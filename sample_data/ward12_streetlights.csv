@@ -1,0 +1,6 @@
+name,category,severity,latitude,longitude
+Streetlight A1,streetlight,0.2,14.4644,75.9218
+Streetlight A2,streetlight,0.6,14.4661,75.9235
+Pothole B1,pothole,0.8,14.4629,75.9201
+Drainage C1,drainage,0.4,14.4650,75.9260
+Streetlight A3,streetlight,0.1,14.4675,75.9180

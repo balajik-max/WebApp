@@ -1,0 +1,9 @@
+-- ---------------------------------------------------------------------
+-- PostGIS bootstrap. Runs once when the PostgreSQL data volume is empty.
+-- Executed by the postgis/postgis image via /docker-entrypoint-initdb.d.
+-- ---------------------------------------------------------------------
+
+CREATE EXTENSION IF NOT EXISTS postgis;
+CREATE EXTENSION IF NOT EXISTS postgis_topology;
+CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+CREATE EXTENSION IF NOT EXISTS pg_trgm;

@@ -1,0 +1,158 @@
+name: davangere-urban-survey
+
+# ---------------------------------------------------------------------------
+# Davangere Smart Urban Survey & Architecture Dashboard
+# Production-oriented local orchestration.  Bring up with `docker compose up`.
+# ---------------------------------------------------------------------------
+
+networks:
+  urban_net:
+    driver: bridge
+
+volumes:
+  postgis_data:
+  minio_data:
+  ollama_data:
+
+services:
+
+  # =========================================================================
+  # PostgreSQL 16 + PostGIS 3.4
+  # =========================================================================
+  db:
+    image: postgis/postgis:16-3.4
+    container_name: davangere_db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB:       ${POSTGRES_DB}
+      POSTGRES_USER:     ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgis_data:/var/lib/postgresql/data
+      - ./backend/init.sql:/docker-entrypoint-initdb.d/00_init_postgis.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB} -h 127.0.0.1"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 15s
+    networks: [urban_net]
+
+  # =========================================================================
+  # MinIO — S3-compatible object storage
+  # =========================================================================
+  storage:
+    image: minio/minio:latest
+    container_name: davangere_storage
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER:     ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+    ports:
+      - "${MINIO_API_PORT:-9000}:9000"
+      - "${MINIO_CONSOLE_PORT:-9001}:9001"
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:9000/minio/health/live || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+    networks: [urban_net]
+
+  # =========================================================================
+  # Ollama — local Llama 3 8B AI engine (fully offline after first pull)
+  # =========================================================================
+  ai_engine:
+    image: ollama/ollama:latest
+    container_name: davangere_ai
+    restart: unless-stopped
+    environment:
+      OLLAMA_KEEP_ALIVE: 24h
+      OLLAMA_MODEL:      ${OLLAMA_MODEL}
+    ports:
+      - "${OLLAMA_PORT:-11434}:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+      - ./scripts/ollama_bootstrap.sh:/bootstrap.sh:ro
+    entrypoint: ["/bin/sh", "/bootstrap.sh"]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:11434/api/tags || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 40
+      start_period: 30s
+    networks: [urban_net]
+
+  # =========================================================================
+  # FastAPI backend
+  # =========================================================================
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: davangere_backend
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+      storage:
+        condition: service_healthy
+      ai_engine:
+        condition: service_started
+    env_file:
+      - .env
+    environment:
+      # Compose-scoped overrides so in-network hostnames win regardless of
+      # what the operator set in `.env` (which may target localhost for
+      # bare-metal runs).
+      DATABASE_URL:    postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
+      MINIO_ENDPOINT:  http://storage:9000
+      OLLAMA_BASE_URL: http://ai_engine:11434
+    ports:
+      - "${BACKEND_PORT:-8001}:8001"
+    volumes:
+      - ./backend:/app
+    entrypoint: ["/app/entrypoint.sh"]
+    command:
+      - uvicorn
+      - app.main:app
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8001"
+      - --workers
+      - "${BACKEND_WORKERS:-2}"
+      - --proxy-headers
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8001/api/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 20s
+    networks: [urban_net]
+
+  # =========================================================================
+  # React + TypeScript + Vite frontend
+  # =========================================================================
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: davangere_frontend
+    restart: unless-stopped
+    depends_on:
+      backend:
+        condition: service_healthy
+    environment:
+      VITE_API_BASE_URL: ${VITE_API_BASE_URL}
+    ports:
+      - "${FRONTEND_PORT:-3000}:3000"
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    networks: [urban_net]

@@ -1,0 +1,30 @@
+{
+  "type": "FeatureCollection",
+  "features": [
+    {
+      "type": "Feature",
+      "geometry": { "type": "Point", "coordinates": [75.9218, 14.4644] },
+      "properties": { "name": "Streetlight A1", "category": "streetlight", "severity": 0.2, "ward": "12" }
+    },
+    {
+      "type": "Feature",
+      "geometry": { "type": "Point", "coordinates": [75.9235, 14.4661] },
+      "properties": { "name": "Streetlight A2", "category": "streetlight", "severity": 0.6, "ward": "12" }
+    },
+    {
+      "type": "Feature",
+      "geometry": { "type": "Point", "coordinates": [75.9201, 14.4629] },
+      "properties": { "name": "Pothole B1", "category": "pothole", "severity": 0.8, "ward": "12" }
+    },
+    {
+      "type": "Feature",
+      "geometry": { "type": "Point", "coordinates": [75.9260, 14.4650] },
+      "properties": { "name": "Drainage C1", "category": "drainage", "severity": 0.4, "ward": "12" }
+    },
+    {
+      "type": "Feature",
+      "geometry": { "type": "Point", "coordinates": [75.9180, 14.4675] },
+      "properties": { "name": "Streetlight A3", "category": "streetlight", "severity": 0.1, "ward": "12" }
+    }
+  ]
+}
