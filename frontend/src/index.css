@@ -710,6 +710,15 @@ body {
   box-shadow: 0 0 0 4px var(--accent-muted);
 }
 
+.login__input:focus-visible,
+.login__eye-btn:focus-visible,
+.login__theme-btn:focus-visible,
+.login__submit:focus-visible,
+.login__demo-accounts button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
 .login__input::placeholder {
   color: var(--ink-ghost);
 }
@@ -755,6 +764,10 @@ body {
 .login__eye-btn:hover {
   background: var(--surface-3);
   color: var(--ink);
+}
+
+.login__eye-btn:focus-visible {
+  background: var(--surface-3);
 }
 
 .login__error {
@@ -868,6 +881,12 @@ body {
 }
 
 .login__demo-accounts button:hover {
+  background: var(--surface-3);
+  border-color: var(--accent);
+  color: var(--ink);
+}
+
+.login__demo-accounts button:focus-visible {
   background: var(--surface-3);
   border-color: var(--accent);
   color: var(--ink);
