@@ -15,7 +15,7 @@ import logging
 import uuid
 from datetime import date as date_type, datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import (
     APIRouter,
@@ -58,6 +58,78 @@ router = APIRouter()
 # Shared with SecurityMiddleware's body-size check (app/core/config.py)
 # so the two limits can never drift out of sync again.
 _MAX_UPLOAD_BYTES = MAX_UPLOAD_BYTES
+
+
+def _render_preview_variant(png_bytes: bytes, *, mode: Literal["rgb", "grayscale"]) -> bytes:
+    """Transform stored preview PNGs into display variants on demand.
+
+    Single-band raster previews are stored as grayscale+alpha. For those,
+    `rgb` returns a terrain-style colorized overlay so DTM/DSM rasters are
+    visibly distinct from grayscale mode. For true-color previews, `rgb`
+    returns the original image and `grayscale` desaturates it.
+    """
+    import numpy as np
+    from rasterio.io import MemoryFile
+
+    with MemoryFile(png_bytes) as memfile:
+        with memfile.open() as src:
+            data = src.read()
+
+    band_count = data.shape[0]
+    if band_count < 2:
+        return png_bytes
+
+    alpha = data[-1]
+
+    if band_count == 2:
+        gray = data[0].astype(np.float32)
+        if mode == "grayscale":
+            return png_bytes
+
+        stops = np.array([0.0, 0.18, 0.4, 0.62, 0.82, 1.0], dtype=np.float32)
+        palette = np.array(
+            [
+                [18, 52, 86],
+                [42, 134, 196],
+                [69, 168, 101],
+                [175, 187, 92],
+                [204, 143, 64],
+                [245, 244, 240],
+            ],
+            dtype=np.float32,
+        )
+        normalized = gray / 255.0
+        rgb = np.stack(
+            [
+                np.interp(normalized, stops, palette[:, 0]),
+                np.interp(normalized, stops, palette[:, 1]),
+                np.interp(normalized, stops, palette[:, 2]),
+            ],
+            axis=0,
+        ).astype(np.uint8)
+    else:
+        rgb_src = data[:3].astype(np.float32)
+        if mode == "rgb":
+            return png_bytes
+        luminance = (
+            0.2126 * rgb_src[0]
+            + 0.7152 * rgb_src[1]
+            + 0.0722 * rgb_src[2]
+        ).astype(np.uint8)
+        rgb = np.stack([luminance, luminance, luminance], axis=0)
+
+    stacked = np.vstack([rgb, alpha[np.newaxis, :, :]])
+    height, width = alpha.shape
+    with MemoryFile() as out_memfile:
+        with out_memfile.open(
+            driver="PNG",
+            height=height,
+            width=width,
+            count=4,
+            dtype="uint8",
+        ) as dst:
+            dst.write(stacked)
+        return out_memfile.read()
 
 
 # Suffix → declared file_type mapping used to persist a stable enum value.
@@ -205,7 +277,11 @@ async def get_dataset(dataset_id: uuid.UUID, db: AsyncSession = Depends(get_db))
     "/{dataset_id}/raster-preview.png",
     dependencies=[Depends(require_any)],
 )
-async def get_raster_preview(dataset_id: uuid.UUID, db: AsyncSession = Depends(get_db)) -> Response:
+async def get_raster_preview(
+    dataset_id: uuid.UUID,
+    mode: Literal["rgb", "grayscale"] = Query("grayscale"),
+    db: AsyncSession = Depends(get_db),
+) -> Response:
     """Streams the reprojected raster preview PNG generated at ingestion
     time. Proxied through the API (rather than a presigned MinIO URL)
     because the storage endpoint is an internal Docker hostname the
@@ -225,6 +301,7 @@ async def get_raster_preview(dataset_id: uuid.UUID, db: AsyncSession = Depends(g
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=404, detail="Raster preview not found in storage") from exc
 
+    png_bytes = _render_preview_variant(png_bytes, mode=mode)
     return Response(content=png_bytes, media_type="image/png")
 
 
