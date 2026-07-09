@@ -3,7 +3,7 @@ Ollama-backed grounded RAG service.
 
 * Uses the official `ollama` Python client, pointed at `OLLAMA_BASE_URL`
   which resolves to the `ai_engine` container in the compose network.
-* Targets `OLLAMA_MODEL` (defaults to `llama3:8b`).
+* Targets `OLLAMA_MODEL` (defaults to `qwen2.5:7b-instruct`).
 * The system prompt is hard-coded and forbids the model from drawing on
   its own pre-trained knowledge — every answer must cite ONLY the
   serialized database context we pass in.
@@ -53,13 +53,26 @@ class LlmReply:
     prompt_tokens_hint: int
 
 
+# Singleton Ollama client for connection pooling.
+_ollama_client: ollama.Client | None = None
+
+
 def _client() -> ollama.Client:
-    s = get_settings()
-    # `ollama.Client` accepts a `host=` arg which becomes the base URL.
-    return ollama.Client(host=s.ollama_base_url, timeout=120)
+    """Return a singleton Ollama client with generous timeouts."""
+    global _ollama_client
+    if _ollama_client is None:
+        s = get_settings()
+        # 5 min timeout so large context summarization calls never truncate early.
+        _ollama_client = ollama.Client(host=s.ollama_base_url, timeout=300)
+        log.info(
+            "Initialized Ollama client: host=%s, model=%s, timeout=300s",
+            s.ollama_base_url,
+            s.ollama_model,
+        )
+    return _ollama_client
 
 
-def _blocking_chat(*, model: str, system: str, user: str) -> str:
+def _blocking_chat(*, model: str, system: str, user: str, num_ctx: int = 4096, num_predict: int = 1024) -> str:
     resp = _client().chat(
         model=model,
         messages=[
@@ -69,7 +82,8 @@ def _blocking_chat(*, model: str, system: str, user: str) -> str:
         options={
             "temperature": 0.2,
             "top_p": 0.9,
-            "num_ctx": 4096,
+            "num_ctx": num_ctx,
+            "num_predict": num_predict,
         },
     )
     # ollama-python returns a dict-like response with a `message.content` key.
@@ -84,12 +98,23 @@ async def run_grounded_completion(
     *,
     context: str,
     user_prompt: str,
+    num_predict: int = 1024,
+    num_ctx: int | None = None,
 ) -> LlmReply:
     settings = get_settings()
     system = SYSTEM_PROMPT_TEMPLATE.format(context=context)
 
+    # num_ctx is the model's TOTAL context window (prompt + completion), so
+    # a caller requesting a large num_predict (e.g. a multi-section report)
+    # must also raise num_ctx or the completion gets starved of room to
+    # actually write in. Default to the configured cap; long-form callers
+    # pass an explicit, larger value.
+    num_ctx = min(num_ctx or settings.ai_max_context_tokens, 8192)
+
     def _do() -> str:
-        return _blocking_chat(model=settings.ollama_model, system=system, user=user_prompt)
+        return _blocking_chat(
+            model=settings.ollama_model, system=system, user=user_prompt, num_ctx=num_ctx, num_predict=num_predict
+        )
 
     try:
         text_out = await asyncio.to_thread(_do)

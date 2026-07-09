@@ -22,6 +22,7 @@ class DatasetOut(BaseModel):
     storage_key: str | None = None
     size_bytes: int | None = None
     processing_error: str | None = None
+    dataset_metadata: dict = {}
     created_at: datetime
     updated_at: datetime
 

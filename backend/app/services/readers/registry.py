@@ -9,6 +9,8 @@ from __future__ import annotations
 
 from app.services.readers.base import DatasetReader
 from app.services.readers.gis_reader import GISReader
+from app.services.readers.obj_reader import ObjReader
+from app.services.readers.raster_reader import RasterReader
 from app.services.readers.table_reader import TableReader
 
 # Order matters — earlier readers win.  Native GIS formats are checked
@@ -16,6 +18,8 @@ from app.services.readers.table_reader import TableReader
 # hits the GISReader.
 _STRATEGIES: tuple[DatasetReader, ...] = (
     GISReader(),
+    RasterReader(),
+    ObjReader(),
     TableReader(),
 )
 

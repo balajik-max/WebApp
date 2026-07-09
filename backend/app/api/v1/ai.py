@@ -21,9 +21,8 @@ from app.db.session import get_db
 from app.schemas.ai import (
     AiAnswer,
     NLQueryRequest,
-    PrioritizeRequest,
     RecommendRequest,
-    SummarizeRequest,
+    ReportRequest,
 )
 from app.services.ai import (
     AI_DISCLAIMER,
@@ -31,10 +30,11 @@ from app.services.ai import (
     run_grounded_completion,
 )
 from app.services.ai_context import (
+    ReportFacts,
     build_dataset_or_ward_context,
     build_feature_ids_context,
-    build_prioritize_context,
     build_recommend_context,
+    build_report_facts,
 )
 
 log = logging.getLogger("davangere.api.ai")
@@ -54,51 +54,161 @@ def _insufficient(kind: str, model: str, debug: dict | None) -> AiAnswer:
     )
 
 
+def _render_facts_markdown(facts: ReportFacts) -> str:
+    """Renders the factual front half of the report directly from SQL
+    results — no LLM involved, so these numbers can never be wrong."""
+    lines: list[str] = []
+
+    lines.append("## Executive Summary")
+    lines.append(
+        f"This report covers **{facts.total_features} surveyed features** across "
+        f"**{facts.distinct_categories} categories** in **{facts.scope_label}**, "
+        f"drawn from {facts.distinct_datasets} dataset(s). The average severity "
+        f"score across all features is **{facts.avg_severity:.2f}** (0-1 scale)."
+    )
+    lines.append("")
+
+    lines.append("## Study Area")
+    lines.append(f"- Scope: {facts.scope_label}")
+    lines.append(f"- Total features surveyed: {facts.total_features}")
+    lines.append(f"- Distinct categories: {facts.distinct_categories}")
+    lines.append(f"- Datasets contributing to this scope: {facts.distinct_datasets}")
+    lines.append(f"- Review backlog: {facts.review_summary}")
+    lines.append("")
+
+    lines.append("## Existing Situation")
+    lines.append("Category breakdown across every matching feature (full count, not a sample):")
+    lines.append("")
+    lines.append("| Category | Count | Avg Severity |")
+    lines.append("|---|---|---|")
+    shown = facts.categories[:15]
+    for c in shown:
+        lines.append(f"| {c.category} | {c.count} | {c.avg_severity:.2f} |")
+    if len(facts.categories) > len(shown):
+        lines.append(f"| …and {len(facts.categories) - len(shown)} more categories | | |")
+    lines.append("")
+    lines.append(
+        f"Severity distribution: **{facts.severity_buckets['high']} high**, "
+        f"**{facts.severity_buckets['medium']} medium**, "
+        f"**{facts.severity_buckets['low']} low** severity features."
+    )
+    lines.append("")
+
+    lines.append("## Key Findings")
+    if facts.top_features:
+        lines.append("Highest-severity individual features on record:")
+        lines.append("")
+        for f in facts.top_features:
+            lines.append(f"- **{f.label}** ({f.category}) — severity {f.severity:.2f}, from *{f.dataset_name}*")
+    else:
+        lines.append("No features with elevated severity were found in this scope.")
+
+    return "\n".join(lines)
+
+
+def _facts_crib_sheet(facts: ReportFacts) -> str:
+    """A short, verified fact sheet handed to the LLM for the
+    narrative-only sections — deliberately terse so there's little room
+    for it to latch onto anything to misread."""
+    top_categories = ", ".join(f"{c.category} ({c.count})" for c in facts.categories[:10])
+    examples = "\n".join(
+        f"  - {f.label} ({f.category}), severity {f.severity:.2f}" for f in facts.top_features
+    ) or "  - none"
+    return (
+        f"SCOPE: {facts.scope_label}\n"
+        f"TOTAL_FEATURES: {facts.total_features}\n"
+        f"DISTINCT_CATEGORIES: {facts.distinct_categories}\n"
+        f"TOP_CATEGORIES (real name and count — do not invent any other category name): {top_categories}\n"
+        f"SEVERITY_BUCKETS: high={facts.severity_buckets['high']}, "
+        f"medium={facts.severity_buckets['medium']}, low={facts.severity_buckets['low']}\n"
+        f"REVIEW_BACKLOG: {facts.review_summary}\n"
+        f"HIGH_SEVERITY_EXAMPLES (real labels — cite verbatim only, never alter):\n{examples}"
+    )
+
+
 # ---------------------------------------------------------------------------
-# POST /api/v1/ai/summarize
+# POST /api/v1/ai/report
 # ---------------------------------------------------------------------------
 @router.post(
-    "/summarize",
+    "/report",
     response_model=AiAnswer,
     dependencies=[Depends(require_any)],
-    summary="Grounded markdown summary of a dataset or ward",
+    summary="Full ward/dataset-level neighbourhood regeneration report",
 )
-async def summarize(body: SummarizeRequest, db: AsyncSession = Depends(get_db)) -> AiAnswer:
+async def report(body: ReportRequest, db: AsyncSession = Depends(get_db)) -> AiAnswer:
     if body.dataset_id is None and body.ward is None:
         raise HTTPException(status_code=400, detail="Provide either dataset_id or ward")
 
     from app.core.config import get_settings
-    model = get_settings().ollama_model
+    settings = get_settings()
+    model = settings.ollama_model
 
-    ctx = await build_dataset_or_ward_context(
-        db,
-        dataset_id=body.dataset_id,
-        ward=body.ward,
-        max_features=body.max_features,
-    )
-    if ctx.count == 0:
-        return _insufficient("summarize", model, ctx.debug)
+    facts = await build_report_facts(db, dataset_id=body.dataset_id, ward=body.ward)
+    if facts is None:
+        return _insufficient("report", model, {"reason": "no matching features"})
 
-    user_prompt = (
-        "Produce a structured markdown report for the scope above. Include:\n"
-        "1. `## Scope` — briefly restate the scope filters.\n"
-        "2. `## Volume & Severity` — number of features, average severity, category mix.\n"
-        "3. `## Review Backlog` — open vs resolved counts if data is present.\n"
-        "4. `## Top Hotspots` — up to 5 highest-severity features (id, label, category).\n"
-        "5. `## Notable Attribute Patterns` — anything recurring in the raw attributes.\n"
-        "Only cite the rows in the DATABASE CONTEXT; do not invent values."
+    # Every count/category/id the report states comes from `facts`
+    # (computed by SQL, rendered by Python below) — the LLM is never
+    # asked to recall or restate a number itself, only to write
+    # narrative/prescriptive prose around facts it's handed. This is a
+    # deliberate response to real hallucinations seen in testing (an
+    # invented "Divider" category, a lat/long mistaken for a feature id,
+    # a sample size reported as the area's total) even with a strict
+    # grounding prompt — a 7B CPU model just isn't reliable enough to be
+    # trusted with the numbers themselves.
+    facts_markdown = _render_facts_markdown(facts)
+    crib = _facts_crib_sheet(facts)
+
+    narrative_prompt = (
+        "You are writing the back half of a neighbourhood-regeneration "
+        "planning report. The front half (already written, shown below as "
+        "FACTS) covers the Executive Summary, Study Area, Existing "
+        "Situation, and Key Findings — do not repeat or restate those.\n\n"
+        "Using ONLY the FACTS below, write these remaining sections, using "
+        "exactly these headers in order:\n\n"
+        "`## Quality of Life Implications` — plain-language consequences "
+        "for residents that plausibly follow from the categories/severity "
+        "in FACTS (e.g. closed drains -> stagnant water/mosquito risk). Do "
+        "not list generic urban problems unrelated to the categories given.\n\n"
+        "`## Strategic Opportunities` — 3-5 opportunities a civic engineer "
+        "could pursue, each justified by a category or finding in FACTS.\n\n"
+        "`## Phased Improvement Strategy` — three sub-sections `Immediate "
+        "(0-12 months)`, `Short-Term (1-3 Years)`, `Long-Term (3-10 Years)`, "
+        "bullet lists of actions addressing the categories in FACTS, "
+        "highest-severity items first.\n\n"
+        "`## Expected Outcomes` — bullet list of realistic improvements if "
+        "the phases above are carried out.\n\n"
+        "`## Investment Priorities` — which categories should be funded "
+        "first and why, based on the severity/count figures in FACTS — "
+        "never invent a specific budget figure.\n\n"
+        "`## Monitoring & Performance` — 4-6 KPIs this survey system could "
+        "track over time (e.g. open review count, avg severity, "
+        "category-specific counts) — only metrics this database could "
+        "actually produce.\n\n"
+        "`## Conclusion` — 2-3 sentences tying the findings back to the "
+        "opportunity for coordinated improvement.\n\n"
+        "CRITICAL RULE: never state a specific number, percentage, or "
+        "category name that is not written verbatim in FACTS below. If you "
+        "need to reference 'the most common issue', use the exact category "
+        "name from FACTS — never a category that isn't listed there.\n\n"
+        f"FACTS:\n{crib}"
     )
-    reply = await run_grounded_completion(context=ctx.text, user_prompt=user_prompt)
+    reply = await run_grounded_completion(
+        context=crib,
+        user_prompt=narrative_prompt,
+        num_predict=1200,
+        num_ctx=4096,
+    )
 
     return AiAnswer(
-        kind="summarize",
+        kind="report",
         model=reply.model,
         prompt_tokens_hint=reply.prompt_tokens_hint,
-        context_rows=ctx.count,
+        context_rows=facts.total_features,
         grounded=True,
-        answer_markdown=reply.text,
+        answer_markdown=f"{facts_markdown}\n\n{reply.text}",
         generated_at=datetime.now(timezone.utc),
-        debug=ctx.debug,
+        debug={"scope": facts.scope_label, "total_features": facts.total_features},
     )
 
 
@@ -139,53 +249,17 @@ async def query(body: NLQueryRequest, db: AsyncSession = Depends(get_db)) -> AiA
         context=ctx.text,
         user_prompt=(
             f"User's question:\n{body.question.strip()}\n\n"
-            "Answer strictly from the DATABASE CONTEXT above."
+            "Answer strictly from the DATABASE CONTEXT above. If the context "
+            "includes a CATEGORY BREAKDOWN, that is the real, complete total "
+            "for the whole scope — use it for any count/composition claim. "
+            "A 'TOP FEATURES' list, if present, is only a severity-sorted "
+            "SAMPLE of individual examples, not the full picture — never "
+            "state or imply overall composition/totals from it, and never "
+            "name a category that doesn't literally appear in the context."
         ),
     )
     return AiAnswer(
         kind="query",
-        model=reply.model,
-        prompt_tokens_hint=reply.prompt_tokens_hint,
-        context_rows=ctx.count,
-        grounded=True,
-        answer_markdown=reply.text,
-        generated_at=datetime.now(timezone.utc),
-        debug=ctx.debug,
-    )
-
-
-# ---------------------------------------------------------------------------
-# POST /api/v1/ai/prioritize
-# ---------------------------------------------------------------------------
-@router.post(
-    "/prioritize",
-    response_model=AiAnswer,
-    dependencies=[Depends(require_any)],
-    summary="Prioritize the open backlog into an action list",
-)
-async def prioritize(body: PrioritizeRequest, db: AsyncSession = Depends(get_db)) -> AiAnswer:
-    from app.core.config import get_settings
-    model = get_settings().ollama_model
-
-    ctx = await build_prioritize_context(db, ward=body.ward, limit=body.limit)
-    if ctx.count == 0:
-        return _insufficient("prioritize", model, ctx.debug)
-
-    user_prompt = (
-        "You are given a list of currently open review items with their "
-        "priority tier (P0 most critical … P4 least), severity, category, "
-        "ward, and age in hours.\n\n"
-        "Produce a prioritized action plan as a markdown table with columns: "
-        "Rank | review_id | Category | Ward | Reason. Order by (priority ASC, "
-        "severity DESC, age_h DESC). Cover at most the top 15 rows. "
-        "Do not invent items that are not in the context. Below the table, "
-        "add a `## Notes` section with one paragraph summarising what themes "
-        "dominate the backlog based ONLY on the rows given."
-    )
-    reply = await run_grounded_completion(context=ctx.text, user_prompt=user_prompt)
-
-    return AiAnswer(
-        kind="prioritize",
         model=reply.model,
         prompt_tokens_hint=reply.prompt_tokens_hint,
         context_rows=ctx.count,
@@ -237,6 +311,9 @@ async def recommend(body: RecommendRequest, db: AsyncSession = Depends(get_db)) 
         "coordination touchpoints.\n"
         "4. `## Open Questions` — anything you cannot infer from the context "
         "and would need an engineer to confirm.\n\n"
+        "Only one feature is described in the context above — do not invent "
+        "counts, additional features, or categories beyond what's shown "
+        "there; every attribute/value you cite must appear verbatim above.\n\n"
         "At the very END of your response, append exactly this line on its "
         f"own, verbatim: {AI_DISCLAIMER}"
     )

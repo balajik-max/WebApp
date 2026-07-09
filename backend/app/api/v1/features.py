@@ -108,6 +108,13 @@ async def list_features_in_viewport(
     ward: str | None = Query(default=None, max_length=128),
     category: str | None = Query(default=None, max_length=128),
     severity: int | None = Query(default=None, description="Minimum severity threshold"),
+    dataset_id: list[uuid.UUID] | None = Query(
+        default=None,
+        description=(
+            "Restrict to one or more datasets (used by the map's dataset-click "
+            "isolation / multi-dataset selection). Repeat the param for more than one."
+        ),
+    ),
     limit: int = Query(default=_DEFAULT_ROW_LIMIT, ge=1, le=_HARD_ROW_LIMIT),
     db: AsyncSession = Depends(get_db),
 ) -> dict[str, Any]:
@@ -131,6 +138,9 @@ async def list_features_in_viewport(
     if severity is not None:
         conditions.append("f.severity >= :severity")
         params["severity"] = float(severity)
+    if dataset_id:
+        conditions.append("f.dataset_id = ANY(:dataset_ids)")
+        params["dataset_ids"] = dataset_id
 
     where_clause = " AND ".join(conditions)
     join_clause = "JOIN datasets d ON d.id = f.dataset_id" if join_dataset else ""

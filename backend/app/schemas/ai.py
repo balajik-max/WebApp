@@ -11,14 +11,6 @@ from pydantic import BaseModel, Field
 
 
 # ---------- Requests ------------------------------------------------------
-class SummarizeRequest(BaseModel):
-    """Summarize a dataset or a ward.  Exactly one scope required."""
-
-    dataset_id: uuid.UUID | None = None
-    ward: str | None = Field(default=None, max_length=128)
-    max_features: int = Field(default=80, ge=1, le=300)
-
-
 class NLQueryRequest(BaseModel):
     """Natural language question with optional grounding hints."""
 
@@ -29,22 +21,23 @@ class NLQueryRequest(BaseModel):
     max_features: int = Field(default=60, ge=1, le=200)
 
 
-class PrioritizeRequest(BaseModel):
-    """Prioritize the current backlog of open review items."""
-
-    ward: str | None = Field(default=None, max_length=128)
-    limit: int = Field(default=25, ge=1, le=100)
-
-
 class RecommendRequest(BaseModel):
     """Recommend mitigation actions for a single feature."""
 
     feature_id: uuid.UUID
 
 
+class ReportRequest(BaseModel):
+    """Generate a full ward/dataset-level planning report. Exactly one scope required."""
+
+    dataset_id: uuid.UUID | None = None
+    ward: str | None = Field(default=None, max_length=128)
+    max_features: int = Field(default=120, ge=1, le=300)
+
+
 # ---------- Response ------------------------------------------------------
 class AiAnswer(BaseModel):
-    kind: Literal["summarize", "query", "prioritize", "recommend"]
+    kind: Literal["query", "recommend", "report"]
     model: str
     prompt_tokens_hint: int
     context_rows: int

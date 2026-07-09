@@ -81,7 +81,9 @@ services:
       - ./scripts/ollama_bootstrap.sh:/bootstrap.sh:ro
     entrypoint: ["/bin/sh", "/bootstrap.sh"]
     healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://localhost:11434/api/tags || exit 1"]
+      # curl is not present in the ollama/ollama base image — use the
+      # ollama CLI itself so the healthcheck can actually succeed.
+      test: ["CMD-SHELL", "ollama list || exit 1"]
       interval: 15s
       timeout: 5s
       retries: 40
@@ -143,6 +145,7 @@ services:
     build:
       context: ./frontend
       dockerfile: Dockerfile
+      target: production
     container_name: davangere_frontend
     restart: unless-stopped
     depends_on:
@@ -152,7 +155,4 @@ services:
       VITE_API_BASE_URL: ${VITE_API_BASE_URL}
     ports:
       - "${FRONTEND_PORT:-3000}:3000"
-    volumes:
-      - ./frontend:/app
-      - /app/node_modules
     networks: [urban_net]

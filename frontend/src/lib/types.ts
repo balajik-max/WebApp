@@ -41,4 +41,10 @@ export interface FeatureFilter {
   ward?: string;
   category?: string;
   severity?: number;
+  /** When set, isolates the map to exactly this set of datasets — overrides
+   * ward/category/severity so a stale global filter can never combine
+   * with a dataset selection to silently return zero or mixed results.
+   * Multiple entries let the map show two or more datasets together
+   * (e.g. a raster orthophoto plus its companion GDB vector layer). */
+  datasetIds?: string[];
 }

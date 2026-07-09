@@ -29,10 +29,11 @@ from fastapi import (
     UploadFile,
     status,
 )
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_user, require_any
+from app.core.config import MAX_UPLOAD_BYTES
 from app.db.session import get_db
 from app.models import (
     ActivityAction,
@@ -51,6 +52,13 @@ from app.services.storage import delete_object, ensure_bucket, upload_stream
 log = logging.getLogger("davangere.api.datasets")
 router = APIRouter()
 
+# Hard cap so a single upload can't exhaust worker memory. GDAL/geopandas
+# reads the whole file into memory downstream, so this must stay well
+# under available container RAM regardless of how many workers run.
+# Shared with SecurityMiddleware's body-size check (app/core/config.py)
+# so the two limits can never drift out of sync again.
+_MAX_UPLOAD_BYTES = MAX_UPLOAD_BYTES
+
 
 # Suffix → declared file_type mapping used to persist a stable enum value.
 _SUFFIX_TO_TYPE: dict[str, DatasetFileType] = {
@@ -65,6 +73,9 @@ _SUFFIX_TO_TYPE: dict[str, DatasetFileType] = {
     ".xls": DatasetFileType.CSV,
     ".tif": DatasetFileType.GEOTIFF,
     ".tiff": DatasetFileType.GEOTIFF,
+    ".geotiff": DatasetFileType.GEOTIFF,
+    ".obj": DatasetFileType.OTHER,       # 3D model
+    ".gdb": DatasetFileType.SHAPEFILE,   # Esri File Geodatabase
 }
 
 
@@ -101,10 +112,21 @@ async def upload_dataset(
         )
 
     # 1. Buffer the payload (UploadFile streams from a SpooledTemporaryFile).
-    payload = await file.read()
+    #    Bounded read: request at most one byte over the cap so an oversized
+    #    upload is rejected without ever materializing the full file in memory.
+    payload = await file.read(_MAX_UPLOAD_BYTES + 1)
+    if len(payload) > _MAX_UPLOAD_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail=f"File exceeds the {_MAX_UPLOAD_BYTES // (1024 * 1024)} MB upload limit",
+        )
     size_bytes = len(payload)
     if size_bytes == 0:
         raise HTTPException(status_code=400, detail="Uploaded file is empty")
+
+    # Basic magic-byte validation for common file types
+    ext = Path(file.filename).suffix.lower()
+    _validate_file_magic(payload, ext)
 
     # 2. Ensure the bucket exists (idempotent) then push the object.
     await ensure_bucket()
@@ -177,6 +199,33 @@ async def get_dataset(dataset_id: uuid.UUID, db: AsyncSession = Depends(get_db))
     if row is None:
         raise HTTPException(status_code=404, detail="Dataset not found")
     return DatasetOut.model_validate(row)
+
+
+@router.get(
+    "/{dataset_id}/raster-preview.png",
+    dependencies=[Depends(require_any)],
+)
+async def get_raster_preview(dataset_id: uuid.UUID, db: AsyncSession = Depends(get_db)) -> Response:
+    """Streams the reprojected raster preview PNG generated at ingestion
+    time. Proxied through the API (rather than a presigned MinIO URL)
+    because the storage endpoint is an internal Docker hostname the
+    browser can't resolve directly."""
+    row = (await db.execute(select(Dataset).where(Dataset.id == dataset_id))).scalar_one_or_none()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+
+    overlay = (row.dataset_metadata or {}).get("raster_overlay")
+    if not overlay or not overlay.get("image_key"):
+        raise HTTPException(status_code=404, detail="No raster preview available for this dataset")
+
+    from app.services.storage import get_object_bytes
+
+    try:
+        png_bytes = await get_object_bytes(overlay["image_key"])
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=404, detail="Raster preview not found in storage") from exc
+
+    return Response(content=png_bytes, media_type="image/png")
 
 
 @router.patch(
@@ -280,6 +329,12 @@ async def dataset_feature_table(
     offset: int = Query(default=0, ge=0),
     db: AsyncSession = Depends(get_db),
 ) -> dict[str, Any]:
+    exists = (
+        await db.execute(select(Dataset.id).where(Dataset.id == dataset_id))
+    ).scalar_one_or_none()
+    if exists is None:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+
     total = (
         await db.execute(
             select(func.count(Feature.id)).where(Feature.dataset_id == dataset_id)
@@ -317,6 +372,89 @@ async def dataset_feature_table(
             for r in rows
         ],
     }
+
+
+@router.get(
+    "/{dataset_id}/bounds",
+    dependencies=[Depends(require_any)],
+    summary="Bounding box of a dataset's ingested features, for map fly-to",
+)
+async def dataset_bounds(
+    dataset_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    exists = (
+        await db.execute(select(Dataset.id).where(Dataset.id == dataset_id))
+    ).scalar_one_or_none()
+    if exists is None:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+
+    row = (
+        await db.execute(
+            text(
+                """
+                SELECT
+                    ST_XMin(ext) AS min_lon, ST_YMin(ext) AS min_lat,
+                    ST_XMax(ext) AS max_lon, ST_YMax(ext) AS max_lat
+                FROM (SELECT ST_Extent(geom) AS ext FROM features WHERE dataset_id = :id) t
+                """
+            ),
+            {"id": str(dataset_id)},
+        )
+    ).mappings().first()
+
+    if row is None or row["min_lon"] is None:
+        raise HTTPException(status_code=404, detail="Dataset has no ingested features")
+
+    return {
+        "min_lon": row["min_lon"],
+        "min_lat": row["min_lat"],
+        "max_lon": row["max_lon"],
+        "max_lat": row["max_lat"],
+    }
+
+
+# Magic-byte signatures for file type validation
+_MAGIC: dict[str, list[bytes]] = {
+    ".geojson": [b"{", b"["],
+    ".json": [b"{", b"["],
+    ".csv": [],
+    ".tsv": [],
+    ".xlsx": [b"PK\x03\x04"],
+    ".xls": [b"\xD0\xCF\x11\xE0"],
+    ".zip": [b"PK\x03\x04"],
+    ".kml": [b"<"],
+    ".gpkg": [b"GP"],
+    # Classic TIFF (little/big-endian) plus BigTIFF (little/big-endian) —
+    # large real-world GeoTIFFs (DEMs, orthomosaics) are frequently written
+    # as BigTIFF, which has a different magic number (0x2B instead of 0x2A).
+    ".tif": [b"II\x2a\x00", b"MM\x00\x2a", b"II\x2b\x00", b"MM\x00\x2b"],
+    ".tiff": [b"II\x2a\x00", b"MM\x00\x2a", b"II\x2b\x00", b"MM\x00\x2b"],
+    ".geotiff": [b"II\x2a\x00", b"MM\x00\x2a", b"II\x2b\x00", b"MM\x00\x2b"],
+    ".obj": [b"#", b"v ", b"vt ", b"vn ", b"vp ", b"f ", b"o ", b"g ", b"s ", b"mtllib", b"usemtl"],
+}
+_MAX_MAGIC_BYTES = 256
+# OBJ is a line-oriented text format with many valid leading directives
+# (comments, object/group names, material refs) before any vertex/face
+# data — unlike the binary formats above, its "signature" can appear
+# anywhere in the head, not just at byte 0.
+_CONTAINS_ANYWHERE = {".obj"}
+
+
+def _validate_file_magic(payload: bytes, ext: str) -> None:
+    sigs = _MAGIC.get(ext)
+    if sigs is None or not sigs:
+        return
+    head = payload[:_MAX_MAGIC_BYTES]
+    if ext in _CONTAINS_ANYWHERE:
+        matched = any(sig in head for sig in sigs)
+    else:
+        matched = any(head.startswith(sig) for sig in sigs)
+    if not matched:
+        raise HTTPException(
+            status_code=400,
+            detail=f"File content does not match expected format for '{ext}' extension",
+        )
 
 
 @router.get(

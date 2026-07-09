@@ -24,6 +24,13 @@ export interface SeverityBucket {
   count: number;
 }
 
+/** One real day a dataset/feature was ingested — not a simulated point. */
+export interface IngestionTrendPoint {
+  date: string;
+  features_added: number;
+  cumulative_features: number;
+}
+
 export interface AnalyticsOverview {
   total_datasets: number;
   ready_datasets: number;
@@ -37,6 +44,7 @@ export interface AnalyticsOverview {
   ward_breakdown: WardBreakdown[];
   category_breakdown: CategoryBreakdown[];
   severity_breakdown: SeverityBucket[];
+  ingestion_trend: IngestionTrendPoint[];
   generated_at: string;
 }
 
@@ -51,12 +59,21 @@ export interface DatasetRow {
   storage_key: string | null;
   size_bytes: number | null;
   processing_error: string | null;
+  dataset_metadata: {
+    raster_overlay?: { image_key: string; bounds: [number, number, number, number] };
+    [key: string]: unknown;
+  };
   created_at: string;
   updated_at: string;
 }
 
-export function fetchOverview(signal?: AbortSignal) {
-  return apiGet<AnalyticsOverview>("/api/v1/analytics/overview", signal);
+export function fetchOverview(datasetIds?: string[], signal?: AbortSignal) {
+  if (!datasetIds || datasetIds.length === 0) {
+    return apiGet<AnalyticsOverview>("/api/v1/analytics/overview", signal);
+  }
+  const params = new URLSearchParams();
+  for (const id of datasetIds) params.append("dataset_id", id);
+  return apiGet<AnalyticsOverview>(`/api/v1/analytics/overview?${params.toString()}`, signal);
 }
 
 export function fetchDatasets(signal?: AbortSignal) {
@@ -87,6 +104,17 @@ export interface WardOption {
 
 export function fetchWards(signal?: AbortSignal) {
   return apiGet<WardOption[]>("/api/v1/datasets/wards/list", signal);
+}
+
+export interface DatasetBounds {
+  min_lon: number;
+  min_lat: number;
+  max_lon: number;
+  max_lat: number;
+}
+
+export function fetchDatasetBounds(datasetId: string, signal?: AbortSignal) {
+  return apiGet<DatasetBounds>(`/api/v1/datasets/${datasetId}/bounds`, signal);
 }
 
 export interface CategoryOption {

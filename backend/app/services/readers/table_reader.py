@@ -22,6 +22,7 @@ from shapely.geometry import Point
 from app.db.session import SessionLocal
 from app.models import Feature
 from app.services.readers.base import ReaderResult
+from app.services.readers.severity import infer_severity_from_attributes
 
 log = logging.getLogger("davangere.readers.table")
 
@@ -48,6 +49,17 @@ def _detect_column(columns: list[str], aliases: tuple[str, ...]) -> str | None:
             if col_lower.startswith(alias):
                 return original
     return None
+
+
+def _clean_str(value: Any) -> str | None:
+    """Stringify a raw attribute value for label/category, treating NaN
+    floats and blank strings as missing instead of the literal text "nan"."""
+    if value is None:
+        return None
+    if isinstance(value, float) and math.isnan(value):
+        return None
+    text = str(value).strip()
+    return text if text and text.lower() != "nan" else None
 
 
 def _jsonable(value: Any) -> Any:
@@ -152,12 +164,14 @@ class TableReader:
                             severity_val = max(0.0, min(1.0, float(raw)))
                     except (TypeError, ValueError):
                         severity_val = 0.0
+                if severity_val == 0.0:
+                    severity_val = infer_severity_from_attributes(attrs)
 
                 batch.append(
                     Feature(
                         dataset_id=dataset_uuid,
-                        label=str(row.get(label_col)) if label_col is not None and row.get(label_col) is not None else None,
-                        category=str(row.get(category_col)) if category_col is not None and row.get(category_col) is not None else None,
+                        label=_clean_str(row.get(label_col)) if label_col is not None else None,
+                        category=_clean_str(row.get(category_col)) if category_col is not None else None,
                         severity=severity_val,
                         attributes=attrs,
                         geom=from_shape(Point(lon, lat), srid=4326),

@@ -37,11 +37,12 @@ router = APIRouter()
 
 def _set_auth_cookies(response: Response, access: str, refresh: str) -> None:
     settings = get_settings()
+    is_prod = settings.app_env == "production"
     response.set_cookie(
         "access_token",
         access,
         httponly=True,
-        secure=False,
+        secure=is_prod,
         samesite="lax",
         max_age=settings.jwt_access_ttl_min * 60,
         path="/",
@@ -50,7 +51,7 @@ def _set_auth_cookies(response: Response, access: str, refresh: str) -> None:
         "refresh_token",
         refresh,
         httponly=True,
-        secure=False,
+        secure=is_prod,
         samesite="lax",
         max_age=settings.jwt_refresh_ttl_days * 86400,
         path="/",
@@ -133,13 +134,15 @@ async def refresh_token(
         raise HTTPException(status_code=401, detail="User not found")
 
     access = create_access_token(user_id=user.id, email=user.email, role=user.role.value)
+    settings = get_settings()
+    is_prod = settings.app_env == "production"
     response.set_cookie(
         "access_token",
         access,
         httponly=True,
-        secure=False,
+        secure=is_prod,
         samesite="lax",
-        max_age=get_settings().jwt_access_ttl_min * 60,
+        max_age=settings.jwt_access_ttl_min * 60,
         path="/",
     )
     return {"access_token": access, "token_type": "bearer"}

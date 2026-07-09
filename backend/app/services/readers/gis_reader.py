@@ -26,10 +26,11 @@ from shapely.geometry.base import BaseGeometry
 from app.db.session import SessionLocal
 from app.models import Feature
 from app.services.readers.base import ReaderResult
+from app.services.readers.severity import infer_severity_from_attributes
 
 log = logging.getLogger("davangere.readers.gis")
 
-_VECTOR_SUFFIXES = {".shp", ".geojson", ".json", ".zip", ".gpkg", ".kml"}
+_VECTOR_SUFFIXES = {".shp", ".geojson", ".json", ".zip", ".gpkg", ".kml", ".gdb"}
 _BATCH_SIZE = 500
 _TARGET_CRS = "EPSG:4326"
 
@@ -59,6 +60,17 @@ def _jsonable(value: Any) -> Any:
 
 def _row_attributes(row: dict[str, Any]) -> dict[str, Any]:
     return {str(k): _jsonable(v) for k, v in row.items() if k != "geometry"}
+
+
+def _clean_str(value: Any) -> str | None:
+    """Stringify a raw attribute value for label/category, treating NaN
+    floats and blank strings as missing instead of the literal text "nan"."""
+    if value is None:
+        return None
+    if isinstance(value, float) and math.isnan(value):
+        return None
+    text = str(value).strip()
+    return text if text and text.lower() != "nan" else None
 
 
 def _find_gdb_entry(zip_path: Path) -> str | None:
@@ -155,15 +167,34 @@ class GISReader:
                 continue
             if layer_gdf.empty:
                 continue
+
+            # Real-world GDBs frequently mix CRS across layers — e.g. one
+            # layer in a plain projected CRS and another with a vertical
+            # height datum tacked on (WGS 84 / UTM zone 43N vs. WGS 84 /
+            # UTM zone 43N + EGM2008 height). geopandas refuses to
+            # `pd.concat` frames whose CRS objects aren't identical, so
+            # every layer must be normalized to the shared target CRS
+            # *before* concatenation, not after.
+            if layer_gdf.crs is None:
+                layer_gdf = layer_gdf.set_crs(_TARGET_CRS, allow_override=True)
+            elif str(layer_gdf.crs).upper() != _TARGET_CRS:
+                try:
+                    layer_gdf = layer_gdf.to_crs(_TARGET_CRS)
+                except Exception as exc:  # noqa: BLE001
+                    log.warning(
+                        "Skipping layer %r in %s: could not reproject from %s to %s: %s",
+                        layer_name, gdb_entry, layer_gdf.crs, _TARGET_CRS, exc,
+                    )
+                    continue
+
             layer_gdf["gdb_layer"] = layer_name
             frames.append(layer_gdf)
 
         if not frames:
             raise ValueError(f"No usable features found in any layer of '{gdb_entry}'")
 
-        crs = frames[0].crs
         combined = pd.concat(frames, ignore_index=True)
-        return gpd.GeoDataFrame(combined, geometry="geometry", crs=crs)
+        return gpd.GeoDataFrame(combined, geometry="geometry", crs=_TARGET_CRS)
 
     async def _persist(
         self,
@@ -181,18 +212,62 @@ class GISReader:
 
         # Detect label / category columns heuristically.
         columns_lower = {c.lower(): c for c in gdf.columns if c != "geometry"}
+
+        # Label: prefer human-readable name/title columns
+        label_priority = ("name", "label", "title", "feature_name", "asset_name",
+                          "objectid", "object_id", "id", "fid")
         label_col = next(
-            (columns_lower[c] for c in ("name", "label", "title") if c in columns_lower),
+            (columns_lower[c] for c in label_priority if c in columns_lower),
             None,
         )
+
+        # Category: prefer columns describing what the feature is
+        category_priority = ("category", "type", "class", "kind", "layer",
+                             "asset_type", "feature_type", "infrastructure_type",
+                             "work_type", "road_type", "drain_type", "utility_type",
+                             "condition", "status", "category_name", "type_name")
         category_col = next(
-            (columns_lower[c] for c in ("category", "type", "class", "kind", "layer") if c in columns_lower),
+            (columns_lower[c] for c in category_priority if c in columns_lower),
             None,
         )
+
+        # Severity
         severity_col = next(
-            (columns_lower[c] for c in ("severity", "priority", "score") if c in columns_lower),
+            (columns_lower[c] for c in ("severity", "priority", "score", "risk") if c in columns_lower),
             None,
         )
+
+        # Fallback: if no label column found, pick the first string column
+        # with the most non-null values (likely a descriptive name field).
+        if label_col is None:
+            best_count = 0
+            for col_name in gdf.columns:
+                if col_name == "geometry":
+                    continue
+                non_null = gdf[col_name].dropna()
+                if non_null.empty:
+                    continue
+                # Only consider string-like columns
+                sample = non_null.iloc[0]
+                if isinstance(sample, str) and non_null.nunique() > best_count:
+                    best_count = non_null.nunique()
+                    label_col = col_name
+
+        # Fallback: if no category column, look for columns with low cardinality
+        # (few unique values relative to row count — likely categorical).
+        if category_col is None and len(gdf) > 10:
+            best_ratio = 1.0
+            for col_name in gdf.columns:
+                if col_name == "geometry" or col_name == label_col:
+                    continue
+                non_null = gdf[col_name].dropna()
+                if non_null.empty:
+                    continue
+                ratio = non_null.nunique() / len(non_null)
+                # Categorical columns typically have < 30% unique values
+                if 0.01 < ratio < 0.3 and ratio < best_ratio:
+                    best_ratio = ratio
+                    category_col = col_name
 
         async with SessionLocal() as session:
             for _, row in gdf.iterrows():
@@ -213,12 +288,17 @@ class GISReader:
                             severity_val = max(0.0, min(1.0, float(raw)))
                     except (TypeError, ValueError):
                         severity_val = 0.0
+                if severity_val == 0.0:
+                    # No explicit numeric column (or it was blank) — fall back
+                    # to scanning condition/status text fields for known
+                    # problem keywords instead of leaving every row at 0.0.
+                    severity_val = infer_severity_from_attributes(attrs)
 
                 batch.append(
                     Feature(
                         dataset_id=dataset_uuid,
-                        label=str(row.get(label_col)) if label_col is not None and row.get(label_col) is not None else None,
-                        category=str(row.get(category_col)) if category_col is not None and row.get(category_col) is not None else None,
+                        label=_clean_str(row.get(label_col)) if label_col is not None else None,
+                        category=_clean_str(row.get(category_col)) if category_col is not None else None,
                         severity=severity_val,
                         attributes=attrs,
                         geom=from_shape(geom, srid=4326),

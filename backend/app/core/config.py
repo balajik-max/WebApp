@@ -15,6 +15,14 @@ from functools import lru_cache
 from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+# Single source of truth for the upload size cap — shared by the
+# SecurityMiddleware body-size check (rejects before the body is fully
+# read) and the datasets upload route (rejects after buffering). Real-world
+# GIS rasters/point clouds routinely run several hundred MB, so this is set
+# generously for a self-hosted deployment rather than the 300MB that
+# rejected genuine survey data.
+MAX_UPLOAD_BYTES = 2 * 1024 * 1024 * 1024  # 2 GB
+
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
@@ -30,13 +38,17 @@ class Settings(BaseSettings):
     log_level: str = Field(default="INFO", validation_alias="LOG_LEVEL")
     frontend_url: str = Field(validation_alias="FRONTEND_URL")
 
+    # --- Rate limiting ---------------------------------------------------
+    rate_limit_max: int = Field(default=10, validation_alias="RATE_LIMIT_MAX")
+    rate_limit_window_seconds: int = Field(default=60, validation_alias="RATE_LIMIT_WINDOW_SECONDS")
+
     # --- Auth ------------------------------------------------------------
     jwt_secret: str = Field(
         validation_alias=AliasChoices("JWT_SECRET_KEY", "JWT_SECRET"),
     )
     jwt_algorithm: str = Field(default="HS256", validation_alias="JWT_ALGORITHM")
     jwt_access_ttl_min: int = Field(
-        default=15,
+        default=1440,
         validation_alias=AliasChoices("ACCESS_TOKEN_EXPIRE_MINUTES", "JWT_ACCESS_TTL_MIN"),
     )
     jwt_refresh_ttl_days: int = Field(default=7, validation_alias="JWT_REFRESH_TTL_DAYS")
@@ -57,7 +69,9 @@ class Settings(BaseSettings):
 
     # --- AI --------------------------------------------------------------
     ollama_base_url: str = Field(validation_alias="OLLAMA_BASE_URL")
-    ollama_model: str = Field(default="llama3:8b", validation_alias="OLLAMA_MODEL")
+    ollama_model: str = Field(default="qwen2.5:3b-instruct", validation_alias="OLLAMA_MODEL")
+    ai_max_context_tokens: int = Field(default=4096, validation_alias="AI_MAX_CONTEXT_TOKENS")
+    ai_max_features: int = Field(default=30, validation_alias="AI_MAX_FEATURES")
 
     # --- Seed users ------------------------------------------------------
     admin_email: str = Field(validation_alias="ADMIN_EMAIL")

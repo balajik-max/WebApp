@@ -9,6 +9,24 @@ interface Props {
   onClose: () => void;
 }
 
+function severityClass(v: number): string {
+  if (v >= 0.7) return "severity-high";
+  if (v >= 0.4) return "severity-medium";
+  return "severity-low";
+}
+
+function formatCell(v: unknown): { text: string; isNull: boolean; isLong: boolean } {
+  if (v === null || v === undefined || v === "") {
+    return { text: "—", isNull: true, isLong: false };
+  }
+  if (typeof v === "object") {
+    const s = JSON.stringify(v);
+    return { text: s, isNull: false, isLong: s.length > 60 };
+  }
+  const s = String(v);
+  return { text: s, isNull: false, isLong: s.length > 60 };
+}
+
 export function AttributeTable({ datasetId, datasetName, onClose }: Props) {
   const [page, setPage] = useState<FeatureTablePage | null>(null);
   const [offset, setOffset] = useState(0);
@@ -32,12 +50,10 @@ export function AttributeTable({ datasetId, datasetName, onClose }: Props) {
     <section className="attr-table-wrap" data-testid="attribute-table">
       <div className="attr-table-head">
         <div>
-          <h3 className="page-title" style={{ fontSize: 15 }}>
-            Attribute table — {datasetName}
-          </h3>
+          <h3>Attribute Table — {datasetName}</h3>
           {page && (
             <span className="grid-head__count">
-              {page.total} features · {page.columns.length} attribute columns · page {currentPage} of {totalPages}
+              {page.total.toLocaleString()} features · {page.columns.length} columns · page {currentPage} of {totalPages}
             </span>
           )}
         </div>
@@ -53,30 +69,47 @@ export function AttributeTable({ datasetId, datasetName, onClose }: Props) {
           <table className="attr-table">
             <thead>
               <tr>
-                <th>label</th>
-                <th>category</th>
-                <th>severity</th>
+                <th>#</th>
+                <th style={{ minWidth: 140 }}>label</th>
+                <th style={{ minWidth: 120 }}>category</th>
+                <th style={{ width: 80, textAlign: "right" }}>severity</th>
                 {page.columns.map((c) => (
-                  <th key={c}>{c}</th>
+                  <th key={c} style={{ minWidth: 120 }}>{c}</th>
                 ))}
               </tr>
             </thead>
             <tbody>
-              {page.rows.map((row) => (
+              {page.rows.map((row, idx) => (
                 <tr key={row.id}>
-                  <td>{row.label ?? "—"}</td>
-                  <td>{row.category ?? "—"}</td>
-                  <td>{row.severity.toFixed(2)}</td>
-                  {page.columns.map((c) => (
-                    <td key={c}>{formatCell(row.attributes[c])}</td>
-                  ))}
+                  <td>{offset + idx + 1}</td>
+                  <td className={`attr-label ${!row.label ? "is-null" : ""}`}>
+                    {row.label ?? "—"}
+                  </td>
+                  <td className={`attr-category ${!row.category ? "is-null" : ""}`}>
+                    {row.category ?? "—"}
+                  </td>
+                  <td className={`attr-severity ${severityClass(row.severity)}`}>
+                    {row.severity.toFixed(2)}
+                  </td>
+                  {page.columns.map((c) => {
+                    const cell = formatCell(row.attributes[c]);
+                    return (
+                      <td
+                        key={c}
+                        className={`${cell.isNull ? "is-null" : ""} ${cell.isLong ? "attr-long" : ""}`}
+                        title={cell.isLong ? cell.text : undefined}
+                      >
+                        {cell.text}
+                      </td>
+                    );
+                  })}
                 </tr>
               ))}
             </tbody>
           </table>
         </div>
       ) : (
-        <div className="grid__empty">loading attribute table…</div>
+        <div className="grid__empty">Loading attribute table…</div>
       )}
 
       {page && page.total > PAGE_SIZE && (
@@ -87,24 +120,21 @@ export function AttributeTable({ datasetId, datasetName, onClose }: Props) {
             disabled={offset === 0}
             onClick={() => setOffset(Math.max(0, offset - PAGE_SIZE))}
           >
-            ← prev
+            ← Previous
           </button>
+          <span style={{ fontSize: 11, color: "var(--ink-mute)", fontFamily: "var(--font-mono)" }}>
+            Page {currentPage} of {totalPages}
+          </span>
           <button
             type="button"
             className="btn btn--sm"
             disabled={offset + PAGE_SIZE >= page.total}
             onClick={() => setOffset(offset + PAGE_SIZE)}
           >
-            next →
+            Next →
           </button>
         </div>
       )}
     </section>
   );
-}
-
-function formatCell(v: unknown): string {
-  if (v === null || v === undefined || v === "") return "—";
-  if (typeof v === "object") return JSON.stringify(v);
-  return String(v);
 }

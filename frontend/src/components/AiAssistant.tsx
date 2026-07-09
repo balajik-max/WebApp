@@ -1,10 +1,8 @@
-import { useState } from "react";
+import { useState, useEffect, useRef } from "react";
 import ReactMarkdown from "react-markdown";
 import {
-  aiPrioritize,
   aiQuery,
   aiRecommend,
-  aiSummarize,
   type AiAnswer,
   type AiKind,
 } from "../lib/ai";
@@ -22,6 +20,8 @@ interface HistoryEntry {
   answer: AiAnswer | null;
   error: string | null;
   loading: boolean;
+  startTime?: number;
+  duration?: number;
 }
 
 const uid = () => Math.random().toString(36).slice(2, 10);
@@ -31,45 +31,46 @@ export function AiAssistant({ filter, selectedFeature }: Props) {
   const [question, setQuestion] = useState("");
   const [history, setHistory] = useState<HistoryEntry[]>([]);
   const [pendingKind, setPendingKind] = useState<AiKind | null>(null);
+  const [elapsed, setElapsed] = useState(0);
+  const timerRef = useRef<number | null>(null);
+
+  // Timer for loading state
+  useEffect(() => {
+    if (pendingKind) {
+      setElapsed(0);
+      timerRef.current = window.setInterval(() => {
+        setElapsed((e) => e + 1);
+      }, 1000);
+    } else {
+      if (timerRef.current) {
+        clearInterval(timerRef.current);
+        timerRef.current = null;
+      }
+    }
+    return () => {
+      if (timerRef.current) clearInterval(timerRef.current);
+    };
+  }, [pendingKind]);
 
   async function run(kind: AiKind, prompt: string, invoke: () => Promise<AiAnswer>) {
     if (pendingKind) return;
-    const entry: HistoryEntry = { id: uid(), kind, prompt, answer: null, error: null, loading: true };
+    const startTime = Date.now();
+    const entry: HistoryEntry = { id: uid(), kind, prompt, answer: null, error: null, loading: true, startTime };
     setHistory((h) => [entry, ...h]);
     setPendingKind(kind);
     try {
       const answer = await invoke();
-      setHistory((h) => h.map((e) => (e.id === entry.id ? { ...e, answer, loading: false } : e)));
+      const duration = Math.round((Date.now() - startTime) / 1000);
+      setHistory((h) => h.map((e) => (e.id === entry.id ? { ...e, answer, loading: false, duration } : e)));
     } catch (e) {
       const message = (e as Error).message;
+      const duration = Math.round((Date.now() - startTime) / 1000);
       setHistory((h) =>
-        h.map((e) => (e.id === entry.id ? { ...e, error: message, loading: false } : e))
+        h.map((e) => (e.id === entry.id ? { ...e, error: message, loading: false, duration } : e))
       );
     } finally {
       setPendingKind(null);
     }
-  }
-
-  function summarizeCurrentScope() {
-    if (!filter.ward) {
-      const msg = "Set a ward filter first, then click Summarize.";
-      setHistory((h) => [
-        { id: uid(), kind: "summarize", prompt: "Summarize current ward", answer: null, error: msg, loading: false },
-        ...h,
-      ]);
-      return;
-    }
-    void run("summarize", `Summarize ward ${filter.ward}`, () =>
-      aiSummarize({ ward: filter.ward, max_features: 80 })
-    );
-  }
-
-  function prioritizeCritical() {
-    void run(
-      "prioritize",
-      filter.ward ? `Prioritize open issues in ward ${filter.ward}` : "Prioritize open issues",
-      () => aiPrioritize({ ward: filter.ward, limit: 25 })
-    );
   }
 
   function recommendForSelected() {
@@ -136,22 +137,6 @@ export function AiAssistant({ filter, selectedFeature }: Props) {
           <div className="ai-panel__quick" data-testid="ai-quick">
             <button
               type="button"
-              onClick={summarizeCurrentScope}
-              disabled={pendingKind !== null}
-              data-testid="ai-quick-summarize"
-            >
-              Summarize current ward
-            </button>
-            <button
-              type="button"
-              onClick={prioritizeCritical}
-              disabled={pendingKind !== null}
-              data-testid="ai-quick-prioritize"
-            >
-              Prioritize critical issues
-            </button>
-            <button
-              type="button"
               onClick={recommendForSelected}
               disabled={pendingKind !== null || !selectedFeature}
               data-testid="ai-quick-recommend"
@@ -184,11 +169,21 @@ export function AiAssistant({ filter, selectedFeature }: Props) {
 
           <div className="ai-panel__history" data-testid="ai-history">
             {history.length === 0 ? (
-              <p className="workspace__muted">
-                Try a quick task or ask a natural-language question.
-              </p>
+              <div className="ai-panel__empty">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" width="32" height="32">
+                  <path d="M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-5 5v-5z" strokeLinecap="round" strokeLinejoin="round" />
+                </svg>
+                <p>Ask a question or try a quick action above</p>
+                <span>Responses are grounded in your PostGIS data only</span>
+              </div>
             ) : (
-              history.map((h) => <ChatBubble key={h.id} entry={h} />)
+              history.map((h) => (
+                <ChatBubble
+                  key={h.id}
+                  entry={h}
+                  elapsed={h.loading ? elapsed : undefined}
+                />
+              ))
             )}
           </div>
         </section>
@@ -197,7 +192,7 @@ export function AiAssistant({ filter, selectedFeature }: Props) {
   );
 }
 
-function ChatBubble({ entry }: { entry: HistoryEntry }) {
+function ChatBubble({ entry, elapsed }: { entry: HistoryEntry; elapsed?: number }) {
   return (
     <article className="ai-turn" data-testid={`ai-turn-${entry.kind}`}>
       <header className="ai-turn__head">
@@ -210,12 +205,19 @@ function ChatBubble({ entry }: { entry: HistoryEntry }) {
           <span className="ai-turn__dot" />
           <span className="ai-turn__dot" />
           <span className="ai-turn__dot" />
-          <span>llama3:8b reasoning over PostGIS…</span>
+          <span className="ai-turn__loading-text">
+            <span>Processing with local AI...</span>
+            <span className="ai-turn__timer">{elapsed || 0}s</span>
+          </span>
         </div>
       )}
 
       {entry.error && (
         <div className="ai-turn__error" data-testid="ai-turn-error">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="14" height="14">
+            <circle cx="12" cy="12" r="10" />
+            <path d="M12 8v4m0 4h.01" strokeLinecap="round" />
+          </svg>
           {entry.error}
         </div>
       )}
@@ -223,8 +225,26 @@ function ChatBubble({ entry }: { entry: HistoryEntry }) {
       {entry.answer && (
         <>
           <div className="ai-turn__meta">
-            <span>model: <b>{entry.answer.model}</b></span>
-            <span>rows: <b>{entry.answer.context_rows}</b></span>
+            <span className="ai-turn__meta-item">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" width="12" height="12">
+                <path d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" strokeLinecap="round" strokeLinejoin="round" />
+              </svg>
+              {entry.answer.model}
+            </span>
+            <span className="ai-turn__meta-item">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" width="12" height="12">
+                <path d="M4 7v10c0 2.21 3.582 4 8 4s8-1.79 8-4V7M4 7c0 2.21 3.582 4 8 4s8-1.79 8-4M4 7c0-2.21 3.582-4 8-4s8 1.79 8 4" strokeLinecap="round" strokeLinejoin="round" />
+              </svg>
+              {entry.answer.context_rows} rows
+            </span>
+            {entry.duration && (
+              <span className="ai-turn__meta-item">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" width="12" height="12">
+                  <path d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" strokeLinecap="round" strokeLinejoin="round" />
+                </svg>
+                {entry.duration}s
+              </span>
+            )}
             <span
               className={
                 entry.answer.grounded ? "ai-turn__pill--ok" : "ai-turn__pill--warn"

@@ -1,7 +1,7 @@
 /** AI Assistant API client. */
 import { apiPost } from "./api";
 
-export type AiKind = "summarize" | "query" | "prioritize" | "recommend";
+export type AiKind = "query" | "recommend" | "report";
 
 export interface AiAnswer {
   kind: AiKind;
@@ -15,12 +15,6 @@ export interface AiAnswer {
   debug?: Record<string, unknown> | null;
 }
 
-export const aiSummarize = (body: {
-  dataset_id?: string;
-  ward?: string;
-  max_features?: number;
-}) => apiPost<AiAnswer>("/api/v1/ai/summarize", body);
-
 export const aiQuery = (body: {
   question: string;
   dataset_id?: string;
@@ -29,8 +23,8 @@ export const aiQuery = (body: {
   max_features?: number;
 }) => apiPost<AiAnswer>("/api/v1/ai/query", body);
 
-export const aiPrioritize = (body: { ward?: string; limit?: number }) =>
-  apiPost<AiAnswer>("/api/v1/ai/prioritize", body);
-
 export const aiRecommend = (body: { feature_id: string }) =>
   apiPost<AiAnswer>("/api/v1/ai/recommend", body);
+
+export const aiReport = (body: { dataset_id?: string; ward?: string; max_features?: number }) =>
+  apiPost<AiAnswer>("/api/v1/ai/report", body);

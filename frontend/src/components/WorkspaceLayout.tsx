@@ -3,15 +3,16 @@ import { NavLink, Outlet, useLocation } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
 import { useTheme } from "../context/ThemeContext";
 import type { FeatureFilter } from "../lib/types";
-import { fetchCategories, fetchWards, type CategoryOption, type WardOption } from "../lib/workflow";
+import { fetchCategories, fetchWards, type CategoryOption, type WardOption, type DatasetRow } from "../lib/workflow";
 
 /**
  * WorkspaceLayout — the shell that hosts the three tab views.
  *
- * Filters live at this level so switching tabs preserves the current
- * ward/category/severity scope.  The map tab is the only tab that
- * consumes the filter; datasets and analytics ignore it but the input
- * stays visible so context is never lost.
+ * Filters AND the selected-dataset(s) live at this level, not inside the
+ * map tab, so switching tabs preserves them — the map/datasets/analytics
+ * routes are unmounted and remounted by the router on every tab switch,
+ * so any state that lived inside one of those pages was getting wiped
+ * out the moment you left it.
  */
 export function WorkspaceLayout() {
   const { user, logout } = useAuth();
@@ -24,6 +25,7 @@ export function WorkspaceLayout() {
   const [filter, setFilter] = useState<FeatureFilter>({});
   const [wardOptions, setWardOptions] = useState<WardOption[]>([]);
   const [categoryOptions, setCategoryOptions] = useState<CategoryOption[]>([]);
+  const [selectedDatasets, setSelectedDatasets] = useState<DatasetRow[]>([]);
 
   const showFilters = location.pathname.startsWith("/map");
 
@@ -63,7 +65,10 @@ export function WorkspaceLayout() {
     setFilter({});
   }
 
-  const outletContext = useMemo(() => ({ filter }), [filter]);
+  const outletContext = useMemo(
+    () => ({ filter, selectedDatasets, setSelectedDatasets }),
+    [filter, selectedDatasets]
+  );
 
   return (
     <div className="workspace" data-testid="workspace">
@@ -101,7 +106,7 @@ export function WorkspaceLayout() {
                 <option value="">all wards</option>
                 {wardOptions.map((w) => (
                   <option key={w.ward} value={w.ward}>
-                    ward {w.ward} ({w.feature_count})
+                    {w.ward} ({w.feature_count})
                   </option>
                 ))}
               </select>
@@ -146,7 +151,7 @@ export function WorkspaceLayout() {
             aria-label="Toggle theme"
             title={`Switch to ${theme === "dark" ? "light" : "dark"} mode`}
           >
-            {theme === "dark" ? "☾" : "☀"}
+            {theme === "dark" ? "☀" : "☾"}
           </button>
           <button
             type="button"

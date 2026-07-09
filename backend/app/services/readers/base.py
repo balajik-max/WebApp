@@ -21,6 +21,10 @@ class ReaderResult:
     skipped: int
     source_crs: str | None
     notes: str | None = None
+    # Set by RasterReader: a rendered preview image of the full raster
+    # (reprojected to EPSG:4326) so the map can show actual imagery
+    # instead of sampled points — {"image_key": str, "bounds": [w,s,e,n]}.
+    raster_overlay: dict | None = None
 
 
 @runtime_checkable

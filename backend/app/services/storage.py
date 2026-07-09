@@ -79,6 +79,19 @@ async def download_to_file(key: str, dest: Path) -> Path:
     return dest
 
 
+async def get_object_bytes(key: str) -> bytes:
+    """Fetch an object's full body. Used to serve small derived assets
+    (e.g. raster preview PNGs) back through the API without exposing the
+    internal MinIO endpoint to the browser."""
+    s = get_settings()
+
+    def _do() -> bytes:
+        resp = _client().get_object(Bucket=s.s3_bucket, Key=key)
+        return resp["Body"].read()
+
+    return await asyncio.to_thread(_do)
+
+
 async def delete_object(key: str) -> None:
     """Remove an object from the bucket. Safe to call even if it's already gone."""
     s = get_settings()

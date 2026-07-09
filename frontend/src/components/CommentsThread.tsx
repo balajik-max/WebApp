@@ -88,7 +88,7 @@ export function CommentsThread({ reviewId }: Props) {
 }
 
 function renderWithMentions(body: string): React.ReactNode {
-  const parts = body.split(/(@[A-Za-z0-9_.+\-]{2,64})/g);
+  const parts = body.split(/(@[A-Za-z0-9_.+]{2,64})/g);
   return parts.map((part, idx) =>
     part.startsWith("@") ? (
       <span key={idx} className="mention">{part}</span>

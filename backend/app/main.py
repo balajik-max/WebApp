@@ -13,6 +13,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.core.config import get_settings
 from app.core.logging import configure_logging
+from app.core.middleware import SecurityMiddleware
 from app.db.init_db import init_database
 from app.services.storage import ensure_bucket
 from app.api.v1.router import api_router
@@ -58,6 +59,8 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    app.add_middleware(SecurityMiddleware)
 
     app.include_router(api_router, prefix="/api")
     return app

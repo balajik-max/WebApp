@@ -47,6 +47,9 @@ async def _set_status(
         if result_payload is not None:
             merged = dict(ds.dataset_metadata or {})
             merged["ingestion"] = result_payload
+            raster_overlay = result_payload.pop("raster_overlay", None)
+            if raster_overlay is not None:
+                merged["raster_overlay"] = raster_overlay
             ds.dataset_metadata = merged
 
         session.add(
@@ -67,51 +70,75 @@ async def _set_status(
 
 
 async def ingest_dataset(*, dataset_id: uuid.UUID, storage_key: str, filename: str) -> None:
-    """Background pipeline: MinIO → local tmp → strategy reader → DB rows."""
+    """Background pipeline: MinIO → local tmp → strategy reader → DB rows.
 
-    reader = get_reader_for(filename)
-    if reader is None:
+    This runs fire-and-forget via `BackgroundTasks` after the HTTP response
+    has already been sent — nothing surfaces an unhandled exception here to
+    any client. Without the outer try/except, a failure in the PROCESSING
+    or READY status writes themselves (DB blip, transient network issue)
+    would propagate out uncaught and leave the dataset permanently stuck
+    at its last-written status, potentially with rows already inserted by
+    a successful reader run. The outer handler guarantees a FAILED status
+    is always attempted as a last resort.
+    """
+    try:
+        reader = get_reader_for(filename)
+        if reader is None:
+            await _set_status(
+                dataset_id,
+                DatasetStatus.FAILED,
+                error=f"No reader can handle file '{filename}'",
+            )
+            return
+
+        await _set_status(dataset_id, DatasetStatus.PROCESSING)
+
+        with tempfile.TemporaryDirectory(prefix="ingest_") as tmpdir:
+            local = Path(tmpdir) / filename
+            try:
+                await download_to_file(storage_key, local)
+            except Exception as exc:  # noqa: BLE001
+                log.exception("Failed to fetch %s from storage", storage_key)
+                await _set_status(
+                    dataset_id,
+                    DatasetStatus.FAILED,
+                    error=f"storage_fetch_error: {exc}",
+                )
+                return
+
+            try:
+                result = await reader.read(local, str(dataset_id))
+            except Exception as exc:  # noqa: BLE001
+                log.exception("Reader failed for dataset %s", dataset_id)
+                await _set_status(
+                    dataset_id,
+                    DatasetStatus.FAILED,
+                    error=f"reader_error: {exc}",
+                )
+                return
+
         await _set_status(
             dataset_id,
-            DatasetStatus.FAILED,
-            error=f"No reader can handle file '{filename}'",
+            DatasetStatus.READY,
+            result_payload={
+                "reader": reader.__class__.__name__,
+                "inserted": result.inserted,
+                "skipped": result.skipped,
+                "source_crs": result.source_crs,
+                "notes": result.notes,
+                "raster_overlay": result.raster_overlay,
+            },
         )
-        return
-
-    await _set_status(dataset_id, DatasetStatus.PROCESSING)
-
-    with tempfile.TemporaryDirectory(prefix="ingest_") as tmpdir:
-        local = Path(tmpdir) / filename
+    except Exception as exc:  # noqa: BLE001 — last-resort guard, see docstring
+        log.exception("Unhandled error in ingest_dataset for %s", dataset_id)
         try:
-            await download_to_file(storage_key, local)
-        except Exception as exc:  # noqa: BLE001
-            log.exception("Failed to fetch %s from storage", storage_key)
             await _set_status(
                 dataset_id,
                 DatasetStatus.FAILED,
-                error=f"storage_fetch_error: {exc}",
+                error=f"unexpected_error: {exc}",
             )
-            return
-
-        try:
-            result = await reader.read(local, str(dataset_id))
-        except Exception as exc:  # noqa: BLE001
-            log.exception("Reader failed for dataset %s", dataset_id)
-            await _set_status(
+        except Exception:  # noqa: BLE001
+            log.exception(
+                "Failed to record FAILED status for dataset %s — it will remain stuck",
                 dataset_id,
-                DatasetStatus.FAILED,
-                error=f"reader_error: {exc}",
             )
-            return
-
-    await _set_status(
-        dataset_id,
-        DatasetStatus.READY,
-        result_payload={
-            "reader": reader.__class__.__name__,
-            "inserted": result.inserted,
-            "skipped": result.skipped,
-            "source_crs": result.source_crs,
-            "notes": result.notes,
-        },
-    )

@@ -140,6 +140,16 @@ class SeverityBucket(BaseModel):
     count: int
 
 
+class IngestionTrendPoint(BaseModel):
+    """One real day on which at least one dataset was uploaded — NOT a
+    simulated/interpolated point. Used to chart genuine growth in survey
+    coverage over time from each dataset's actual `created_at` timestamp."""
+
+    date: str  # YYYY-MM-DD
+    features_added: int
+    cumulative_features: int
+
+
 class AnalyticsOverview(BaseModel):
     total_datasets: int
     ready_datasets: int
@@ -153,6 +163,7 @@ class AnalyticsOverview(BaseModel):
     ward_breakdown: list[WardBreakdown]
     category_breakdown: list[CategoryBreakdown]
     severity_breakdown: list[SeverityBucket]
+    ingestion_trend: list[IngestionTrendPoint]
     generated_at: datetime
 
 
