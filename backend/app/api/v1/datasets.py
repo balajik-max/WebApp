@@ -60,7 +60,7 @@ router = APIRouter()
 _MAX_UPLOAD_BYTES = MAX_UPLOAD_BYTES
 
 
-def _render_preview_variant(png_bytes: bytes, *, mode: Literal["rgb", "grayscale"]) -> bytes:
+def _render_preview_variant(png_bytes: bytes, *, mode: Literal["rgb", "grayscale", "enhanced"]) -> bytes:
     """Transform stored preview PNGs into display variants on demand.
 
     Single-band raster previews are stored as grayscale+alpha. For those,
@@ -86,27 +86,47 @@ def _render_preview_variant(png_bytes: bytes, *, mode: Literal["rgb", "grayscale
         if mode == "grayscale":
             return png_bytes
 
-        stops = np.array([0.0, 0.18, 0.4, 0.62, 0.82, 1.0], dtype=np.float32)
+        # Global Mapper rainbow palette: Blue -> Cyan -> Green -> Yellow -> Orange -> Red
+        stops = np.array([0.0, 0.2, 0.4, 0.6, 0.8, 1.0], dtype=np.float32)
         palette = np.array(
             [
-                [18, 52, 86],
-                [42, 134, 196],
-                [69, 168, 101],
-                [175, 187, 92],
-                [204, 143, 64],
-                [245, 244, 240],
+                [0,   0,   255],  # Blue   (low elevation)
+                [0,   255, 255],  # Cyan
+                [0,   255, 0],    # Green
+                [255, 255, 0],    # Yellow
+                [255, 127, 0],    # Orange
+                [255, 0,   0],    # Red    (high elevation)
             ],
             dtype=np.float32,
         )
         normalized = gray / 255.0
-        rgb = np.stack(
-            [
-                np.interp(normalized, stops, palette[:, 0]),
-                np.interp(normalized, stops, palette[:, 1]),
-                np.interp(normalized, stops, palette[:, 2]),
-            ],
-            axis=0,
-        ).astype(np.uint8)
+        r = np.interp(normalized, stops, palette[:, 0])
+        g = np.interp(normalized, stops, palette[:, 1])
+        b = np.interp(normalized, stops, palette[:, 2])
+
+        if mode == "enhanced":
+            try:
+                # 3D hillshading — Azimuth 315°, Altitude 45° (same as Global Mapper default)
+                dy, dx = np.gradient(gray)
+                z = 2.0  # z-factor: amplifies height differences for visible shading
+                slope = np.pi / 2.0 - np.arctan(np.sqrt((dx * z) ** 2 + (dy * z) ** 2))
+                aspect = np.arctan2(-dy, dx)
+                az = 315.0 * np.pi / 180.0
+                alt = 45.0 * np.pi / 180.0
+                intensity = (
+                    np.sin(alt) * np.sin(slope)
+                    + np.cos(alt) * np.cos(slope) * np.cos((az - np.pi / 2.0) - aspect)
+                )
+                intensity = np.clip(intensity, 0.0, 1.0)
+                # Normalize so mid-slope terrain keeps its colour brightness
+                blend = intensity / np.sin(alt)
+                r = np.clip(r * blend, 0, 255)
+                g = np.clip(g * blend, 0, 255)
+                b = np.clip(b * blend, 0, 255)
+            except Exception:  # noqa: BLE001
+                pass  # fallback: show plain rainbow without shading
+
+        rgb = np.stack([r, g, b], axis=0).astype(np.uint8)
     else:
         rgb_src = data[:3].astype(np.float32)
         if mode == "rgb":
@@ -279,7 +299,7 @@ async def get_dataset(dataset_id: uuid.UUID, db: AsyncSession = Depends(get_db))
 )
 async def get_raster_preview(
     dataset_id: uuid.UUID,
-    mode: Literal["rgb", "grayscale"] = Query("grayscale"),
+    mode: Literal["rgb", "grayscale", "enhanced"] = Query("grayscale"),
     db: AsyncSession = Depends(get_db),
 ) -> Response:
     """Streams the reprojected raster preview PNG generated at ingestion

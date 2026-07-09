@@ -52,8 +52,8 @@ const COLOR_MODE_OPTIONS: Array<{ value: RasterColorMode; label: string }> = [
   { value: "enhanced", label: "Enhanced" },
 ];
 
-function previewModeForSettings(settings: RasterDisplaySettings): "rgb" | "grayscale" {
-  return settings.colorMode === "grayscale" ? "grayscale" : "rgb";
+function previewModeForSettings(settings: RasterDisplaySettings): "rgb" | "grayscale" | "enhanced" {
+  return settings.colorMode;
 }
 
 function rasterPreviewUrl(datasetId: string, settings: RasterDisplaySettings): string {
@@ -74,18 +74,18 @@ function resolveRasterSettings(settings?: Partial<RasterDisplaySettings>): Raste
 
 function rasterPaintForSettings(settings: RasterDisplaySettings): Record<string, number> {
   const normalized = resolveRasterSettings(settings);
-  const baseContrast = normalized.colorMode === "enhanced" ? 0.08 : 0;
-  const clarityContrast = normalized.clarity * 0.45;
-  const saturation = normalized.colorMode === "grayscale" ? -1 : normalized.colorMode === "enhanced" ? 0.25 : 0;
-  const brightnessMin = normalized.colorMode === "enhanced" ? 0.03 : 0;
-  const brightnessMax = clamp(1 - normalized.clarity * 0.12 - (normalized.colorMode === "enhanced" ? 0.02 : 0), 0.65, 1);
+  // The backend now renders the correct rainbow/hillshade image.
+  // We apply only mild contrast boost from Edge Clarity, and keep
+  // brightness untouched so we don't wash out or crush the image.
+  const clarityContrast = normalized.clarity * 0.35;
+  const saturation = normalized.colorMode === "grayscale" ? -1 : 0;
 
   return {
-    "raster-opacity": 0.85,
+    "raster-opacity": 0.9,
     "raster-saturation": saturation,
-    "raster-contrast": clamp(baseContrast + clarityContrast, -1, 1),
-    "raster-brightness-min": brightnessMin,
-    "raster-brightness-max": brightnessMax,
+    "raster-contrast": clamp(clarityContrast, -1, 1),
+    "raster-brightness-min": 0,
+    "raster-brightness-max": 1,
   };
 }
 
