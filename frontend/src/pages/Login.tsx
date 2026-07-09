@@ -229,7 +229,7 @@ export function LoginPage() {
                     onClick={() => setShowPw((v) => !v)}
                     data-testid="toggle-password-visibility"
                     aria-label={showPw ? "Hide password" : "Show password"}
-                    tabIndex={-1}
+                    aria-pressed={showPw}
                   >
                     {showPw ? (
                       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" width="18" height="18">
