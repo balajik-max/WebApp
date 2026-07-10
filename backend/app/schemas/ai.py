@@ -17,6 +17,7 @@ class NLQueryRequest(BaseModel):
     question: str = Field(min_length=3, max_length=2000)
     dataset_id: uuid.UUID | None = None
     ward: str | None = Field(default=None, max_length=128)
+    category: str | None = Field(default=None, max_length=128)
     feature_ids: list[uuid.UUID] = Field(default_factory=list, max_length=25)
     max_features: int = Field(default=60, ge=1, le=200)
 
@@ -35,9 +36,27 @@ class ReportRequest(BaseModel):
     max_features: int = Field(default=120, ge=1, le=300)
 
 
+class SpacingRequest(BaseModel):
+    """Check whether features of one category (e.g. Power Pole) are
+    unusually close together within a ward/dataset — a real distance
+    computation, not a guess. Exactly one scope (ward or dataset) required."""
+
+    dataset_id: uuid.UUID | None = None
+    ward: str | None = Field(default=None, max_length=128)
+    category: str = Field(min_length=1, max_length=128)
+    distance_m: float = Field(default=200.0, ge=1.0, le=5000.0)
+
+
 # ---------- Response ------------------------------------------------------
+class NeededLocation(BaseModel):
+    id: str
+    lon: float
+    lat: float
+    reason: str
+
+
 class AiAnswer(BaseModel):
-    kind: Literal["query", "recommend", "report"]
+    kind: Literal["query", "recommend", "report", "spacing"]
     model: str
     prompt_tokens_hint: int
     context_rows: int
@@ -46,3 +65,10 @@ class AiAnswer(BaseModel):
     generated_at: datetime
     disclaimer: str | None = None
     debug: dict[str, Any] | None = None
+    # Spacing-specific: AI-classified feature IDs for map highlighting.
+    # redundant_feature_ids — poles the AI recommends removing (show red).
+    # needed_feature_ids   — poles that are structurally required (show green).
+    # Both are empty lists for non-spacing answers.
+    redundant_feature_ids: list[str] = Field(default_factory=list)
+    needed_feature_ids: list[str] = Field(default_factory=list)
+    needed_locations: list[NeededLocation] = Field(default_factory=list)

@@ -146,6 +146,8 @@ services:
       context: ./frontend
       dockerfile: Dockerfile
       target: production
+      args:
+        VITE_API_BASE_URL: ${VITE_API_BASE_URL}
     container_name: davangere_frontend
     restart: unless-stopped
     depends_on:

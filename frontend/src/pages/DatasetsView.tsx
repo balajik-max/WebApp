@@ -8,7 +8,10 @@ const REFRESH_MS = 4000;
 const ACCEPTED_EXTENSIONS = [
   ".geojson", ".json", ".zip", ".gpkg", ".kml", ".csv", ".tsv", ".xlsx", ".xls",
   ".tif", ".tiff", ".geotiff", ".obj",
+  ".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp",
 ];
+
+const IMAGE_EXTENSIONS = [".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp"];
 
 const FILE_TYPE_INFO: Record<string, { icon: React.ReactNode; label: string }> = {
   shapefile: {
@@ -42,6 +45,10 @@ const FILE_TYPE_INFO: Record<string, { icon: React.ReactNode; label: string }> =
   obj: {
     icon: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" width="16" height="16"><path d="M14 10l-2 1m0 0l-2-1m2 1v2.5M20 7l-2 1m2-1l-2-1m2 1v2.5M14 4l-2-1-2 1M4 7l2-1M4 7l2 1M4 7v2.5M12 21l-2-1m2 1l2-1m-2 1v-2.5M6 18l-2-1v-2.5M18 18l2-1v-2.5" strokeLinecap="round" strokeLinejoin="round" /></svg>,
     label: "3D Model",
+  },
+  image: {
+    icon: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" width="16" height="16"><path d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14M4 6h16M4 6a2 2 0 00-2 2v10a2 2 0 002 2h16a2 2 0 002-2V8a2 2 0 00-2-2M4 6l4-4h8l4 4" strokeLinecap="round" strokeLinejoin="round" /><circle cx="9" cy="10" r="1.5" /></svg>,
+    label: "Site Photo",
   },
 };
 
@@ -101,25 +108,28 @@ async function walkEntry(entry: WebkitEntry, basePath: string, out: { path: stri
   }
 }
 
-async function zipDroppedFolder(rootEntry: WebkitDirEntry): Promise<File> {
+async function collectDroppedFolder(rootEntry: WebkitDirEntry): Promise<{ path: string; file: File }[]> {
   const collected: { path: string; file: File }[] = [];
   await walkEntry(rootEntry, "", collected);
-  const zip = new JSZip();
-  for (const { path, file } of collected) zip.file(path, file);
-  const blob = await zip.generateAsync({ type: "blob" });
-  return new File([blob], `${rootEntry.name}.zip`, { type: "application/zip" });
+  return collected;
 }
 
-async function zipPickedFolder(fileList: FileList): Promise<File> {
+function collectPickedFolder(fileList: FileList): { name: string; files: { path: string; file: File }[] } {
   const first = fileList[0] as File & { webkitRelativePath?: string };
   const topFolder = first.webkitRelativePath?.split("/")[0] || "folder";
-  const zip = new JSZip();
+  const files: { path: string; file: File }[] = [];
   for (let i = 0; i < fileList.length; i++) {
     const f = fileList[i] as File & { webkitRelativePath?: string };
-    zip.file(f.webkitRelativePath || f.name, f);
+    files.push({ path: f.webkitRelativePath || f.name, file: f });
   }
+  return { name: topFolder, files };
+}
+
+async function zipCollectedFiles(name: string, files: { path: string; file: File }[]): Promise<File> {
+  const zip = new JSZip();
+  for (const { path, file } of files) zip.file(path, file);
   const blob = await zip.generateAsync({ type: "blob" });
-  return new File([blob], `${topFolder}.zip`, { type: "application/zip" });
+  return new File([blob], `${name}.zip`, { type: "application/zip" });
 }
 
 function getFileIcon(type: string): React.ReactNode {
@@ -155,6 +165,7 @@ export function DatasetsView() {
 
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const folderInputRef = useRef<HTMLInputElement | null>(null);
+  const photosInputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
     setMounted(true);
@@ -185,7 +196,7 @@ export function DatasetsView() {
     if (f && !ACCEPTED_EXTENSIONS.includes(extensionOf(f.name))) {
       setUploadFile(null);
       setUploadError(
-        `Unsupported file type "${extensionOf(f.name) || f.name}". Supported: GeoJSON, Shapefile, GeoPackage, KML, GeoTIFF, OBJ, CSV, TSV, XLSX.`
+        `Unsupported file type "${extensionOf(f.name) || f.name}". Supported: GeoJSON, Shapefile, GeoPackage, KML, GeoTIFF, OBJ, CSV, TSV, XLSX, and photos (JPG/PNG/GIF/BMP/WEBP).`
       );
       return;
     }
@@ -194,17 +205,44 @@ export function DatasetsView() {
     if (f && !uploadName.trim()) setUploadName(f.name.replace(/\.[^.]+$/, ""));
   }
 
-  async function pickFolder(name: string, zipIt: () => Promise<File>) {
-    if (!name.toLowerCase().endsWith(".gdb")) {
-      setUploadError(
-        `"${name}" doesn't look like a File Geodatabase (.gdb) — folders aren't otherwise supported, only individual files.`
-      );
-      return;
-    }
+  // Several individually selected/dropped photos are bundled into one zip
+  // client-side (same JSZip mechanism the .gdb folder path already uses)
+  // so they upload and ingest as a single dataset — the backend's
+  // ImageReader unpacks the zip and geo-tags each photo from its own EXIF.
+  async function pickMultiplePhotos(files: File[]) {
     setUploadError(null);
     setZipping(true);
     try {
-      const zipped = await zipIt();
+      const zip = new JSZip();
+      for (const f of files) zip.file(f.name, f);
+      const blob = await zip.generateAsync({ type: "blob" });
+      const zipped = new File([blob], `photos-${Date.now()}.zip`, { type: "application/zip" });
+      pickFile(zipped);
+    } catch (err) {
+      setUploadError(`Couldn't bundle those photos: ${(err as Error).message}`);
+    } finally {
+      setZipping(false);
+    }
+  }
+
+  // A dropped/browsed folder is only supported if it's a File Geodatabase
+  // (by name) OR a folder full of photos (checked by content, since a
+  // photo folder has no special naming convention) — anything else is
+  // rejected with a clear reason before we waste time zipping it.
+  async function pickFolder(name: string, collectFiles: () => Promise<{ path: string; file: File }[]>) {
+    setUploadError(null);
+    setZipping(true);
+    try {
+      const files = await collectFiles();
+      const isGdb = name.toLowerCase().endsWith(".gdb");
+      const isAllImages = files.length > 0 && files.every(({ file }) => IMAGE_EXTENSIONS.includes(extensionOf(file.name)));
+      if (!isGdb && !isAllImages) {
+        setUploadError(
+          `"${name}" doesn't look like a File Geodatabase (.gdb) or a folder of photos — other folder types aren't supported, only individual files.`
+        );
+        return;
+      }
+      const zipped = await zipCollectedFiles(name, files);
       pickFile(zipped);
     } catch (err) {
       setUploadError(`Couldn't read that folder: ${(err as Error).message}`);
@@ -370,11 +408,27 @@ export function DatasetsView() {
               const entry = (item as unknown as { webkitGetAsEntry?: () => WebkitEntry | null })
                 ?.webkitGetAsEntry?.();
               if (entry && !entry.isFile) {
-                void pickFolder(entry.name, () => zipDroppedFolder(entry));
+                void pickFolder(entry.name, () => collectDroppedFolder(entry));
                 return;
               }
 
-              const f = e.dataTransfer.files?.[0] ?? null;
+              const files = Array.from(e.dataTransfer.files ?? []);
+              if (files.length > 1) {
+                // Several photos dropped at once — bundle them into one
+                // dataset. Any other multi-file drop isn't a supported
+                // combination (only one non-photo file at a time).
+                const allImages = files.every((f) => IMAGE_EXTENSIONS.includes(extensionOf(f.name)));
+                if (allImages) {
+                  void pickMultiplePhotos(files);
+                } else {
+                  setUploadError(
+                    "Multiple files were dropped — only a batch of photos can be combined into one upload. Other formats must be dropped one at a time, or as a zip/.gdb folder."
+                  );
+                }
+                return;
+              }
+
+              const f = files[0] ?? null;
               if (f) pickFile(f);
             }}
             onSubmit={submit}
@@ -401,9 +455,28 @@ export function DatasetsView() {
               onChange={(e) => {
                 const files = e.target.files;
                 if (!files || files.length === 0) return;
-                const first = files[0] as File & { webkitRelativePath?: string };
-                const topFolder = first.webkitRelativePath?.split("/")[0] || "folder";
-                void pickFolder(topFolder, () => zipPickedFolder(files));
+                const { name: topFolder, files: collected } = collectPickedFolder(files);
+                void pickFolder(topFolder, () => Promise.resolve(collected));
+                e.target.value = "";
+              }}
+              disabled={uploadBusy || zipping}
+              style={{ display: "none" }}
+            />
+            <input
+              id="dz-photos"
+              ref={photosInputRef}
+              type="file"
+              accept="image/*"
+              multiple
+              data-testid="dropzone-photos"
+              onChange={(e) => {
+                const files = e.target.files;
+                if (!files || files.length === 0) return;
+                if (files.length === 1) {
+                  pickFile(files[0]);
+                } else {
+                  void pickMultiplePhotos(Array.from(files));
+                }
                 e.target.value = "";
               }}
               disabled={uploadBusy || zipping}
@@ -413,7 +486,7 @@ export function DatasetsView() {
             {zipping ? (
               <div className="ds-dropzone__content">
                 <span className="ds-dropzone__label">Reading folder & zipping it in your browser…</span>
-                <span className="ds-dropzone__hint">Large .gdb folders may take a few seconds.</span>
+                <span className="ds-dropzone__hint">Large .gdb folders / photo batches may take a few seconds.</span>
               </div>
             ) : !uploadFile ? (
               <label htmlFor="dz-file" className="ds-dropzone__content">
@@ -424,7 +497,7 @@ export function DatasetsView() {
                   </svg>
                 </div>
                 <span className="ds-dropzone__label">
-                  {dragOver ? "Drop file or .gdb folder here" : "Drag & drop your file (or a .gdb folder) here"}
+                  {dragOver ? "Drop file(s) or a folder here" : "Drag & drop your file, photos, a .gdb folder, or a folder of photos here"}
                 </span>
                 <span className="ds-dropzone__hint">
                   or <span className="ds-dropzone__browse">browse files</span>
@@ -437,11 +510,22 @@ export function DatasetsView() {
                       folderInputRef.current?.click();
                     }}
                   >
-                    browse a .gdb folder
+                    browse a folder (.gdb or photos)
+                  </span>
+                  {" · "}
+                  <span
+                    className="ds-dropzone__browse"
+                    onClick={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      photosInputRef.current?.click();
+                    }}
+                  >
+                    browse photos
                   </span>
                 </span>
                 <span className="ds-dropzone__formats">
-                  GeoJSON · Shapefile · GeoPackage · KML · GeoTIFF · OBJ · CSV · Excel
+                  GeoJSON · Shapefile · GeoPackage · KML · GeoTIFF · OBJ · CSV · Excel · Photos (JPG/PNG/GIF/BMP/WEBP)
                 </span>
               </label>
             ) : (
@@ -601,6 +685,11 @@ export function DatasetsView() {
                 <span className="ds-format-name">Excel</span>
                 <span className="ds-format-desc">.xlsx or .xls</span>
               </li>
+              <li>
+                <span className="ds-format-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" width="14" height="14"><path d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14M4 6h16M4 6a2 2 0 00-2 2v10a2 2 0 002 2h16a2 2 0 002-2V8a2 2 0 00-2-2M4 6l4-4h8l4 4" strokeLinecap="round" strokeLinejoin="round" /><circle cx="9" cy="10" r="1.5" /></svg></span>
+                <span className="ds-format-name">Photos</span>
+                <span className="ds-format-desc">Geo-tagged JPG/PNG/GIF/BMP/WEBP</span>
+              </li>
             </ul>
           </div>
 
@@ -617,6 +706,7 @@ export function DatasetsView() {
               <li>Use consistent coordinate systems (WGS84 / EPSG:4326)</li>
               <li>Name datasets descriptively for easy identification</li>
               <li>Assign ward names for spatial filtering</li>
+              <li>Photos need real GPS EXIF data (most phone/survey cameras add this automatically) — photos without it are skipped</li>
             </ul>
           </div>
         </aside>

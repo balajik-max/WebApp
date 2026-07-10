@@ -27,6 +27,7 @@ from fastapi import (
     Form,
     HTTPException,
     Query,
+    Response,
     UploadFile,
     status as httpstatus,
 )
@@ -104,7 +105,7 @@ def _parse_bbox(raw: str) -> tuple[float, float, float, float]:
     summary="Viewport-filtered features as GeoJSON",
 )
 async def list_features_in_viewport(
-    bbox: str = Query(..., description="minLon,minLat,maxLon,maxLat (WGS84)"),
+    bbox: str | None = Query(default=None, description="minLon,minLat,maxLon,maxLat (WGS84)"),
     ward: str | None = Query(default=None, max_length=128),
     category: str | None = Query(default=None, max_length=128),
     severity: int | None = Query(default=None, description="Minimum severity threshold"),
@@ -115,9 +116,66 @@ async def list_features_in_viewport(
             "isolation / multi-dataset selection). Repeat the param for more than one."
         ),
     ),
+    feature_ids: list[uuid.UUID] | None = Query(
+        default=None,
+        alias="id",
+        description="Fetch specific features by ID (bypasses bbox requirement). Repeat for multiple.",
+    ),
     limit: int = Query(default=_DEFAULT_ROW_LIMIT, ge=1, le=_HARD_ROW_LIMIT),
     db: AsyncSession = Depends(get_db),
 ) -> dict[str, Any]:
+    # When explicit feature IDs are supplied, skip the bbox requirement
+    # and return those features directly — used by the AI highlight layer
+    # to resolve coordinates for classified poles.
+    if feature_ids:
+        sql = text(
+            """
+            SELECT
+                f.id::text                          AS id,
+                f.dataset_id::text                  AS dataset_id,
+                f.label                             AS label,
+                f.category                          AS category,
+                f.severity                          AS severity,
+                f.attributes                        AS attributes,
+                ST_AsGeoJSON(f.geom)::text          AS geom_json
+            FROM features f
+            WHERE f.id = ANY(:ids)
+            LIMIT :limit
+            """
+        )
+        result = await db.execute(sql, {"ids": feature_ids, "limit": limit})
+        rows = result.mappings().all()
+        features: list[dict[str, Any]] = []
+        for row in rows:
+            geometry = json.loads(row["geom_json"]) if row["geom_json"] else None
+            features.append({
+                "type": "Feature",
+                "id": row["id"],
+                "geometry": geometry,
+                "properties": {
+                    "id": row["id"],
+                    "dataset_id": row["dataset_id"],
+                    "label": row["label"],
+                    "category": row["category"],
+                    "severity": row["severity"],
+                    "attributes": row["attributes"] or {},
+                },
+            })
+        return {
+            "type": "FeatureCollection",
+            "features": features,
+            "bbox": [0, 0, 0, 0],
+            "count": len(features),
+            "limit": limit,
+            "truncated": False,
+        }
+
+    if bbox is None:
+        raise HTTPException(
+            status_code=400,
+            detail="Either bbox or id query parameter is required",
+        )
+
     min_x, min_y, max_x, max_y = _parse_bbox(bbox)
 
     conditions = [
@@ -347,3 +405,28 @@ async def feature_activity_timeline(
         )
         for r in rows
     ]
+
+
+@router.get(
+    "/{feature_id}/photo",
+    dependencies=[Depends(require_any)],
+    summary="Streams the original site-photo image for a geo-tagged photo feature",
+)
+async def feature_photo(feature_id: uuid.UUID, db: AsyncSession = Depends(get_db)) -> Response:
+    row = (await db.execute(select(Feature).where(Feature.id == feature_id))).scalar_one_or_none()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Feature not found")
+
+    photo_key = (row.attributes or {}).get("photo_key")
+    if not photo_key:
+        raise HTTPException(status_code=404, detail="This feature has no attached photo")
+
+    from app.services.storage import get_object_bytes
+
+    try:
+        image_bytes = await get_object_bytes(photo_key)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=404, detail="Photo not found in storage") from exc
+
+    content_type = (row.attributes or {}).get("content_type", "application/octet-stream")
+    return Response(content=image_bytes, media_type=content_type)

@@ -76,11 +76,35 @@ _SUFFIX_TO_TYPE: dict[str, DatasetFileType] = {
     ".geotiff": DatasetFileType.GEOTIFF,
     ".obj": DatasetFileType.OTHER,       # 3D model
     ".gdb": DatasetFileType.SHAPEFILE,   # Esri File Geodatabase
+    ".jpg": DatasetFileType.IMAGE,
+    ".jpeg": DatasetFileType.IMAGE,
+    ".png": DatasetFileType.IMAGE,
+    ".gif": DatasetFileType.IMAGE,
+    ".bmp": DatasetFileType.IMAGE,
+    ".webp": DatasetFileType.IMAGE,
 }
 
+_ZIP_IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp"}
+_ZIP_GIS_EXTS = {".shp", ".dbf", ".shx", ".prj", ".gpkg"}
 
-def _classify(filename: str) -> DatasetFileType:
-    return _SUFFIX_TO_TYPE.get(Path(filename).suffix.lower(), DatasetFileType.OTHER)
+
+def _classify(filename: str, payload: bytes | None = None) -> DatasetFileType:
+    ext = Path(filename).suffix.lower()
+    if ext == ".zip" and payload:
+        # A zip could be a shapefile/GDB bundle or a batch of geo-tagged
+        # photos — peek at its real contents rather than assuming, so the
+        # dataset row's declared type matches what actually got ingested.
+        import zipfile
+
+        try:
+            with zipfile.ZipFile(io.BytesIO(payload)) as zf:
+                names = [n for n in zf.namelist() if not n.endswith("/")]
+            if not any(Path(n).suffix.lower() in _ZIP_GIS_EXTS or ".gdb/" in n.lower() for n in names):
+                if any(Path(n).suffix.lower() in _ZIP_IMAGE_EXTS for n in names):
+                    return DatasetFileType.IMAGE
+        except zipfile.BadZipFile:
+            pass
+    return _SUFFIX_TO_TYPE.get(ext, DatasetFileType.OTHER)
 
 
 @router.post(
@@ -146,7 +170,7 @@ async def upload_dataset(
         description=description,
         ward=ward,
         survey_date=survey_date,
-        file_type=_classify(file.filename),
+        file_type=_classify(file.filename, payload),
         storage_key=storage_key,
         size_bytes=size_bytes,
         status=DatasetStatus.QUEUED,
@@ -432,13 +456,20 @@ _MAGIC: dict[str, list[bytes]] = {
     ".tiff": [b"II\x2a\x00", b"MM\x00\x2a", b"II\x2b\x00", b"MM\x00\x2b"],
     ".geotiff": [b"II\x2a\x00", b"MM\x00\x2a", b"II\x2b\x00", b"MM\x00\x2b"],
     ".obj": [b"#", b"v ", b"vt ", b"vn ", b"vp ", b"f ", b"o ", b"g ", b"s ", b"mtllib", b"usemtl"],
+    ".jpg": [b"\xff\xd8\xff"],
+    ".jpeg": [b"\xff\xd8\xff"],
+    ".png": [b"\x89PNG\r\n\x1a\n"],
+    ".gif": [b"GIF87a", b"GIF89a"],
+    ".bmp": [b"BM"],
+    ".webp": [b"WEBP"],  # actual prefix is "RIFF"+size+"WEBP" — checked via _CONTAINS_ANYWHERE below
 }
 _MAX_MAGIC_BYTES = 256
 # OBJ is a line-oriented text format with many valid leading directives
 # (comments, object/group names, material refs) before any vertex/face
 # data — unlike the binary formats above, its "signature" can appear
-# anywhere in the head, not just at byte 0.
-_CONTAINS_ANYWHERE = {".obj"}
+# anywhere in the head, not just at byte 0. WEBP's "WEBP" marker sits at
+# a fixed offset (8) after the RIFF header/size, not at byte 0 either.
+_CONTAINS_ANYWHERE = {".obj", ".webp"}
 
 
 def _validate_file_magic(payload: bytes, ext: str) -> None:

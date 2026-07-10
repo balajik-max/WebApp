@@ -101,3 +101,41 @@ export async function apiPost<T>(
   }
   return body as T;
 }
+
+export async function apiPatch<T>(
+  path: string,
+  payload: unknown,
+  signal?: AbortSignal
+): Promise<T> {
+  const res = await doFetch(path, {
+    method: "PATCH",
+    credentials: "include",
+    headers: { "Content-Type": "application/json", Accept: "application/json" },
+    body: JSON.stringify(payload),
+    signal,
+  });
+  const body = await res.json().catch(() => null);
+  if (!res.ok) {
+    throw new ApiError(res.status, `${res.status} ${res.statusText}`, body);
+  }
+  return body as T;
+}
+
+export async function apiPut<T>(
+  path: string,
+  payload: unknown,
+  signal?: AbortSignal
+): Promise<T> {
+  const res = await doFetch(path, {
+    method: "PUT",
+    credentials: "include",
+    headers: { "Content-Type": "application/json", Accept: "application/json" },
+    body: JSON.stringify(payload),
+    signal,
+  });
+  const body = await res.json().catch(() => null);
+  if (!res.ok) {
+    throw new ApiError(res.status, `${res.status} ${res.statusText}`, body);
+  }
+  return body as T;
+}

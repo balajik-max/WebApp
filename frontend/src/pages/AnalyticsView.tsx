@@ -33,7 +33,7 @@ export function AnalyticsView() {
 
   const totalSeverity = overview ? overview.severity_breakdown.reduce((s, b) => s + b.count, 0) : 0;
   const totalCategoryCount = useMemo(() => overview ? overview.category_breakdown.reduce((s, c) => s + c.count, 0) : 0, [overview]);
-  const avgSeverity = totalCategoryCount > 0 ? (overview!.category_breakdown.reduce((s, c) => s + c.avg_severity * c.count, 0) / totalCategoryCount) : 0;
+  const avgSeverity = totalCategoryCount > 0 && overview ? (overview.category_breakdown.reduce((s, c) => s + c.avg_severity * c.count, 0) / totalCategoryCount) : 0;
   const healthScore = overview && overview.total_features > 0 ? Math.round(((overview.resolved_reviews || 0) / Math.max(overview.total_review_items, 1)) * 100) : 0;
 
   const severityData = overview ? overview.severity_breakdown.map(s => ({
