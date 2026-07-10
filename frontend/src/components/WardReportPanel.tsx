@@ -11,10 +11,10 @@ interface Props {
 /** Picks the scope for the report: prefer the ward of the first selected
  * dataset that has one (several datasets over the same neighbourhood
  * usually share a ward), otherwise fall back to that single dataset. */
-function reportScope(datasets: DatasetRow[]): { ward?: string; dataset_id?: string; label: string } | null {
+function reportScope(datasets: DatasetRow[]): { ward?: string; dataset_id?: string; label: string; wardName?: string } | null {
   if (datasets.length === 0) return null;
   const withWard = datasets.find((d) => d.ward);
-  if (withWard?.ward) return { ward: withWard.ward, label: `Ward: ${withWard.ward}` };
+  if (withWard?.ward) return { ward: withWard.ward, label: `Ward ${withWard.ward}`, wardName: withWard.ward };
   const first = datasets[0];
   return { dataset_id: first.id, label: first.name };
 }
@@ -61,6 +61,11 @@ export function WardReportPanel({ datasets, onClose }: Props) {
       <header className="workspace-panel__head">
         <div>
           <div className="workspace-panel__eyebrow">Neighbourhood Report</div>
+          {scope.wardName && (
+            <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: "0.06em", textTransform: "uppercase", color: "var(--accent)", marginBottom: 2 }}>
+              Ward {scope.wardName}
+            </div>
+          )}
           <h2 className="workspace-panel__title" data-testid="ward-report-title">{scope.label}</h2>
           <div className="workspace-panel__sub">
             {datasets.length} dataset{datasets.length === 1 ? "" : "s"} selected · grounded in real survey data

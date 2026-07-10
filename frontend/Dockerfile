@@ -1,8 +1,8 @@
 # ---- Stage 1: install ----
 FROM node:22-alpine AS deps
 WORKDIR /app
-COPY package.json ./
-RUN corepack enable && yarn install --frozen-lockfile 2>/dev/null || yarn install
+COPY package.json yarn.lock ./
+RUN corepack enable && yarn install --frozen-lockfile
 
 # ---- Stage 2: build ----
 FROM node:22-alpine AS build

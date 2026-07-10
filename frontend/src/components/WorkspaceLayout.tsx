@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { NavLink, Outlet, useLocation } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
 import { useTheme } from "../context/ThemeContext";
@@ -45,7 +45,7 @@ export function WorkspaceLayout() {
     const ctrl = new AbortController();
     fetchCategories(ward || undefined, ctrl.signal)
       .then(setCategoryOptions)
-      .catch(() => {});
+      .catch(() => { });
     return () => ctrl.abort();
   }, [showFilters, ward]);
 
@@ -65,18 +65,40 @@ export function WorkspaceLayout() {
     setFilter({});
   }
 
+  // Reflect the ward of the currently selected dataset(s) in the top-bar ward
+  // filter so its name is visible even before "Apply" — selecting a dataset
+  // on the map should surface the ward there, not leave it on "all wards".
+  const handleActiveDatasetsChange = useCallback((datasets: DatasetRow[]) => {
+    setSelectedDatasets(datasets);
+    const firstWard = datasets.find((d) => d.ward)?.ward ?? "";
+    setWard(firstWard);
+  }, [setSelectedDatasets]);
+
   const outletContext = useMemo(
-    () => ({ filter, selectedDatasets, setSelectedDatasets }),
-    [filter, selectedDatasets]
+    () => ({ filter, selectedDatasets, setSelectedDatasets: handleActiveDatasetsChange }),
+    [filter, selectedDatasets, handleActiveDatasetsChange]
   );
 
   return (
     <div className="workspace" data-testid="workspace">
       <header className="workspace__topbar" data-testid="topbar">
         <div className="workspace__brand">
-          <span className="workspace__mark" />
+          <span className="workspace__mark" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none">
+              <circle cx="6" cy="18" r="2.1" fill="currentColor" />
+              <circle cx="13" cy="9.5" r="2.1" fill="currentColor" />
+              <circle cx="19" cy="14" r="2.1" fill="currentColor" />
+              <circle cx="19" cy="5.5" r="2.1" fill="currentColor" />
+              <path
+                d="M6 18L13 9.5M13 9.5L19 14M13 9.5L19 5.5"
+                stroke="currentColor"
+                strokeWidth="1.6"
+                strokeLinecap="round"
+              />
+            </svg>
+          </span>
           <div>
-            <div className="workspace__title">Davangere Urban Survey</div>
+            <div className="workspace__title">Urban Intelligence</div>
             <div className="workspace__subtitle" data-testid="topbar-user">
               signed in as <b>{user?.name ?? "…"}</b> · {user?.role ?? "…"}
             </div>
@@ -109,6 +131,11 @@ export function WorkspaceLayout() {
                     {w.ward} ({w.feature_count})
                   </option>
                 ))}
+                {ward && !wardOptions.some((w) => w.ward === ward) && (
+                  <option key={ward} value={ward}>
+                    {ward} (selected)
+                  </option>
+                )}
               </select>
               <select
                 data-testid="filter-category"
@@ -179,10 +206,10 @@ export function useTabTitle(base = "Davangere Urban Survey") {
       location.pathname.startsWith("/map")
         ? "Map"
         : location.pathname.startsWith("/datasets")
-        ? "Datasets"
-        : location.pathname.startsWith("/analytics")
-        ? "Analytics"
-        : "";
+          ? "Datasets"
+          : location.pathname.startsWith("/analytics")
+            ? "Analytics"
+            : "";
     document.title = label ? `${label} · ${base}` : base;
   }, [location.pathname, base]);
 }

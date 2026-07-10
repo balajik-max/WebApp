@@ -182,10 +182,14 @@ body {
   display: flex;
   align-items: center;
   justify-content: center;
-  font-weight: 800;
-  font-size: 14px;
   color: white;
   flex-shrink: 0;
+  box-shadow: var(--shadow-glow), var(--shadow-sm);
+}
+
+.workspace__mark svg {
+  width: 18px;
+  height: 18px;
 }
 
 .workspace__title {
@@ -1004,48 +1008,165 @@ body {
   border-radius: var(--radius-full);
 }
 
+.command-center__text-btn {
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: var(--accent);
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  padding: 0;
+  transition: color var(--transition-fast);
+}
+
+.command-center__text-btn:hover {
+  color: var(--accent-hover);
+}
+
+/* ── LAYER VISIBILITY LIST (QGIS-style category checklist) ───────────── */
+.layer-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.layer-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  transition: background var(--transition-fast);
+}
+
+.layer-row:hover {
+  background: var(--surface-3);
+}
+
+.layer-row--hidden {
+  opacity: 0.5;
+}
+
+.layer-row__checkbox {
+  width: 18px;
+  height: 18px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-xs);
+  border: 1.5px solid var(--edge-strong);
+  background: var(--surface-3);
+  transition: all var(--transition-base);
+}
+
+.layer-row:hover .layer-row__checkbox {
+  border-color: var(--accent);
+}
+
+.layer-row__checkbox--checked {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+.layer-row__checkbox-mark {
+  width: 11px;
+  height: 11px;
+  color: var(--accent-ink);
+  opacity: 0;
+  transform: scale(0.4);
+  transition: all var(--transition-base);
+}
+
+.layer-row__checkbox--checked .layer-row__checkbox-mark {
+  opacity: 1;
+  transform: scale(1);
+}
+
+.layer-row__swatch {
+  width: 9px;
+  height: 9px;
+  border-radius: var(--radius-full);
+  flex-shrink: 0;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.15);
+}
+
+.layer-row__name {
+  flex: 1;
+  min-width: 0;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--ink);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  text-transform: capitalize;
+}
+
+.layer-row--hidden .layer-row__name {
+  color: var(--ink-mute);
+}
+
+.layer-row__count {
+  font-size: 10.5px;
+  font-weight: 600;
+  color: var(--ink-mute);
+  font-family: var(--font-mono);
+  flex-shrink: 0;
+}
+
 /* ── DATASET CARD ─────────────────────────────────────────────────────── */
 .dataset-card {
   display: flex;
   align-items: center;
   gap: 12px;
-  padding: 12px;
+  padding: 13px 14px;
   background: var(--surface-2);
   border: 1px solid var(--edge);
-  border-radius: var(--radius-md);
+  border-radius: var(--radius-lg);
   margin-bottom: 0;
   cursor: pointer;
-  transition: all var(--transition-fast);
+  box-shadow: var(--shadow-xs);
+  transition: border-color var(--transition-fast), background var(--transition-fast),
+    box-shadow var(--transition-fast), transform var(--transition-fast);
 }
 
 .dataset-card:hover {
   border-color: var(--edge-strong);
   background: var(--surface-3);
+  box-shadow: var(--shadow-sm);
+  transform: translateY(-1px);
 }
 
 .dataset-card--active {
   border-color: var(--accent);
   background: var(--accent-muted);
-  box-shadow: inset 3px 0 0 var(--accent);
+  box-shadow: var(--shadow-glow);
 }
 
 .dataset-card--active:hover {
   border-color: var(--accent);
-  background: var(--accent-muted);
+  background: var(--accent-strong);
+  transform: translateY(-1px);
 }
 
 .dataset-card--disabled {
   cursor: default;
-  opacity: 0.8;
+  opacity: 0.65;
 }
 
 .dataset-card--disabled:hover {
   border-color: var(--edge);
   background: var(--surface-2);
+  box-shadow: var(--shadow-xs);
+  transform: none;
 }
 
 .dataset-card-shell {
-  margin-bottom: 8px;
+  margin-bottom: 10px;
 }
 
 .dataset-card-shell--expanded .dataset-card {
@@ -1054,21 +1175,47 @@ body {
   border-bottom-right-radius: 0;
 }
 
-.dataset-card__icon {
-  width: 36px;
-  height: 36px;
+/* ── PREMIUM CHECKBOX ─────────────────────────────────────────────────── */
+.dataset-card__checkbox {
+  width: 20px;
+  height: 20px;
+  flex-shrink: 0;
   display: flex;
   align-items: center;
   justify-content: center;
-  background: var(--surface-3);
   border-radius: var(--radius-sm);
-  color: var(--accent);
-  flex-shrink: 0;
+  border: 1.5px solid var(--edge-strong);
+  background: var(--surface-3);
+  transition: all var(--transition-base);
 }
 
-.dataset-card__icon svg {
-  width: 18px;
-  height: 18px;
+.dataset-card:hover .dataset-card__checkbox {
+  border-color: var(--accent);
+}
+
+.dataset-card--disabled .dataset-card__checkbox,
+.dataset-card--disabled:hover .dataset-card__checkbox {
+  border-color: var(--edge);
+}
+
+.dataset-card__checkbox--checked {
+  background: var(--accent);
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-muted);
+}
+
+.dataset-card__checkbox-mark {
+  width: 13px;
+  height: 13px;
+  color: var(--accent-ink);
+  opacity: 0;
+  transform: scale(0.4);
+  transition: all var(--transition-base);
+}
+
+.dataset-card__checkbox--checked .dataset-card__checkbox-mark {
+  opacity: 1;
+  transform: scale(1);
 }
 
 .dataset-card__info {
@@ -1163,15 +1310,13 @@ body {
 }
 
 .dataset-card__settings {
-  padding: 12px;
+  padding: 14px;
   border: 1px solid var(--accent);
   border-top: 0;
-  border-bottom-left-radius: var(--radius-md);
-  border-bottom-right-radius: var(--radius-md);
-  background:
-    linear-gradient(180deg, rgba(10, 27, 43, 0.96), rgba(9, 22, 36, 0.98)),
-    var(--surface-2);
-  box-shadow: inset 0 1px 0 rgba(34, 211, 238, 0.08);
+  border-bottom-left-radius: var(--radius-lg);
+  border-bottom-right-radius: var(--radius-lg);
+  background: var(--surface-3);
+  box-shadow: var(--shadow-inset);
 }
 
 .dataset-card__settings-head {
@@ -1236,7 +1381,7 @@ body {
   padding: 7px 10px;
   border: 1px solid var(--edge);
   border-radius: 999px;
-  background: rgba(15, 23, 42, 0.44);
+  background: var(--surface-2);
   color: var(--ink-dim);
   font-size: 10px;
   font-weight: 700;
@@ -1251,7 +1396,7 @@ body {
 
 .dataset-card__mode-btn--active {
   border-color: var(--accent);
-  background: rgba(34, 211, 238, 0.14);
+  background: var(--accent-muted);
   color: var(--accent);
 }
 

@@ -57,6 +57,19 @@ function extensionOf(filename: string): string {
   return i === -1 ? "" : filename.slice(i).toLowerCase();
 }
 
+// Best-effort extraction of a ward name/number from an uploaded filename,
+// e.g. "Davangere Ghandinagar Ward.gdb-20260708T103425Z-3-001.zip" ->
+// "Ghandinagar", or "Ward 12 streetlights.geojson" -> "12". Returns null
+// when nothing looks ward-like, so the field is left for the user to fill.
+function guessWardFromFilename(filename: string): string | null {
+  const stem = filename.replace(/\.[^.]+$/, "");
+  const before = stem.match(/([A-Za-z]+)\s+Ward\b/i);
+  if (before) return before[1];
+  const after = stem.match(/\bWard[\s_-]+([A-Za-z0-9]+)/i);
+  if (after) return after[1];
+  return null;
+}
+
 // A raw .gdb (File Geodatabase) is a *folder*, not a single file — the
 // browser file APIs only ever hand us a placeholder for a dropped/selected
 // directory, never its contents, unless we explicitly walk it. These
@@ -203,6 +216,14 @@ export function DatasetsView() {
     setUploadError(null);
     setUploadFile(f);
     if (f && !uploadName.trim()) setUploadName(f.name.replace(/\.[^.]+$/, ""));
+    // Best-effort ward suggestion from the filename (e.g. "Davangere
+    // Ghandinagar Ward.gdb-...zip" -> "Ghandinagar") so re-uploading the
+    // same survey doesn't silently drop its ward again — never overrides
+    // a ward the user already typed.
+    if (f && !uploadWard.trim()) {
+      const guess = guessWardFromFilename(f.name);
+      if (guess) setUploadWard(guess);
+    }
   }
 
   // Several individually selected/dropped photos are bundled into one zip

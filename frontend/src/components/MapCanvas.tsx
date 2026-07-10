@@ -138,6 +138,31 @@ const LAYER_POLY_OUTLINE = "urban-features-poly-outline";
 const LAYER_PHOTOS = "urban-features-photos";
 const PHOTO_ICON_ID = "site-photo-icon";
 
+// Base (category-agnostic) filters for the layers above — kept as named
+// constants so the category-visibility checklist can AND a hidden-category
+// clause onto them without duplicating the geometry/role logic.
+const POLY_BASE_FILTER: maplibregl.FilterSpecification = ["in", ["geometry-type"], ["literal", ["Polygon", "MultiPolygon"]]];
+const LINE_BASE_FILTER: maplibregl.FilterSpecification = ["in", ["geometry-type"], ["literal", ["LineString", "MultiLineString"]]];
+const POINT_BASE_FILTER: maplibregl.FilterSpecification = [
+  "all",
+  ["in", ["geometry-type"], ["literal", ["Point", "MultiPoint"]]],
+  ["!=", ["get", "category"], "raster_pixel"],
+  ["!=", ["get", "category"], "site_photo"],
+];
+const PHOTO_BASE_FILTER: maplibregl.FilterSpecification = ["==", ["get", "category"], "site_photo"];
+
+function withCategoryVisibility(
+  base: maplibregl.FilterSpecification,
+  hidden: Set<string>
+): maplibregl.FilterSpecification {
+  if (hidden.size === 0) return base;
+  return [
+    "all",
+    base,
+    ["!", ["in", ["coalesce", ["get", "category"], "uncategorized"], ["literal", Array.from(hidden)]]],
+  ] as unknown as maplibregl.FilterSpecification;
+}
+
 // Separate GeoJSON source + layers for AI highlight overlays so they sit
 // on top of the normal feature layers without touching the original data.
 const AI_HIGHLIGHT_SOURCE = "ai-highlight";
@@ -255,17 +280,6 @@ function decodeFeature(raw: {
   };
 }
 
-function geometryCenter(geometry: GeoJSON.Geometry): [number, number] | null {
-  const coords: number[][] = [];
-  const walk = (c: unknown): void => {
-    if (Array.isArray(c) && typeof c[0] === "number") { coords.push(c as number[]); return; }
-    if (Array.isArray(c)) c.forEach(walk);
-  };
-  if ("coordinates" in geometry) walk(geometry.coordinates);
-  if (coords.length === 0) return null;
-  return [coords.reduce((s, c) => s + c[0], 0) / coords.length, coords.reduce((s, c) => s + c[1], 0) / coords.length];
-}
-
 function buildCategoryColorExpression(
   colorByCategory: Map<string, string>
 ): maplibregl.ExpressionSpecification | string {
@@ -307,6 +321,14 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
 
   const [status, setStatus] = useState<ViewportStatus>({ loading: false, count: 0, truncated: false, error: null, bbox: null });
   const [legend, setLegend] = useState<LegendEntry[]>([]);
+  // Full (unsliced) per-category breakdown of the currently loaded features,
+  // for the QGIS-style layer-visibility checklist in the Command Center —
+  // `legend` above stays capped at 10 entries for the compact map overlay.
+  const [categoryStats, setCategoryStats] = useState<LegendEntry[]>([]);
+  // Categories unchecked in that checklist — purely a client-side paint/
+  // filter toggle on already-fetched features, so it applies instantly and
+  // never touches the topbar ward/category filter or triggers a refetch.
+  const [hiddenCategories, setHiddenCategories] = useState<Set<string>>(new Set());
   const [basemap, setBasemap] = useState<Basemap>("street");
   const [hover, setHover] = useState<HoverInfo | null>(null);
   const [photoViewer, setPhotoViewer] = useState<{ url: string; label: string; isPanorama: boolean } | null>(null);
@@ -323,8 +345,6 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
   const [rasterSettingsById, setRasterSettingsById] = useState<Record<string, RasterDisplaySettings>>({});
   const rasterSettingsRef = useRef<Record<string, RasterDisplaySettings>>({});
   const [flyError, setFlyError] = useState<string | null>(null);
-  const [topSeverity, setTopSeverity] = useState<UrbanFeature[]>([]);
-  const [activeFeatureId, setActiveFeatureId] = useState<string | null>(null);
   const [mapReady, setMapReady] = useState(false);
 
   // Keep a fast lookup: featureId → "redundant" | "needed" for tooltip + hover
@@ -471,29 +491,52 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
 
     const entries: LegendEntry[] = Array.from(counts.entries())
       .map(([category, count]) => ({ category, color: colorMap.get(category)!, count }))
-      .sort((a, b) => b.count - a.count)
-      .slice(0, 10);
-    setLegend(entries);
-
-    const ranked = (data.features as unknown as GeoJSON.Feature[])
-      .map(decodeFeature)
-      .filter((f) => f.properties.severity > 0 && f.properties.category !== "raster_pixel")
-      .sort((a, b) => b.properties.severity - a.properties.severity)
-      .slice(0, 8);
-    setTopSeverity(ranked);
+      .sort((a, b) => b.count - a.count);
+    setLegend(entries.slice(0, 10));
+    setCategoryStats(entries);
   }, [flushAiHighlightSource]);
 
-  const selectFeature = useCallback((feature: UrbanFeature) => {
+  // Re-applies the hidden-category set to every category-aware layer's
+  // filter. Runs on mount/mapReady and whenever the checklist changes —
+  // client-side only, so toggling a category is instant and never refetches.
+  useEffect(() => {
     const map = mapRef.current;
-    setActiveFeatureId(feature.properties.id);
-    onFeatureSelect(feature);
-    const center = geometryCenter(feature.geometry);
-    if (map && center) map.flyTo({ center, zoom: Math.max(map.getZoom(), 17), duration: 900 });
-  }, [onFeatureSelect]);
+    if (!mapReady || !map || !map.isStyleLoaded()) return;
+    if (map.getLayer(LAYER_POLY_FILL)) map.setFilter(LAYER_POLY_FILL, withCategoryVisibility(POLY_BASE_FILTER, hiddenCategories));
+    if (map.getLayer(LAYER_POLY_OUTLINE)) map.setFilter(LAYER_POLY_OUTLINE, withCategoryVisibility(POLY_BASE_FILTER, hiddenCategories));
+    if (map.getLayer(LAYER_LINES)) map.setFilter(LAYER_LINES, withCategoryVisibility(LINE_BASE_FILTER, hiddenCategories));
+    if (map.getLayer(LAYER_POINTS)) map.setFilter(LAYER_POINTS, withCategoryVisibility(POINT_BASE_FILTER, hiddenCategories));
+    if (map.getLayer(LAYER_PHOTOS)) map.setFilter(LAYER_PHOTOS, withCategoryVisibility(PHOTO_BASE_FILTER, hiddenCategories));
+  }, [mapReady, hiddenCategories]);
+
+  const toggleCategoryVisibility = useCallback((category: string) => {
+    setHiddenCategories((prev) => {
+      const next = new Set(prev);
+      if (next.has(category)) next.delete(category);
+      else next.add(category);
+      return next;
+    });
+  }, []);
+
+  const setAllCategoriesVisible = useCallback((visible: boolean) => {
+    setHiddenCategories(visible ? new Set() : new Set(categoryStats.map((c) => c.category)));
+  }, [categoryStats]);
 
   const runFetch = useCallback(async () => {
     const map = mapRef.current;
     if (!map) return;
+
+    // If no dataset is selected AND no real topbar filter is active,
+    // show an empty map rather than dumping every feature in the viewport.
+    const currentFilter = filterRef.current;
+    const hasDatasetFilter = (currentFilter.datasetIds?.length ?? 0) > 0;
+    const hasRealFilter = Boolean(currentFilter.ward || currentFilter.category || currentFilter.severity !== undefined);
+    if (!hasDatasetFilter && !hasRealFilter) {
+      applyFeatureCollection(EMPTY_FC);
+      setStatus({ loading: false, count: 0, truncated: false, error: null, bbox: null });
+      return;
+    }
+
     abortRef.current?.abort();
     const controller = new AbortController();
     abortRef.current = controller;
@@ -543,9 +586,15 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     rasterLayersRef.current.add(dataset.id);
   }, []);
 
+  // Deliberately does NOT gate on map.isStyleLoaded() the way addRasterOverlay
+  // does — that check can be transiently false while tiles are still loading,
+  // and skipping a removal then leaves the raster permanently stuck on the
+  // map with no user-facing way to clear it (deselecting again is a no-op
+  // since app state already considers it removed). getLayer/getSource are
+  // safe to call as soon as the map exists, loaded or not.
   const removeRasterOverlay = useCallback((datasetId: string) => {
     const map = mapRef.current;
-    if (!map || !map.isStyleLoaded()) return;
+    if (!map) return;
     const layerId = rasterLayerId(datasetId);
     const sourceId = rasterSourceId(datasetId);
     if (map.getLayer(layerId)) map.removeLayer(layerId);
@@ -596,9 +645,19 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
   // then came back to Map) Ã¢â‚¬â€ re-applies the raster overlay(s) and scopes
   // the feature fetch, without flying the camera anywhere, since this is
   // a passive restore, not a fresh click.
+  // Also acts as a standing reconciliation pass: any raster layer left on
+  // the map for a dataset that is no longer active (e.g. a removal that
+  // lost a race with an in-progress style/tile load) is torn down here
+  // too, so the map can never get stuck showing a raster nothing in the
+  // UI claims is selected.
   useEffect(() => {
-    if (!mapReady || activeDatasetIds.length === 0) return;
-    const matched = datasets.filter((d) => activeDatasetIds.includes(d.id));
+    if (!mapReady) return;
+    const activeIds = new Set(activeDatasetIds);
+    for (const id of Array.from(rasterLayersRef.current)) {
+      if (!activeIds.has(id)) removeRasterOverlay(id);
+    }
+    if (activeDatasetIds.length === 0) return;
+    const matched = datasets.filter((d) => activeIds.has(d.id));
     if (matched.length === 0) return;
     for (const d of matched) addRasterOverlay(d);
     filterRef.current = { datasetIds: activeDatasetIds };
@@ -701,9 +760,9 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
 
     map.on("load", () => {
       map.addSource(FEATURE_SOURCE, { type: "geojson", data: EMPTY_FC as unknown as GeoJSON.FeatureCollection, promoteId: "id" });
-      map.addLayer({ id: LAYER_POLY_FILL, type: "fill", source: FEATURE_SOURCE, filter: ["in", ["geometry-type"], ["literal", ["Polygon", "MultiPolygon"]]], paint: { "fill-color": ["interpolate", ["linear"], ["coalesce", ["get", "severity"], 0], 0, "#3aa1ff", 0.5, "#f5c542", 1, "#ff5a3d"], "fill-opacity": 0.35 } });
-      map.addLayer({ id: LAYER_POLY_OUTLINE, type: "line", source: FEATURE_SOURCE, filter: ["in", ["geometry-type"], ["literal", ["Polygon", "MultiPolygon"]]], paint: { "line-color": "#0b1013", "line-width": 1 } });
-      map.addLayer({ id: LAYER_LINES, type: "line", source: FEATURE_SOURCE, filter: ["in", ["geometry-type"], ["literal", ["LineString", "MultiLineString"]]], paint: { "line-color": ["interpolate", ["linear"], ["coalesce", ["get", "severity"], 0], 0, "#3aa1ff", 0.5, "#f5c542", 1, "#ff5a3d"], "line-width": 2.5 } });
+      map.addLayer({ id: LAYER_POLY_FILL, type: "fill", source: FEATURE_SOURCE, filter: POLY_BASE_FILTER, paint: { "fill-color": ["interpolate", ["linear"], ["coalesce", ["get", "severity"], 0], 0, "#3aa1ff", 0.5, "#f5c542", 1, "#ff5a3d"], "fill-opacity": 0.35 } });
+      map.addLayer({ id: LAYER_POLY_OUTLINE, type: "line", source: FEATURE_SOURCE, filter: POLY_BASE_FILTER, paint: { "line-color": "#0b1013", "line-width": 1 } });
+      map.addLayer({ id: LAYER_LINES, type: "line", source: FEATURE_SOURCE, filter: LINE_BASE_FILTER, paint: { "line-color": ["interpolate", ["linear"], ["coalesce", ["get", "severity"], 0], 0, "#3aa1ff", 0.5, "#f5c542", 1, "#ff5a3d"], "line-width": 2.5 } });
       map.addLayer({
         id: LAYER_POINTS,
         type: "circle",
@@ -714,12 +773,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
         // grid of dots on top of it would just be redundant clutter.
         // site_photo features get their own camera-icon symbol layer below
         // instead of a plain dot.
-        filter: [
-          "all",
-          ["in", ["geometry-type"], ["literal", ["Point", "MultiPoint"]]],
-          ["!=", ["get", "category"], "raster_pixel"],
-          ["!=", ["get", "category"], "site_photo"],
-        ],
+        filter: POINT_BASE_FILTER,
         paint: { "circle-radius": ["interpolate", ["linear"], ["zoom"], 8, 3, 12, 6, 16, 10], "circle-color": ["interpolate", ["linear"], ["coalesce", ["get", "severity"], 0], 0, "#3aa1ff", 0.5, "#f5c542", 1, "#ff5a3d"], "circle-stroke-color": "#0b1013", "circle-stroke-width": 1.5, "circle-opacity": 0.9 },
       });
 
@@ -730,7 +784,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
         id: LAYER_PHOTOS,
         type: "symbol",
         source: FEATURE_SOURCE,
-        filter: ["==", ["get", "category"], "site_photo"],
+        filter: PHOTO_BASE_FILTER,
         layout: {
           "icon-image": PHOTO_ICON_ID,
           "icon-size": ["interpolate", ["linear"], ["zoom"], 8, 0.35, 16, 0.65],
@@ -788,7 +842,6 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
         const isAi = AI_CLICKABLE.includes(hit[0].layer?.id as string);
         const base = isAi ? hit.find((f) => BASE_CLICKABLE.includes(f.layer?.id as string)) : hit[0];
         const selected = decodeFeature(base ?? hit[0]);
-        setActiveFeatureId(selected.properties.id);
         if (selected.properties.category === "site_photo") {
           setPhotoViewer({
             url: `${API_BASE}/api/v1/features/${selected.properties.id}/photo`,
@@ -851,9 +904,10 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
         }}
         rasterSettingsById={rasterSettingsById}
         onChangeRasterSettings={updateRasterDisplaySettings}
-        topSeverity={topSeverity}
-        activeFeatureId={activeFeatureId}
-        onSelectFeature={selectFeature}
+        categoryStats={categoryStats}
+        hiddenCategories={hiddenCategories}
+        onToggleCategory={toggleCategoryVisibility}
+        onSetAllCategoriesVisible={setAllCategoriesVisible}
         status={status}
       />
       <div className="map-canvas" data-testid="map-canvas">
@@ -861,6 +915,17 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
         <MapControls basemap={basemap} onChangeBasemap={changeBasemap} status={status} />
         <MapLegend entries={legend} />
         <HoverTooltip hover={hover} />
+        {activeDatasetIds.length === 0 && !filter.ward && !filter.category && filter.severity === undefined && (
+          <div style={{
+            position: "absolute", top: "50%", left: "50%", transform: "translate(-50%, -50%)",
+            pointerEvents: "none", textAlign: "center",
+            background: "rgba(11,16,19,0.72)", borderRadius: "var(--radius-md)",
+            padding: "14px 22px", color: "var(--ink-mute)", fontSize: 13, fontWeight: 500,
+            backdropFilter: "blur(4px)", border: "1px solid var(--edge)",
+          }}>
+            Select a dataset from the Command Center to view it on the map
+          </div>
+        )}
       </div>
       {photoViewer?.isPanorama ? (
         <PanoramaViewer url={photoViewer.url} label={photoViewer.label} onClose={() => setPhotoViewer(null)} />
@@ -873,7 +938,8 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
 
 function CommandCenter({
   datasets, activeDatasetIds, flyError, onSelectDataset, onClearDataset, expandedDatasetId, onToggleDatasetSettings,
-  rasterSettingsById, onChangeRasterSettings, topSeverity, activeFeatureId, onSelectFeature, status: _status,
+  rasterSettingsById, onChangeRasterSettings, categoryStats, hiddenCategories, onToggleCategory,
+  onSetAllCategoriesVisible, status: _status,
 }: {
   datasets: DatasetRow[]; activeDatasetIds: string[]; flyError: string | null; onSelectDataset: (d: DatasetRow) => void;
   onClearDataset: () => void;
@@ -881,16 +947,17 @@ function CommandCenter({
   onToggleDatasetSettings: (datasetId: string) => void;
   rasterSettingsById: Record<string, RasterDisplaySettings>;
   onChangeRasterSettings: (datasetId: string, patch: Partial<RasterDisplaySettings>) => void;
-  topSeverity: UrbanFeature[]; activeFeatureId: string | null; onSelectFeature: (f: UrbanFeature) => void;
+  categoryStats: LegendEntry[];
+  hiddenCategories: Set<string>;
+  onToggleCategory: (category: string) => void;
+  onSetAllCategoriesVisible: (visible: boolean) => void;
   status: ViewportStatus;
 }) {
-  const topFeatures = topSeverity.slice(0, 5);
-
   return (
     <aside className="command-center" data-testid="command-center">
       <div className="command-center__header">
         <div className="command-center__eyebrow">Command Center</div>
-        <div className="command-center__title">Davangere<br/>Live Ops</div>
+        <div className="command-center__title">Urban<br/>Intelligence</div>
       </div>
       <div className="command-center__body">
         {datasets.length > 0 && (
@@ -900,13 +967,9 @@ function CommandCenter({
               {activeDatasetIds.length > 0 ? (
                 <button
                   type="button"
+                  className="command-center__text-btn"
                   onClick={onClearDataset}
                   data-testid="clear-dataset-filter"
-                  style={{
-                    background: "none", border: "none", cursor: "pointer",
-                    color: "var(--accent)", fontSize: 10.5, fontWeight: 700,
-                    letterSpacing: "0.04em", textTransform: "uppercase",
-                  }}
                 >
                   Show all
                 </button>
@@ -936,14 +999,23 @@ function CommandCenter({
                     onClick={() => d.status === "ready" && onSelectDataset(d)}
                     data-testid={`map-dataset-${d.id}`}
                   >
-                    <div className="dataset-card__icon">
-                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
-                        <path d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+                    <div
+                      className={`dataset-card__checkbox${isActive ? " dataset-card__checkbox--checked" : ""}`}
+                      aria-hidden="true"
+                    >
+                      <svg className="dataset-card__checkbox-mark" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3">
+                        <path d="M5 13l4 4L19 7" strokeLinecap="round" strokeLinejoin="round" />
                       </svg>
                     </div>
                     <div className="dataset-card__info">
                       <div className="dataset-card__name">{d.name}</div>
-                      <div className="dataset-card__meta">{d.ward ? `Ward ${d.ward}` : "All wards"} - {d.file_type}</div>
+                      <div className="dataset-card__meta">
+                        {d.ward ? (
+                          <><strong style={{ color: "var(--accent)", fontWeight: 700 }}>Ward {d.ward}</strong> · {d.file_type}</>
+                        ) : (
+                          <>All wards · {d.file_type}</>
+                        )}
+                      </div>
                     </div>
                     <div className="dataset-card__actions">
                       {hasRasterControls ? (
@@ -1030,50 +1102,37 @@ function CommandCenter({
           </div>
         )}
 
-        {topFeatures.length > 0 && (
+        {categoryStats.length > 0 && (
           <div className="command-center__section">
             <div className="command-center__section-head">
-              <span className="command-center__section-title">Top Severity</span>
-              <span className="command-center__section-count">{topFeatures.length}</span>
+              <span className="command-center__section-title">Layers</span>
+              <button
+                type="button"
+                className="command-center__text-btn"
+                data-testid="layers-toggle-all"
+                onClick={() => onSetAllCategoriesVisible(hiddenCategories.size > 0)}
+              >
+                {hiddenCategories.size > 0 ? "Show all" : "Hide all"}
+              </button>
             </div>
-            <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-              {topFeatures.map((f) => {
-                const tier = f.properties.severity >= 0.67 ? "critical" : f.properties.severity >= 0.34 ? "high" : "medium";
-                const isActive = activeFeatureId === f.properties.id;
+            <div className="layer-list">
+              {categoryStats.map((c) => {
+                const visible = !hiddenCategories.has(c.category);
                 return (
                   <div
-                    key={f.properties.id}
-                    onClick={() => onSelectFeature(f)}
-                    style={{
-                      display: "flex", alignItems: "center", gap: 10, padding: "10px 12px",
-                      background: isActive ? "var(--accent-muted)" : "var(--surface-2)",
-                      border: `1px solid ${isActive ? "var(--accent)" : "var(--edge)"}`,
-                      borderRadius: "var(--radius-md)", cursor: "pointer",
-                      transition: "all 0.15s ease",
-                    }}
-                    data-testid={`map-severity-${f.properties.id}`}
+                    key={c.category}
+                    className={`layer-row${visible ? "" : " layer-row--hidden"}`}
+                    onClick={() => onToggleCategory(c.category)}
+                    data-testid={`layer-row-${c.category}`}
                   >
-                    <div style={{
-                      width: 8, height: 8, borderRadius: "50%", flexShrink: 0,
-                      background: tier === "critical" ? "var(--danger)" : tier === "high" ? "#f97316" : "var(--warn)",
-                      boxShadow: tier === "critical" ? "0 0 8px var(--danger)" : "none",
-                    }} />
-                    <div style={{ flex: 1, minWidth: 0 }}>
-                      <div style={{ fontSize: 12, fontWeight: 600, color: "var(--ink)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
-                        {f.properties.label || f.properties.category || "Unnamed"}
-                      </div>
-                      <div style={{ fontSize: 10, color: "var(--ink-mute)", marginTop: 1 }}>
-                        {f.properties.category || "uncategorized"}
-                      </div>
+                    <div className={`layer-row__checkbox${visible ? " layer-row__checkbox--checked" : ""}`}>
+                      <svg className="layer-row__checkbox-mark" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3">
+                        <path d="M5 13l4 4L19 7" strokeLinecap="round" strokeLinejoin="round" />
+                      </svg>
                     </div>
-                    <div style={{
-                      fontSize: 11, fontWeight: 700, fontFamily: "var(--font-mono)",
-                      padding: "2px 8px", borderRadius: "var(--radius-sm)",
-                      background: tier === "critical" ? "var(--danger-muted)" : tier === "high" ? "rgba(249, 115, 22, 0.15)" : "var(--warn-muted)",
-                      color: tier === "critical" ? "var(--danger)" : tier === "high" ? "#f97316" : "var(--warn)",
-                    }}>
-                      {f.properties.severity.toFixed(2)}
-                    </div>
+                    <span className="layer-row__swatch" style={{ background: c.color }} />
+                    <span className="layer-row__name">{c.category}</span>
+                    <span className="layer-row__count">{c.count}</span>
                   </div>
                 );
               })}
