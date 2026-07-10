@@ -1,6 +1,9 @@
 # Dependencies
 node_modules/
 **/node_modules/
+env/
+venv/
+.venv/
 
 # Build outputs
 dist/
@@ -27,6 +30,10 @@ Thumbs.db
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
+
+# Python
+__pycache__/
+*.py[cod]
 
 # Docker
 docker-compose.override.yml

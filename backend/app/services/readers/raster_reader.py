@@ -135,6 +135,12 @@ class RasterReader:
                             "max": float(data.max()),
                             "mean": float(data.mean()),
                             "std": float(data.std()),
+                            # 2nd/98th percentile stretch — used by the preview
+                            # renderer to ignore outlier bright/dark pixels that
+                            # would otherwise crush the visible colour range
+                            # (the same approach Global Mapper uses by default).
+                            "p02": float(np.percentile(data, 2)),
+                            "p98": float(np.percentile(data, 98)),
                         }
                 except Exception as exc:  # noqa: BLE001
                     log.warning("Failed to read band %d: %s", band_idx, exc)
@@ -252,11 +258,13 @@ class RasterReader:
                     scaled = data.astype(np.uint8)
                 else:
                     # No natural display range for non-Byte data (float DEMs,
-                    # uint16 elevation, etc.) — stretch the observed band
-                    # range to 0-255 so it's visible as an image at all.
+                    # uint16 elevation, etc.) — stretch to 0-255 using the
+                    # 2nd-98th percentile range so outlier pixels (noise, tall
+                    # buildings, voids) don't crush the visible colour range.
+                    # This matches Global Mapper's default percentile stretch.
                     stats = band_stats.get(f"band_{band_idx}", {})
-                    bmin = stats.get("min", 0.0)
-                    bmax = stats.get("max", 1.0)
+                    bmin = stats.get("p02", stats.get("min", 0.0))
+                    bmax = stats.get("p98", stats.get("max", 1.0))
                     rng = (bmax - bmin) or 1.0
                     scaled = np.clip((data.astype("float64") - bmin) / rng * 255.0, 0, 255).astype(np.uint8)
 

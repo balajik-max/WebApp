@@ -13,10 +13,10 @@ interface Props {
   filter: FeatureFilter;
   onFeatureSelect: (feature: UrbanFeature | null) => void;
   /** Fires whenever the set of datasets selected in the Command Center
-   * changes — used to drive the ward/dataset-level report panel. */
+   * changes Ã¢â‚¬â€ used to drive the ward/dataset-level report panel. */
   onActiveDatasetsChange?: (rows: DatasetRow[]) => void;
   /** Dataset selection persisted by the parent (survives this component
-   * being unmounted/remounted on tab navigation) — seeds the initial
+   * being unmounted/remounted on tab navigation) Ã¢â‚¬â€ seeds the initial
    * selection and is re-applied once the map and dataset list are ready. */
   initialActiveDatasets?: DatasetRow[];
   /** AI-produced highlight overrides — redundant poles show red,
@@ -27,7 +27,7 @@ interface Props {
 const DAVANGERE_CENTER: [number, number] = [75.9218, 14.4644];
 const DAVANGERE_ZOOM = 12;
 
-// Same base the rest of the app's fetch wrapper (lib/api.ts) uses — the
+// Same base the rest of the app's fetch wrapper (lib/api.ts) uses Ã¢â‚¬â€ the
 // dev setup serves the API from a different origin/port than the SPA, so
 // raster preview image requests need the same credentials treatment as
 // every other authenticated call.
@@ -38,6 +38,65 @@ const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "";
 const rasterSourceId = (datasetId: string) => `raster-preview-${datasetId}`;
 const rasterLayerId = (datasetId: string) => `raster-preview-layer-${datasetId}`;
 
+type RasterColorMode = "rgb" | "grayscale" | "enhanced";
+
+interface RasterDisplaySettings {
+  colorMode: RasterColorMode;
+  clarity: number;
+}
+
+const DEFAULT_RASTER_SETTINGS: RasterDisplaySettings = {
+  colorMode: "grayscale",
+  clarity: 0,
+};
+
+const COLOR_MODE_OPTIONS: Array<{ value: RasterColorMode; label: string }> = [
+  { value: "rgb", label: "RGB" },
+  { value: "grayscale", label: "Grayscale" },
+  { value: "enhanced", label: "Enhanced" },
+];
+
+function previewModeForSettings(settings: RasterDisplaySettings): "rgb" | "grayscale" | "enhanced" {
+  return settings.colorMode;
+}
+
+function rasterPreviewUrl(datasetId: string, settings: RasterDisplaySettings): string {
+  const params = new URLSearchParams({ mode: previewModeForSettings(settings) });
+  return `${API_BASE}/api/v1/datasets/${datasetId}/raster-preview.png?${params.toString()}`;
+}
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, value));
+}
+
+function resolveRasterSettings(settings?: Partial<RasterDisplaySettings>): RasterDisplaySettings {
+  return {
+    colorMode: settings?.colorMode ?? DEFAULT_RASTER_SETTINGS.colorMode,
+    clarity: clamp(settings?.clarity ?? DEFAULT_RASTER_SETTINGS.clarity, 0, 2),
+  };
+}
+
+function rasterPaintForSettings(settings: RasterDisplaySettings): Record<string, number> {
+  const normalized = resolveRasterSettings(settings);
+  // The backend now renders the correct rainbow/hillshade image.
+  // We apply only mild contrast boost from Edge Clarity, and keep
+  // brightness untouched so we don't wash out or crush the image.
+  const clarityContrast = normalized.clarity * 0.35;
+  const saturation = normalized.colorMode === "grayscale" ? -1 : 0;
+
+  return {
+    "raster-opacity": 0.9,
+    "raster-saturation": saturation,
+    "raster-contrast": clamp(clarityContrast, -1, 1),
+    "raster-brightness-min": 0,
+    "raster-brightness-max": 1,
+  };
+}
+
+function rasterResamplingForSettings(settings: RasterDisplaySettings): "linear" | "nearest" {
+  return resolveRasterSettings(settings).clarity >= 0.35 ? "nearest" : "linear";
+}
+
 const BASE_STYLE: maplibregl.StyleSpecification = {
   version: 8,
   sources: {
@@ -45,7 +104,7 @@ const BASE_STYLE: maplibregl.StyleSpecification = {
       type: "raster",
       tiles: ["https://tile.openstreetmap.org/{z}/{x}/{y}.png"],
       tileSize: 256,
-      attribution: "© OpenStreetMap contributors",
+      attribution: "(c) OpenStreetMap contributors",
     },
     "satellite-tiles": {
       type: "raster",
@@ -211,7 +270,7 @@ function buildCategoryColorExpression(
   colorByCategory: Map<string, string>
 ): maplibregl.ExpressionSpecification | string {
   // A MapLibre "match" expression requires at least one input/output pair
-  // before its fallback value — with zero categories seen yet (empty map,
+  // before its fallback value Ã¢â‚¬â€ with zero categories seen yet (empty map,
   // no features loaded), building one anyway produces an invalid
   // expression that throws at runtime. Fall back to a plain solid color.
   if (colorByCategory.size === 0) return UNCATEGORIZED_COLOR;
@@ -260,6 +319,9 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     () => initialActiveDatasets?.map((d) => d.id) ?? []
   );
   const rasterLayersRef = useRef<Set<string>>(new Set());
+  const [expandedDatasetId, setExpandedDatasetId] = useState<string | null>(null);
+  const [rasterSettingsById, setRasterSettingsById] = useState<Record<string, RasterDisplaySettings>>({});
+  const rasterSettingsRef = useRef<Record<string, RasterDisplaySettings>>({});
   const [flyError, setFlyError] = useState<string | null>(null);
   const [topSeverity, setTopSeverity] = useState<UrbanFeature[]>([]);
   const [activeFeatureId, setActiveFeatureId] = useState<string | null>(null);
@@ -444,7 +506,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
       setStatus({ loading: false, count: data.count, truncated: data.truncated, error: null, bbox });
     } catch (err) {
       if ((err as Error).name === "AbortError") return;
-      const msg = err instanceof ApiError ? `${err.status} — ${err.message}` : (err as Error).message;
+      const msg = err instanceof ApiError ? `${err.status} - ${err.message}` : (err as Error).message;
       applyFeatureCollection(EMPTY_FC);
       setStatus({ loading: false, count: 0, truncated: false, error: msg, bbox });
     }
@@ -467,7 +529,8 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     if (map.getSource(sourceId)) map.removeSource(sourceId);
 
     const [west, south, east, north] = overlay.bounds;
-    const url = `${API_BASE}/api/v1/datasets/${dataset.id}/raster-preview.png`;
+    const rasterSettings = resolveRasterSettings(rasterSettingsRef.current[dataset.id]);
+    const url = rasterPreviewUrl(dataset.id, rasterSettings);
     map.addSource(sourceId, {
       type: "image",
       url,
@@ -476,7 +539,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     });
     // Insert below the vector feature layers so pins/lines stay visible
     // on top of the raster imagery.
-    map.addLayer({ id: layerId, type: "raster", source: sourceId, paint: { "raster-opacity": 0.85 } }, LAYER_POLY_FILL);
+    map.addLayer({ id: layerId, type: "raster", source: sourceId, paint: rasterPaintForSettings(rasterSettings) }, LAYER_POLY_FILL);
     rasterLayersRef.current.add(dataset.id);
   }, []);
 
@@ -494,9 +557,43 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     for (const id of Array.from(rasterLayersRef.current)) removeRasterOverlay(id);
   }, [removeRasterOverlay]);
 
+  const applyRasterDisplaySettings = useCallback((datasetId: string, nextSettings: RasterDisplaySettings) => {
+    const map = mapRef.current;
+    if (!map || !map.isStyleLoaded()) return;
+    const layerId = rasterLayerId(datasetId);
+    if (!map.getLayer(layerId)) return;
+
+    const paint = rasterPaintForSettings(nextSettings);
+    Object.entries(paint).forEach(([key, value]) => {
+      map.setPaintProperty(layerId, key, value);
+    });
+    map.setPaintProperty(layerId, "raster-resampling", rasterResamplingForSettings(nextSettings));
+  }, []);
+
+  const updateRasterDisplaySettings = useCallback((
+    datasetId: string,
+    patch: Partial<RasterDisplaySettings>
+  ) => {
+    const nextSettings = resolveRasterSettings({
+      ...rasterSettingsRef.current[datasetId],
+      ...patch,
+    });
+    const previousSettings = resolveRasterSettings(rasterSettingsRef.current[datasetId]);
+    rasterSettingsRef.current = { ...rasterSettingsRef.current, [datasetId]: nextSettings };
+    setRasterSettingsById(rasterSettingsRef.current);
+    if (
+      previousSettings.colorMode !== nextSettings.colorMode &&
+      rasterLayersRef.current.has(datasetId)
+    ) {
+      const dataset = datasets.find((row) => row.id === datasetId);
+      if (dataset) addRasterOverlay(dataset);
+    }
+    applyRasterDisplaySettings(datasetId, nextSettings);
+  }, [addRasterOverlay, applyRasterDisplaySettings, datasets]);
+
   // Restores a dataset selection that was persisted by the parent (e.g.
   // the user picked a dataset, switched to the Datasets/Analytics tab,
-  // then came back to Map) — re-applies the raster overlay(s) and scopes
+  // then came back to Map) Ã¢â‚¬â€ re-applies the raster overlay(s) and scopes
   // the feature fetch, without flying the camera anywhere, since this is
   // a passive restore, not a fresh click.
   useEffect(() => {
@@ -507,13 +604,13 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     filterRef.current = { datasetIds: activeDatasetIds };
     scheduleFetch();
     // Only re-run when the map/datasets actually become ready or the
-    // persisted id list itself changes — not on every addRasterOverlay
+    // persisted id list itself changes Ã¢â‚¬â€ not on every addRasterOverlay
     // identity change, which would fight with toggleDataset's own call.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mapReady, datasets, activeDatasetIds]);
 
   // Selecting a dataset toggles it in/out of the active set rather than
-  // replacing it — so a raster orthophoto and its companion GDB vector
+  // replacing it Ã¢â‚¬â€ so a raster orthophoto and its companion GDB vector
   // layer over the same area can be viewed together, not just one at a
   // time. Clearing the set (or changing the topbar filter) goes back to
   // the global ward/category/severity view.
@@ -528,6 +625,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     onActiveDatasetsChange?.(datasets.filter((d) => next.includes(d.id)));
 
     if (isActive) {
+      setExpandedDatasetId((current) => (current === dataset.id ? null : current));
       removeRasterOverlay(dataset.id);
       scheduleFetch();
       return;
@@ -537,7 +635,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
       const b = await fetchDatasetBounds(dataset.id);
       map.fitBounds([[b.min_lon, b.min_lat], [b.max_lon, b.max_lat]], { padding: 80, duration: 1000, maxZoom: 18 });
       // fitBounds fires moveend, which the mount effect already wires to
-      // scheduleFetch — but call it directly too in case the map is
+      // scheduleFetch Ã¢â‚¬â€ but call it directly too in case the map is
       // already sitting on those exact bounds (no moveend would fire).
       scheduleFetch();
     } catch (e) { setFlyError((e as Error).message); }
@@ -545,6 +643,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
 
   const clearAllDatasets = useCallback(() => {
     setActiveDatasetIds([]);
+    setExpandedDatasetId(null);
     filterRef.current = filter;
     clearAllRasterOverlays();
     onActiveDatasetsChange?.([]);
@@ -555,16 +654,16 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
 
   useEffect(() => {
     // Only a *real* ward/category/severity constraint should override an
-    // active dataset selection — clicking Apply/Reset with everything left
+    // active dataset selection Ã¢â‚¬â€ clicking Apply/Reset with everything left
     // at "all wards"/"all categories"/blank severity is a no-op and must
     // not silently clear the dataset(s) currently shown on the map. A real
     // constraint, though, is an explicit signal to leave dataset isolation
-    // and go back to the global filtered view for the vector FEATURES —
+    // and go back to the global filtered view for the vector FEATURES Ã¢â‚¬â€
     // otherwise a stale dataset selection could silently AND-combine with
     // it into an empty/wrong result.
     //
-    // A raster image overlay is NOT a filterable feature, though — it's a
-    // visual backdrop with no ward/category/severity of its own — so it
+    // A raster image overlay is NOT a filterable feature, though Ã¢â‚¬â€ it's a
+    // visual backdrop with no ward/category/severity of its own Ã¢â‚¬â€ so it
     // deliberately stays on the map here. It's only removed when its own
     // dataset card is clicked again or "Show all" is pressed explicitly.
     const hasRealFilter = Boolean(filter.ward || filter.category || filter.severity !== undefined);
@@ -573,7 +672,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     filterRef.current = filter;
     if (mapRef.current) scheduleFetch();
     // activeDatasetIds/scheduleFetch are read for their latest value here
-    // but must not retrigger this effect on their own — dataset-selection
+    // but must not retrigger this effect on their own Ã¢â‚¬â€ dataset-selection
     // changes are already handled directly by
     // toggleDataset/clearAllDatasets.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -589,7 +688,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
       minZoom: 4,
       // Raster/image overlays (aerial TIFs etc.) have no tile pyramid of
       // their own, so they can be zoomed in far past where basemap tiles
-      // stop looking sharp — 20 was capping that closer inspection even
+      // stop looking sharp Ã¢â‚¬â€ 20 was capping that closer inspection even
       // with the basemap turned off. MapLibre's practical ceiling is ~24.
       maxZoom: 24,
       attributionControl: { compact: true },
@@ -610,7 +709,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
         type: "circle",
         source: FEATURE_SOURCE,
         // raster_pixel features are the raster reader's internal sample
-        // grid (kept for the feature table / severity / AI summary) — the
+        // grid (kept for the feature table / severity / AI summary) Ã¢â‚¬â€ the
         // actual image overlay already shows the raster visually, so the
         // grid of dots on top of it would just be redundant clutter.
         // site_photo features get their own camera-icon symbol layer below
@@ -714,7 +813,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
         setHover({
           x: e.point.x,
           y: e.point.y,
-          label: decoded.properties.label || "—",
+          label: decoded.properties.label || "-",
           category,
           severity: decoded.properties.severity,
           color: colorForCategory(category),
@@ -746,6 +845,12 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
         flyError={flyError}
         onSelectDataset={toggleDataset}
         onClearDataset={clearAllDatasets}
+        expandedDatasetId={expandedDatasetId}
+        onToggleDatasetSettings={(datasetId) => {
+          setExpandedDatasetId((current) => (current === datasetId ? null : datasetId));
+        }}
+        rasterSettingsById={rasterSettingsById}
+        onChangeRasterSettings={updateRasterDisplaySettings}
         topSeverity={topSeverity}
         activeFeatureId={activeFeatureId}
         onSelectFeature={selectFeature}
@@ -767,14 +872,18 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
 });
 
 function CommandCenter({
-  datasets, activeDatasetIds, flyError, onSelectDataset, onClearDataset, topSeverity, activeFeatureId, onSelectFeature, status: _status,
+  datasets, activeDatasetIds, flyError, onSelectDataset, onClearDataset, expandedDatasetId, onToggleDatasetSettings,
+  rasterSettingsById, onChangeRasterSettings, topSeverity, activeFeatureId, onSelectFeature, status: _status,
 }: {
   datasets: DatasetRow[]; activeDatasetIds: string[]; flyError: string | null; onSelectDataset: (d: DatasetRow) => void;
   onClearDataset: () => void;
+  expandedDatasetId: string | null;
+  onToggleDatasetSettings: (datasetId: string) => void;
+  rasterSettingsById: Record<string, RasterDisplaySettings>;
+  onChangeRasterSettings: (datasetId: string, patch: Partial<RasterDisplaySettings>) => void;
   topSeverity: UrbanFeature[]; activeFeatureId: string | null; onSelectFeature: (f: UrbanFeature) => void;
   status: ViewportStatus;
 }) {
-  // Limit to top 5 unique categories for better variety
   const topFeatures = topSeverity.slice(0, 5);
 
   return (
@@ -799,7 +908,7 @@ function CommandCenter({
                     letterSpacing: "0.04em", textTransform: "uppercase",
                   }}
                 >
-                  Show all ✕
+                  Show all
                 </button>
               ) : (
                 <span className="command-center__section-count">{datasets.length}</span>
@@ -807,28 +916,116 @@ function CommandCenter({
             </div>
             {activeDatasetIds.length > 0 && (
               <div style={{ fontSize: 10.5, color: "var(--ink-mute)", margin: "-2px 0 8px" }}>
-                Click a dataset again to deselect it — multiple can be shown together.
+                Click a dataset again to deselect it - multiple can be shown together.
               </div>
             )}
-            {datasets.map((d) => (
-              <div
-                key={d.id}
-                className={`dataset-card${activeDatasetIds.includes(d.id) ? " dataset-card--active" : ""}`}
-                onClick={() => d.status === "ready" && onSelectDataset(d)}
-                data-testid={`map-dataset-${d.id}`}
-              >
-                <div className="dataset-card__icon">
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
-                    <path d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
-                  </svg>
+            {datasets.map((d) => {
+              const isActive = activeDatasetIds.includes(d.id);
+              const hasRasterControls = d.status === "ready" && d.file_type === "geotiff" && Boolean(d.dataset_metadata?.raster_overlay);
+              const canOpenSettings = hasRasterControls && isActive;
+              const isExpanded = canOpenSettings && expandedDatasetId === d.id;
+              const rasterSettings = resolveRasterSettings(rasterSettingsById[d.id]);
+
+              return (
+                <div
+                  key={d.id}
+                  className={`dataset-card-shell${isExpanded ? " dataset-card-shell--expanded" : ""}`}
+                >
+                  <div
+                    className={`dataset-card${isActive ? " dataset-card--active" : ""}${d.status !== "ready" ? " dataset-card--disabled" : ""}`}
+                    onClick={() => d.status === "ready" && onSelectDataset(d)}
+                    data-testid={`map-dataset-${d.id}`}
+                  >
+                    <div className="dataset-card__icon">
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+                        <path d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+                      </svg>
+                    </div>
+                    <div className="dataset-card__info">
+                      <div className="dataset-card__name">{d.name}</div>
+                      <div className="dataset-card__meta">{d.ward ? `Ward ${d.ward}` : "All wards"} - {d.file_type}</div>
+                    </div>
+                    <div className="dataset-card__actions">
+                      {hasRasterControls ? (
+                        <button
+                          type="button"
+                          className={`dataset-card__gear${isExpanded ? " dataset-card__gear--active" : ""}`}
+                          aria-label={`Open display settings for ${d.name}`}
+                          aria-expanded={isExpanded}
+                          disabled={!canOpenSettings}
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            if (!canOpenSettings) return;
+                            onToggleDatasetSettings(d.id);
+                          }}
+                        >
+                          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+                            <circle cx="12" cy="12" r="3" />
+                            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z" />
+                          </svg>
+                        </button>
+                      ) : (
+                        <span className={`dataset-card__status dataset-card__status--${d.status}`}>{d.status}</span>
+                      )}
+                    </div>
+                  </div>
+                  {canOpenSettings && isExpanded && (
+                    <div
+                      className="dataset-card__settings"
+                      onClick={(event) => event.stopPropagation()}
+                    >
+                      <div className="dataset-card__settings-head">
+                        <div>
+                          <div className="dataset-card__settings-title">Display Settings</div>
+                          <div className="dataset-card__settings-copy">
+                            Default preview already looks correct. Use these only when you need a manual adjustment.
+                          </div>
+                        </div>
+                        <button
+                          type="button"
+                          className="dataset-card__reset"
+                          onClick={() => onChangeRasterSettings(d.id, DEFAULT_RASTER_SETTINGS)}
+                        >
+                          Reset
+                        </button>
+                      </div>
+                      <div className="dataset-card__settings-group">
+                        <div className="dataset-card__settings-label">Color Type</div>
+                        <div className="dataset-card__mode-row">
+                          {COLOR_MODE_OPTIONS.map((option) => (
+                            <button
+                              key={option.value}
+                              type="button"
+                              className={`dataset-card__mode-btn${rasterSettings.colorMode === option.value ? " dataset-card__mode-btn--active" : ""}`}
+                              onClick={() => onChangeRasterSettings(d.id, { colorMode: option.value })}
+                            >
+                            {option.label}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                      <div className="dataset-card__settings-group">
+                        <div className="dataset-card__slider-head">
+                          <span className="dataset-card__settings-label">Edge Clarity</span>
+                          <span className="dataset-card__slider-value">
+                            {rasterSettings.clarity.toFixed(2)}
+                          </span>
+                        </div>
+                        <input
+                          className="dataset-card__slider"
+                          type="range"
+                          min="0"
+                          max="2"
+                          step="0.05"
+                          value={rasterSettings.clarity}
+                          onChange={(event) => onChangeRasterSettings(d.id, { clarity: Number(event.target.value) })}
+                        />
+                      </div>
+                    </div>
+                  )}
                 </div>
-                <div className="dataset-card__info">
-                  <div className="dataset-card__name">{d.name}</div>
-                  <div className="dataset-card__meta">{d.ward ? `Ward ${d.ward}` : "All wards"} · {d.file_type}</div>
-                </div>
-                <span className={`dataset-card__badge dataset-card__badge--${d.status}`}>{d.status}</span>
-              </div>
-            ))}
+              );
+            })}
             {flyError && <div style={{ marginTop: 8, padding: "8px 10px", background: "var(--danger-muted)", borderRadius: "var(--radius-sm)", color: "var(--danger)", fontSize: 11 }}>{flyError}</div>}
           </div>
         )}
@@ -887,12 +1084,11 @@ function CommandCenter({
     </aside>
   );
 }
-
 function MapControls({ basemap, onChangeBasemap, status }: { basemap: Basemap; onChangeBasemap: (b: Basemap) => void; status: ViewportStatus }) {
   return (
     <>
       <div className="feature-count" data-testid="viewport-status">
-        {status.loading ? "loading…" : `${status.count} features`}
+        {status.loading ? "loading..." : `${status.count} features`}
       </div>
       <div className="map-controls">
         <div className="map-controls__group" data-testid="basemap-toggle">
@@ -932,15 +1128,15 @@ function MapControls({ basemap, onChangeBasemap, status }: { basemap: Basemap; o
 }
 
 function formatAttrValue(v: unknown): string {
-  if (v === null || v === undefined || v === "") return "—";
+  if (v === null || v === undefined || v === "") return "-";
   if (typeof v === "object") return JSON.stringify(v);
   return String(v);
 }
 
 function HoverTooltip({ hover }: { hover: HoverInfo | null }) {
   if (!hover) return null;
-  // Only show attributes that actually have a value — most survey rows
-  // leave many condition/status fields blank, and a tooltip full of "—"
+  // Only show attributes that actually have a value Ã¢â‚¬â€ most survey rows
+  // leave many condition/status fields blank, and a tooltip full of "Ã¢â‚¬â€"
   // placeholders is noise, not information.
   const isPhoto = hover.category === "site_photo";
   const isPanorama = isPhoto && hover.attributes.is_360 === true;
