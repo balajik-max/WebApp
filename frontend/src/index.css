@@ -1019,11 +1019,17 @@ body {
 }
 
 .dataset-card:hover {
-  border-color: var(--accent);
-  background: var(--accent-muted);
+  border-color: var(--edge-strong);
+  background: var(--surface-3);
 }
 
 .dataset-card--active {
+  border-color: var(--accent);
+  background: var(--accent-muted);
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+
+.dataset-card--active:hover {
   border-color: var(--accent);
   background: var(--accent-muted);
 }
