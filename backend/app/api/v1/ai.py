@@ -23,6 +23,7 @@ from app.schemas.ai import (
     NLQueryRequest,
     RecommendRequest,
     ReportRequest,
+    SpacingRequest,
 )
 from app.services.ai import (
     AI_DISCLAIMER,
@@ -30,9 +31,11 @@ from app.services.ai import (
     run_grounded_completion,
 )
 from app.services.ai_context import (
+    ProximityFacts,
     ReportFacts,
     build_dataset_or_ward_context,
     build_feature_ids_context,
+    build_proximity_facts,
     build_recommend_context,
     build_report_facts,
 )
@@ -233,6 +236,7 @@ async def query(body: NLQueryRequest, db: AsyncSession = Depends(get_db)) -> AiA
             db,
             dataset_id=body.dataset_id,
             ward=body.ward,
+            category=body.category,
             max_features=body.max_features,
         )
     else:
@@ -334,4 +338,165 @@ async def recommend(body: RecommendRequest, db: AsyncSession = Depends(get_db)) 
         generated_at=datetime.now(timezone.utc),
         disclaimer=AI_DISCLAIMER,
         debug=ctx.debug,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Spacing / redundancy facts rendering — same rule as the report: every
+# distance and count below comes straight from `build_proximity_facts`
+# (a real PostGIS geography self-join), never from the LLM.
+# ---------------------------------------------------------------------------
+def _render_spacing_markdown(facts: ProximityFacts) -> str:
+    lines: list[str] = []
+    lines.append(
+        f"## Spacing Check — {facts.category} in {facts.scope_label}"
+    )
+    lines.append(
+        f"**{facts.total_in_scope}** `{facts.category}` feature(s) in scope, checked pairwise "
+        f"for anything closer than **{facts.threshold_m:.0f} m**."
+    )
+    lines.append("")
+
+    if not facts.pairs:
+        lines.append(f"No two `{facts.category}` features are within {facts.threshold_m:.0f} m of each other.")
+        return "\n".join(lines)
+
+    lines.append(
+        f"Found **{len(facts.pairs)} pair(s)** within range, forming "
+        f"**{len(facts.cluster_sizes)} cluster(s)** covering **{facts.clustered_feature_count}** "
+        f"of the {facts.total_in_scope} features."
+    )
+    lines.append(
+        f"AI recommendation overlay: **{len(facts.redundant_feature_ids)} red** "
+        f"(very close duplicate removal-review) and **{len(facts.needed_locations)} green** "
+        f"(proposed missing/service-gap locations). The red decision used a conservative duplicate "
+        f"rule inside a **{facts.local_graph_threshold_m:.1f} m** local review graph, while this report "
+        f"still searched up to **{facts.threshold_m:.0f} m**."
+    )
+    lines.append("")
+    lines.append("| Feature A | Feature B | Distance |")
+    lines.append("|---|---|---|")
+    shown = facts.pairs[:20]
+    for p in shown:
+        lines.append(f"| {p.label_a} | {p.label_b} | {p.distance_m:.1f} m |")
+    if len(facts.pairs) > len(shown):
+        lines.append(f"| …and {len(facts.pairs) - len(shown)} more pairs | | |")
+
+    return "\n".join(lines)
+
+
+def _spacing_crib_sheet(facts: ProximityFacts) -> str:
+    pair_lines = "\n".join(
+        f"  - {p.label_a} <-> {p.label_b}: {p.distance_m:.1f} m apart" for p in facts.pairs[:15]
+    ) or "  - none"
+    return (
+        f"CATEGORY: {facts.category}\n"
+        f"SCOPE: {facts.scope_label}\n"
+        f"THRESHOLD_M: {facts.threshold_m:.0f}\n"
+        f"TOTAL_IN_SCOPE: {facts.total_in_scope}\n"
+        f"PAIRS_WITHIN_THRESHOLD: {len(facts.pairs)}\n"
+        f"CLUSTER_SIZES (a cluster is a group of features each within threshold of another in the group): "
+        f"{facts.cluster_sizes}\n"
+        f"CLUSTERED_FEATURE_COUNT: {facts.clustered_feature_count}\n"
+        f"LOCAL_GRAPH_THRESHOLD_M_FOR_RED_GREEN: {facts.local_graph_threshold_m:.1f}\n"
+        f"MAX_REMOVAL_GAP_M: {facts.max_removal_gap_m:.1f}\n"
+        f"AI_RED_RECOMMENDED_REMOVAL_COUNT: {len(facts.redundant_feature_ids)}\n"
+        f"AI_GREEN_PROPOSED_SERVICE_GAP_COUNT: {len(facts.needed_locations)}\n"
+        f"CLOSEST_PAIRS (real measured distances — never alter or invent a distance):\n{pair_lines}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# POST /api/v1/ai/spacing
+# ---------------------------------------------------------------------------
+@router.post(
+    "/spacing",
+    response_model=AiAnswer,
+    dependencies=[Depends(require_any)],
+    summary="Detect features of one category placed unusually close together (e.g. redundant poles)",
+)
+async def spacing(body: SpacingRequest, db: AsyncSession = Depends(get_db)) -> AiAnswer:
+    if body.dataset_id is None and body.ward is None:
+        raise HTTPException(status_code=400, detail="Provide either dataset_id or ward")
+
+    from app.core.config import get_settings
+    model = get_settings().ollama_model
+
+    facts = await build_proximity_facts(
+        db,
+        dataset_id=body.dataset_id,
+        ward=body.ward,
+        category=body.category,
+        threshold_m=body.distance_m,
+    )
+    if facts is None:
+        return _insufficient(
+            "spacing", model, {"reason": "no features of that category in scope"}
+        )
+
+    facts_markdown = _render_spacing_markdown(facts)
+
+    if not facts.pairs:
+        # Nothing to analyze — every real number is already stated above,
+        # no ambiguity for a model to narrate around, so skip the LLM call.
+        return AiAnswer(
+            kind="spacing",
+            model=model,
+            prompt_tokens_hint=0,
+            context_rows=facts.total_in_scope,
+            grounded=True,
+            answer_markdown=facts_markdown,
+            generated_at=datetime.now(timezone.utc),
+            debug={"scope": facts.scope_label, "pairs": 0,
+               "median_nn_m": round(facts.local_graph_threshold_m / 1.5, 1) if facts.local_graph_threshold_m else 0,
+               "local_threshold_m": round(facts.local_graph_threshold_m, 1),
+               "redundant": len(facts.redundant_feature_ids),
+               "critical": len(facts.needed_locations)},
+            redundant_feature_ids=facts.redundant_feature_ids,
+            needed_feature_ids=facts.needed_feature_ids,
+            needed_locations=[{"id": loc.id, "lon": loc.lon, "lat": loc.lat, "reason": loc.reason} for loc in facts.needed_locations],
+        )
+
+    crib = _spacing_crib_sheet(facts)
+    narrative_prompt = (
+        "The FACTS below are real, pre-computed distances between "
+        f"`{body.category}` features that are closer together than "
+        f"{body.distance_m:.0f} m. The red/green recommendation counts are "
+        "computed separately from conservative duplicate/service-gap rules, "
+        "not from the full report threshold. Using ONLY the FACTS, write a "
+        "short markdown section:\n\n"
+        "`## Assessment` — 2-4 sentences on whether the clustering looks "
+        "like genuine redundancy worth consolidating, citing the real "
+        "cluster sizes, distances, and red/green recommendation counts "
+        "from FACTS.\n\n"
+        "`## Recommendation` — a short numbered list of concrete next "
+        "steps (e.g. field-verify before removal, check for a physical "
+        "reason like a road crossing or a junction).\n\n"
+        "CRITICAL RULE: never state a distance, count, or feature name "
+        "that is not written verbatim in FACTS below.\n\n"
+        f"FACTS:\n{crib}"
+    )
+    reply = await run_grounded_completion(
+        context=crib,
+        user_prompt=narrative_prompt,
+        num_predict=500,
+        num_ctx=2048,
+    )
+
+    return AiAnswer(
+        kind="spacing",
+        model=reply.model,
+        prompt_tokens_hint=reply.prompt_tokens_hint,
+        context_rows=facts.total_in_scope,
+        grounded=True,
+        answer_markdown=f"{facts_markdown}\n\n{reply.text}",
+        generated_at=datetime.now(timezone.utc),
+        debug={"scope": facts.scope_label, "pairs": len(facts.pairs),
+               "median_nn_m": round(facts.local_graph_threshold_m / 1.5, 1) if facts.local_graph_threshold_m else 0,
+               "local_threshold_m": round(facts.local_graph_threshold_m, 1),
+               "redundant": len(facts.redundant_feature_ids),
+               "critical": len(facts.needed_locations)},
+        redundant_feature_ids=facts.redundant_feature_ids,
+        needed_feature_ids=facts.needed_feature_ids,
+            needed_locations=[{"id": loc.id, "lon": loc.lon, "lat": loc.lat, "reason": loc.reason} for loc in facts.needed_locations],
     )

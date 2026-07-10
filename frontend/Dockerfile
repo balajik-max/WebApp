@@ -8,6 +8,8 @@ RUN corepack enable && yarn install --frozen-lockfile 2>/dev/null || yarn instal
 FROM node:22-alpine AS build
 WORKDIR /app
 ENV NODE_ENV=production
+ARG VITE_API_BASE_URL
+ENV VITE_API_BASE_URL=$VITE_API_BASE_URL
 COPY --from=deps /app/node_modules /app/node_modules
 COPY . /app
 RUN yarn build

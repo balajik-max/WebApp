@@ -3,10 +3,11 @@ import maplibregl, { Map as MLMap, MapMouseEvent, GeoJSONSource } from "maplibre
 import "maplibre-gl/dist/maplibre-gl.css";
 
 import { fetchFeaturesInViewport } from "../lib/features";
-import type { FeatureFilter, UrbanFeature, FeatureCollectionResponse } from "../lib/types";
+import type { AiHighlight, FeatureFilter, UrbanFeature, FeatureCollectionResponse } from "../lib/types";
 import { ApiError } from "../lib/api";
 import { colorForCategory, UNCATEGORIZED_COLOR } from "../lib/categoryColors";
 import { fetchDatasets, fetchDatasetBounds, type DatasetRow } from "../lib/workflow";
+import { PanoramaViewer } from "./PanoramaViewer";
 
 interface Props {
   filter: FeatureFilter;
@@ -18,6 +19,9 @@ interface Props {
    * being unmounted/remounted on tab navigation) — seeds the initial
    * selection and is re-applied once the map and dataset list are ready. */
   initialActiveDatasets?: DatasetRow[];
+  /** AI-produced highlight overrides — redundant poles show red,
+   * needed poles show green. Empty array clears the overlay. */
+  aiHighlights?: AiHighlight[];
 }
 
 const DAVANGERE_CENTER: [number, number] = [75.9218, 14.4644];
@@ -72,6 +76,98 @@ const LAYER_POINTS = "urban-features-points";
 const LAYER_LINES = "urban-features-lines";
 const LAYER_POLY_FILL = "urban-features-poly-fill";
 const LAYER_POLY_OUTLINE = "urban-features-poly-outline";
+const LAYER_PHOTOS = "urban-features-photos";
+const PHOTO_ICON_ID = "site-photo-icon";
+
+// Separate GeoJSON source + layers for AI highlight overlays so they sit
+// on top of the normal feature layers without touching the original data.
+const AI_HIGHLIGHT_SOURCE = "ai-highlight";
+const LAYER_AI_REDUNDANT = "ai-highlight-redundant";
+const LAYER_AI_NEEDED = "ai-highlight-needed";
+
+const AI_REDUNDANT_COLOR = "#ef4444"; // red
+const AI_NEEDED_COLOR = "#22c55e";    // green
+
+function roundRectPath(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, r: number): void {
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.arcTo(x + w, y, x + w, y + h, r);
+  ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r);
+  ctx.arcTo(x, y, x + w, y, r);
+  ctx.closePath();
+}
+
+/** Draws a standard map-pin marker (teardrop + circular badge + camera
+ * glyph) at high resolution and returns raw pixel data — the same visual
+ * pattern mapping apps use for photo locations (Google Maps, Mapillary,
+ * etc.), rendered crisp rather than the small hand-drawn glyph this
+ * replaced, which looked muddy at map scale. */
+function buildPhotoIconImageData(): ImageData {
+  const w = 96, h = 120;
+  const canvas = document.createElement("canvas");
+  canvas.width = w;
+  canvas.height = h;
+  const ctx = canvas.getContext("2d")!;
+
+  const pinColor = "#f2b134";
+  const strokeColor = "#20140a";
+  const cx = w / 2;
+  const r = 38;
+  const cy = r + 10;
+
+  // Tail (drawn first so the badge circle cleanly covers the seam where
+  // the triangle meets the circle).
+  const spread = (30 * Math.PI) / 180;
+  const leftX = cx - r * Math.sin(spread);
+  const rightX = cx + r * Math.sin(spread);
+  const baseY = cy + r * Math.cos(spread);
+  ctx.beginPath();
+  ctx.moveTo(leftX, baseY);
+  ctx.lineTo(cx, h - 4);
+  ctx.lineTo(rightX, baseY);
+  ctx.closePath();
+  ctx.fillStyle = pinColor;
+  ctx.fill();
+  ctx.strokeStyle = strokeColor;
+  ctx.lineWidth = 4;
+  ctx.lineJoin = "round";
+  ctx.stroke();
+
+  // Circular badge
+  ctx.beginPath();
+  ctx.arc(cx, cy, r, 0, Math.PI * 2);
+  ctx.fillStyle = pinColor;
+  ctx.fill();
+  ctx.lineWidth = 4;
+  ctx.strokeStyle = strokeColor;
+  ctx.stroke();
+
+  // White disc the camera glyph sits on, for contrast against the badge color.
+  ctx.beginPath();
+  ctx.arc(cx, cy, r - 9, 0, Math.PI * 2);
+  ctx.fillStyle = "#ffffff";
+  ctx.fill();
+
+  // Camera glyph
+  ctx.fillStyle = strokeColor;
+  const camW = 34, camH = 22;
+  const camX = cx - camW / 2, camY = cy - camH / 2 + 3;
+  roundRectPath(ctx, camX, camY, camW, camH, 4);
+  ctx.fill();
+  roundRectPath(ctx, cx - 8, camY - 7, 16, 8, 2.5);
+  ctx.fill();
+  ctx.beginPath();
+  ctx.arc(cx, cy + 3, 8, 0, Math.PI * 2);
+  ctx.fillStyle = "#ffffff";
+  ctx.fill();
+  ctx.beginPath();
+  ctx.arc(cx, cy + 3, 4, 0, Math.PI * 2);
+  ctx.fillStyle = strokeColor;
+  ctx.fill();
+
+  return ctx.getImageData(0, 0, w, h);
+}
 
 function decodeFeature(raw: {
   id?: string | number;
@@ -136,11 +232,12 @@ interface HoverInfo {
   severity: number;
   color: string;
   attributes: Record<string, unknown>;
+  aiStatus?: "redundant" | "needed";
 }
 export interface MapCanvasHandle { clearDatasets: () => void; }
 
 export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
-  { filter, onFeatureSelect, onActiveDatasetsChange, initialActiveDatasets },
+  { filter, onFeatureSelect, onActiveDatasetsChange, initialActiveDatasets, aiHighlights },
   ref
 ) {
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -153,6 +250,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
   const [legend, setLegend] = useState<LegendEntry[]>([]);
   const [basemap, setBasemap] = useState<Basemap>("street");
   const [hover, setHover] = useState<HoverInfo | null>(null);
+  const [photoViewer, setPhotoViewer] = useState<{ url: string; label: string; isPanorama: boolean } | null>(null);
   const [datasets, setDatasets] = useState<DatasetRow[]>([]);
   // More than one entry lets two or more datasets be shown together (e.g. a
   // raster orthophoto plus its companion GDB vector layer over the same area).
@@ -166,6 +264,98 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
   const [topSeverity, setTopSeverity] = useState<UrbanFeature[]>([]);
   const [activeFeatureId, setActiveFeatureId] = useState<string | null>(null);
   const [mapReady, setMapReady] = useState(false);
+
+  // Keep a fast lookup: featureId → "redundant" | "needed" for tooltip + hover
+  const aiStatusRef = useRef<Map<string, "redundant" | "needed">>(new Map());
+  const aiCoordinateHighlightsRef = useRef<AiHighlight[]>([]);
+  // Cache of featureId → [lon, lat] populated whenever features are loaded
+  const featureCoordsRef = useRef<Map<string, [number, number]>>(new Map());
+
+  /** Push the current aiStatusRef contents into the AI highlight GeoJSON source.
+   * Called both from the aiHighlights useEffect and from applyFeatureCollection
+   * so the overlay is always up-to-date regardless of which arrives first. */
+  const flushAiHighlightSource = useCallback(() => {
+    const map = mapRef.current;
+    if (!map || !map.isStyleLoaded()) return;
+    const src = map.getSource(AI_HIGHLIGHT_SOURCE) as GeoJSONSource | undefined;
+    if (!src) return;
+    const feats: GeoJSON.Feature[] = [];
+    aiStatusRef.current.forEach((status, featureId) => {
+      const coords = featureCoordsRef.current.get(featureId);
+      if (coords) {
+        feats.push({
+          type: "Feature",
+          id: featureId,
+          geometry: { type: "Point", coordinates: coords },
+          properties: { id: featureId, ai_status: status },
+        });
+      }
+    });
+    for (const h of aiCoordinateHighlightsRef.current) {
+      if (h.coordinates) {
+        feats.push({
+          type: "Feature",
+          id: h.featureId ?? `${h.status}-${h.coordinates.join(",")}`,
+          geometry: { type: "Point", coordinates: h.coordinates },
+          properties: { id: h.featureId ?? "proposed", ai_status: h.status, reason: h.reason ?? "Proposed service-gap pole" },
+        });
+      }
+    }
+    src.setData({ type: "FeatureCollection", features: feats });
+  }, []);
+
+  // Sync AI highlights → aiStatusRef and then flush to the map source.
+  // Also fetches missing coordinates directly from the API so the overlay
+  // works even before a full viewport fetch has populated featureCoordsRef.
+  useEffect(() => {
+    if (!mapReady) return;
+
+    const lookup = new Map<string, "redundant" | "needed">();
+    const coordinateHighlights: AiHighlight[] = [];
+    for (const h of aiHighlights ?? []) {
+      if (h.coordinates) coordinateHighlights.push(h);
+      else if (h.featureId) lookup.set(h.featureId, h.status);
+    }
+    aiStatusRef.current = lookup;
+    aiCoordinateHighlightsRef.current = coordinateHighlights;
+
+    if (lookup.size === 0 && coordinateHighlights.length === 0) {
+      flushAiHighlightSource();
+      return;
+    }
+
+    // Collect IDs whose coords we don't have cached yet
+    const missing = [...lookup.keys()].filter(
+      (id) => !featureCoordsRef.current.has(id)
+    );
+
+    if (missing.length === 0) {
+      // All coords already in cache — paint immediately
+      flushAiHighlightSource();
+      return;
+    }
+
+    // Fetch missing coords via the features API (by IDs)
+    const params = new URLSearchParams();
+    for (const id of missing) params.append("id", id);
+    params.set("limit", String(missing.length + 10));
+    fetch(`${API_BASE}/api/v1/features?${params.toString()}`, { credentials: "include" })
+      .then((r) => r.json())
+      .then((fc: { features?: Array<{ id?: string; geometry?: { type: string; coordinates: unknown }; properties?: { id?: string } }> }) => {
+        for (const f of fc.features ?? []) {
+          const fid = String(f.properties?.id ?? f.id ?? "");
+          if (fid && f.geometry?.type === "Point") {
+            featureCoordsRef.current.set(fid, f.geometry.coordinates as [number, number]);
+          }
+        }
+        flushAiHighlightSource();
+      })
+      .catch(() => {
+        // Best-effort: flush whatever we have from cache
+        flushAiHighlightSource();
+      });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [aiHighlights, mapReady, flushAiHighlightSource]);
 
   useEffect(() => {
     const ctrl = new AbortController();
@@ -189,11 +379,24 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     const src = map.getSource(FEATURE_SOURCE) as GeoJSONSource | undefined;
     if (src) src.setData(data as unknown as GeoJSON.FeatureCollection);
 
+    // Cache coordinates for every Point feature so the AI highlight layer
+    // can place its circles correctly even when highlights arrive after load.
+    for (const f of data.features as unknown as GeoJSON.Feature[]) {
+      if (f.geometry.type === "Point") {
+        const fid = String((f.properties as Record<string, unknown>)?.id ?? f.id ?? "");
+        if (fid) featureCoordsRef.current.set(fid, f.geometry.coordinates as [number, number]);
+      }
+    }
+
+    // If AI highlights are active, refresh the overlay with the newly cached coords.
+    // This handles the case where the spacing check ran before features were loaded.
+    if (aiStatusRef.current.size > 0) flushAiHighlightSource();
+
     const colorMap = colorByCategoryRef.current;
     const counts = new Map<string, number>();
     for (const f of data.features as unknown as GeoJSON.Feature[]) {
       const raw = (f.properties as { category?: string | null } | null)?.category;
-      if (raw === "raster_pixel") continue; // internal sample grid — already visualized as the raster image itself
+      if (raw === "raster_pixel") continue;
       const category = raw && raw.trim() !== "" ? raw : "uncategorized";
       if (!colorMap.has(category)) colorMap.set(category, colorForCategory(category));
       counts.set(category, (counts.get(category) ?? 0) + 1);
@@ -216,7 +419,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
       .sort((a, b) => b.properties.severity - a.properties.severity)
       .slice(0, 8);
     setTopSeverity(ranked);
-  }, []);
+  }, [flushAiHighlightSource]);
 
   const selectFeature = useCallback((feature: UrbanFeature) => {
     const map = mapRef.current;
@@ -410,19 +613,104 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
         // grid (kept for the feature table / severity / AI summary) — the
         // actual image overlay already shows the raster visually, so the
         // grid of dots on top of it would just be redundant clutter.
-        filter: ["all", ["in", ["geometry-type"], ["literal", ["Point", "MultiPoint"]]], ["!=", ["get", "category"], "raster_pixel"]],
+        // site_photo features get their own camera-icon symbol layer below
+        // instead of a plain dot.
+        filter: [
+          "all",
+          ["in", ["geometry-type"], ["literal", ["Point", "MultiPoint"]]],
+          ["!=", ["get", "category"], "raster_pixel"],
+          ["!=", ["get", "category"], "site_photo"],
+        ],
         paint: { "circle-radius": ["interpolate", ["linear"], ["zoom"], 8, 3, 12, 6, 16, 10], "circle-color": ["interpolate", ["linear"], ["coalesce", ["get", "severity"], 0], 0, "#3aa1ff", 0.5, "#f5c542", 1, "#ff5a3d"], "circle-stroke-color": "#0b1013", "circle-stroke-width": 1.5, "circle-opacity": 0.9 },
       });
 
-      const CLICKABLE = [LAYER_POINTS, LAYER_LINES, LAYER_POLY_FILL];
-      const handleClick = (e: MapMouseEvent) => { const hit = map.queryRenderedFeatures(e.point, { layers: CLICKABLE }); if (!hit.length) return; const selected = decodeFeature(hit[0]); setActiveFeatureId(selected.properties.id); onFeatureSelect(selected); };
-      const handleHover = (e: MapMouseEvent) => {
-        const hit = map.queryRenderedFeatures(e.point, { layers: CLICKABLE });
+      if (!map.hasImage(PHOTO_ICON_ID)) {
+        map.addImage(PHOTO_ICON_ID, buildPhotoIconImageData(), { pixelRatio: 2 });
+      }
+      map.addLayer({
+        id: LAYER_PHOTOS,
+        type: "symbol",
+        source: FEATURE_SOURCE,
+        filter: ["==", ["get", "category"], "site_photo"],
+        layout: {
+          "icon-image": PHOTO_ICON_ID,
+          "icon-size": ["interpolate", ["linear"], ["zoom"], 8, 0.35, 16, 0.65],
+          "icon-anchor": "bottom",
+          "icon-allow-overlap": true,
+        },
+      });
+
+      const BASE_CLICKABLE = [LAYER_POINTS, LAYER_LINES, LAYER_POLY_FILL, LAYER_PHOTOS];
+      void runFetch();
+
+      // AI highlight overlay — separate GeoJSON source so it never
+      // interferes with the normal feature source or its colour expressions.
+      map.addSource(AI_HIGHLIGHT_SOURCE, {
+        type: "geojson",
+        data: { type: "FeatureCollection", features: [] },
+      });
+      // Proposed missing/service-gap poles - green circle
+      map.addLayer({
+        id: LAYER_AI_NEEDED,
+        type: "circle",
+        source: AI_HIGHLIGHT_SOURCE,
+        filter: ["==", ["get", "ai_status"], "needed"],
+        paint: {
+          "circle-radius": ["interpolate", ["linear"], ["zoom"], 8, 5, 12, 9, 16, 14],
+          "circle-color": AI_NEEDED_COLOR,
+          "circle-opacity": 0.92,
+          "circle-stroke-color": "#065f46",
+          "circle-stroke-width": 2,
+        },
+      });
+      // Redundant poles — red circle on top of normal circle
+      map.addLayer({
+        id: LAYER_AI_REDUNDANT,
+        type: "circle",
+        source: AI_HIGHLIGHT_SOURCE,
+        filter: ["==", ["get", "ai_status"], "redundant"],
+        paint: {
+          "circle-radius": ["interpolate", ["linear"], ["zoom"], 8, 5, 12, 9, 16, 14],
+          "circle-color": AI_REDUNDANT_COLOR,
+          "circle-opacity": 0.92,
+          "circle-stroke-color": "#ffffff",
+          "circle-stroke-width": 2,
+        },
+      });
+
+      // Single set of event handlers on ALL_CLICKABLE (base + AI layers).
+      // Registered AFTER AI layers are added so MapLibre binds them correctly.
+      // Using one handler set avoids double-fire when AI circles overlap base features.
+      const AI_CLICKABLE = [LAYER_AI_NEEDED, LAYER_AI_REDUNDANT];
+      const ALL_CLICKABLE = [...BASE_CLICKABLE, ...AI_CLICKABLE];
+      const handleFeatureClick = (e: MapMouseEvent) => {
+        const hit = map.queryRenderedFeatures(e.point, { layers: ALL_CLICKABLE });
+        if (!hit.length) return;
+        const isAi = AI_CLICKABLE.includes(hit[0].layer?.id as string);
+        const base = isAi ? hit.find((f) => BASE_CLICKABLE.includes(f.layer?.id as string)) : hit[0];
+        const selected = decodeFeature(base ?? hit[0]);
+        setActiveFeatureId(selected.properties.id);
+        if (selected.properties.category === "site_photo") {
+          setPhotoViewer({
+            url: `${API_BASE}/api/v1/features/${selected.properties.id}/photo`,
+            label: selected.properties.label || "Site photo",
+            isPanorama: selected.properties.attributes?.is_360 === true,
+          });
+          return;
+        }
+        onFeatureSelect(selected);
+      };
+      const handleFeatureHover = (e: MapMouseEvent) => {
+        const hit = map.queryRenderedFeatures(e.point, { layers: ALL_CLICKABLE });
         if (!hit.length) { setHover(null); return; }
-        // Reuse the same decoder as click-select so the tooltip shows the
-        // exact same fully-parsed attributes as the detail panel does.
-        const decoded = decodeFeature(hit[0]);
+        const aiHit = hit.find((f) => AI_CLICKABLE.includes(f.layer?.id as string));
+        const baseHit = hit.find((f) => BASE_CLICKABLE.includes(f.layer?.id as string));
+        const featureToDecode = baseHit ?? aiHit ?? hit[0];
+        const decoded = decodeFeature(featureToDecode);
         const category = decoded.properties.category || "uncategorized";
+        const aiStatus: "redundant" | "needed" | undefined =
+          (aiHit?.properties?.ai_status as "redundant" | "needed" | undefined)
+          ?? aiStatusRef.current.get(decoded.properties.id);
         setHover({
           x: e.point.x,
           y: e.point.y,
@@ -431,10 +719,18 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
           severity: decoded.properties.severity,
           color: colorForCategory(category),
           attributes: decoded.properties.attributes,
+          aiStatus,
         });
       };
-      CLICKABLE.forEach((id) => { map.on("click", id, handleClick); map.on("mouseenter", id, () => (map.getCanvas().style.cursor = "pointer")); map.on("mousemove", id, handleHover); map.on("mouseleave", id, () => { map.getCanvas().style.cursor = ""; setHover(null); }); });
-      void runFetch();
+      ALL_CLICKABLE.forEach((id) => {
+        map.on("click", id, handleFeatureClick);
+        map.on("mouseenter", id, () => (map.getCanvas().style.cursor = "pointer"));
+        map.on("mousemove", id, handleFeatureHover);
+        map.on("mouseleave", id, () => { map.getCanvas().style.cursor = ""; setHover(null); });
+      });
+
+      // setMapReady AFTER the AI source/layers are added so the aiHighlights
+      // useEffect can safely call map.getSource(AI_HIGHLIGHT_SOURCE).
       setMapReady(true);
     });
     map.on("moveend", scheduleFetch);
@@ -461,6 +757,11 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
         <MapLegend entries={legend} />
         <HoverTooltip hover={hover} />
       </div>
+      {photoViewer?.isPanorama ? (
+        <PanoramaViewer url={photoViewer.url} label={photoViewer.label} onClose={() => setPhotoViewer(null)} />
+      ) : (
+        <PhotoViewer photo={photoViewer} onClose={() => setPhotoViewer(null)} />
+      )}
     </>
   );
 });
@@ -641,22 +942,53 @@ function HoverTooltip({ hover }: { hover: HoverInfo | null }) {
   // Only show attributes that actually have a value — most survey rows
   // leave many condition/status fields blank, and a tooltip full of "—"
   // placeholders is noise, not information.
+  const isPhoto = hover.category === "site_photo";
+  const isPanorama = isPhoto && hover.attributes.is_360 === true;
   const attrEntries = Object.entries(hover.attributes).filter(([k, v]) => {
     if (k === "gdb_layer") return false;
+    // Internal plumbing fields, not something a user needs to see in a tooltip.
+    if (isPhoto && (k === "photo_key" || k === "content_type" || k === "is_360")) return false;
     if (v === null || v === undefined) return false;
     if (typeof v === "string" && (v.trim() === "" || v.trim().toLowerCase() === "nan")) return false;
     return true;
   });
+
+  const aiBadge = hover.aiStatus === "redundant"
+    ? { text: "⚠ AI: Recommended for removal", bg: "#ef4444", color: "#fff" }
+    : hover.aiStatus === "needed"
+    ? { text: "✓ AI: Critical — junction / corner / relay", bg: "#22c55e", color: "#fff" }
+    : null;
+
   return (
     <div className="map__tooltip" style={{ left: hover.x + 14, top: hover.y + 14 }} data-testid="map-tooltip">
       <div className="map__tooltip-head">
-        <span className="map__tooltip-swatch" style={{ background: hover.color }} />
+        <span className="map__tooltip-swatch" style={{ background: hover.aiStatus === "redundant" ? "#ef4444" : hover.aiStatus === "needed" ? "#22c55e" : hover.color }} />
         <span className="map__tooltip-name">{hover.label}</span>
       </div>
       <div className="map__tooltip-row">
         <span>{hover.category}</span>
-        <span className="map__tooltip-sev">sev {hover.severity.toFixed(2)}</span>
+        {isPanorama ? (
+          <span className="map__tooltip-sev">🌐 360° — click to view</span>
+        ) : isPhoto ? (
+          <span className="map__tooltip-sev">📷 click to view</span>
+        ) : (
+          <span className="map__tooltip-sev">sev {hover.severity.toFixed(2)}</span>
+        )}
       </div>
+      {aiBadge && (
+        <div style={{
+          margin: "6px 0 2px",
+          padding: "4px 8px",
+          background: aiBadge.bg,
+          color: aiBadge.color,
+          borderRadius: "var(--radius-sm)",
+          fontSize: 10,
+          fontWeight: 700,
+          letterSpacing: "0.04em",
+        }}>
+          {aiBadge.text}
+        </div>
+      )}
       {attrEntries.length > 0 && (
         <div className="map__tooltip-attrs">
           {attrEntries.map(([k, v]) => (
@@ -667,6 +999,41 @@ function HoverTooltip({ hover }: { hover: HoverInfo | null }) {
           ))}
         </div>
       )}
+    </div>
+  );
+}
+
+function PhotoViewer({ photo, onClose }: { photo: { url: string; label: string } | null; onClose: () => void }) {
+  if (!photo) return null;
+  return (
+    <div
+      style={{
+        position: "fixed", inset: 0, zIndex: 1000, background: "rgba(0,0,0,0.82)",
+        display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 16,
+      }}
+      onClick={onClose}
+      data-testid="photo-viewer"
+    >
+      <img
+        src={photo.url}
+        alt={photo.label}
+        style={{ maxWidth: "90vw", maxHeight: "82vh", borderRadius: "var(--radius-md)", boxShadow: "0 20px 60px rgba(0,0,0,0.5)" }}
+        onClick={(e) => e.stopPropagation()}
+      />
+      <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+        <span style={{ color: "#fff", fontSize: 13, fontWeight: 600 }}>{photo.label}</span>
+        <button
+          type="button"
+          onClick={onClose}
+          data-testid="photo-viewer-close"
+          style={{
+            background: "rgba(255,255,255,0.15)", border: "1px solid rgba(255,255,255,0.3)", color: "#fff",
+            borderRadius: "var(--radius-sm)", padding: "4px 12px", fontSize: 12, fontWeight: 600, cursor: "pointer",
+          }}
+        >
+          Close ✕
+        </button>
+      </div>
     </div>
   );
 }

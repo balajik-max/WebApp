@@ -1,5 +1,5 @@
 /** Analytics + workflow API helpers. */
-import { apiDelete, apiGet, apiPost } from "./api";
+import { apiDelete, apiGet, apiPatch, apiPost } from "./api";
 
 export interface StatusBreakdown {
   status: string;
@@ -85,15 +85,7 @@ export function deleteDataset(id: string, signal?: AbortSignal) {
 }
 
 export function updateDataset(id: string, body: { ward?: string | null; description?: string | null }) {
-  return fetch(`${import.meta.env.VITE_API_BASE_URL ?? ""}/api/v1/datasets/${id}`, {
-    method: "PATCH",
-    credentials: "include",
-    headers: { "Content-Type": "application/json", Accept: "application/json" },
-    body: JSON.stringify(body),
-  }).then(async (r) => {
-    if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
-    return (await r.json()) as DatasetRow;
-  });
+  return apiPatch<DatasetRow>(`/api/v1/datasets/${id}`, body);
 }
 
 export interface WardOption {
@@ -230,18 +222,7 @@ export const createReviewForFeature = (featureId: string, body: {
   apiPost<ReviewItem>(`/api/v1/review-items/feature/${featureId}`, body);
 
 export const updateReviewStatus = (reviewId: string, status: ReviewStatus) =>
-  fetch(
-    `${import.meta.env.VITE_API_BASE_URL ?? ""}/api/v1/review-items/${reviewId}/status`,
-    {
-      method: "PATCH",
-      credentials: "include",
-      headers: { "Content-Type": "application/json", Accept: "application/json" },
-      body: JSON.stringify({ status }),
-    }
-  ).then(async (r) => {
-    if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
-    return (await r.json()) as ReviewItem;
-  });
+  apiPatch<ReviewItem>(`/api/v1/review-items/${reviewId}/status`, { status });
 
 export const listComments = (reviewId: string, signal?: AbortSignal) =>
   apiGet<CommentRow[]>(`/api/v1/review-items/${reviewId}/comments`, signal);

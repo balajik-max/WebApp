@@ -11,6 +11,7 @@
     "lint": "eslint . --ext ts,tsx"
   },
   "dependencies": {
+    "@photo-sphere-viewer/core": "^5.14.3",
     "axios": "^1.7.9",
     "jszip": "^3.10.1",
     "maplibre-gl": "^4.7.1",

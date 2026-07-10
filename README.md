@@ -14,7 +14,7 @@ cloud dependencies, no telemetry**.
 | Database   | PostgreSQL 16 + **PostGIS 3.4** (SRID 4326, GIST + GIN indexes)   |
 | Backend    | FastAPI (async) · SQLAlchemy 2 async · asyncpg · GeoAlchemy2      |
 | Object storage | **MinIO** (S3-compatible) for datasets + revised design files |
-| AI engine  | **Ollama** serving `llama3:8b` (offline after first pull)         |
+| AI engine  | **Ollama** serving `qwen2.5:7b-instruct` (offline after first pull)         |
 | Frontend   | React 18 · TypeScript · Vite · MapLibre GL JS · Recharts          |
 | Auth       | JWT (bcrypt hashes) + httpOnly cookies · roles `admin` \| `architect` |
 | Orchestration | Docker Compose on the `urban_net` bridge network               |
@@ -24,11 +24,11 @@ cloud dependencies, no telemetry**.
 ## 1. Prerequisites
 
 * Docker Engine ≥ 24 with Compose v2
-* 8 GB free RAM (needed for `llama3:8b` + Postgres + MinIO + Vite)
+* 8 GB free RAM (needed for `qwen2.5:7b-instruct` + Postgres + MinIO + Vite)
 * 15 GB free disk (Ollama model + Postgres data + MinIO buckets)
 * An open outbound connection **only for the first-ever run**, to pull:
   * container images (postgis/postgis, minio/minio, ollama/ollama, node, python)
-  * the `llama3:8b` weights (~4.7 GB)
+  * the `qwen2.5:7b-instruct` weights (~4.7 GB)
 
 After the first `docker compose up` completes, everything runs fully offline.
 
@@ -38,7 +38,7 @@ After the first `docker compose up` completes, everything runs fully offline.
 
 ```bash
 git clone <this-repo>
-cd davangere-urban-survey
+cd davangere-urban-survey-platform-main
 
 # 1. Provision your environment
 cp .env.example .env
@@ -54,7 +54,7 @@ docker compose up --build -d
 # 3. Watch the AI engine pull the model on first launch (one-time, ~4.7 GB)
 docker compose logs -f ai_engine
 # You will see:
-#   [ollama-bootstrap] pulling llama3:8b (first-run only)...
+#   [ollama-bootstrap] pulling qwen2.5:7b-instruct (first-run only)...
 #   pulling manifest ...
 #   verifying sha256 digest ...
 #   writing manifest ...
@@ -82,9 +82,9 @@ The bootstrap script pulls automatically, but you can also do it by hand
 at any time:
 
 ```bash
-docker compose exec ai_engine ollama pull llama3:8b
+docker compose exec ai_engine ollama pull qwen2.5:7b-instruct
 # or, to warm the runtime + verify it responds:
-docker compose exec ai_engine ollama run llama3:8b "hello"
+docker compose exec ai_engine ollama run qwen2.5:7b-instruct "hello"
 ```
 
 ---
@@ -99,7 +99,7 @@ Once healthy, the following URLs are live on the host:
 | http://localhost:8001/api/docs   | FastAPI Swagger UI                       |
 | http://localhost:8001/api/health | Backend liveness probe                   |
 | http://localhost:8001/api/ready  | Readiness (verifies PostGIS is reachable)|
-| http://localhost:9001            | MinIO web console                        |
+| http://localhost:9003            | MinIO web console                        |
 | http://localhost:11434/api/tags  | Ollama's own API (advanced)              |
 
 ### Seeded credentials (idempotently created by `entrypoint.sh`)
@@ -224,11 +224,11 @@ curl -b c.txt -X POST $API/api/v1/ai/summarize \
 | Symptom                                             | Fix                                                                                                     |
 |-----------------------------------------------------|---------------------------------------------------------------------------------------------------------|
 | `backend` container restart loop                    | `docker compose logs backend` — usually a missing `.env` key. Every value in `.env.example` is required.|
-| `/api/ai/*` returns 500 with `ollama_error`         | `docker compose exec ai_engine ollama list` — if `llama3:8b` is missing, pull it manually.              |
+| `/api/ai/*` returns 500 with `ollama_error`         | `docker compose exec ai_engine ollama list` — if `qwen2.5:7b-instruct` is missing, pull it manually.              |
 | MinIO console shows no bucket                       | Bucket is created on-demand by the first upload; call `POST /api/v1/datasets/upload` once.              |
 | Postgres reports "extension postgis does not exist" | You are running an image other than `postgis/postgis`. Reset the `postgis_data` volume.                 |
 | Frontend cannot reach backend                       | Confirm `VITE_API_BASE_URL` matches the host-side URL of the backend (default `http://localhost:8001`). |
-| Model download stalls                               | `docker compose exec ai_engine ollama pull llama3:8b` — resumes with an unstable network.               |
+| Model download stalls                               | `docker compose exec ai_engine ollama pull qwen2.5:7b-instruct` — resumes with an unstable network.               |
 
 ---
 
@@ -260,7 +260,7 @@ curl -b c.txt -X POST $API/api/v1/ai/summarize \
 ├── frontend/                    # Vite + TS scaffold (MapCanvas, AnalyticsPanel,
 │                                #   ArchitectWorkspace, AiAssistant)
 └── scripts/
-    └── ollama_bootstrap.sh      # first-boot llama3:8b pull, then `ollama serve`
+    └── ollama_bootstrap.sh      # first-boot qwen2.5:7b-instruct pull, then `ollama serve`
 ```
 
 ---

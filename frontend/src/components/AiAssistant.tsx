@@ -3,14 +3,18 @@ import ReactMarkdown from "react-markdown";
 import {
   aiQuery,
   aiRecommend,
+  aiSpacing,
   type AiAnswer,
   type AiKind,
 } from "../lib/ai";
-import type { FeatureFilter, UrbanFeature } from "../lib/types";
+import type { AiHighlight, FeatureFilter, UrbanFeature } from "../lib/types";
 
 interface Props {
   filter: FeatureFilter;
   selectedFeature: UrbanFeature | null;
+  /** Called whenever a spacing check completes with AI highlight data.
+   * Pass an empty array to clear previous highlights. */
+  onAiHighlights?: (highlights: AiHighlight[]) => void;
 }
 
 interface HistoryEntry {
@@ -26,13 +30,16 @@ interface HistoryEntry {
 
 const uid = () => Math.random().toString(36).slice(2, 10);
 
-export function AiAssistant({ filter, selectedFeature }: Props) {
+export function AiAssistant({ filter, selectedFeature, onAiHighlights }: Props) {
   const [open, setOpen] = useState(false);
   const [question, setQuestion] = useState("");
   const [history, setHistory] = useState<HistoryEntry[]>([]);
   const [pendingKind, setPendingKind] = useState<AiKind | null>(null);
   const [elapsed, setElapsed] = useState(0);
   const timerRef = useRef<number | null>(null);
+
+  const spacingScope = filter.ward || filter.datasetIds?.[0];
+  const canCheckSpacing = Boolean(filter.category && spacingScope);
 
   // Timer for loading state
   useEffect(() => {
@@ -62,6 +69,27 @@ export function AiAssistant({ filter, selectedFeature }: Props) {
       const answer = await invoke();
       const duration = Math.round((Date.now() - startTime) / 1000);
       setHistory((h) => h.map((e) => (e.id === entry.id ? { ...e, answer, loading: false, duration } : e)));
+
+      // Fire highlight callback for spacing results
+      if (kind === "spacing" && onAiHighlights) {
+        const highlights: AiHighlight[] = [
+          ...(answer.redundant_feature_ids ?? []).map((id) => ({
+            featureId: id,
+            status: "redundant" as const,
+          })),
+          ...(answer.needed_feature_ids ?? []).map((id) => ({
+            featureId: id,
+            status: "needed" as const,
+          })),
+          ...(answer.needed_locations ?? []).map((loc) => ({
+            featureId: loc.id,
+            coordinates: [loc.lon, loc.lat] as [number, number],
+            reason: loc.reason,
+            status: "needed" as const,
+          })),
+        ];
+        onAiHighlights(highlights);
+      }
     } catch (e) {
       const message = (e as Error).message;
       const duration = Math.round((Date.now() - startTime) / 1000);
@@ -71,6 +99,10 @@ export function AiAssistant({ filter, selectedFeature }: Props) {
     } finally {
       setPendingKind(null);
     }
+  }
+
+  function clearHighlights() {
+    onAiHighlights?.([]);
   }
 
   function recommendForSelected() {
@@ -104,9 +136,25 @@ export function AiAssistant({ filter, selectedFeature }: Props) {
       aiQuery({
         question: q,
         ward: filter.ward,
-        dataset_id: undefined,
+        category: filter.category,
+        dataset_id: filter.ward ? undefined : filter.datasetIds?.[0],
         feature_ids: selectedFeature ? [selectedFeature.properties.id] : undefined,
       })
+    );
+  }
+
+  function checkSpacing() {
+    if (!filter.category || !spacingScope) return;
+    void run(
+      "spacing",
+      `Check spacing of "${filter.category}"`,
+      () =>
+        aiSpacing({
+          ward: filter.ward,
+          dataset_id: filter.ward ? undefined : filter.datasetIds?.[0],
+          category: filter.category!,
+          distance_m: 200,
+        })
     );
   }
 
@@ -145,6 +193,50 @@ export function AiAssistant({ filter, selectedFeature }: Props) {
             </button>
           </div>
 
+          <div className="ai-panel__quick ai-panel__quick--spacing" data-testid="ai-quick-spacing-row">
+            <button
+              type="button"
+              onClick={checkSpacing}
+              disabled={pendingKind !== null || !canCheckSpacing}
+              data-testid="ai-quick-spacing"
+              title={
+                canCheckSpacing
+                  ? `Analyse ${filter.category} placement — detect redundant poles`
+                  : "Select a ward and a category filter first"
+              }
+            >
+              Check spacing
+            </button>
+          </div>
+          {!canCheckSpacing && (
+            <div className="ai-panel__hint">
+              Set a ward and a category in the topbar filter, then Apply, to check for
+              features placed too close together.
+            </div>
+          )}
+          {/* AI highlight legend — visible after a spacing check produces highlights */}
+          {onAiHighlights && history.some(
+            (h) => h.kind === "spacing" && h.answer &&
+              ((h.answer.redundant_feature_ids?.length ?? 0) + (h.answer.needed_feature_ids?.length ?? 0) + (h.answer.needed_locations?.length ?? 0)) > 0
+          ) && (
+            <div className="ai-highlight-legend">
+              <div className="ai-highlight-legend__title">AI Map Overlay</div>
+              <div className="ai-highlight-legend__items">
+                <span className="ai-highlight-legend__dot ai-highlight-legend__dot--red" />
+                <span>Recommended removal</span>
+                <span className="ai-highlight-legend__dot ai-highlight-legend__dot--green" />
+                <span>Proposed missing/service-gap pole</span>
+              </div>
+              <button
+                type="button"
+                className="ai-highlight-legend__clear"
+                onClick={clearHighlights}
+                title="Remove AI colour overlay from the map"
+              >
+                Clear overlay ✕
+              </button>
+            </div>
+          )}
           <form className="ai-panel__form" onSubmit={askQuestion} data-testid="ai-form">
             <textarea
               data-testid="ai-input"

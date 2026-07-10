@@ -23,10 +23,35 @@ from app.models import (
     Dataset,
     DatasetStatus,
 )
-from app.services.readers import get_reader_for
+from app.services.readers import DatasetReader, GISReader, ImageReader, get_reader_for
 from app.services.storage import download_to_file
 
 log = logging.getLogger("davangere.ingestion")
+
+_IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp"}
+_GIS_EXTS = {".shp", ".dbf", ".shx", ".prj", ".gpkg"}
+
+
+def _pick_zip_reader(local_path: Path) -> DatasetReader:
+    """A `.zip` could be a shapefile/GDB bundle or a batch of geo-tagged
+    photos (a zipped folder of images, or several individually-selected
+    photos zipped client-side) — peek at its real contents instead of
+    assuming, since both share the same extension."""
+    import zipfile
+
+    try:
+        with zipfile.ZipFile(local_path) as zf:
+            names = [n for n in zf.namelist() if not n.endswith("/")]
+    except zipfile.BadZipFile:
+        return GISReader()  # let the existing reader produce its own clear error
+
+    has_gis = any(Path(n).suffix.lower() in _GIS_EXTS or ".gdb/" in n.lower() for n in names)
+    if has_gis:
+        return GISReader()
+    has_images = any(Path(n).suffix.lower() in _IMAGE_EXTS for n in names)
+    if has_images:
+        return ImageReader()
+    return GISReader()
 
 
 async def _set_status(
@@ -105,6 +130,9 @@ async def ingest_dataset(*, dataset_id: uuid.UUID, storage_key: str, filename: s
                     error=f"storage_fetch_error: {exc}",
                 )
                 return
+
+            if local.suffix.lower() == ".zip":
+                reader = _pick_zip_reader(local)
 
             try:
                 result = await reader.read(local, str(dataset_id))

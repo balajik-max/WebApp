@@ -48,3 +48,17 @@ export interface FeatureFilter {
    * (e.g. a raster orthophoto plus its companion GDB vector layer). */
   datasetIds?: string[];
 }
+
+/**
+ * Produced by the AI spacing check. Each entry tells the map to
+ * override the normal category-colour for a specific feature.
+ *
+ * status "redundant" → red  (AI recommends removal)
+ *  * status "needed"    -> green (AI proposes a missing/service-gap location)
+ */
+export interface AiHighlight {
+  featureId?: string;
+  coordinates?: [number, number];
+  reason?: string;
+  status: "redundant" | "needed";
+}
