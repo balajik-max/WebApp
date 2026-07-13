@@ -123,6 +123,7 @@ export function fetchCategories(ward: string | undefined, signal?: AbortSignal) 
 
 export interface FeatureTableRow {
   id: string;
+  fid: string | number;
   label: string | null;
   category: string | null;
   severity: number;
@@ -134,7 +135,15 @@ export interface FeatureTablePage {
   limit: number;
   offset: number;
   columns: string[];
+  populated_column_count: number;
   rows: FeatureTableRow[];
+}
+
+export interface LayerFeatureTableFilter {
+  category: string;
+  datasetIds?: string[];
+  ward?: string;
+  severity?: number;
 }
 
 export function fetchDatasetFeatureTable(
@@ -147,6 +156,24 @@ export function fetchDatasetFeatureTable(
     `/api/v1/datasets/${datasetId}/features?limit=${limit}&offset=${offset}`,
     signal
   );
+}
+
+export function fetchLayerFeatureTable(
+  filter: LayerFeatureTableFilter,
+  limit: number,
+  offset: number,
+  signal?: AbortSignal
+) {
+  const qs = new URLSearchParams({
+    category: filter.category,
+    limit: String(limit),
+    offset: String(offset),
+  });
+  filter.datasetIds?.forEach((id) => qs.append("dataset_id", id));
+  if (filter.ward) qs.set("ward", filter.ward);
+  if (filter.severity !== undefined) qs.set("severity", String(filter.severity));
+
+  return apiGet<FeatureTablePage>(`/api/v1/features/table?${qs.toString()}`, signal);
 }
 
 // ---------------------- reviews / comments / versions ----------------------

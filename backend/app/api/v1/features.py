@@ -44,6 +44,11 @@ from app.models import (
     User,
 )
 from app.schemas.workflow import ActivityOut, FeatureVersionOut
+from app.services.attribute_table import (
+    order_attribute_columns,
+    populated_attribute_column_count,
+    resolve_feature_fid,
+)
 from app.services.storage import ensure_bucket, upload_stream
 
 log = logging.getLogger("davangere.api.features")
@@ -51,6 +56,78 @@ router = APIRouter()
 
 _HARD_ROW_LIMIT = 5000
 _DEFAULT_ROW_LIMIT = 2000
+
+
+@router.get(
+    "/fid-search",
+    dependencies=[Depends(require_any)],
+    summary="Search source FIDs for direct map navigation",
+)
+async def search_feature_fids(
+    q: str = Query(min_length=1, max_length=64),
+    ward: str | None = Query(default=None, max_length=128),
+    dataset_id: list[uuid.UUID] | None = Query(default=None),
+    limit: int = Query(default=20, ge=1, le=50),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """Return lightweight, unambiguous FID matches for the map top bar."""
+    normalized = q.strip()
+    if not normalized:
+        return {"results": []}
+
+    fid_expression = """
+        COALESCE(
+            f.attributes ->> 'FID',
+            f.attributes ->> 'fid',
+            f.attributes ->> 'OBJECTID',
+            f.attributes ->> 'objectid'
+        )
+    """
+    conditions = [f"{fid_expression} ILIKE :pattern"]
+    params: dict[str, Any] = {"pattern": f"%{normalized}%", "exact": normalized, "limit": limit}
+    if ward:
+        conditions.append("d.ward = :ward")
+        params["ward"] = ward
+    if dataset_id:
+        conditions.append("f.dataset_id = ANY(:dataset_ids)")
+        params["dataset_ids"] = dataset_id
+
+    result = await db.execute(
+        text(
+            f"""
+            SELECT
+                f.id::text AS id,
+                f.dataset_id::text AS dataset_id,
+                d.name AS dataset_name,
+                {fid_expression} AS fid,
+                COALESCE(f.category, 'uncategorized') AS category,
+                f.label AS label
+            FROM features f
+            JOIN datasets d ON d.id = f.dataset_id
+            WHERE {' AND '.join(conditions)}
+            ORDER BY
+                CASE WHEN {fid_expression} = :exact THEN 0 ELSE 1 END,
+                length({fid_expression}),
+                {fid_expression},
+                COALESCE(f.category, 'uncategorized')
+            LIMIT :limit
+            """
+        ),
+        params,
+    )
+    return {
+        "results": [
+            {
+                "id": row["id"],
+                "dataset_id": row["dataset_id"],
+                "dataset_name": row["dataset_name"],
+                "fid": row["fid"],
+                "category": row["category"],
+                "label": row["label"],
+            }
+            for row in result.mappings().all()
+        ]
+    }
 
 
 @router.get(
@@ -97,6 +174,152 @@ def _parse_bbox(raw: str) -> tuple[float, float, float, float]:
 
 
 # ---------------------------------------------------------------------------
+# GET /api/v1/features/table
+# ---------------------------------------------------------------------------
+@router.get(
+    "/table",
+    dependencies=[Depends(require_any)],
+    summary="Paginated attribute table for a filtered map layer",
+)
+async def map_layer_attribute_table(
+    category: str = Query(
+        ...,
+        min_length=1,
+        max_length=128,
+        description="The map layer/category whose rows should be returned.",
+    ),
+    dataset_id: list[uuid.UUID] | None = Query(
+        default=None,
+        description="Restrict the table to the selected map datasets. Repeat for multiple datasets.",
+    ),
+    ward: str | None = Query(default=None, max_length=128),
+    severity: float | None = Query(default=None, ge=0, le=1),
+    limit: int = Query(default=100, ge=1, le=1000),
+    offset: int = Query(default=0, ge=0),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """Return raw stored attributes for exactly the layer visible on the map.
+
+    Geometry is deliberately omitted so the table stays lightweight even for
+    complex GDB polygons. Attribute columns are discovered across the entire
+    filtered layer, not only the current page, so they remain stable while
+    the user pages through the readings.
+    """
+    normalized_category = category.strip()
+    if not normalized_category:
+        raise HTTPException(status_code=400, detail="category must not be blank")
+
+    conditions = ["COALESCE(f.category, 'uncategorized') = :category"]
+    params: dict[str, Any] = {
+        "category": normalized_category,
+        "limit": limit,
+        "offset": offset,
+    }
+
+    join_dataset = ward is not None
+    if dataset_id:
+        conditions.append("f.dataset_id = ANY(:dataset_ids)")
+        params["dataset_ids"] = list(dict.fromkeys(dataset_id))
+    if ward is not None:
+        conditions.append("d.ward = :ward")
+        params["ward"] = ward
+    if severity is not None:
+        conditions.append("f.severity >= :severity")
+        params["severity"] = severity
+
+    join_clause = "JOIN datasets d ON d.id = f.dataset_id" if join_dataset else ""
+    where_clause = " AND ".join(conditions)
+
+    total = (
+        await db.execute(
+            text(
+                f"""
+                SELECT COUNT(*)
+                FROM features f
+                {join_clause}
+                WHERE {where_clause}
+                """
+            ),
+            params,
+        )
+    ).scalar_one()
+
+    column_rows = (
+        await db.execute(
+            text(
+                f"""
+                SELECT
+                    keys.attribute_key,
+                    COUNT(*) FILTER (
+                        WHERE keys.attribute_value NOT IN (
+                            'null'::jsonb, '""'::jsonb, '[]'::jsonb, '{{}}'::jsonb
+                        )
+                    ) AS populated_count
+                FROM features f
+                {join_clause}
+                CROSS JOIN LATERAL jsonb_each(
+                    COALESCE(f.attributes, '{{}}'::jsonb)
+                ) AS keys(attribute_key, attribute_value)
+                WHERE {where_clause}
+                GROUP BY keys.attribute_key
+                """
+            ),
+            params,
+        )
+    ).all()
+
+    rows = (
+        await db.execute(
+            text(
+                f"""
+                WITH ranked_features AS (
+                    SELECT
+                        source_feature.*,
+                        ROW_NUMBER() OVER (
+                            PARTITION BY source_feature.dataset_id
+                            ORDER BY source_feature.created_at, source_feature.id
+                        ) AS generated_fid
+                    FROM features source_feature
+                )
+                SELECT
+                    f.id::text AS id,
+                    f.label AS label,
+                    f.category AS category,
+                    f.severity AS severity,
+                    f.attributes AS attributes,
+                    f.generated_fid AS generated_fid
+                FROM ranked_features f
+                {join_clause}
+                WHERE {where_clause}
+                ORDER BY f.dataset_id, f.generated_fid
+                LIMIT :limit OFFSET :offset
+                """
+            ),
+            params,
+        )
+    ).mappings().all()
+
+    return {
+        "total": int(total),
+        "limit": limit,
+        "offset": offset,
+        "columns": order_attribute_columns(column_rows),
+        "populated_column_count": populated_attribute_column_count(column_rows),
+        "rows": [
+            {
+                "id": row["id"],
+                "fid": resolve_feature_fid(row["attributes"], int(row["generated_fid"])),
+                "label": row["label"],
+                "category": row["category"],
+                "severity": row["severity"],
+                "attributes": row["attributes"] or {},
+            }
+            for row in rows
+        ],
+    }
+
+
+# ---------------------------------------------------------------------------
 # GET /api/v1/features
 # ---------------------------------------------------------------------------
 @router.get(
@@ -107,7 +330,10 @@ def _parse_bbox(raw: str) -> tuple[float, float, float, float]:
 async def list_features_in_viewport(
     bbox: str | None = Query(default=None, description="minLon,minLat,maxLon,maxLat (WGS84)"),
     ward: str | None = Query(default=None, max_length=128),
-    category: str | None = Query(default=None, max_length=128),
+    category: list[str] | None = Query(
+        default=None,
+        description="Restrict to one or more categories. Repeat the parameter for multiple values.",
+    ),
     severity: int | None = Query(default=None, description="Minimum severity threshold"),
     dataset_id: list[uuid.UUID] | None = Query(
         default=None,
@@ -190,9 +416,13 @@ async def list_features_in_viewport(
     if ward is not None:
         conditions.append("d.ward = :ward")
         params["ward"] = ward
-    if category is not None:
-        conditions.append("f.category = :category")
-        params["category"] = category
+    if category:
+        if any(len(value) > 128 for value in category):
+            raise HTTPException(status_code=400, detail="category values must be at most 128 characters")
+        # The category dropdown exposes NULL rows as "uncategorized", so use
+        # the same coalescing here to make that option filter correctly.
+        conditions.append("COALESCE(f.category, 'uncategorized') = ANY(:categories)")
+        params["categories"] = list(dict.fromkeys(category))
     if severity is not None:
         conditions.append("f.severity >= :severity")
         params["severity"] = float(severity)

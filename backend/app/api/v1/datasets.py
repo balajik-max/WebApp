@@ -45,6 +45,11 @@ from app.models import (
     User,
 )
 from app.schemas.dataset import DatasetOut, DatasetUpdate, DatasetUploadAccepted, WardOption
+from app.services.attribute_table import (
+    order_attribute_columns,
+    populated_attribute_column_count,
+    resolve_feature_fid,
+)
 from app.services.ingestion import ingest_dataset
 from app.services.readers import get_reader_for
 from app.services.storage import delete_object, ensure_bucket, upload_stream
@@ -466,31 +471,54 @@ async def dataset_feature_table(
         await db.execute(
             select(Feature)
             .where(Feature.dataset_id == dataset_id)
-            .order_by(Feature.created_at)
+            .order_by(Feature.created_at, Feature.id)
             .limit(limit)
             .offset(offset)
         )
     ).scalars().all()
 
-    # Column set = union of attribute keys seen on this page, alphabetical.
-    columns: set[str] = set()
-    for r in rows:
-        columns.update(r.attributes.keys())
+    # Rank fields by actual data coverage across the complete dataset. This
+    # keeps populated survey readings at the front and moves fields that are
+    # entirely null/blank to the far right, consistently on every page.
+    column_rows = (
+        await db.execute(
+            text(
+                """
+                SELECT
+                    keys.attribute_key,
+                    COUNT(*) FILTER (
+                        WHERE keys.attribute_value NOT IN (
+                            'null'::jsonb, '""'::jsonb, '[]'::jsonb, '{}'::jsonb
+                        )
+                    ) AS populated_count
+                FROM features f
+                CROSS JOIN LATERAL jsonb_each(
+                    COALESCE(f.attributes, '{}'::jsonb)
+                ) AS keys(attribute_key, attribute_value)
+                WHERE f.dataset_id = :dataset_id
+                GROUP BY keys.attribute_key
+                """
+            ),
+            {"dataset_id": dataset_id},
+        )
+    ).all()
 
     return {
         "total": int(total),
         "limit": limit,
         "offset": offset,
-        "columns": sorted(columns),
+        "columns": order_attribute_columns(column_rows),
+        "populated_column_count": populated_attribute_column_count(column_rows),
         "rows": [
             {
                 "id": str(r.id),
+                "fid": resolve_feature_fid(r.attributes, offset + index + 1),
                 "label": r.label,
                 "category": r.category,
                 "severity": r.severity,
                 "attributes": r.attributes,
             }
-            for r in rows
+            for index, r in enumerate(rows)
         ],
     }
 
