@@ -39,6 +39,9 @@ export interface FeatureCollectionResponse {
 
 export interface FeatureFilter {
   ward?: string;
+  /** One or more categories selected by the searchable category picker. */
+  categories?: string[];
+  /** Legacy/single-category value retained for category-specific AI tools. */
   category?: string;
   severity?: number;
   /** When set, isolates the map to exactly this set of datasets — overrides

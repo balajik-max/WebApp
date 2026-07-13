@@ -2,7 +2,7 @@ import { useState, useCallback, useRef } from "react";
 import { MapCanvas, type MapCanvasHandle } from "../components/MapCanvas";
 import { WardReportPanel } from "../components/WardReportPanel";
 import { AiAssistant } from "../components/AiAssistant";
-import { useOutletContext } from "react-router-dom";
+import { useOutletContext, useSearchParams } from "react-router-dom";
 import type { AiHighlight, FeatureFilter, UrbanFeature } from "../lib/types";
 import type { DatasetRow } from "../lib/workflow";
 
@@ -17,6 +17,8 @@ export function MapView() {
   const [selected, setSelected] = useState<UrbanFeature | null>(null);
   const [aiHighlights, setAiHighlights] = useState<AiHighlight[]>([]);
   const mapRef = useRef<MapCanvasHandle | null>(null);
+  const [searchParams, setSearchParams] = useSearchParams();
+  const locateFeatureId = searchParams.get("locateFeature") ?? undefined;
 
   const handleSelect = useCallback((feature: UrbanFeature | null) => {
     setSelected(feature);
@@ -25,6 +27,12 @@ export function MapView() {
   const handleCloseReport = useCallback(() => {
     mapRef.current?.clearDatasets();
   }, []);
+
+  const handleFeatureLocated = useCallback(() => {
+    const next = new URLSearchParams(searchParams);
+    next.delete("locateFeature");
+    setSearchParams(next, { replace: true });
+  }, [searchParams, setSearchParams]);
 
   return (
     <div
@@ -38,6 +46,8 @@ export function MapView() {
         initialActiveDatasets={selectedDatasets}
         onActiveDatasetsChange={setSelectedDatasets}
         aiHighlights={aiHighlights}
+        focusFeatureId={locateFeatureId}
+        onFocusHandled={handleFeatureLocated}
       />
       {selectedDatasets.length > 0 && (
         <WardReportPanel datasets={selectedDatasets} onClose={handleCloseReport} />

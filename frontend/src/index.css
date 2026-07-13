@@ -404,6 +404,264 @@ body {
 .filters button.ghost { background: transparent; color: var(--ink-dim); border: 1px solid var(--edge); }
 .filters button.ghost:hover { background: var(--surface-3); color: var(--ink); }
 
+/* Searchable category multi-select. Kept inside the existing filter slot so
+   it occupies the same top-bar position as the native category select. */
+.category-picker {
+  position: relative;
+  width: 220px;
+}
+
+.filters .category-picker__trigger {
+  width: 100%;
+  height: 32px;
+  padding: 0 9px 0 10px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  background: var(--surface-2);
+  color: var(--ink);
+  border: 1px solid var(--edge);
+  border-radius: var(--radius-sm);
+  font-family: var(--font);
+  font-size: 12px;
+  font-weight: 400;
+  letter-spacing: 0;
+  text-transform: none;
+  box-shadow: none;
+}
+
+.filters .category-picker__trigger:hover,
+.filters .category-picker__trigger--open {
+  background: var(--surface-2);
+  border-color: var(--accent);
+}
+
+.category-picker__trigger-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.category-picker__trigger svg {
+  width: 16px;
+  height: 16px;
+  flex: 0 0 auto;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  transition: transform var(--transition-fast);
+}
+
+.category-picker__trigger--open svg { transform: rotate(180deg); }
+
+.category-picker__menu {
+  position: absolute;
+  top: calc(100% + 5px);
+  left: 0;
+  z-index: 1000;
+  width: 300px;
+  padding: 7px;
+  background: var(--surface);
+  border: 1px solid var(--edge-strong);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-lg);
+}
+
+.category-picker__search-wrap {
+  position: relative;
+  margin-bottom: 6px;
+}
+
+.category-picker__search-wrap > svg {
+  position: absolute;
+  left: 10px;
+  top: 50%;
+  width: 15px;
+  height: 15px;
+  transform: translateY(-50%);
+  fill: none;
+  stroke: var(--ink-mute);
+  stroke-width: 1.8;
+  pointer-events: none;
+}
+
+.filters .category-picker__search {
+  width: 100%;
+  height: 34px;
+  padding: 0 10px 0 32px;
+  box-sizing: border-box;
+  background: var(--surface-2);
+}
+
+.category-picker__list {
+  max-height: 350px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.filters .category-picker__option {
+  width: 100%;
+  height: auto;
+  min-height: 32px;
+  padding: 5px 8px;
+  display: grid;
+  grid-template-columns: 17px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  background: transparent;
+  color: var(--ink-dim);
+  border: none;
+  border-radius: var(--radius-xs);
+  font-family: var(--font);
+  font-size: 12px;
+  font-weight: 400;
+  letter-spacing: 0;
+  line-height: 1.25;
+  text-align: left;
+  text-transform: none;
+}
+
+.filters .category-picker__option:hover {
+  background: var(--surface-3);
+  color: var(--ink);
+}
+
+.filters .category-picker__option--selected {
+  background: var(--accent-muted);
+  color: var(--ink);
+}
+
+.filters .category-picker__option--selected:hover { background: var(--accent-muted); }
+
+.category-picker__check {
+  width: 16px;
+  height: 16px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--edge-strong);
+  border-radius: 4px;
+  color: var(--accent-ink);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.category-picker__option--selected .category-picker__check {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+.category-picker__name {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.category-picker__count {
+  color: var(--ink-mute);
+  font-variant-numeric: tabular-nums;
+}
+
+.category-picker__empty {
+  padding: 18px 10px;
+  color: var(--ink-mute);
+  font-size: 11px;
+  text-align: center;
+}
+
+/* Direct source-FID lookup in the map toolbar. */
+.fid-search {
+  position: relative;
+  width: 150px;
+}
+
+.fid-search__input-wrap { position: relative; }
+
+.fid-search__input-wrap > svg {
+  position: absolute;
+  left: 9px;
+  top: 50%;
+  width: 14px;
+  height: 14px;
+  transform: translateY(-50%);
+  fill: none;
+  stroke: var(--ink-mute);
+  stroke-width: 1.8;
+  pointer-events: none;
+}
+
+.filters .fid-search input {
+  width: 100%;
+  padding-left: 29px;
+  padding-right: 25px;
+}
+
+.fid-search__spinner {
+  position: absolute;
+  right: 8px;
+  top: 10px;
+  width: 12px;
+  height: 12px;
+  border: 2px solid var(--edge-strong);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 0.7s linear infinite;
+}
+
+.fid-search__results {
+  position: absolute;
+  z-index: 1200;
+  top: calc(100% + 6px);
+  left: 0;
+  width: 290px;
+  max-height: 320px;
+  overflow-y: auto;
+  padding: 5px;
+  background: var(--surface-1);
+  border: 1px solid var(--edge-strong);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-lg);
+}
+
+.filters .fid-search__result {
+  width: 100%;
+  height: auto;
+  min-height: 48px;
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 2px 9px;
+  padding: 7px 9px;
+  text-align: left;
+  text-transform: none;
+  letter-spacing: 0;
+  color: var(--ink);
+  background: transparent;
+  border-radius: var(--radius-sm);
+}
+
+.filters .fid-search__result:hover,
+.filters .fid-search__result:focus-visible {
+  background: var(--accent-muted);
+}
+
+.fid-search__result b { color: var(--accent); }
+.fid-search__result span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fid-search__result small {
+  grid-column: 1 / -1;
+  color: var(--ink-mute);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.fid-search__empty {
+  padding: 14px 10px;
+  color: var(--ink-mute);
+  font-size: 11px;
+  text-align: center;
+}
+
 /* ── LOGIN PAGE ───────────────────────────────────────────────────────── */
 .login {
   display: flex;
@@ -1110,10 +1368,82 @@ body {
 .ai-detection-mode__dot--manholes { background: #15803d; }
 
 /* ── LAYER VISIBILITY LIST (QGIS-style category checklist) ───────────── */
+.layer-search {
+  position: relative;
+  margin-bottom: 8px;
+}
+
+.layer-search > svg {
+  position: absolute;
+  left: 10px;
+  top: 50%;
+  width: 15px;
+  height: 15px;
+  transform: translateY(-50%);
+  fill: none;
+  stroke: var(--ink-mute);
+  stroke-width: 1.8;
+  pointer-events: none;
+}
+
+.layer-search input {
+  width: 100%;
+  height: 34px;
+  box-sizing: border-box;
+  padding: 0 30px 0 32px;
+  background: var(--surface-2);
+  border: 1px solid var(--edge);
+  border-radius: var(--radius-sm);
+  color: var(--ink);
+  font-family: var(--font);
+  font-size: 11.5px;
+  outline: none;
+  transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
+}
+
+.layer-search input:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-muted);
+}
+
+.layer-search input::-webkit-search-cancel-button { display: none; }
+
+.layer-search__clear {
+  position: absolute;
+  top: 50%;
+  right: 6px;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  transform: translateY(-50%);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-xs);
+  color: var(--ink-mute);
+  cursor: pointer;
+  font-size: 16px;
+  line-height: 1;
+}
+
+.layer-search__clear:hover {
+  background: var(--surface-3);
+  color: var(--ink);
+}
+
 .layer-list {
   display: flex;
   flex-direction: column;
   gap: 4px;
+}
+
+.layer-list__empty {
+  padding: 16px 8px;
+  color: var(--ink-mute);
+  font-size: 11px;
+  text-align: center;
 }
 
 .layer-row {
@@ -1203,6 +1533,62 @@ body {
 }
 
 /* ── DATASET CARD ─────────────────────────────────────────────────────── */
+.layer-context-menu {
+  position: fixed;
+  z-index: 1000;
+  width: 208px;
+  padding: 6px;
+  background: var(--surface);
+  border: 1px solid var(--edge-strong);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-xl);
+  animation: fadeIn 0.12s ease;
+}
+
+.layer-context-menu__title {
+  padding: 6px 8px 7px;
+  color: var(--ink-mute);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  border-bottom: 1px solid var(--edge);
+}
+
+.layer-context-menu button {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  margin-top: 5px;
+  padding: 8px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--ink);
+  font: inherit;
+  font-size: 11.5px;
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
+}
+
+.layer-context-menu button:hover,
+.layer-context-menu button:focus-visible {
+  background: var(--accent-muted);
+  color: var(--accent);
+  outline: none;
+}
+
+.layer-context-menu button svg {
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+}
+
 .dataset-card {
   display: flex;
   align-items: center;
@@ -3999,6 +4385,17 @@ body {
   z-index: 11;
   background: var(--surface-2);
   border-right: 1px solid var(--edge);
+  width: 50px;
+  min-width: 50px;
+  max-width: 50px;
+}
+
+.attr-table th:nth-child(2) {
+  position: sticky;
+  left: 50px;
+  z-index: 11;
+  background: var(--surface-2);
+  border-right: 1px solid var(--edge);
 }
 
 .attr-table td {
@@ -4027,8 +4424,27 @@ body {
   max-width: 50px;
 }
 
+.attr-table td.attr-fid {
+  position: sticky;
+  left: 50px;
+  z-index: 5;
+  min-width: 90px;
+  max-width: 120px;
+  background: var(--surface);
+  border-right: 1px solid var(--edge);
+  color: var(--ink);
+  font-family: var(--font-mono);
+  font-weight: 600;
+}
+
 .attr-table tbody tr {
   transition: background var(--transition-fast);
+  cursor: pointer;
+}
+
+.attr-table tbody tr:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
 }
 
 .attr-table tbody tr:hover {
@@ -4036,6 +4452,10 @@ body {
 }
 
 .attr-table tbody tr:hover td:first-child {
+  background: var(--surface-3);
+}
+
+.attr-table tbody tr:hover td.attr-fid {
   background: var(--surface-3);
 }
 
@@ -4052,8 +4472,123 @@ body {
   background: var(--bg-subtle);
 }
 
+.attr-table tbody tr:nth-child(even) td.attr-fid {
+  background: var(--bg-subtle);
+}
+
 .attr-table tbody tr:nth-child(even):hover td:first-child {
   background: var(--surface-3);
+}
+
+.attr-table tbody tr:nth-child(even):hover td.attr-fid {
+  background: var(--surface-3);
+}
+
+.attr-table tbody tr.attr-table__row--selected,
+.attr-table tbody tr.attr-table__row--selected:hover {
+  background: var(--accent-muted);
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+
+.attr-table tbody tr.attr-table__row--selected td:first-child,
+.attr-table tbody tr.attr-table__row--selected:hover td:first-child,
+.attr-table tbody tr.attr-table__row--selected td.attr-fid,
+.attr-table tbody tr.attr-table__row--selected:hover td.attr-fid {
+  background: var(--accent-muted);
+}
+
+.attribute-row-context-menu {
+  width: 216px;
+}
+
+/* Street View location picker and full-screen Google panorama. */
+.map-controls__group--street-view { width: max-content; }
+.map-controls__btn--street-view { color: #c47b08; }
+.map-controls__btn--street-view.map-controls__btn--active {
+  background: #f5a623;
+  color: #15100a;
+}
+
+.street-pick-hint {
+  position: absolute;
+  z-index: 20;
+  top: 64px;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 9px 15px;
+  background: rgba(15, 23, 42, 0.9);
+  border: 1px solid rgba(255,255,255,0.18);
+  border-radius: var(--radius-full);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 600;
+  box-shadow: var(--shadow-lg);
+  pointer-events: none;
+}
+
+.google-street-view {
+  position: fixed;
+  inset: 0;
+  z-index: 1400;
+  background: #111827;
+}
+
+.google-street-view__canvas { width: 100%; height: 100%; }
+
+.google-street-view__location {
+  position: absolute;
+  top: 16px;
+  left: 18px;
+  max-width: calc(100% - 180px);
+  padding: 8px 12px;
+  background: rgba(17, 24, 39, 0.82);
+  border-radius: var(--radius-sm);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 600;
+  box-shadow: var(--shadow-md);
+}
+
+.google-street-view__close {
+  position: absolute;
+  z-index: 2;
+  top: 14px;
+  right: 16px;
+  padding: 8px 14px;
+  background: rgba(17, 24, 39, 0.86);
+  border: 1px solid rgba(255,255,255,0.3);
+  border-radius: var(--radius-sm);
+  color: #fff;
+  font-family: var(--font);
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.google-street-view__status {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  min-width: 280px;
+  max-width: 440px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 22px;
+  background: rgba(17, 24, 39, 0.94);
+  border: 1px solid rgba(255,255,255,0.18);
+  border-radius: var(--radius-md);
+  color: #fff;
+  text-align: center;
+  box-shadow: var(--shadow-xl);
+}
+
+.google-street-view__status--error { border-color: rgba(239,68,68,0.7); }
+.google-street-view__status span {
+  color: rgba(255,255,255,0.76);
+  font-size: 12px;
+  line-height: 1.5;
 }
 
 /* Column: label */
@@ -4105,6 +4640,19 @@ body {
 }
 
 /* Pager */
+.attr-table td.attr-table__empty {
+  position: static;
+  max-width: none;
+  padding: 40px 20px;
+  color: var(--ink-mute);
+  font-family: var(--font);
+  font-size: 12px;
+  font-style: normal;
+  text-align: center;
+  background: transparent;
+  border-right: 0;
+}
+
 .attr-table-pager {
   display: flex;
   align-items: center;

@@ -148,6 +148,7 @@ services:
       target: production
       args:
         VITE_API_BASE_URL: ${VITE_API_BASE_URL}
+        VITE_GOOGLE_MAPS_API_KEY: ${VITE_GOOGLE_MAPS_API_KEY:-}
     container_name: davangere_frontend
     restart: unless-stopped
     depends_on:
