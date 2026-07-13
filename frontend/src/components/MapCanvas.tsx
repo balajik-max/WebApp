@@ -1,13 +1,16 @@
-import { useEffect, useRef, useState, useCallback, useImperativeHandle, forwardRef } from "react";
+import { useEffect, useRef, useState, useCallback, useImperativeHandle, useMemo, forwardRef } from "react";
+import { createPortal } from "react-dom";
 import maplibregl, { Map as MLMap, MapMouseEvent, GeoJSONSource } from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
 
-import { fetchFeaturesInViewport } from "../lib/features";
+import { fetchFeatureById, fetchFeaturesInViewport } from "../lib/features";
 import type { AiHighlight, FeatureFilter, UrbanFeature, FeatureCollectionResponse } from "../lib/types";
 import { ApiError } from "../lib/api";
 import { colorForCategory, UNCATEGORIZED_COLOR } from "../lib/categoryColors";
-import { fetchDatasets, fetchDatasetBounds, type DatasetRow } from "../lib/workflow";
+import { fetchDatasets, fetchDatasetBounds, type DatasetRow, type FeatureTableRow, type LayerFeatureTableFilter } from "../lib/workflow";
+import { AttributeTable } from "./AttributeTable";
 import { PanoramaViewer } from "./PanoramaViewer";
+import { GoogleStreetView } from "./GoogleStreetView";
 
 interface Props {
   filter: FeatureFilter;
@@ -22,10 +25,19 @@ interface Props {
   /** AI-produced highlight overrides — redundant poles show red,
    * needed poles show green. Empty array clears the overlay. */
   aiHighlights?: AiHighlight[];
+  /** Feature requested from an attribute-table row on another route. */
+  focusFeatureId?: string;
+  /** Clears the one-shot route request after the feature has been handled. */
+  onFocusHandled?: () => void;
 }
 
 const DAVANGERE_CENTER: [number, number] = [75.9218, 14.4644];
 const DAVANGERE_ZOOM = 12;
+// Dataset/filter changes load one stable GeoJSON snapshot. Map navigation
+// then only changes the camera; it never replaces that snapshot. The API
+// still requires a bbox, so use the full valid WGS84 extent and let the
+// selected dataset/ward/category filters define the data scope.
+const COMPLETE_DATA_BBOX: [number, number, number, number] = [-180, -90, 180, 90];
 
 // Same base the rest of the app's fetch wrapper (lib/api.ts) uses Ã¢â‚¬â€ the
 // dev setup serves the API from a different origin/port than the SPA, so
@@ -104,6 +116,10 @@ const BASE_STYLE: maplibregl.StyleSpecification = {
       type: "raster",
       tiles: ["https://tile.openstreetmap.org/{z}/{x}/{y}.png"],
       tileSize: 256,
+      // The public OSM raster service ends at z19. Requesting z20+ produces
+      // CORS/network failures; source-level maxzoom makes MapLibre overzoom
+      // valid z19 tiles while our vector inspection camera continues to z24.
+      maxzoom: 19,
       attribution: "(c) OpenStreetMap contributors",
     },
     "satellite-tiles": {
@@ -112,17 +128,23 @@ const BASE_STYLE: maplibregl.StyleSpecification = {
         "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
       ],
       tileSize: 256,
+      // ArcGIS advertises higher global LODs, but at Davangere levels 20+
+      // return its grey "Map data not yet available" placeholder. Declaring
+      // the last real local level makes MapLibre overzoom level 19 instead of
+      // requesting those placeholders, so satellite mode remains continuous
+      // through the application's zoom-24 inspection range.
+      maxzoom: 19,
       attribution: "Esri, Maxar, Earthstar Geographics",
     },
   },
   layers: [
-    { id: "osm", type: "raster", source: "osm-tiles", minzoom: 0, maxzoom: 22 },
+    { id: "osm", type: "raster", source: "osm-tiles", minzoom: 0, maxzoom: 24 },
     {
       id: "satellite",
       type: "raster",
       source: "satellite-tiles",
       minzoom: 0,
-      maxzoom: 22,
+      maxzoom: 24,
       layout: { visibility: "none" },
     },
   ],
@@ -137,6 +159,14 @@ const LAYER_POLY_FILL = "urban-features-poly-fill";
 const LAYER_POLY_OUTLINE = "urban-features-poly-outline";
 const LAYER_PHOTOS = "urban-features-photos";
 const PHOTO_ICON_ID = "site-photo-icon";
+
+// Attribute-table selection highlight. It uses its own source so the target
+// remains visible even while the selected dataset snapshot is still loading.
+const TABLE_FOCUS_SOURCE = "attribute-table-focus";
+const TABLE_FOCUS_FILL = "attribute-table-focus-fill";
+const TABLE_FOCUS_LINE = "attribute-table-focus-line";
+const TABLE_FOCUS_POINT = "attribute-table-focus-point";
+const TABLE_FOCUS_DURATION_MS = 8000;
 
 // Base (category-agnostic) filters for the layers above — kept as named
 // constants so the category-visibility checklist can AND a hidden-category
@@ -431,6 +461,36 @@ function decodeFeature(raw: {
   };
 }
 
+function extendCoordinateBounds(bounds: maplibregl.LngLatBounds, coordinates: unknown): void {
+  if (!Array.isArray(coordinates)) return;
+  if (
+    coordinates.length >= 2
+    && typeof coordinates[0] === "number"
+    && typeof coordinates[1] === "number"
+    && Number.isFinite(coordinates[0])
+    && Number.isFinite(coordinates[1])
+  ) {
+    bounds.extend([coordinates[0], coordinates[1]]);
+    return;
+  }
+  coordinates.forEach((nested) => extendCoordinateBounds(bounds, nested));
+}
+
+function featureFocusGeometry(feature: UrbanFeature): {
+  bounds: maplibregl.LngLatBounds;
+  anchor: maplibregl.LngLat;
+  isPoint: boolean;
+} | null {
+  const bounds = new maplibregl.LngLatBounds();
+  extendCoordinateBounds(bounds, feature.geometry.coordinates);
+  if (bounds.isEmpty()) return null;
+  return {
+    bounds,
+    anchor: bounds.getCenter(),
+    isPoint: feature.geometry.type === "Point" || feature.geometry.type === "MultiPoint",
+  };
+}
+
 function buildCategoryColorExpression(
   colorByCategory: Map<string, string>
 ): maplibregl.ExpressionSpecification | string {
@@ -458,15 +518,22 @@ interface HoverInfo {
   attributes: Record<string, unknown>;
   aiStatus?: "redundant" | "needed";
 }
+interface LayerAttributeTableState extends LayerFeatureTableFilter {
+  sourceLabel: string;
+}
 export interface MapCanvasHandle { clearDatasets: () => void; }
 
 export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
-  { filter, onFeatureSelect, onActiveDatasetsChange, initialActiveDatasets, aiHighlights },
+  { filter, onFeatureSelect, onActiveDatasetsChange, initialActiveDatasets, aiHighlights, focusFeatureId, onFocusHandled },
   ref
 ) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<MLMap | null>(null);
   const abortRef = useRef<AbortController | null>(null);
+  // AbortController normally prevents an older data response from being
+  // applied after a newer one. Keep an explicit sequence as well because a
+  // response can already be resolving when a rapid dashboard change aborts it.
+  const fetchSequenceRef = useRef(0);
   const debounceRef = useRef<number | null>(null);
   const filterRef = useRef<FeatureFilter>(filter);
 
@@ -497,6 +564,28 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
   const rasterSettingsRef = useRef<Record<string, RasterDisplaySettings>>({});
   const [flyError, setFlyError] = useState<string | null>(null);
   const [mapReady, setMapReady] = useState(false);
+  const [attributeTable, setAttributeTable] = useState<LayerAttributeTableState | null>(null);
+  const [streetPickMode, setStreetPickMode] = useState(false);
+  const [streetViewTarget, setStreetViewTarget] = useState<{ latitude: number; longitude: number } | null>(null);
+  const streetPickModeRef = useRef(false);
+  const streetPickConsumedRef = useRef(false);
+  const [pendingFocusFeatureId, setPendingFocusFeatureId] = useState<string | null>(focusFeatureId ?? null);
+  const focusAbortRef = useRef<AbortController | null>(null);
+  const focusClearTimerRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    if (focusFeatureId) setPendingFocusFeatureId(focusFeatureId);
+  }, [focusFeatureId]);
+
+  const toggleStreetPickMode = useCallback(() => {
+    setStreetPickMode((current) => {
+      const next = !current;
+      streetPickModeRef.current = next;
+      const canvas = mapRef.current?.getCanvas();
+      if (canvas) canvas.style.cursor = next ? "crosshair" : "";
+      return next;
+    });
+  }, []);
 
   // Ruler / measurement tool (Google Earth Pro-style dialog: Line, Path,
   // Polygon, Circle) — off by default. `measureActiveRef`/`measurePointsRef`
@@ -1083,9 +1172,14 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
 
   const applyFeatureCollection = useCallback((data: FeatureCollectionResponse) => {
     const map = mapRef.current;
-    if (!map || !map.isStyleLoaded()) return;
+    if (!map) return;
     const src = map.getSource(FEATURE_SOURCE) as GeoJSONSource | undefined;
-    if (src) src.setData(data as unknown as GeoJSON.FeatureCollection);
+    // `isStyleLoaded()` becomes false while new basemap tiles are loading
+    // during a zoom. The GeoJSON source already exists at this point and is
+    // safe to update, so gating on the whole style caused the new viewport
+    // data to be discarded precisely while zooming.
+    if (!src) return;
+    src.setData(data as unknown as GeoJSON.FeatureCollection);
 
     // Cache coordinates for every Point feature so the AI highlight layer
     // can place its circles correctly even when highlights arrive after load.
@@ -1148,16 +1242,46 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     setHiddenCategories(visible ? new Set() : new Set(categoryStats.map((c) => c.category)));
   }, [categoryStats]);
 
+  const openLayerAttributeTable = useCallback((category: string) => {
+    const currentFilter = filterRef.current;
+    const datasetIds = currentFilter.datasetIds?.length ? [...currentFilter.datasetIds] : undefined;
+    const selectedNames = datasetIds
+      ? datasets.filter((dataset) => datasetIds.includes(dataset.id)).map((dataset) => dataset.name)
+      : [];
+    const sourceLabel = selectedNames.length === 1
+      ? selectedNames[0]
+      : selectedNames.length > 1
+        ? `${selectedNames.length} selected datasets`
+        : currentFilter.ward
+          ? `Ward ${currentFilter.ward}`
+          : "Current map selection";
+
+    setAttributeTable({
+      category,
+      datasetIds,
+      ward: datasetIds ? undefined : currentFilter.ward,
+      severity: datasetIds ? undefined : currentFilter.severity,
+      sourceLabel,
+    });
+  }, [datasets]);
+
   const runFetch = useCallback(async () => {
     const map = mapRef.current;
     if (!map) return;
+    const requestSequence = ++fetchSequenceRef.current;
 
     // If no dataset is selected AND no real topbar filter is active,
     // show an empty map rather than dumping every feature in the viewport.
     const currentFilter = filterRef.current;
     const hasDatasetFilter = (currentFilter.datasetIds?.length ?? 0) > 0;
-    const hasRealFilter = Boolean(currentFilter.ward || currentFilter.category || currentFilter.severity !== undefined);
+    const hasRealFilter = Boolean(
+      currentFilter.ward
+      || currentFilter.category
+      || (currentFilter.categories?.length ?? 0) > 0
+      || currentFilter.severity !== undefined
+    );
     if (!hasDatasetFilter && !hasRealFilter) {
+      abortRef.current?.abort();
       applyFeatureCollection(EMPTY_FC);
       setStatus({ loading: false, count: 0, truncated: false, error: null, bbox: null });
       return;
@@ -1166,15 +1290,15 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     abortRef.current?.abort();
     const controller = new AbortController();
     abortRef.current = controller;
-    const bounds = map.getBounds();
-    const bbox: [number, number, number, number] = [bounds.getWest(), bounds.getSouth(), bounds.getEast(), bounds.getNorth()];
+    const bbox = COMPLETE_DATA_BBOX;
     setStatus((prev) => ({ ...prev, loading: true, error: null, bbox }));
     try {
       const data = await fetchFeaturesInViewport(bbox, filterRef.current, controller.signal);
+      if (requestSequence !== fetchSequenceRef.current) return;
       applyFeatureCollection(data);
       setStatus({ loading: false, count: data.count, truncated: data.truncated, error: null, bbox });
     } catch (err) {
-      if ((err as Error).name === "AbortError") return;
+      if ((err as Error).name === "AbortError" || requestSequence !== fetchSequenceRef.current) return;
       const msg = err instanceof ApiError ? `${err.status} - ${err.message}` : (err as Error).message;
       applyFeatureCollection(EMPTY_FC);
       setStatus({ loading: false, count: 0, truncated: false, error: msg, bbox });
@@ -1294,6 +1418,89 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mapReady, datasets, activeDatasetIds]);
 
+  // Resolve a one-shot attribute-table request to the authoritative feature,
+  // make its dataset/category visible, then focus and identify the geometry.
+  useEffect(() => {
+    if (!pendingFocusFeatureId || !mapReady || datasets.length === 0) return;
+    const map = mapRef.current;
+    if (!map) return;
+
+    focusAbortRef.current?.abort();
+    if (focusClearTimerRef.current !== null) {
+      window.clearTimeout(focusClearTimerRef.current);
+      focusClearTimerRef.current = null;
+    }
+    const controller = new AbortController();
+    focusAbortRef.current = controller;
+
+    void fetchFeatureById(pendingFocusFeatureId, controller.signal)
+      .then((feature) => {
+        if (controller.signal.aborted) return;
+        const source = map.getSource(TABLE_FOCUS_SOURCE) as GeoJSONSource | undefined;
+        source?.setData({ type: "FeatureCollection", features: [feature] });
+
+        const dataset = datasets.find((row) => row.id === feature.properties.dataset_id);
+        if (dataset) {
+          setActiveDatasetIds([dataset.id]);
+          setExpandedDatasetId(null);
+          filterRef.current = { datasetIds: [dataset.id] };
+          onActiveDatasetsChange?.([dataset]);
+          scheduleFetch();
+        }
+
+        const category = feature.properties.category || "uncategorized";
+        setHiddenCategories((current) => {
+          if (!current.has(category)) return current;
+          const next = new Set(current);
+          next.delete(category);
+          return next;
+        });
+        onFeatureSelect(feature);
+
+        const target = featureFocusGeometry(feature);
+        if (target) {
+          const showTooltip = () => {
+            const point = map.project(target.anchor);
+            const attributes = feature.properties.attributes ?? {};
+            const fidEntry = Object.entries(attributes).find(([key]) => key.toLowerCase() === "fid");
+            setHover({
+              x: point.x,
+              y: point.y,
+              label: feature.properties.label || (fidEntry ? `FID ${String(fidEntry[1])}` : category),
+              category,
+              severity: feature.properties.severity,
+              color: colorForCategory(category),
+              attributes,
+            });
+            focusClearTimerRef.current = window.setTimeout(() => {
+              const focusSource = map.getSource(TABLE_FOCUS_SOURCE) as GeoJSONSource | undefined;
+              focusSource?.setData({ type: "FeatureCollection", features: [] });
+              setHover(null);
+              focusClearTimerRef.current = null;
+            }, TABLE_FOCUS_DURATION_MS);
+          };
+          map.once("moveend", showTooltip);
+          if (target.isPoint) {
+            map.easeTo({ center: target.anchor, zoom: Math.max(map.getZoom(), 19), duration: 900 });
+          } else {
+            map.fitBounds(target.bounds, { padding: 110, maxZoom: 19, duration: 900 });
+          }
+        }
+
+        setFlyError(null);
+        setPendingFocusFeatureId(null);
+        onFocusHandled?.();
+      })
+      .catch((error: Error) => {
+        if (error.name === "AbortError") return;
+        setFlyError(`Could not locate feature: ${error.message}`);
+        setPendingFocusFeatureId(null);
+        onFocusHandled?.();
+      });
+
+    return () => controller.abort();
+  }, [datasets, mapReady, onActiveDatasetsChange, onFeatureSelect, onFocusHandled, pendingFocusFeatureId, scheduleFetch]);
+
   // Selecting a dataset toggles it in/out of the active set rather than
   // replacing it Ã¢â‚¬â€ so a raster orthophoto and its companion GDB vector
   // layer over the same area can be viewed together, not just one at a
@@ -1316,13 +1523,13 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
       return;
     }
     addRasterOverlay(dataset);
+    // Load the complete updated dataset selection immediately. fitBounds
+    // below changes only the camera and deliberately does not trigger a
+    // second data request.
+    scheduleFetch();
     try {
       const b = await fetchDatasetBounds(dataset.id);
       map.fitBounds([[b.min_lon, b.min_lat], [b.max_lon, b.max_lat]], { padding: 80, duration: 1000, maxZoom: 18 });
-      // fitBounds fires moveend, which the mount effect already wires to
-      // scheduleFetch Ã¢â‚¬â€ but call it directly too in case the map is
-      // already sitting on those exact bounds (no moveend would fire).
-      scheduleFetch();
     } catch (e) { setFlyError((e as Error).message); }
   }, [activeDatasetIds, datasets, filter, scheduleFetch, addRasterOverlay, removeRasterOverlay, onActiveDatasetsChange]);
 
@@ -1351,7 +1558,12 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     // visual backdrop with no ward/category/severity of its own Ã¢â‚¬â€ so it
     // deliberately stays on the map here. It's only removed when its own
     // dataset card is clicked again or "Show all" is pressed explicitly.
-    const hasRealFilter = Boolean(filter.ward || filter.category || filter.severity !== undefined);
+    const hasRealFilter = Boolean(
+      filter.ward
+      || filter.category
+      || (filter.categories?.length ?? 0) > 0
+      || filter.severity !== undefined
+    );
     if (activeDatasetIds.length > 0 && !hasRealFilter) return;
     setActiveDatasetIds([]);
     filterRef.current = filter;
@@ -1497,6 +1709,40 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
         },
       });
 
+      // A separate, top-most source keeps an attribute-table selection
+      // visible even while the regular dataset source is being refreshed.
+      map.addSource(TABLE_FOCUS_SOURCE, {
+        type: "geojson",
+        data: { type: "FeatureCollection", features: [] },
+      });
+      map.addLayer({
+        id: TABLE_FOCUS_FILL,
+        type: "fill",
+        source: TABLE_FOCUS_SOURCE,
+        filter: ["in", ["geometry-type"], ["literal", ["Polygon", "MultiPolygon"]]],
+        paint: { "fill-color": "#f59e0b", "fill-opacity": 0.32 },
+      });
+      map.addLayer({
+        id: TABLE_FOCUS_LINE,
+        type: "line",
+        source: TABLE_FOCUS_SOURCE,
+        filter: ["in", ["geometry-type"], ["literal", ["LineString", "MultiLineString", "Polygon", "MultiPolygon"]]],
+        paint: { "line-color": "#f59e0b", "line-width": 6, "line-opacity": 0.95 },
+      });
+      map.addLayer({
+        id: TABLE_FOCUS_POINT,
+        type: "circle",
+        source: TABLE_FOCUS_SOURCE,
+        filter: ["in", ["geometry-type"], ["literal", ["Point", "MultiPoint"]]],
+        paint: {
+          "circle-radius": ["interpolate", ["linear"], ["zoom"], 8, 8, 16, 14, 20, 18],
+          "circle-color": "#fbbf24",
+          "circle-opacity": 0.95,
+          "circle-stroke-color": "#111827",
+          "circle-stroke-width": 3,
+        },
+      });
+
       // Single set of event handlers on ALL_CLICKABLE (base + AI layers).
       // Registered AFTER AI layers are added so MapLibre binds them correctly.
       // Using one handler set avoids double-fire when AI circles overlap base features.
@@ -1509,6 +1755,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
         // same click. Once Escape deactivates the tool (panel still open),
         // this must stop applying so ordinary feature clicks work again.
         if (isMeasureInputActive()) return;
+        if (streetPickModeRef.current || streetPickConsumedRef.current) return;
         const hit = map.queryRenderedFeatures(e.point, { layers: ALL_CLICKABLE });
         if (!hit.length) return;
         const isAi = AI_CLICKABLE.includes(hit[0].layer?.id as string);
@@ -1534,6 +1781,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
         // flag) so hover works normally again as soon as Escape deactivates
         // the tool, even while the Measure panel itself stays open.
         if (isMeasureInputActive()) return;
+        if (streetPickModeRef.current) { setHover(null); return; }
         const hit = map.queryRenderedFeatures(e.point, { layers: ALL_CLICKABLE });
         if (!hit.length) { setHover(null); return; }
         const aiHit = hit.find((f) => AI_CLICKABLE.includes(f.layer?.id as string));
@@ -1699,6 +1947,19 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
           return;
         }
         finishMeasurePath();
+        map.on("mouseenter", id, () => (map.getCanvas().style.cursor = streetPickModeRef.current ? "crosshair" : "pointer"));
+        map.on("mousemove", id, handleFeatureHover);
+        map.on("mouseleave", id, () => { map.getCanvas().style.cursor = streetPickModeRef.current ? "crosshair" : ""; setHover(null); });
+      });
+      map.on("click", (event) => {
+        if (!streetPickModeRef.current) return;
+        streetPickConsumedRef.current = true;
+        window.requestAnimationFrame(() => { streetPickConsumedRef.current = false; });
+        streetPickModeRef.current = false;
+        setStreetPickMode(false);
+        map.getCanvas().style.cursor = "";
+        setHover(null);
+        setStreetViewTarget({ latitude: event.lngLat.lat, longitude: event.lngLat.lng });
       });
 
       // setMapReady AFTER the AI source/layers are added so the aiHighlights
@@ -1715,6 +1976,9 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
       mapRef.current = null;
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
+    // Do not fetch on move/zoom. Once a dashboard selection is loaded, the
+    // GeoJSON source remains unchanged until the user changes that selection.
+    return () => { fetchSequenceRef.current += 1; abortRef.current?.abort(); focusAbortRef.current?.abort(); if (focusClearTimerRef.current !== null) window.clearTimeout(focusClearTimerRef.current); if (debounceRef.current !== null) window.clearTimeout(debounceRef.current); map.remove(); mapRef.current = null; };
   }, []);
 
   return (
@@ -1736,11 +2000,18 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
         hiddenCategories={hiddenCategories}
         onToggleCategory={toggleCategoryVisibility}
         onSetAllCategoriesVisible={setAllCategoriesVisible}
+        onOpenAttributeTable={openLayerAttributeTable}
         status={status}
       />
       <div className="map-canvas" data-testid="map-canvas">
         <div ref={containerRef} className="map-canvas__map" data-testid="map-gl" />
-        <MapControls basemap={basemap} onChangeBasemap={changeBasemap} status={status} />
+        <MapControls
+          basemap={basemap}
+          onChangeBasemap={changeBasemap}
+          status={status}
+          streetPickMode={streetPickMode}
+          onToggleStreetView={toggleStreetPickMode}
+        />
         <MapLegend entries={legend} />
         <HoverTooltip hover={hover} />
         <CoordinateReadout lngLat={cursorLngLat} />
@@ -1763,6 +2034,12 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
           />
         )}
         {activeDatasetIds.length === 0 && !filter.ward && !filter.category && filter.severity === undefined && (
+        {streetPickMode && (
+          <div className="street-pick-hint" data-testid="street-pick-hint">
+            Click a road location to open the nearest 360° Street View
+          </div>
+        )}
+        {activeDatasetIds.length === 0 && !filter.ward && !filter.category && (filter.categories?.length ?? 0) === 0 && filter.severity === undefined && (
           <div style={{
             position: "absolute", top: "50%", left: "50%", transform: "translate(-50%, -50%)",
             pointerEvents: "none", textAlign: "center",
@@ -1779,6 +2056,26 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
       ) : (
         <PhotoViewer photo={photoViewer} onClose={() => setPhotoViewer(null)} />
       )}
+      {streetViewTarget && (
+        <GoogleStreetView
+          latitude={streetViewTarget.latitude}
+          longitude={streetViewTarget.longitude}
+          onClose={() => setStreetViewTarget(null)}
+        />
+      )}
+      {attributeTable && (
+        <AttributeTable
+          key={`${attributeTable.category}:${attributeTable.datasetIds?.join(",") ?? attributeTable.ward ?? "all"}:${attributeTable.severity ?? ""}`}
+          datasetName={attributeTable.category}
+          scopeLabel={attributeTable.sourceLabel}
+          layerFilter={attributeTable}
+          onClose={() => setAttributeTable(null)}
+          onLocateFeature={(row: FeatureTableRow) => {
+            setAttributeTable(null);
+            setPendingFocusFeatureId(row.id);
+          }}
+        />
+      )}
     </>
   );
 });
@@ -1786,7 +2083,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
 function CommandCenter({
   datasets, activeDatasetIds, flyError, onSelectDataset, onClearDataset, expandedDatasetId, onToggleDatasetSettings,
   rasterSettingsById, onChangeRasterSettings, categoryStats, hiddenCategories, onToggleCategory,
-  onSetAllCategoriesVisible, status: _status,
+  onSetAllCategoriesVisible, onOpenAttributeTable, status: _status,
 }: {
   datasets: DatasetRow[]; activeDatasetIds: string[]; flyError: string | null; onSelectDataset: (d: DatasetRow) => void;
   onClearDataset: () => void;
@@ -1798,8 +2095,37 @@ function CommandCenter({
   hiddenCategories: Set<string>;
   onToggleCategory: (category: string) => void;
   onSetAllCategoriesVisible: (visible: boolean) => void;
+  onOpenAttributeTable: (category: string) => void;
   status: ViewportStatus;
 }) {
+  const [layerQuery, setLayerQuery] = useState("");
+  const [layerMenu, setLayerMenu] = useState<{ category: string; x: number; y: number } | null>(null);
+  const normalizedLayerQuery = layerQuery.trim().toLocaleLowerCase();
+  const displayedLayers = useMemo(
+    () => [...categoryStats]
+      .sort((a, b) => a.category.localeCompare(b.category, undefined, { sensitivity: "base", numeric: true }))
+      .filter((layer) => !normalizedLayerQuery || layer.category.toLocaleLowerCase().includes(normalizedLayerQuery)),
+    [categoryStats, normalizedLayerQuery]
+  );
+
+  useEffect(() => {
+    if (!layerMenu) return;
+    const closeMenu = () => setLayerMenu(null);
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") closeMenu();
+    };
+    document.addEventListener("click", closeMenu);
+    document.addEventListener("keydown", closeOnEscape);
+    window.addEventListener("resize", closeMenu);
+    window.addEventListener("scroll", closeMenu, true);
+    return () => {
+      document.removeEventListener("click", closeMenu);
+      document.removeEventListener("keydown", closeOnEscape);
+      window.removeEventListener("resize", closeMenu);
+      window.removeEventListener("scroll", closeMenu, true);
+    };
+  }, [layerMenu]);
+
   return (
     <aside className="command-center" data-testid="command-center">
       <div className="command-center__header">
@@ -1962,14 +2288,48 @@ function CommandCenter({
                 {hiddenCategories.size > 0 ? "Show all" : "Hide all"}
               </button>
             </div>
+            <div className="layer-search">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <circle cx="11" cy="11" r="7" />
+                <path d="m16.5 16.5 4 4" />
+              </svg>
+              <input
+                type="search"
+                value={layerQuery}
+                onChange={(event) => setLayerQuery(event.target.value)}
+                placeholder="Search layers..."
+                aria-label="Search layers"
+                data-testid="layer-search"
+              />
+              {layerQuery && (
+                <button
+                  type="button"
+                  className="layer-search__clear"
+                  onClick={() => setLayerQuery("")}
+                  aria-label="Clear layer search"
+                >
+                  ×
+                </button>
+              )}
+            </div>
             <div className="layer-list">
-              {categoryStats.map((c) => {
+              {displayedLayers.map((c) => {
                 const visible = !hiddenCategories.has(c.category);
                 return (
                   <div
                     key={c.category}
                     className={`layer-row${visible ? "" : " layer-row--hidden"}`}
                     onClick={() => onToggleCategory(c.category)}
+                    onContextMenu={(event) => {
+                      event.preventDefault();
+                      event.stopPropagation();
+                      setLayerMenu({
+                        category: c.category,
+                        x: Math.max(8, Math.min(event.clientX, window.innerWidth - 224)),
+                        y: Math.max(8, Math.min(event.clientY, window.innerHeight - 96)),
+                      });
+                    }}
+                    title="Click to show or hide. Right-click for the attribute table."
                     data-testid={`layer-row-${c.category}`}
                   >
                     <div className={`layer-row__checkbox${visible ? " layer-row__checkbox--checked" : ""}`}>
@@ -1983,10 +2343,42 @@ function CommandCenter({
                   </div>
                 );
               })}
+              {displayedLayers.length === 0 && (
+                <div className="layer-list__empty">No matching layers</div>
+              )}
             </div>
           </div>
         )}
       </div>
+      {layerMenu && createPortal(
+        <div
+          className="layer-context-menu"
+          style={{ left: layerMenu.x, top: layerMenu.y }}
+          role="menu"
+          aria-label={`${layerMenu.category} layer actions`}
+          data-testid="layer-context-menu"
+          onContextMenu={(event) => event.preventDefault()}
+        >
+          <div className="layer-context-menu__title" title={layerMenu.category}>
+            {layerMenu.category}
+          </div>
+          <button
+            type="button"
+            role="menuitem"
+            onClick={() => {
+              onOpenAttributeTable(layerMenu.category);
+              setLayerMenu(null);
+            }}
+          >
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true">
+              <rect x="3" y="4" width="18" height="16" rx="2" />
+              <path d="M3 9h18M9 9v11M15 9v11" />
+            </svg>
+            Open attribute table
+          </button>
+        </div>,
+        document.body
+      )}
     </aside>
   );
 }
@@ -2304,6 +2696,13 @@ function RulerPanel({
 }
 
 function MapControls({ basemap, onChangeBasemap, status }: { basemap: Basemap; onChangeBasemap: (b: Basemap) => void; status: ViewportStatus }) {
+function MapControls({ basemap, onChangeBasemap, status, streetPickMode, onToggleStreetView }: {
+  basemap: Basemap;
+  onChangeBasemap: (b: Basemap) => void;
+  status: ViewportStatus;
+  streetPickMode: boolean;
+  onToggleStreetView: () => void;
+}) {
   return (
     <>
       <div className="feature-count" data-testid="viewport-status">
@@ -2334,6 +2733,21 @@ function MapControls({ basemap, onChangeBasemap, status }: { basemap: Basemap; o
               <path d="M3 3l18 18M10.58 10.58a2 2 0 002.83 2.83M9.88 4.24A9.4 9.4 0 0112 4c5 0 8.5 4 10 8-.46 1.3-1.13 2.6-2 3.79M6.6 6.6C4.7 8 3.2 10 2 12c1.5 4 5 8 10 8 1.35 0 2.63-.28 3.8-.78" />
             </svg>
             Off
+          </button>
+        </div>
+        <div className="map-controls__group map-controls__group--street-view">
+          <button
+            className={`map-controls__btn map-controls__btn--street-view${streetPickMode ? " map-controls__btn--active" : ""}`}
+            onClick={onToggleStreetView}
+            data-testid="street-view-picker"
+            title="Select a map location and open the nearest Google Street View panorama"
+            aria-pressed={streetPickMode}
+          >
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" width="15" height="15" style={{ marginRight: 4, verticalAlign: -2 }}>
+              <circle cx="12" cy="5" r="2.5" fill="currentColor" stroke="none" />
+              <path d="M8 10c1.2-1.2 2.5-1.8 4-1.8s2.8.6 4 1.8M9.2 10.2 8 16m6.8-5.8L16 16M9.3 13h5.4M10.5 16v5m3-5v5" />
+            </svg>
+            Street View
           </button>
         </div>
       </div>
@@ -2477,7 +2891,7 @@ function MapLegend({ entries }: { entries: LegendEntry[] }) {
   if (entries.length === 0) return null;
   return (
     <div className="map__legend" data-testid="map-legend">
-      <div className="map__legend-title">Categories in View</div>
+      <div className="map__legend-title">Loaded Categories</div>
       {entries.map((e) => (
         <div className="map__legend-row" key={e.category}>
           <span className="map__legend-swatch" style={{ background: e.color }} />

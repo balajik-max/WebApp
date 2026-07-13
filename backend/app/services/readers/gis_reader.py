@@ -159,7 +159,16 @@ class GISReader:
         frames: list[gpd.GeoDataFrame] = []
         for layer_name, _geom_type in layers:
             try:
-                layer_gdf = gpd.read_file(vsizip_path, layer=layer_name)
+                # OpenFileGDB exposes its true source FID through the frame
+                # index when ``fid_as_index`` is requested (for example a
+                # Polygon table may legitimately start at FID 884). Preserve
+                # it before concatenation resets the per-layer indices.
+                layer_gdf = gpd.read_file(
+                    vsizip_path,
+                    layer=layer_name,
+                    engine="pyogrio",
+                    fid_as_index=True,
+                )
             except Exception as exc:  # noqa: BLE001 — one bad layer shouldn't sink the whole dataset
                 log.warning(
                     "Skipping unreadable layer %r in %s: %s", layer_name, gdb_entry, exc
@@ -175,6 +184,10 @@ class GISReader:
             # `pd.concat` frames whose CRS objects aren't identical, so
             # every layer must be normalized to the shared target CRS
             # *before* concatenation, not after.
+            if not any(str(column).casefold() == "fid" for column in layer_gdf.columns):
+                layer_gdf.insert(0, "FID", layer_gdf.index.to_list())
+            layer_gdf = layer_gdf.reset_index(drop=True)
+
             if layer_gdf.crs is None:
                 layer_gdf = layer_gdf.set_crs(_TARGET_CRS, allow_override=True)
             elif str(layer_gdf.crs).upper() != _TARGET_CRS:
