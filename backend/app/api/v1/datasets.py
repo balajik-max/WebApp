@@ -472,10 +472,21 @@ async def dataset_feature_table(
         )
     ).scalars().all()
 
-    # Column set = union of attribute keys seen on this page, alphabetical.
-    columns: set[str] = set()
-    for r in rows:
-        columns.update(r.attributes.keys())
+    # Column set = union of attribute keys across the WHOLE dataset, not just
+    # this page. A zipped File Geodatabase ingests multiple layers with
+    # different schemas (Building, Manhole, Wall, ...) back-to-back, so any
+    # single page of rows is dominated by one layer — deriving columns from
+    # the page alone made every layer but the first look like its columns
+    # were silently dropped, when they were fully ingested all along.
+    columns = (
+        await db.execute(
+            text(
+                "SELECT DISTINCT jsonb_object_keys(attributes) AS key "
+                "FROM features WHERE dataset_id = :dataset_id ORDER BY key"
+            ),
+            {"dataset_id": str(dataset_id)},
+        )
+    ).scalars().all()
 
     return {
         "total": int(total),
