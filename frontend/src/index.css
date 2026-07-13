@@ -2923,8 +2923,6 @@ body {
   font-weight: 600;
   color: var(--ink);
 }
-  font-size: 11px;
-}
 
 .ai-turn__dot {
   width: 6px;
