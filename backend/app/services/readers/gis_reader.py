@@ -25,6 +25,7 @@ from shapely.geometry.base import BaseGeometry
 
 from app.db.session import SessionLocal
 from app.models import Feature
+from app.services.classification import resolve_canonical_classes_bulk
 from app.services.readers.base import ReaderResult
 from app.services.readers.severity import infer_severity_from_attributes
 
@@ -269,6 +270,24 @@ class GISReader:
                     best_ratio = ratio
                     category_col = col_name
 
+        # Resolve every distinct raw category string in this batch to a
+        # canonical asset class ONCE (see app.services.classification) —
+        # this is what keeps semantic classification cheap regardless of
+        # how many feature rows share that category.
+        canonical_by_category: dict[str, str] = {}
+        async with SessionLocal() as classify_session:
+            if category_col is not None:
+                distinct_categories = {
+                    c for c in gdf[category_col].dropna().unique().tolist()
+                    if _clean_str(c) is not None
+                }
+                resolutions = await resolve_canonical_classes_bulk(
+                    {str(c) for c in distinct_categories}, classify_session
+                )
+                canonical_by_category = {
+                    raw: res.canonical_class for raw, res in resolutions.items()
+                }
+
         async with SessionLocal() as session:
             for _, row in gdf.iterrows():
                 geom: BaseGeometry | None = row.get("geometry")
@@ -277,6 +296,10 @@ class GISReader:
                     continue
 
                 attrs = _row_attributes(row.to_dict())
+                if category_col is not None:
+                    raw_category = _clean_str(row.get(category_col))
+                    if raw_category is not None:
+                        attrs["_canonical_class"] = canonical_by_category.get(raw_category)
                 # Round-trip through json so any exotic types raise here, not in DB.
                 json.dumps(attrs)
 

@@ -275,3 +275,77 @@ export const createSurveyRequest = (body: {
   latitude: number;
   longitude: number;
 }) => apiPost<SurveyRequestRow>("/api/v1/survey-requests", body);
+
+// ---------------------- AI spatial audit engine ----------------------------
+export type AnomalyType = "pole_redundancy" | "drain_encroachment" | "manhole_status";
+export type AnomalyColor = "red" | "yellow" | "green";
+export type AnomalyStatus = "open" | "reviewing" | "resolved" | "dismissed";
+
+export interface AuditRunResult {
+  dataset_id: string;
+  ward: string | null;
+  pole_redundancy: Record<string, number>;
+  drain_encroachment: Record<string, number>;
+  manhole_status: Record<string, number>;
+}
+
+export interface SpatialAnomaly {
+  id: string;
+  dataset_id: string;
+  ward: string | null;
+  anomaly_type: AnomalyType;
+  color: AnomalyColor;
+  severity_score: number;
+  status: AnomalyStatus;
+  lon: number;
+  lat: number;
+  feature_ids: string[];
+  anomaly_metadata: Record<string, unknown>;
+  explanation_text: string | null;
+  created_at: string;
+}
+
+export interface AnomalyExplanation {
+  id: string;
+  explanation_text: string;
+  explanation_model: string;
+  cached: boolean;
+}
+
+export const runSpatialAudit = (datasetId: string, signal?: AbortSignal) =>
+  apiPost<AuditRunResult>("/api/v1/ai/audit", { dataset_id: datasetId }, signal);
+
+export const fetchAnomalies = (datasetId: string, statusFilter?: AnomalyStatus, signal?: AbortSignal) => {
+  const qs = new URLSearchParams({ dataset_id: datasetId });
+  if (statusFilter) qs.set("status_filter", statusFilter);
+  return apiGet<SpatialAnomaly[]>(`/api/v1/ai/audit/anomalies?${qs.toString()}`, signal);
+};
+
+export const explainAnomaly = (anomalyId: string, signal?: AbortSignal) =>
+  apiPost<AnomalyExplanation>(`/api/v1/ai/audit/anomalies/${anomalyId}/explain`, {}, signal);
+
+export const updateAnomalyStatus = (anomalyId: string, status: AnomalyStatus) =>
+  apiPatch<SpatialAnomaly>(`/api/v1/ai/audit/anomalies/${anomalyId}`, { status });
+
+// ---------------------- category -> canonical class mapping ----------------
+export interface CategoryClassMapping {
+  raw_category: string;
+  canonical_class: string;
+  match_method: "exact" | "fuzzy" | "embedding" | "manual";
+  confidence: number;
+}
+
+export const fetchCanonicalClasses = (signal?: AbortSignal) =>
+  apiGet<string[]>("/api/v1/classification/classes", signal);
+
+export const fetchUnclassifiedCategories = (signal?: AbortSignal) =>
+  apiGet<CategoryClassMapping[]>("/api/v1/classification/unclassified", signal);
+
+export const fetchAllClassMappings = (signal?: AbortSignal) =>
+  apiGet<CategoryClassMapping[]>("/api/v1/classification", signal);
+
+export const assignCanonicalClass = (rawCategory: string, canonicalClass: string) =>
+  apiPatch<CategoryClassMapping>(
+    `/api/v1/classification/${encodeURIComponent(rawCategory)}`,
+    { canonical_class: canonicalClass }
+  );

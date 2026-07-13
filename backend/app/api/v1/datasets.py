@@ -478,15 +478,21 @@ async def dataset_feature_table(
     # single page of rows is dominated by one layer — deriving columns from
     # the page alone made every layer but the first look like its columns
     # were silently dropped, when they were fully ingested all along.
-    columns = (
-        await db.execute(
-            text(
-                "SELECT DISTINCT jsonb_object_keys(attributes) AS key "
-                "FROM features WHERE dataset_id = :dataset_id ORDER BY key"
-            ),
-            {"dataset_id": str(dataset_id)},
-        )
-    ).scalars().all()
+    # Leading-underscore keys (e.g. _canonical_class) are internal spatial
+    # audit engine bookkeeping, not survey attributes — never surface them
+    # in the user-facing attribute table.
+    columns = [
+        c for c in (
+            await db.execute(
+                text(
+                    "SELECT DISTINCT jsonb_object_keys(attributes) AS key "
+                    "FROM features WHERE dataset_id = :dataset_id ORDER BY key"
+                ),
+                {"dataset_id": str(dataset_id)},
+            )
+        ).scalars().all()
+        if not c.startswith("_")
+    ]
 
     return {
         "total": int(total),

@@ -72,3 +72,43 @@ class AiAnswer(BaseModel):
     redundant_feature_ids: list[str] = Field(default_factory=list)
     needed_feature_ids: list[str] = Field(default_factory=list)
     needed_locations: list[NeededLocation] = Field(default_factory=list)
+
+
+# ---------- Spatial audit engine (Phase 1) --------------------------------
+class AuditRunRequest(BaseModel):
+    dataset_id: uuid.UUID
+
+
+class AuditRunResponse(BaseModel):
+    dataset_id: uuid.UUID
+    ward: str | None
+    pole_redundancy: dict[str, int]
+    drain_encroachment: dict[str, int]
+    manhole_status: dict[str, int]
+
+
+class SpatialAnomalyOut(BaseModel):
+    id: uuid.UUID
+    dataset_id: uuid.UUID
+    ward: str | None
+    anomaly_type: str
+    color: str
+    severity_score: float
+    status: str
+    lon: float
+    lat: float
+    feature_ids: list[uuid.UUID]
+    anomaly_metadata: dict[str, Any]
+    explanation_text: str | None
+    created_at: datetime
+
+
+class AnomalyExplainResponse(BaseModel):
+    id: uuid.UUID
+    explanation_text: str
+    explanation_model: str
+    cached: bool
+
+
+class AnomalyStatusUpdate(BaseModel):
+    status: Literal["open", "reviewing", "resolved", "dismissed"]

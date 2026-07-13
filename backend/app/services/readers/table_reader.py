@@ -21,6 +21,7 @@ from shapely.geometry import Point
 
 from app.db.session import SessionLocal
 from app.models import Feature
+from app.services.classification import resolve_canonical_classes_bulk
 from app.services.readers.base import ReaderResult
 from app.services.readers.severity import infer_severity_from_attributes
 
@@ -132,6 +133,22 @@ class TableReader:
         drop_cols = {lat_col, lon_col}
         batch: list[Feature] = []
 
+        # See gis_reader.py for the rationale — resolve every distinct raw
+        # category string in this batch to a canonical asset class ONCE.
+        canonical_by_category: dict[str, str] = {}
+        async with SessionLocal() as classify_session:
+            if category_col is not None:
+                distinct_categories = {
+                    c for c in df[category_col].dropna().unique().tolist()
+                    if _clean_str(c) is not None
+                }
+                resolutions = await resolve_canonical_classes_bulk(
+                    {str(c) for c in distinct_categories}, classify_session
+                )
+                canonical_by_category = {
+                    raw: res.canonical_class for raw, res in resolutions.items()
+                }
+
         async with SessionLocal() as session:
             for _, row in df.iterrows():
                 lat_raw = row.get(lat_col)
@@ -154,6 +171,10 @@ class TableReader:
                     for col in df.columns
                     if col not in drop_cols
                 }
+                if category_col is not None:
+                    raw_category = _clean_str(row.get(category_col))
+                    if raw_category is not None:
+                        attrs["_canonical_class"] = canonical_by_category.get(raw_category)
                 json.dumps(attrs)  # fail fast on non-serializable content
 
                 severity_val = 0.0

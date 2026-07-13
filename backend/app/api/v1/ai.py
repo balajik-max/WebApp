@@ -11,19 +11,27 @@ All four endpoints share the same structural guarantee:
 from __future__ import annotations
 
 import logging
+import uuid
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import require_any
 from app.db.session import get_db
+from app.models.spatial_anomaly import AnomalyStatus, SpatialAnomaly
 from app.schemas.ai import (
     AiAnswer,
+    AnomalyExplainResponse,
+    AnomalyStatusUpdate,
+    AuditRunRequest,
+    AuditRunResponse,
     NLQueryRequest,
     RecommendRequest,
     ReportRequest,
     SpacingRequest,
+    SpatialAnomalyOut,
 )
 from app.services.ai import (
     AI_DISCLAIMER,
@@ -39,6 +47,7 @@ from app.services.ai_context import (
     build_recommend_context,
     build_report_facts,
 )
+from app.services.spatial_audit import run_spatial_audit
 
 log = logging.getLogger("davangere.api.ai")
 router = APIRouter()
@@ -500,3 +509,151 @@ async def spacing(body: SpacingRequest, db: AsyncSession = Depends(get_db)) -> A
         needed_feature_ids=facts.needed_feature_ids,
             needed_locations=[{"id": loc.id, "lon": loc.lon, "lat": loc.lat, "reason": loc.reason} for loc in facts.needed_locations],
     )
+
+
+# ---------------------------------------------------------------------------
+# Spatial Audit Engine (Phase 1) — pole redundancy, drain encroachment,
+# manhole status. All geometry math lives in app.services.spatial_audit;
+# these endpoints only run it, persist/read results, and (lazily) narrate
+# a single finding via the same anti-hallucination run_grounded_completion
+# used everywhere else in this file.
+# ---------------------------------------------------------------------------
+def _anomaly_out(row: SpatialAnomaly, lon: float, lat: float) -> SpatialAnomalyOut:
+    return SpatialAnomalyOut(
+        id=row.id,
+        dataset_id=row.dataset_id,
+        ward=row.ward,
+        anomaly_type=row.anomaly_type.value,
+        color=row.color.value,
+        severity_score=row.severity_score,
+        status=row.status.value,
+        lon=lon,
+        lat=lat,
+        feature_ids=list(row.feature_ids),
+        anomaly_metadata=row.anomaly_metadata,
+        explanation_text=row.explanation_text,
+        created_at=row.created_at,
+    )
+
+
+@router.post(
+    "/audit",
+    response_model=AuditRunResponse,
+    dependencies=[Depends(require_any)],
+    summary="Run the spatial audit engine (pole redundancy, drain encroachment, manhole status) for a dataset",
+)
+async def run_audit(body: AuditRunRequest, db: AsyncSession = Depends(get_db)) -> AuditRunResponse:
+    try:
+        summary = await run_spatial_audit(body.dataset_id, db)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    ward_row = (
+        await db.execute(
+            select(SpatialAnomaly.ward).where(SpatialAnomaly.dataset_id == body.dataset_id).limit(1)
+        )
+    ).scalar_one_or_none()
+
+    return AuditRunResponse(
+        dataset_id=body.dataset_id,
+        ward=ward_row,
+        pole_redundancy=summary.pole_redundancy,
+        drain_encroachment=summary.drain_encroachment,
+        manhole_status=summary.manhole_status,
+    )
+
+
+@router.get(
+    "/audit/anomalies",
+    response_model=list[SpatialAnomalyOut],
+    dependencies=[Depends(require_any)],
+    summary="List persisted spatial audit findings as map-ready points",
+)
+async def list_anomalies(
+    dataset_id: uuid.UUID,
+    status_filter: str | None = None,
+    db: AsyncSession = Depends(get_db),
+) -> list[SpatialAnomalyOut]:
+    stmt = (
+        select(SpatialAnomaly, func.ST_X(SpatialAnomaly.geom), func.ST_Y(SpatialAnomaly.geom))
+        .where(SpatialAnomaly.dataset_id == dataset_id)
+    )
+    if status_filter:
+        stmt = stmt.where(SpatialAnomaly.status == status_filter)
+    rows = (await db.execute(stmt)).all()
+    return [_anomaly_out(row, lon, lat) for row, lon, lat in rows]
+
+
+@router.post(
+    "/audit/anomalies/{anomaly_id}/explain",
+    response_model=AnomalyExplainResponse,
+    dependencies=[Depends(require_any)],
+    summary="Get (or lazily generate) a plain-English explanation for one specific finding",
+)
+async def explain_anomaly(anomaly_id: uuid.UUID, db: AsyncSession = Depends(get_db)) -> AnomalyExplainResponse:
+    row = (
+        await db.execute(select(SpatialAnomaly).where(SpatialAnomaly.id == anomaly_id))
+    ).scalar_one_or_none()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Anomaly not found")
+
+    if row.explanation_text:
+        return AnomalyExplainResponse(
+            id=row.id,
+            explanation_text=row.explanation_text,
+            explanation_model=row.explanation_model or "",
+            cached=True,
+        )
+
+    crib = (
+        f"ANOMALY_TYPE: {row.anomaly_type.value}\n"
+        f"COLOR: {row.color.value}\n"
+        f"SEVERITY_SCORE_0_100: {row.severity_score:.0f}\n"
+        f"WARD: {row.ward or 'unknown'}\n"
+        f"FACTS (verified, never invent numbers not shown here):\n{row.anomaly_metadata}"
+    )
+    prompt = (
+        "Using ONLY the FACTS below, write a short (2-4 sentence) plain-English "
+        "explanation of this single finding for a municipal engineer, in the "
+        "style: what was found, why it matters, and a one-line recommended "
+        "action. Never state a number that is not present in FACTS.\n\n"
+        f"FACTS:\n{crib}"
+    )
+    reply = await run_grounded_completion(context=crib, user_prompt=prompt, num_predict=250, num_ctx=1024)
+
+    row.explanation_text = reply.text
+    row.explanation_model = reply.model
+    await db.commit()
+
+    return AnomalyExplainResponse(
+        id=row.id, explanation_text=reply.text, explanation_model=reply.model, cached=False
+    )
+
+
+@router.patch(
+    "/audit/anomalies/{anomaly_id}",
+    response_model=SpatialAnomalyOut,
+    dependencies=[Depends(require_any)],
+    summary="Update a finding's review status (open/reviewing/resolved/dismissed)",
+)
+async def update_anomaly_status(
+    anomaly_id: uuid.UUID, body: AnomalyStatusUpdate, db: AsyncSession = Depends(get_db)
+) -> SpatialAnomalyOut:
+    row = (
+        await db.execute(select(SpatialAnomaly).where(SpatialAnomaly.id == anomaly_id))
+    ).scalar_one_or_none()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Anomaly not found")
+
+    row.status = AnomalyStatus(body.status)
+    await db.commit()
+    await db.refresh(row)
+
+    lon, lat = (
+        await db.execute(
+            select(func.ST_X(SpatialAnomaly.geom), func.ST_Y(SpatialAnomaly.geom)).where(
+                SpatialAnomaly.id == anomaly_id
+            )
+        )
+    ).one()
+    return _anomaly_out(row, lon, lat)
