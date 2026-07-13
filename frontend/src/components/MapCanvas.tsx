@@ -172,6 +172,157 @@ const LAYER_AI_NEEDED = "ai-highlight-needed";
 const AI_REDUNDANT_COLOR = "#ef4444"; // red
 const AI_NEEDED_COLOR = "#22c55e";    // green
 
+// Measurement (ruler) tool — separate GeoJSON sources for the vertex
+// points, the outline (line/path/polygon-ring/circle-ring), and the filled
+// area (polygon/circle only) so each can have its own paint without
+// touching any of the feature/AI layers above.
+const MEASURE_POINTS_SOURCE = "measure-points";
+const MEASURE_LINE_SOURCE = "measure-line";
+const MEASURE_FILL_SOURCE = "measure-fill";
+const MEASURE_RADIUS_LINE_SOURCE = "measure-radius-line";
+const LAYER_MEASURE_FILL = "measure-fill-layer";
+const LAYER_MEASURE_LINE = "measure-line-layer";
+const LAYER_MEASURE_RADIUS_LINE = "measure-radius-line-layer";
+const LAYER_MEASURE_POINTS = "measure-points-layer";
+const MEASURE_COLOR = "#f59e0b";
+
+// Below this geodesic separation a second Line/Circle vertex is treated as a
+// degenerate (e.g. a stray double-click on the start), so it is ignored
+// rather than producing a zero-length / NaN measurement.
+const MIN_MEASURE_METERS = 0.001;
+
+const EARTH_RADIUS_M = 6371008.8;
+
+/** Haversine great-circle distance in meters between two [lon, lat] points. */
+function haversineDistance(a: [number, number], b: [number, number]): number {
+  const toRad = (deg: number) => (deg * Math.PI) / 180;
+  const [lon1, lat1] = a;
+  const [lon2, lat2] = b;
+  const dLat = toRad(lat2 - lat1);
+  const dLon = toRad(lon2 - lon1);
+  const sinDLat = Math.sin(dLat / 2);
+  const sinDLon = Math.sin(dLon / 2);
+  const h = sinDLat * sinDLat + Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * sinDLon * sinDLon;
+  return 2 * EARTH_RADIUS_M * Math.asin(Math.min(1, Math.sqrt(h)));
+}
+
+/** Initial compass bearing in degrees [0, 360) from point a to point b. */
+function bearing(a: [number, number], b: [number, number]): number {
+  const toRad = (deg: number) => (deg * Math.PI) / 180;
+  const [lon1, lat1] = a;
+  const [lon2, lat2] = b;
+  const y = Math.sin(toRad(lon2 - lon1)) * Math.cos(toRad(lat2));
+  const x = Math.cos(toRad(lat1)) * Math.sin(toRad(lat2)) -
+    Math.sin(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.cos(toRad(lon2 - lon1));
+  const deg = (Math.atan2(y, x) * 180) / Math.PI;
+  return (deg + 360) % 360;
+}
+
+/** Total length in meters of an open path (sum of consecutive segments). */
+function pathLength(points: [number, number][]): number {
+  let total = 0;
+  for (let i = 1; i < points.length; i++) total += haversineDistance(points[i - 1], points[i]);
+  return total;
+}
+
+/** Perimeter in meters of a closed ring — same as pathLength plus the
+ * closing segment back to the first point. */
+function ringPerimeter(points: [number, number][]): number {
+  if (points.length < 2) return 0;
+  return pathLength(points) + haversineDistance(points[points.length - 1], points[0]);
+}
+
+/** Destination point in meters/bearing from a start [lon, lat] — the
+ * inverse of haversineDistance/bearing, used to draw a geodesic circle. */
+function destinationPoint(start: [number, number], distanceMeters: number, bearingDeg: number): [number, number] {
+  const toRad = (deg: number) => (deg * Math.PI) / 180;
+  const toDeg = (rad: number) => (rad * 180) / Math.PI;
+  const [lon1, lat1] = start.map(toRad) as [number, number];
+  const brng = toRad(bearingDeg);
+  const angularDist = distanceMeters / EARTH_RADIUS_M;
+  const lat2 = Math.asin(
+    Math.sin(lat1) * Math.cos(angularDist) + Math.cos(lat1) * Math.sin(angularDist) * Math.cos(brng)
+  );
+  const lon2 = lon1 + Math.atan2(
+    Math.sin(brng) * Math.sin(angularDist) * Math.cos(lat1),
+    Math.cos(angularDist) - Math.sin(lat1) * Math.sin(lat2)
+  );
+  return [((toDeg(lon2) + 540) % 360) - 180, toDeg(lat2)];
+}
+
+/** Approximate area in square meters of a geographic ring, via the
+ * spherical-excess (Girard's theorem) polygon-area formula — accurate
+ * enough for city/district-scale ruler measurements without pulling in a
+ * full geodesic library. */
+function ringArea(points: [number, number][]): number {
+  if (points.length < 3) return 0;
+  const toRad = (deg: number) => (deg * Math.PI) / 180;
+  let total = 0;
+  const n = points.length;
+  for (let i = 0; i < n; i++) {
+    const [lon1, lat1] = points[i];
+    const [lon2, lat2] = points[(i + 1) % n];
+    total += toRad(lon2 - lon1) * (2 + Math.sin(toRad(lat1)) + Math.sin(toRad(lat2)));
+  }
+  return Math.abs((total * EARTH_RADIUS_M * EARTH_RADIUS_M) / 2);
+}
+
+/** Builds a geodesic circle ring (closed) of `steps` points around a
+ * center at the given radius, for rendering + area/perimeter math. */
+function circlePolygon(center: [number, number], radiusMeters: number, steps = 64): [number, number][] {
+  const ring: [number, number][] = [];
+  for (let i = 0; i < steps; i++) ring.push(destinationPoint(center, radiusMeters, (360 * i) / steps));
+  return ring;
+}
+
+type MeasureTab = "line" | "path" | "polygon" | "circle";
+
+// Authoritative measurement interaction state machine. Replaces the old
+// scattered booleans / point-count heuristics (which could desync — e.g. a
+// finished Line lingering as "2 points" so the next click was silently read
+// as a third vertex). Handlers read `measurePhaseRef`; the mirrored state
+// only drives React rendering / effects.
+//   inactive — tool off; map clicks must not touch measurement.
+//   idle     — tool on, waiting for the first vertex (no start coord).
+//   drawing  — at least one vertex placed; cursor rubber-bands a preview.
+type MeasurePhase = "inactive" | "idle" | "drawing";
+
+// Line/Circle finish after exactly 2 points; Path/Polygon accept unlimited
+// vertices, finished by a right-click.
+const MEASURE_MULTI_POINT_TABS: ReadonlySet<MeasureTab> = new Set(["path", "polygon"]);
+
+type DistanceUnit = "meters" | "kilometers" | "feet" | "yards" | "miles" | "nautical_miles";
+
+const DISTANCE_UNIT_OPTIONS: Array<{ value: DistanceUnit; label: string; metersPerUnit: number }> = [
+  { value: "meters", label: "Meters", metersPerUnit: 1 },
+  { value: "kilometers", label: "Kilometers", metersPerUnit: 1000 },
+  { value: "feet", label: "Feet", metersPerUnit: 0.3048 },
+  { value: "yards", label: "Yards", metersPerUnit: 0.9144 },
+  { value: "miles", label: "Miles", metersPerUnit: 1609.344 },
+  { value: "nautical_miles", label: "Nautical Miles", metersPerUnit: 1852 },
+];
+
+function metersToUnit(meters: number, unit: DistanceUnit): number {
+  const option = DISTANCE_UNIT_OPTIONS.find((o) => o.value === unit)!;
+  return meters / option.metersPerUnit;
+}
+
+type AreaUnit = "sq_meters" | "sq_kilometers" | "acres" | "hectares" | "sq_miles" | "sq_feet";
+
+const AREA_UNIT_OPTIONS: Array<{ value: AreaUnit; label: string; sqMetersPerUnit: number }> = [
+  { value: "sq_meters", label: "Sq Meters", sqMetersPerUnit: 1 },
+  { value: "sq_kilometers", label: "Sq Kilometers", sqMetersPerUnit: 1_000_000 },
+  { value: "hectares", label: "Hectares", sqMetersPerUnit: 10_000 },
+  { value: "acres", label: "Acres", sqMetersPerUnit: 4046.8564224 },
+  { value: "sq_miles", label: "Sq Miles", sqMetersPerUnit: 2_589_988.110336 },
+  { value: "sq_feet", label: "Sq Feet", sqMetersPerUnit: 0.09290304 },
+];
+
+function sqMetersToUnit(sqMeters: number, unit: AreaUnit): number {
+  const option = AREA_UNIT_OPTIONS.find((o) => o.value === unit)!;
+  return sqMeters / option.sqMetersPerUnit;
+}
+
 function roundRectPath(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, r: number): void {
   ctx.beginPath();
   ctx.moveTo(x + r, y);
@@ -347,6 +498,51 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
   const [flyError, setFlyError] = useState<string | null>(null);
   const [mapReady, setMapReady] = useState(false);
 
+  // Ruler / measurement tool (Google Earth Pro-style dialog: Line, Path,
+  // Polygon, Circle) — off by default. `measureActiveRef`/`measurePointsRef`
+  // mirror state into refs so the map click/mousemove handlers (registered
+  // once on "load") always read the latest value instead of a stale closure.
+  const [measureActive, setMeasureActive] = useState(false);
+  const measureActiveRef = useRef(false);
+  const [measureTab, setMeasureTab] = useState<MeasureTab>("line");
+  const measureTabRef = useRef<MeasureTab>("line");
+  // Locked vertices for the shape in progress. Point-count semantics differ
+  // per tab: Line/Circle cap at exactly 2 (start + end/radius point); Path/
+  // Polygon accept unlimited vertices, finished by a right-click. A live
+  // preview point (following the mouse) is kept separate so it doesn't get
+  // treated as a locked vertex.
+  const [measurePoints, setMeasurePoints] = useState<[number, number][]>([]);
+  const measurePointsRef = useRef<[number, number][]>([]);
+  const [measurePreviewPoint, setMeasurePreviewPoint] = useState<[number, number] | null>(null);
+  // Explicit drawing state machine — see `MeasurePhase`. Handlers read the
+  // ref; the state mirror only drives React rendering / effects.
+  const [measurePhase, setMeasurePhaseState] = useState<MeasurePhase>("inactive");
+  const measurePhaseRef = useRef<MeasurePhase>("inactive");
+  // Monotonic id that invalidates any in-flight preview RAF callback whenever
+  // the measurement is reset / cleared / cancelled / finalized, so a stale
+  // frame can never re-draw old geometry after the state has moved on.
+  const measureSessionRef = useRef(0);
+  // Last known cursor position in map-container pixel space (screen point,
+  // NOT lng/lat) — the authoritative geographic preview endpoint is always
+  // re-derived from this via map.unproject() against the *current* camera.
+  // A stationary cursor still points at a different geographic location
+  // once the map pans/zooms under it, and MapLibre does not synthesize a
+  // "mousemove" for that — only "render" fires on every frame of a pan,
+  // zoom, or programmatic camera animation (flyTo/easeTo/fitBounds), so
+  // that's what re-syncs the preview instead of relying on move/zoom end.
+  const latestPointerPointRef = useRef<{ x: number; y: number } | null>(null);
+  const measureRafRef = useRef<number | null>(null);
+  const [measureUnit, setMeasureUnit] = useState<DistanceUnit>("kilometers");
+  const [measureAreaUnit, setMeasureAreaUnit] = useState<AreaUnit>("sq_kilometers");
+  // Ruler panel's dragged position — null means "use the default centered
+  // position". Persists across close/reopen for the life of this component
+  // (i.e. this tab session), reset on a full page reload like the rest of
+  // the map's in-memory UI state.
+  const [rulerPanelPos, setRulerPanelPos] = useState<{ x: number; y: number } | null>(null);
+
+  // Live cursor position readout (bottom-right, Google-Earth-style).
+  const [cursorLngLat, setCursorLngLat] = useState<[number, number] | null>(null);
+
   // Keep a fast lookup: featureId → "redundant" | "needed" for tooltip + hover
   const aiStatusRef = useRef<Map<string, "redundant" | "needed">>(new Map());
   const aiCoordinateHighlightsRef = useRef<AiHighlight[]>([]);
@@ -453,6 +649,436 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     setBasemap(next);
     map.setLayoutProperty("osm", "visibility", next === "street" ? "visible" : "none");
     map.setLayoutProperty("satellite", "visibility", next === "satellite" ? "visible" : "none");
+  }, []);
+
+  // Renders the locked vertices plus, while still placing the shape, a live
+  // preview out to `previewPoint` (the current mouse position) — the same
+  // "rubber band" behavior as Google Earth Pro's ruler tools. Geometry
+  // shape depends on the active tab:
+  //  - line/path: open LineString through the locked points (+ preview).
+  //  - polygon: closed ring (line) + filled polygon through the locked
+  //    points (+ preview), so the shape is visible while still open.
+  //  - circle: locked point 0 is the center; the second point (locked or
+  //    live preview) sets the radius — rendered as a geodesic circle ring
+  //    (line) + filled polygon, not the raw two clicked points.
+
+  // Single entry point for updating the authoritative phase — keeps the ref
+  // (read by map handlers) and the React state (used for rendering/effects)
+  // perfectly in sync so they can never contradict each other.
+  const setMeasurePhase = useCallback((next: MeasurePhase) => {
+    measurePhaseRef.current = next;
+    setMeasurePhaseState(next);
+  }, []);
+
+  // Cancels any in-flight preview frame and bumps the session id so a frame
+  // scheduled before a reset can never redraw stale geometry afterwards.
+  const beginNewSession = useCallback(() => {
+    if (measureRafRef.current !== null) {
+      cancelAnimationFrame(measureRafRef.current);
+      measureRafRef.current = null;
+    }
+    measureSessionRef.current += 1;
+  }, []);
+
+  // Guarded on source existence (map.getSource returning the source), NOT
+  // map.isStyleLoaded() — that flag reflects whether the WHOLE style is
+  // currently idle (including unrelated basemap/feature tile loading), and
+  // flips to false very frequently during ordinary panning/zooming/tile
+  // fetch, long after the measurement sources themselves were created once
+  // on "load". Gating on it was silently dropping legitimate setData calls
+  // (a placed point's marker/line/endpoint intermittently failing to
+  // render) purely because some unrelated tile was mid-fetch at that exact
+  // moment — GeoJSONSource.setData() itself has no such requirement, only
+  // that the source already exists.
+  const flushMeasureSources = useCallback((previewPoint?: [number, number] | null) => {
+    const map = mapRef.current;
+    if (!map) return;
+    const points = measurePointsRef.current;
+    const tab = measureTabRef.current;
+    const pointSrc = map.getSource(MEASURE_POINTS_SOURCE) as GeoJSONSource | undefined;
+    const lineSrc = map.getSource(MEASURE_LINE_SOURCE) as GeoJSONSource | undefined;
+    const fillSrc = map.getSource(MEASURE_FILL_SOURCE) as GeoJSONSource | undefined;
+    const radiusSrc = map.getSource(MEASURE_RADIUS_LINE_SOURCE) as GeoJSONSource | undefined;
+
+    if (pointSrc) {
+      pointSrc.setData({
+        type: "FeatureCollection",
+        features: points.map((p, i) => ({
+          type: "Feature",
+          geometry: { type: "Point", coordinates: p },
+          properties: { index: i },
+        })),
+      });
+    }
+
+    let lineCoords: [number, number][] = [];
+    let fillCoords: [number, number][] | null = null;
+    // Dedicated center→boundary radius line for the Circle tool. Kept in its own
+    // source so it never gets wiped by a preview reset that clears the outline,
+    // and so it sits above the fill but below the point markers. Null unless the
+    // active tab is a Circle with a known center + edge (preview or confirmed).
+    let radiusLineCoords: [number, number][] | null = null;
+
+    if (tab === "circle") {
+      const center = points[0];
+      const edge = points[1] ?? previewPoint;
+      if (center && edge) {
+        const radius = haversineDistance(center, edge);
+        const ring = circlePolygon(center, radius);
+        lineCoords = [...ring, ring[0]];
+        fillCoords = lineCoords;
+        radiusLineCoords = [center, edge];
+      }
+    } else if (tab === "polygon") {
+      const live = points.length >= 1 && previewPoint ? [...points, previewPoint] : points;
+      if (live.length >= 2) lineCoords = [...live, live[0]];
+      if (live.length >= 3) fillCoords = [...live, live[0]];
+    } else {
+      // line / path
+      lineCoords = points.length >= 1 && previewPoint ? [...points, previewPoint] : points;
+    }
+
+    if (lineSrc) {
+      lineSrc.setData({
+        type: "FeatureCollection",
+        features: lineCoords.length > 1
+          ? [{ type: "Feature", geometry: { type: "LineString", coordinates: lineCoords }, properties: {} }]
+          : [],
+      });
+    }
+    if (fillSrc) {
+      fillSrc.setData({
+        type: "FeatureCollection",
+        features: fillCoords
+          ? [{ type: "Feature", geometry: { type: "Polygon", coordinates: [fillCoords] }, properties: {} }]
+          : [],
+      });
+    }
+    if (radiusSrc) {
+      radiusSrc.setData({
+        type: "FeatureCollection",
+        features: radiusLineCoords
+          ? [{ type: "Feature", geometry: { type: "LineString", coordinates: radiusLineCoords }, properties: {} }]
+          : [],
+      });
+    }
+  }, []);
+
+  // Whether a rubber-band preview should currently be tracking the cursor:
+  // true whenever the tool is in the "drawing" phase (at least one vertex
+  // placed and not yet finished) — for every tab, not just Line/Circle.
+  const isAwaitingMeasurePreview = useCallback(() => {
+    return measurePhaseRef.current === "drawing";
+  }, []);
+
+  // Re-derives the preview endpoint from the *current* camera and the last
+  // known cursor pixel — this is what keeps the line synced when the map
+  // pans/zooms under a stationary cursor. Always reads from refs (never
+  // captures coordinates in a closure), so a newer scheduled frame can
+  // never be overwritten by a stale one.
+  const updateMeasurePreviewFromPointer = useCallback(() => {
+    const map = mapRef.current;
+    const point = latestPointerPointRef.current;
+    if (!map || !point) return;
+    if (!measureActiveRef.current || !isAwaitingMeasurePreview()) return;
+    const lngLat = map.unproject([point.x, point.y]);
+    const next: [number, number] = [lngLat.lng, lngLat.lat];
+    setMeasurePreviewPoint(next);
+    flushMeasureSources(next);
+  }, [flushMeasureSources, isAwaitingMeasurePreview]);
+
+  // Coalesces mousemove/render bursts into at most one preview update per
+  // animation frame — only one frame is ever in flight at a time, and it
+  // always consumes the latest ref values when it finally runs. The captured
+  // session id makes the frame a no-op if the measurement was reset in the
+  // meantime (clear/escape/finalize/tool-switch), so no stale geometry can
+  // be re-applied after the state has moved on.
+  const scheduleMeasurePreviewUpdate = useCallback(() => {
+    if (measureRafRef.current !== null) return;
+    const sessionId = measureSessionRef.current;
+    measureRafRef.current = requestAnimationFrame(() => {
+      measureRafRef.current = null;
+      if (sessionId !== measureSessionRef.current) return;
+      updateMeasurePreviewFromPointer();
+    });
+  }, [updateMeasurePreviewFromPointer]);
+
+  const cancelScheduledMeasurePreviewUpdate = useCallback(() => {
+    if (measureRafRef.current !== null) {
+      cancelAnimationFrame(measureRafRef.current);
+      measureRafRef.current = null;
+    }
+  }, []);
+
+  // Whether a measurement tool currently owns map input — true only while
+  // the Measure panel is open AND a tool is actually armed/drawing (phase
+  // !== "inactive"). Escape deactivates the tool (phase -> "inactive") but
+  // deliberately leaves the panel open, so `measureActiveRef.current` alone
+  // is NOT enough to decide whether ordinary data-layer hover/click should
+  // stay suspended — after Escape the panel is still open but the tool no
+  // longer owns input, so normal layers must go back to being interactive.
+  const isMeasureInputActive = useCallback(() => {
+    return measureActiveRef.current && measurePhaseRef.current !== "inactive";
+  }, []);
+
+  // Keeps the canvas cursor consistent with the authoritative measurement state:
+  // crosshair while a mode is selected and not deactivated, plain otherwise.
+  // Reads from refs so it can be called synchronously right after a phase
+  // change (state updates are async but the refs are set immediately).
+  const syncMeasureCursor = useCallback(() => {
+    const map = mapRef.current;
+    if (!map) return;
+    map.getCanvas().style.cursor = isMeasureInputActive() ? "crosshair" : "";
+  }, [isMeasureInputActive]);
+
+  // Closes any ordinary data-layer hover tooltip that was already open the
+  // instant a measurement tool is activated (or switched) — guarding the
+  // hover/click handlers on measureActiveRef only prevents FUTURE popups;
+  // a tooltip already showing needs its state cleared explicitly, or it
+  // would keep rendering, stale, until the next real mouse event. Cursor
+  // ownership is handled separately by syncMeasureCursor.
+  const suspendDataLayerInteraction = useCallback(() => {
+    setHover(null);
+  }, []);
+
+  // Shared: wipes every in-progress measurement artifact (pending preview
+  // frame, cursor pixel, locked vertices, live preview point) and guarantees
+  // no stale RAF/closure can repaint old geometry. Does NOT touch the phase
+  // or the panel visibility — callers decide the resulting phase (inactive for
+  // Escape, idle for a fresh tab / Clear) and whether the tool stays open.
+  const resetMeasureTempState = useCallback(() => {
+    cancelScheduledMeasurePreviewUpdate();
+    latestPointerPointRef.current = null;
+    measurePointsRef.current = [];
+    setMeasurePoints([]);
+    setMeasurePreviewPoint(null);
+    beginNewSession();
+  }, [cancelScheduledMeasurePreviewUpdate, beginNewSession]);
+
+  // Central cancellation for Escape, panel close, and any future tool-switch
+  // with an unfinished shape. Cancels ONLY the unfinished active measurement
+  // and leaves any already-finished shape on the map untouched — Escape must
+  // never delete a completed measurement. The panel stays open but the tool
+  // is marked "inactive", so map clicks / right-click / mousemove can no
+  // longer add or rebuild geometry until the user explicitly selects a mode
+  // tab again.
+  const cancelActiveMeasurement = useCallback(
+    (_reason: "escape" | "panel-close" | "tool-switch" | "unmount") => {
+      const wasDrawing = measurePhaseRef.current === "drawing";
+      // Only discard locked vertices if a shape was still being drawn. A
+      // finished measurement (phase "idle" with confirmed points) is preserved.
+      if (wasDrawing) {
+        measurePointsRef.current = [];
+        setMeasurePoints([]);
+        setMeasurePreviewPoint(null);
+      }
+      cancelScheduledMeasurePreviewUpdate();
+      latestPointerPointRef.current = null;
+      beginNewSession();
+      setMeasurePhase("inactive");
+      flushMeasureSources(null);
+      syncMeasureCursor();
+    },
+    [flushMeasureSources, cancelScheduledMeasurePreviewUpdate, beginNewSession, setMeasurePhase, syncMeasureCursor]
+  );
+
+  // The single real owner of Measure-window visibility — the same
+  // `measureActive` state the X button and the toolbar toggle already share.
+  // Marks the tool inactive, stops all pending preview work, and hides the
+  // panel WITHOUT discarding an already-finished measurement (it stays on the
+  // map until the next open or an explicit Clear). This is what makes
+  // Escape/X "preserve completed measurements" while still closing the window.
+  const closeMeasurePanel = useCallback(() => {
+    measureActiveRef.current = false;
+    setMeasureActive(false);
+    cancelScheduledMeasurePreviewUpdate();
+    latestPointerPointRef.current = null;
+    beginNewSession();
+    setMeasurePhase("inactive");
+    flushMeasureSources(null);
+    syncMeasureCursor();
+  }, [cancelScheduledMeasurePreviewUpdate, beginNewSession, flushMeasureSources, setMeasurePhase, syncMeasureCursor]);
+
+  // ONE safe-close path shared by the X button and the Escape key: cancel any
+  // unfinished measurement first (preserving completed ones), then close the
+  // window through the real `measureActive` state. Escape and X are now
+  // guaranteed to behave identically.
+  const closeMeasureSafely = useCallback(() => {
+    cancelActiveMeasurement("panel-close");
+    closeMeasurePanel();
+  }, [cancelActiveMeasurement, closeMeasurePanel]);
+
+  // "Clear" wipes every measurement (finished and unfinished) per this app's
+  // single-shot UX and leaves the tool armed/idle so a new measurement can
+  // start immediately — distinct from Escape, which only cancels the in-progress
+  // shape and preserves any already-finished one.
+  const clearMeasurement = useCallback(() => {
+    resetMeasureTempState();
+    setMeasurePhase("idle");
+    flushMeasureSources(null);
+  }, [resetMeasureTempState, flushMeasureSources, setMeasurePhase]);
+
+  // Locks the current Path/Polygon at its already-clicked vertices (right-
+  // click completion). Only the confirmed, left-clicked points are kept —
+  // the cursor's right-click location is never added as a vertex. The shape
+  // stays on the map; the phase returns to "idle" so the next left click
+  // starts a fresh shape rather than extending the finished one.
+  const finishMeasurePath = useCallback(() => {
+    const tab = measureTabRef.current;
+    if (!MEASURE_MULTI_POINT_TABS.has(tab)) return;
+    const minVertices = tab === "polygon" ? 3 : 2;
+    if (measurePointsRef.current.length < minVertices) return;
+    beginNewSession();
+    cancelScheduledMeasurePreviewUpdate();
+    setMeasurePreviewPoint(null);
+    setMeasurePhase("idle");
+    flushMeasureSources(null);
+  }, [flushMeasureSources, cancelScheduledMeasurePreviewUpdate, beginNewSession, setMeasurePhase]);
+
+  const toggleMeasureActive = useCallback(() => {
+    if (measureActiveRef.current) {
+      // Closing via the toolbar toggle reuses the exact same safe-close path
+      // as the X button / Escape, so all three stay identical.
+      closeMeasureSafely();
+      return;
+    }
+    measureActiveRef.current = true;
+    setMeasureActive(true);
+    beginNewSession();
+    cancelScheduledMeasurePreviewUpdate();
+    latestPointerPointRef.current = null;
+    measurePointsRef.current = [];
+    setMeasurePoints([]);
+    setMeasurePreviewPoint(null);
+    setMeasurePhase("idle");
+    flushMeasureSources(null);
+    syncMeasureCursor();
+    // Close any ordinary data-layer tooltip that happened to be open the
+    // instant measurement mode was activated.
+    suspendDataLayerInteraction();
+  }, [closeMeasureSafely, flushMeasureSources, cancelScheduledMeasurePreviewUpdate, beginNewSession, setMeasurePhase, syncMeasureCursor, suspendDataLayerInteraction]);
+
+  // Switching modes reuses the same cancellation path: the previous tool's
+  // unfinished geometry is wiped (via resetMeasureTempState) before the new
+  // tab is armed at "idle", so no stale preview/vertices carry over.
+  const changeMeasureTab = useCallback((tab: MeasureTab) => {
+    resetMeasureTempState();
+    measureTabRef.current = tab;
+    setMeasureTab(tab);
+    setMeasurePhase("idle");
+    flushMeasureSources(null);
+    syncMeasureCursor();
+  }, [resetMeasureTempState, flushMeasureSources, setMeasurePhase, syncMeasureCursor]);
+
+  // Effective vertex list used for the readout — locked points plus the
+  // live preview point while a shape is still being placed.
+  const measureLiveVertices: [number, number][] =
+    measurePreviewPoint && isAwaitingMeasurePreview()
+      ? [...measurePoints, measurePreviewPoint]
+      : measurePoints;
+
+  let measureLengthMeters = 0;
+  let measureAreaSqMeters = 0;
+  let measureHeading: number | null = null;
+  let measureRadiusMeters = 0;
+
+  if (measureTab === "line") {
+    const end = measurePoints.length === 2 ? measurePoints[1] : measurePreviewPoint;
+    if (measurePoints.length >= 1 && end) {
+      measureLengthMeters = haversineDistance(measurePoints[0], end);
+      measureHeading = bearing(measurePoints[0], end);
+    }
+  } else if (measureTab === "path") {
+    measureLengthMeters = pathLength(measureLiveVertices);
+  } else if (measureTab === "polygon") {
+    measureLengthMeters = measureLiveVertices.length >= 2 ? ringPerimeter(measureLiveVertices) : 0;
+    measureAreaSqMeters = measureLiveVertices.length >= 3 ? ringArea(measureLiveVertices) : 0;
+  } else if (measureTab === "circle") {
+    const center = measurePoints[0];
+    const edge = measurePoints.length === 2 ? measurePoints[1] : measurePreviewPoint;
+    if (center && edge) {
+      measureRadiusMeters = haversineDistance(center, edge);
+      measureLengthMeters = 2 * Math.PI * measureRadiusMeters;
+      measureAreaSqMeters = Math.PI * measureRadiusMeters * measureRadiusMeters;
+    }
+  }
+
+  // Mouse Navigation is always enabled for every measurement mode: panning
+  // and scroll-zoom stay available so the map can be moved while measuring
+  // (the old per-user checkbox has been removed — the enabled behaviour is
+  // now permanent). Restored on unmount so navigation never stays stuck off
+  // if the map is torn down mid-measurement.
+  //
+  // Double-click-zoom is suspended only while a measurement mode is actually
+  // armed (a tab selected and not yet deactivated), because Path/Polygon finish
+  // on right-click (not double-click) and two quick left clicks placing nearby
+  // vertices would otherwise also trigger the map's native double-click-zoom,
+  // jumping the camera mid-drawing. Once the tool is deactivated via Escape
+  // (phase "inactive") the native double-click-zoom is restored, so Escape
+  // never leaves a navigation control permanently disabled.
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !mapReady) return;
+    map.dragPan.enable();
+    map.scrollZoom.enable();
+    if (measureActive && measurePhase !== "inactive") {
+      map.doubleClickZoom.disable();
+    } else {
+      map.doubleClickZoom.enable();
+    }
+    return () => {
+      map.dragPan.enable();
+      map.scrollZoom.enable();
+      map.doubleClickZoom.enable();
+    };
+  }, [mapReady, measureActive, measurePhase]);
+
+  // Right-click-drag normally rotates the map's bearing (MapLibre's default
+  // dragRotate handler) — while a Path/Polygon shape has at least one
+  // vertex placed, right-click is instead the "finish this shape" gesture,
+  // so rotation is suspended for that window to guarantee a plain
+  // right-click always reaches the contextmenu handler above cleanly,
+  // rather than potentially being swallowed by drag-rotate. Restored as
+  // soon as the shape is finished/cancelled, and on unmount.
+  const measureDrawingActive =
+    measureActive && MEASURE_MULTI_POINT_TABS.has(measureTab) && measurePhase === "drawing" && measurePoints.length > 0;
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !mapReady) return;
+    if (measureDrawingActive) {
+      map.dragRotate.disable();
+    } else {
+      map.dragRotate.enable();
+    }
+    return () => { map.dragRotate.enable(); };
+  }, [mapReady, measureDrawingActive]);
+
+  // Escape deactivates the active measurement TOOL only — it cancels any
+  // unfinished shape (preserving completed ones), returns the phase to
+  // "inactive" so map clicks stop being consumed by measurement, and
+  // restores the normal cursor. It deliberately does NOT close the Measure
+  // window/panel: only the explicit X button does that (via
+  // closeMeasureSafely). The user can re-arm the same tab by clicking it
+  // again (changeMeasureTab always re-arms to "idle" even if that tab was
+  // already selected). Registered once on window, guarded purely by refs at
+  // fire-time, and ignoring key events from real text fields (none in the
+  // panel today) — so it works for every tab, every focus, never
+  // double-registers, and never captures a stale active-tool value.
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      const target = e.target as HTMLElement | null;
+      if (target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable)) {
+        return;
+      }
+      if (!measureActiveRef.current) return;
+      e.preventDefault();
+      e.stopPropagation();
+      cancelActiveMeasurement("escape");
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const applyFeatureCollection = useCallback((data: FeatureCollectionResponse) => {
@@ -758,6 +1384,46 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     map.addControl(new maplibregl.NavigationControl({ visualizePitch: false }), "top-right");
     map.addControl(new maplibregl.ScaleControl({ unit: "metric" }), "bottom-left");
 
+    // Live cursor coordinate readout — map-wide (not tied to feature
+    // layers), so it works over empty map area too, not just on features.
+    // Also drives the ruler's "rubber band" preview line while the second
+    // point of a measurement hasn't been placed yet.
+    //
+    // The bottom-right lng/lat readout uses event.lngLat directly (correct
+    // for a real pointer event). The ruler preview additionally stores the
+    // cursor's *screen* pixel (event.point — map-container-relative, the
+    // same space map.unproject expects) so it can be re-resolved against a
+    // *later* camera state from the "render" handler below, without ever
+    // reading clientX/clientY, offsetX/offsetY, or a cached bounding rect.
+    const handleCursorMove = (e: MapMouseEvent) => {
+      setCursorLngLat([e.lngLat.lng, e.lngLat.lat]);
+      latestPointerPointRef.current = { x: e.point.x, y: e.point.y };
+      // isAwaitingMeasurePreview() is tab-aware: Line/Circle preview only
+      // while exactly 1 point is placed, but Path/Polygon must keep
+      // previewing after every vertex (2, 3, 20, ...) until the shape is
+      // finished.
+      if (measureActiveRef.current && isAwaitingMeasurePreview()) {
+        scheduleMeasurePreviewUpdate();
+      }
+    };
+    const handleCursorLeave = () => {
+      setCursorLngLat(null);
+      latestPointerPointRef.current = null;
+    };
+    // Fires on every animation frame the camera changes — pan, wheel/
+    // control/pinch zoom, and programmatic flyTo/easeTo/fitBounds — so the
+    // preview stays synced even though a stationary cursor generates no
+    // new "mousemove". Using "render" instead of "moveend"/"zoomend" avoids
+    // the lag/snap-at-the-end behavior the task explicitly calls out.
+    const handleMapRender = () => {
+      if (measureActiveRef.current && isAwaitingMeasurePreview() && latestPointerPointRef.current) {
+        scheduleMeasurePreviewUpdate();
+      }
+    };
+    map.on("mousemove", handleCursorMove);
+    map.on("mouseout", handleCursorLeave);
+    map.on("render", handleMapRender);
+
     map.on("load", () => {
       map.addSource(FEATURE_SOURCE, { type: "geojson", data: EMPTY_FC as unknown as GeoJSON.FeatureCollection, promoteId: "id" });
       map.addLayer({ id: LAYER_POLY_FILL, type: "fill", source: FEATURE_SOURCE, filter: POLY_BASE_FILTER, paint: { "fill-color": ["interpolate", ["linear"], ["coalesce", ["get", "severity"], 0], 0, "#3aa1ff", 0.5, "#f5c542", 1, "#ff5a3d"], "fill-opacity": 0.35 } });
@@ -837,6 +1503,12 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
       const AI_CLICKABLE = [LAYER_AI_NEEDED, LAYER_AI_REDUNDANT];
       const ALL_CLICKABLE = [...BASE_CLICKABLE, ...AI_CLICKABLE];
       const handleFeatureClick = (e: MapMouseEvent) => {
+        // While a measurement tool is actually armed/drawing, clicks drop
+        // measurement points instead of selecting a feature/opening its
+        // photo — otherwise the two click handlers would both fire for the
+        // same click. Once Escape deactivates the tool (panel still open),
+        // this must stop applying so ordinary feature clicks work again.
+        if (isMeasureInputActive()) return;
         const hit = map.queryRenderedFeatures(e.point, { layers: ALL_CLICKABLE });
         if (!hit.length) return;
         const isAi = AI_CLICKABLE.includes(hit[0].layer?.id as string);
@@ -853,6 +1525,15 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
         onFeatureSelect(selected);
       };
       const handleFeatureHover = (e: MapMouseEvent) => {
+        // While a measurement tool is actually armed/drawing, ordinary
+        // data-layer hover must not open the feature tooltip — otherwise
+        // hovering a feature mid-measurement pops up its info card over the
+        // map. The measurement crosshair/rubber-band handlers own the
+        // cursor and pointer feedback instead (see handleFeatureMouseEnter/
+        // Leave below). Uses isMeasureInputActive() (not the raw panel-open
+        // flag) so hover works normally again as soon as Escape deactivates
+        // the tool, even while the Measure panel itself stays open.
+        if (isMeasureInputActive()) return;
         const hit = map.queryRenderedFeatures(e.point, { layers: ALL_CLICKABLE });
         if (!hit.length) { setHover(null); return; }
         const aiHit = hit.find((f) => AI_CLICKABLE.includes(f.layer?.id as string));
@@ -874,11 +1555,150 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
           aiStatus,
         });
       };
+      // Named (not inline-anonymous) so the cursor is never fought: while
+      // measuring, syncMeasureCursor() owns canvas.style.cursor (crosshair),
+      // and these handlers must not overwrite it with "pointer"/"" just
+      // because the mouse crossed a feature underneath the measurement layer.
+      const handleFeatureMouseEnter = () => {
+        if (isMeasureInputActive()) return;
+        map.getCanvas().style.cursor = "pointer";
+      };
+      const handleFeatureMouseLeave = () => {
+        if (isMeasureInputActive()) return;
+        map.getCanvas().style.cursor = "";
+        setHover(null);
+      };
       ALL_CLICKABLE.forEach((id) => {
         map.on("click", id, handleFeatureClick);
-        map.on("mouseenter", id, () => (map.getCanvas().style.cursor = "pointer"));
+        map.on("mouseenter", id, handleFeatureMouseEnter);
         map.on("mousemove", id, handleFeatureHover);
-        map.on("mouseleave", id, () => { map.getCanvas().style.cursor = ""; setHover(null); });
+        map.on("mouseleave", id, handleFeatureMouseLeave);
+      });
+
+      // Ruler / measurement overlay — own GeoJSON sources so it never
+      // touches the feature/AI sources above. Fill renders below the
+      // outline, which renders below the radius line, which renders below
+      // the vertex points.
+      map.addSource(MEASURE_FILL_SOURCE, { type: "geojson", data: { type: "FeatureCollection", features: [] } });
+      map.addSource(MEASURE_LINE_SOURCE, { type: "geojson", data: { type: "FeatureCollection", features: [] } });
+      map.addSource(MEASURE_RADIUS_LINE_SOURCE, { type: "geojson", data: { type: "FeatureCollection", features: [] } });
+      map.addSource(MEASURE_POINTS_SOURCE, { type: "geojson", data: { type: "FeatureCollection", features: [] } });
+      map.addLayer({
+        id: LAYER_MEASURE_FILL,
+        type: "fill",
+        source: MEASURE_FILL_SOURCE,
+        paint: { "fill-color": MEASURE_COLOR, "fill-opacity": 0.15 },
+      });
+      map.addLayer({
+        id: LAYER_MEASURE_LINE,
+        type: "line",
+        source: MEASURE_LINE_SOURCE,
+        paint: { "line-color": MEASURE_COLOR, "line-width": 2.5, "line-dasharray": [2, 1.5] },
+      });
+      map.addLayer({
+        id: LAYER_MEASURE_RADIUS_LINE,
+        type: "line",
+        source: MEASURE_RADIUS_LINE_SOURCE,
+        paint: { "line-color": MEASURE_COLOR, "line-width": 2 },
+      });
+      map.addLayer({
+        id: LAYER_MEASURE_POINTS,
+        type: "circle",
+        source: MEASURE_POINTS_SOURCE,
+        paint: {
+          "circle-radius": 5,
+          "circle-color": MEASURE_COLOR,
+          "circle-stroke-color": "#1a1a1a",
+          "circle-stroke-width": 1.5,
+        },
+      });
+
+      // Handles ruler clicks map-wide (not tied to any specific layer) so a
+      // point can be dropped anywhere, including on top of other features.
+      // The single registered click handler dispatches on the authoritative
+      // `measurePhaseRef` state machine (never a stale closure, since this
+      // listener is registered once here for the lifetime of the map):
+      //   idle    → begin a fresh measurement from this vertex
+      //   drawing → Line/Circle: this is the final (2nd) vertex; Path/Polygon:
+      //             append another vertex.
+      map.on("click", (e: MapMouseEvent) => {
+        if (!measureActiveRef.current) return;
+        const phase = measurePhaseRef.current;
+        const tab = measureTabRef.current;
+        const isMultiPoint = MEASURE_MULTI_POINT_TABS.has(tab);
+        const coord: [number, number] = [e.lngLat.lng, e.lngLat.lat];
+
+        // Finalizing click for Line / Circle (exactly 2 vertices).
+        // A Line whose second vertex lands on the start is a degenerate
+        // zero-length / NaN measurement, so it is ignored and we keep
+        // awaiting the real end. A Circle with a small radius is still a
+        // perfectly valid (tiny) circle, so its second click must ALWAYS
+        // complete — otherwise the boundary endpoint intermittently never
+        // appears. (Only a literally-zero radius, i.e. the second click
+        // on the exact center, is degenerate, and that is harmless.)
+        if (phase === "drawing" && !isMultiPoint) {
+          const start = measurePointsRef.current[0];
+          if (tab !== "circle" && start && haversineDistance(start, coord) < MIN_MEASURE_METERS) return;
+          const points: [number, number][] = [...measurePointsRef.current, coord];
+          measurePointsRef.current = points;
+          setMeasurePoints(points);
+          setMeasurePreviewPoint(null);
+          flushMeasureSources(null);
+          beginNewSession();
+          setMeasurePhase("idle");
+          return;
+        }
+
+        // Extra vertex for an in-progress Path / Polygon — stay in "drawing".
+        if (phase === "drawing" && isMultiPoint) {
+          const points: [number, number][] = [...measurePointsRef.current, coord];
+          measurePointsRef.current = points;
+          setMeasurePoints(points);
+          setMeasurePreviewPoint(null);
+          flushMeasureSources(null);
+          return;
+        }
+
+        // Idle: begin a brand-new measurement from this vertex. The previously
+        // completed shape (if any) is replaced — this app's single-shot UX.
+        // An immediate preview tick makes the rubber-band line appear even
+        // before the cursor next moves.
+        if (phase === "idle") {
+          const points: [number, number][] = [coord];
+          measurePointsRef.current = points;
+          setMeasurePoints(points);
+          setMeasurePreviewPoint(null);
+          flushMeasureSources(null);
+          setMeasurePhase("drawing");
+          scheduleMeasurePreviewUpdate();
+          return;
+        }
+      });
+
+      // Right-click finishes an in-progress Path/Polygon (Google Earth
+      // Pro's Path/Polygon completion gesture). The browser's native
+      // context menu must not appear while a multi-point shape is actively
+      // being drawn — MapMouseEvent.preventDefault() only suppresses
+      // MapLibre's own internal handlers (drag-rotate, box-zoom, etc.), not
+      // the browser context menu, so the underlying DOM event needs its
+      // own preventDefault() too. Outside active multi-point drawing,
+      // right-click keeps the map's normal behavior (there is no other
+      // contextmenu handling in this app to preserve).
+      map.on("contextmenu", (e: MapMouseEvent) => {
+        if (!measureActiveRef.current) return;
+        const tab = measureTabRef.current;
+        if (!MEASURE_MULTI_POINT_TABS.has(tab)) return;
+        if (measurePhaseRef.current !== "drawing" || measurePointsRef.current.length === 0) return;
+        e.preventDefault();
+        e.originalEvent.preventDefault();
+        // A single placed vertex isn't a valid path/polygon (needs >= 2 /
+        // >= 3) — right-clicking at that point cancels the incomplete
+        // shape entirely rather than silently doing nothing.
+        if (measurePointsRef.current.length === 1) {
+          clearMeasurement();
+          return;
+        }
+        finishMeasurePath();
       });
 
       // setMapReady AFTER the AI source/layers are added so the aiHighlights
@@ -887,11 +1707,19 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     });
     map.on("moveend", scheduleFetch);
     map.on("zoomend", scheduleFetch);
-    return () => { abortRef.current?.abort(); if (debounceRef.current !== null) window.clearTimeout(debounceRef.current); map.remove(); mapRef.current = null; };
+    return () => {
+      abortRef.current?.abort();
+      if (debounceRef.current !== null) window.clearTimeout(debounceRef.current);
+      if (measureRafRef.current !== null) { cancelAnimationFrame(measureRafRef.current); measureRafRef.current = null; }
+      map.remove();
+      mapRef.current = null;
+    };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   return (
     <>
+      <ToolRail measureActive={measureActive} onToggleMeasure={toggleMeasureActive} />
       <CommandCenter
         datasets={datasets}
         activeDatasetIds={activeDatasetIds}
@@ -915,6 +1743,25 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
         <MapControls basemap={basemap} onChangeBasemap={changeBasemap} status={status} />
         <MapLegend entries={legend} />
         <HoverTooltip hover={hover} />
+        <CoordinateReadout lngLat={cursorLngLat} />
+        {measureActive && (
+          <RulerPanel
+            tab={measureTab}
+            onChangeTab={changeMeasureTab}
+            lengthMeters={measureLengthMeters}
+            areaSqMeters={measureAreaSqMeters}
+            radiusMeters={measureRadiusMeters}
+            heading={measureHeading}
+            unit={measureUnit}
+            onChangeUnit={setMeasureUnit}
+            areaUnit={measureAreaUnit}
+            onChangeAreaUnit={setMeasureAreaUnit}
+            onClear={clearMeasurement}
+            onClose={closeMeasureSafely}
+            position={rulerPanelPos}
+            onPositionChange={setRulerPanelPos}
+          />
+        )}
         {activeDatasetIds.length === 0 && !filter.ward && !filter.category && filter.severity === undefined && (
           <div style={{
             position: "absolute", top: "50%", left: "50%", transform: "translate(-50%, -50%)",
@@ -1143,6 +1990,319 @@ function CommandCenter({
     </aside>
   );
 }
+
+function ToolRail({ measureActive, onToggleMeasure }: { measureActive: boolean; onToggleMeasure: () => void }) {
+  return (
+    <nav className="tool-rail" data-testid="tool-rail" aria-label="Map tools">
+      <button
+        type="button"
+        className={`tool-rail__btn${measureActive ? " tool-rail__btn--active" : ""}`}
+        onClick={onToggleMeasure}
+        title="Measure distance"
+        aria-label="Measure distance"
+        aria-pressed={measureActive}
+        data-testid="tool-rail-measure"
+      >
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" width="18" height="18">
+          <rect x="2.5" y="7.5" width="19" height="9" rx="1.5" transform="rotate(-45 12 12)" />
+          <path d="M8.5 10.5l1 1M11 8l1.5 1.5M14 5.5l1 1" transform="rotate(-45 12 12)" />
+        </svg>
+      </button>
+    </nav>
+  );
+}
+
+/** Google Earth Pro-style "Ruler" dialog for the Line measurement tool. */
+const MEASURE_TAB_OPTIONS: Array<{ value: MeasureTab; label: string }> = [
+  { value: "line", label: "Line" },
+  { value: "path", label: "Path" },
+  { value: "polygon", label: "Polygon" },
+  { value: "circle", label: "Circle" },
+];
+
+const MEASURE_TAB_HINTS: Record<MeasureTab, string> = {
+  line: "Measure the distance between two points on the ground",
+  path: "Click to add points, right-click to finish",
+  polygon: "Click to add points, right-click to finish",
+  circle: "Measure the radius, perimeter, and area of a circle on the ground",
+};
+
+function RulerPanel({
+  tab, onChangeTab,
+  lengthMeters, areaSqMeters, radiusMeters, heading,
+  unit, onChangeUnit, areaUnit, onChangeAreaUnit,
+  onClear, onClose,
+  position, onPositionChange,
+}: {
+  tab: MeasureTab;
+  onChangeTab: (t: MeasureTab) => void;
+  lengthMeters: number;
+  areaSqMeters: number;
+  radiusMeters: number;
+  heading: number | null;
+  unit: DistanceUnit;
+  onChangeUnit: (u: DistanceUnit) => void;
+  areaUnit: AreaUnit;
+  onChangeAreaUnit: (u: AreaUnit) => void;
+  onClear: () => void;
+  onClose: () => void;
+  position: { x: number; y: number } | null;
+  onPositionChange: (
+    pos: { x: number; y: number } | ((prev: { x: number; y: number } | null) => { x: number; y: number } | null)
+  ) => void;
+}) {
+  const displayLength = metersToUnit(lengthMeters, unit).toFixed(2);
+  const displayArea = sqMetersToUnit(areaSqMeters, areaUnit).toFixed(2);
+  const displayRadius = metersToUnit(radiusMeters, unit).toFixed(2);
+  const panelRef = useRef<HTMLDivElement | null>(null);
+  // Drag offset (pointer position relative to the panel's top-left corner,
+  // in viewport/client coordinates — the same space `position: fixed` and
+  // clientX/clientY both use) captured on pointerdown so the panel doesn't
+  // jump to re-center under the cursor on the first move event.
+  const dragOffsetRef = useRef<{ x: number; y: number } | null>(null);
+  // Tracks the active drag's pointer id so we can release its capture on
+  // unmount (e.g. the panel is closed via the X button or Escape mid-drag),
+  // which otherwise leaves the browser cursor stuck in dragging mode.
+  const dragPointerIdRef = useRef<number | null>(null);
+
+  const clampToViewport = (x: number, y: number, width: number, height: number) => {
+    const maxX = Math.max(0, window.innerWidth - width);
+    const maxY = Math.max(0, window.innerHeight - height);
+    return { x: Math.max(0, Math.min(x, maxX)), y: Math.max(0, Math.min(y, maxY)) };
+  };
+
+  const handleTitlebarPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    // Ignore drags started on the close button so it still just closes.
+    if ((e.target as HTMLElement).closest(".ruler-panel__close")) return;
+    const rect = panelRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    // Grab offset in client (viewport) coordinates — matches the `position:
+    // fixed` + clientX/clientY space used below, so no other coordinate
+    // system (page, offset, container-relative) is mixed in.
+    dragOffsetRef.current = { x: e.clientX - rect.left, y: e.clientY - rect.top };
+    // Pointer capture routes subsequent move/up events to this element even
+    // if the cursor leaves it — no window-level listeners to add/clean up.
+    e.currentTarget.setPointerCapture(e.pointerId);
+    dragPointerIdRef.current = e.pointerId;
+    e.preventDefault();
+  };
+  const handleTitlebarPointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
+    const offset = dragOffsetRef.current;
+    const rect = panelRef.current?.getBoundingClientRect();
+    if (!offset || !rect) return;
+    const nextX = e.clientX - offset.x;
+    const nextY = e.clientY - offset.y;
+    onPositionChange(clampToViewport(nextX, nextY, rect.width, rect.height));
+    e.preventDefault();
+  };
+  const endDrag = (e: React.PointerEvent<HTMLDivElement>) => {
+    dragOffsetRef.current = null;
+    dragPointerIdRef.current = null;
+    if (e.currentTarget.hasPointerCapture(e.pointerId)) {
+      e.currentTarget.releasePointerCapture(e.pointerId);
+    }
+  };
+
+  // Keep the panel inside the viewport if the window is resized (e.g.
+  // shrunk) after the user dragged it near an edge.
+  useEffect(() => {
+    const handleResize = () => {
+      const rect = panelRef.current?.getBoundingClientRect();
+      if (!rect) return;
+      onPositionChange((prev) => (prev ? clampToViewport(prev.x, prev.y, rect.width, rect.height) : prev));
+    };
+    window.addEventListener("resize", handleResize);
+    return () => window.removeEventListener("resize", handleResize);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // On unmount (e.g. the panel is closed via Escape/X while a drag is in
+  // progress) release any active pointer capture so the browser cursor is
+  // never left stuck in dragging mode.
+  useEffect(() => {
+    const el = panelRef.current;
+    return () => {
+      const id = dragPointerIdRef.current;
+      if (id !== null && el && el.hasPointerCapture(id)) {
+        el.releasePointerCapture(id);
+      }
+      dragPointerIdRef.current = null;
+    };
+  }, []);
+
+  // The base CSS already sets `position: fixed` (see .ruler-panel) so the
+  // element's containing block is the viewport both before and during a
+  // drag — only left/top/transform are overridden here once the user has
+  // actually moved it, using the same client-coordinate space throughout.
+  const style: React.CSSProperties | undefined = position
+    ? { top: position.y, left: position.x, transform: "none" }
+    : undefined;
+
+  return (
+    <div className="ruler-panel" data-testid="ruler-panel" role="dialog" aria-label="Measure" ref={panelRef} style={style}>
+      <div
+        className="ruler-panel__titlebar"
+        onPointerDown={handleTitlebarPointerDown}
+        onPointerMove={handleTitlebarPointerMove}
+        onPointerUp={endDrag}
+        onPointerCancel={endDrag}
+        data-testid="ruler-panel-titlebar"
+      >
+        <span>Measure</span>
+        <button
+          type="button"
+          className="ruler-panel__close"
+          onClick={onClose}
+          aria-label="Close measure"
+          data-testid="ruler-panel-close"
+        >
+          ✕
+        </button>
+      </div>
+      <div className="ruler-panel__body">
+        <div className="ruler-panel__tabs" role="tablist">
+          {MEASURE_TAB_OPTIONS.map((o) => (
+            <button
+              key={o.value}
+              type="button"
+              role="tab"
+              aria-selected={tab === o.value}
+              className={`ruler-panel__tab${tab === o.value ? " ruler-panel__tab--active" : ""}`}
+              onClick={() => onChangeTab(o.value)}
+              data-testid={`ruler-tab-${o.value}`}
+            >
+              {o.label}
+            </button>
+          ))}
+        </div>
+        <div className="ruler-panel__hint">{MEASURE_TAB_HINTS[tab]}</div>
+
+        {tab === "line" && (
+          <>
+            <div className="ruler-panel__row">
+              <span className="ruler-panel__label">Map Length:</span>
+              <span className="ruler-panel__value" data-testid="ruler-map-length">{displayLength}</span>
+              <select
+                className="ruler-panel__select"
+                value={unit}
+                onChange={(e) => onChangeUnit(e.target.value as DistanceUnit)}
+                data-testid="ruler-unit-select"
+              >
+                {DISTANCE_UNIT_OPTIONS.map((o) => (
+                  <option key={o.value} value={o.value}>{o.label}</option>
+                ))}
+              </select>
+            </div>
+            <div className="ruler-panel__row">
+              <span className="ruler-panel__label">Ground Length:</span>
+              <span className="ruler-panel__value" data-testid="ruler-ground-length">{displayLength}</span>
+            </div>
+            <div className="ruler-panel__row">
+              <span className="ruler-panel__label">Heading:</span>
+              <span className="ruler-panel__value" data-testid="ruler-heading">
+                {heading === null ? "-" : `${heading.toFixed(2)} degrees`}
+              </span>
+            </div>
+          </>
+        )}
+
+        {tab === "path" && (
+          <div className="ruler-panel__row">
+            <span className="ruler-panel__label">Length:</span>
+            <span className="ruler-panel__value" data-testid="ruler-path-length">{displayLength}</span>
+            <select
+              className="ruler-panel__select"
+              value={unit}
+              onChange={(e) => onChangeUnit(e.target.value as DistanceUnit)}
+              data-testid="ruler-unit-select"
+            >
+              {DISTANCE_UNIT_OPTIONS.map((o) => (
+                <option key={o.value} value={o.value}>{o.label}</option>
+              ))}
+            </select>
+          </div>
+        )}
+
+        {tab === "polygon" && (
+          <>
+            <div className="ruler-panel__row">
+              <span className="ruler-panel__label">Perimeter:</span>
+              <span className="ruler-panel__value" data-testid="ruler-polygon-perimeter">{displayLength}</span>
+              <select
+                className="ruler-panel__select"
+                value={unit}
+                onChange={(e) => onChangeUnit(e.target.value as DistanceUnit)}
+                data-testid="ruler-unit-select"
+              >
+                {DISTANCE_UNIT_OPTIONS.map((o) => (
+                  <option key={o.value} value={o.value}>{o.label}</option>
+                ))}
+              </select>
+            </div>
+            <div className="ruler-panel__row">
+              <span className="ruler-panel__label">Area:</span>
+              <span className="ruler-panel__value" data-testid="ruler-polygon-area">{displayArea}</span>
+              <select
+                className="ruler-panel__select"
+                value={areaUnit}
+                onChange={(e) => onChangeAreaUnit(e.target.value as AreaUnit)}
+                data-testid="ruler-area-unit-select"
+              >
+                {AREA_UNIT_OPTIONS.map((o) => (
+                  <option key={o.value} value={o.value}>{o.label}</option>
+                ))}
+              </select>
+            </div>
+          </>
+        )}
+
+        {tab === "circle" && (
+          <>
+            <div className="ruler-panel__row">
+              <span className="ruler-panel__label">Radius:</span>
+              <span className="ruler-panel__value" data-testid="ruler-circle-radius">{displayRadius}</span>
+              <select
+                className="ruler-panel__select"
+                value={unit}
+                onChange={(e) => onChangeUnit(e.target.value as DistanceUnit)}
+                data-testid="ruler-unit-select"
+              >
+                {DISTANCE_UNIT_OPTIONS.map((o) => (
+                  <option key={o.value} value={o.value}>{o.label}</option>
+                ))}
+              </select>
+            </div>
+            <div className="ruler-panel__row">
+              <span className="ruler-panel__label">Perimeter:</span>
+              <span className="ruler-panel__value" data-testid="ruler-circle-perimeter">{displayLength}</span>
+            </div>
+            <div className="ruler-panel__row">
+              <span className="ruler-panel__label">Area:</span>
+              <span className="ruler-panel__value" data-testid="ruler-circle-area">{displayArea}</span>
+              <select
+                className="ruler-panel__select"
+                value={areaUnit}
+                onChange={(e) => onChangeAreaUnit(e.target.value as AreaUnit)}
+                data-testid="ruler-area-unit-select"
+              >
+                {AREA_UNIT_OPTIONS.map((o) => (
+                  <option key={o.value} value={o.value}>{o.label}</option>
+                ))}
+              </select>
+            </div>
+          </>
+        )}
+
+        <div className="ruler-panel__actions">
+          <button type="button" className="ruler-panel__btn" onClick={onClear} data-testid="ruler-panel-clear">
+            Clear
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function MapControls({ basemap, onChangeBasemap, status }: { basemap: Basemap; onChangeBasemap: (b: Basemap) => void; status: ViewportStatus }) {
   return (
     <>
@@ -1289,6 +2449,26 @@ function PhotoViewer({ photo, onClose }: { photo: { url: string; label: string }
           Close ✕
         </button>
       </div>
+    </div>
+  );
+}
+
+function formatDms(value: number, positiveSuffix: string, negativeSuffix: string): string {
+  const suffix = value >= 0 ? positiveSuffix : negativeSuffix;
+  const abs = Math.abs(value);
+  const degrees = Math.floor(abs);
+  const minutesFull = (abs - degrees) * 60;
+  const minutes = Math.floor(minutesFull);
+  const seconds = (minutesFull - minutes) * 60;
+  return `${degrees}°${String(minutes).padStart(2, "0")}'${seconds.toFixed(2).padStart(5, "0")}" ${suffix}`;
+}
+
+function CoordinateReadout({ lngLat }: { lngLat: [number, number] | null }) {
+  if (!lngLat) return null;
+  const [lng, lat] = lngLat;
+  return (
+    <div className="map__coord-readout" data-testid="map-coord-readout">
+      {formatDms(lat, "N", "S")}&nbsp;&nbsp;{formatDms(lng, "E", "W")}
     </div>
   );
 }

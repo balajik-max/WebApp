@@ -923,11 +923,47 @@ body {
 }
 
 .map-page--dual {
-  grid-template-columns: 340px 1fr;
+  grid-template-columns: 56px 340px 1fr;
 }
 
 .map-page--triple {
-  grid-template-columns: 340px 1fr 380px;
+  grid-template-columns: 56px 340px 1fr 380px;
+}
+
+/* ── TOOL RAIL (far-left icon toolbar) ───────────────────────────────── */
+.tool-rail {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 12px 0;
+  background: var(--surface);
+  border-right: 1px solid var(--edge);
+}
+
+.tool-rail__btn {
+  width: 36px;
+  height: 36px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius-md);
+  color: var(--ink-mute);
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.tool-rail__btn:hover {
+  background: var(--surface-3);
+  color: var(--ink);
+}
+
+.tool-rail__btn--active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-ink);
 }
 
 /* ── MAP CANVAS ───────────────────────────────────────────────────────── */
@@ -4751,6 +4787,166 @@ body {
   color: var(--ink-mute);
 }
 
+/* ── MAP CURSOR COORDINATE READOUT ───────────────────────────────────── */
+.map__coord-readout {
+  position: absolute;
+  bottom: 8px;
+  right: 44px;
+  z-index: 10;
+  padding: 4px 10px;
+  background: var(--glass-strong);
+  backdrop-filter: blur(16px) saturate(1.4);
+  border: 1px solid var(--edge);
+  border-radius: var(--radius-sm);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--ink-dim);
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+/* ── RULER PANEL (Google Earth Pro-style measurement dialog) ─────────── */
+/* position: fixed so the panel floats over the full viewport (not clipped
+   by .map-canvas's overflow: hidden) and so left/top live in the same
+   coordinate space as clientX/clientY used for dragging — fixed from the
+   very first render (not just once a drag starts) so switching into drag
+   mode never changes the element's containing block out from under it. */
+.ruler-panel {
+  position: fixed;
+  /* Below .workspace__topbar (z-index: 100) so the panel starts clear of
+     the header instead of colliding with it. */
+  top: 76px;
+  left: 50%;
+  transform: translateX(-50%);
+  /* Above the topbar and other floating chrome so the whole panel —
+     titlebar included — is always visible and draggable, never stacked
+     underneath the header. */
+  z-index: 210;
+  width: 300px;
+  background: var(--surface);
+  border: 1px solid var(--edge-strong);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-md);
+  overflow: hidden;
+}
+
+.ruler-panel__titlebar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 10px;
+  background: var(--surface-3);
+  border-bottom: 1px solid var(--edge);
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--ink);
+  cursor: move;
+  user-select: none;
+  touch-action: none;
+}
+
+.ruler-panel__close {
+  background: none;
+  border: none;
+  color: var(--ink-mute);
+  cursor: pointer;
+  font-size: 12px;
+  line-height: 1;
+  padding: 2px 4px;
+  border-radius: var(--radius-sm);
+}
+
+.ruler-panel__close:hover { background: var(--surface-4); color: var(--ink); }
+
+.ruler-panel__body {
+  padding: 10px 12px 12px;
+}
+
+.ruler-panel__tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 4px;
+  border-bottom: 1px solid var(--edge);
+  margin-bottom: 8px;
+}
+
+.ruler-panel__tab {
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 4px 6px;
+  color: var(--ink-mute);
+  cursor: pointer;
+  transition: color var(--transition-fast);
+}
+
+.ruler-panel__tab:hover { color: var(--ink); }
+
+.ruler-panel__tab--active {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+}
+
+.ruler-panel__hint {
+  font-size: 10.5px;
+  color: var(--ink-mute);
+  margin-bottom: 10px;
+  line-height: 1.4;
+}
+
+.ruler-panel__row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 6px;
+  font-size: 11.5px;
+}
+
+.ruler-panel__label {
+  color: var(--ink-dim);
+  min-width: 90px;
+}
+
+.ruler-panel__value {
+  flex: 1;
+  font-family: var(--font-mono);
+  color: var(--ink);
+  font-weight: 600;
+}
+
+.ruler-panel__select {
+  background: var(--surface-2);
+  border: 1px solid var(--edge);
+  border-radius: var(--radius-sm);
+  color: var(--ink);
+  font-size: 11px;
+  padding: 3px 6px;
+}
+
+.ruler-panel__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 10px;
+  margin-top: 8px;
+}
+
+.ruler-panel__btn {
+  background: var(--surface-2);
+  border: 1px solid var(--edge);
+  border-radius: var(--radius-sm);
+  color: var(--ink);
+  font-size: 11px;
+  font-weight: 600;
+  padding: 5px 14px;
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.ruler-panel__btn:hover { background: var(--surface-3); border-color: var(--edge-strong); }
+
 /* ── MAP TOOLTIP ──────────────────────────────────────────────────────── */
 .map__tooltip {
   position: absolute;
@@ -4921,7 +5117,7 @@ body {
     flex: 1;
   }
   .map-page--triple {
-    grid-template-columns: 300px 1fr;
+    grid-template-columns: 56px 300px 1fr;
   }
   .architect-workspace {
     position: fixed;
@@ -4945,6 +5141,9 @@ body {
 @media (max-width: 768px) {
   .map-page--dual {
     grid-template-columns: 1fr;
+  }
+  .tool-rail {
+    display: none;
   }
   .command-center {
     position: fixed;
