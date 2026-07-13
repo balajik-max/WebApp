@@ -150,12 +150,32 @@ class IngestionTrendPoint(BaseModel):
     cumulative_features: int
 
 
+class AnalyticsFeatureRow(BaseModel):
+    id: uuid.UUID
+    dataset_id: uuid.UUID
+    dataset_name: str
+    ward: str | None = None
+    label: str | None = None
+    category: str
+    severity: float
+    geometry_type: str
+    created_at: datetime
+
+
+class AnalyticsFeaturePage(BaseModel):
+    total: int
+    limit: int
+    offset: int
+    rows: list[AnalyticsFeatureRow]
+
+
 class AnalyticsOverview(BaseModel):
     total_datasets: int
     ready_datasets: int
     processing_datasets: int
     failed_datasets: int
     total_features: int
+    average_severity: float
     total_review_items: int
     open_reviews: int
     resolved_reviews: int

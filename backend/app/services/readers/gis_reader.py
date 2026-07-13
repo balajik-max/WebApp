@@ -73,6 +73,12 @@ def _clean_str(value: Any) -> str | None:
     return text if text and text.lower() != "nan" else None
 
 
+def _clean_category(value: Any) -> str | None:
+    """Normalize harmless whitespace without changing the source wording."""
+    cleaned = _clean_str(value)
+    return " ".join(cleaned.split()) if cleaned else None
+
+
 def _find_gdb_entry(zip_path: Path) -> str | None:
     """Return the top-level '<name>.gdb' directory name inside a zip, if any.
 
@@ -235,7 +241,7 @@ class GISReader:
         )
 
         # Category: prefer columns describing what the feature is
-        category_priority = ("category", "type", "class", "kind", "layer",
+        category_priority = ("category", "type", "class", "kind", "layer", "gdb_layer",
                              "asset_type", "feature_type", "infrastructure_type",
                              "work_type", "road_type", "drain_type", "utility_type",
                              "condition", "status", "category_name", "type_name")
@@ -307,11 +313,25 @@ class GISReader:
                     # problem keywords instead of leaving every row at 0.0.
                     severity_val = infer_severity_from_attributes(attrs)
 
+                # Prefer the dataset's explicit category/LAYER field. For a
+                # zipped File Geodatabase, fall back per row to the real GDB
+                # feature-class name captured in ``gdb_layer``. The per-row
+                # fallback matters when an explicit LAYER column exists but is
+                # blank for only some feature classes.
+                category_value = (
+                    _clean_category(row.get(category_col))
+                    if category_col is not None
+                    else None
+                )
+                gdb_layer_col = columns_lower.get("gdb_layer")
+                if category_value is None and gdb_layer_col is not None:
+                    category_value = _clean_category(row.get(gdb_layer_col))
+
                 batch.append(
                     Feature(
                         dataset_id=dataset_uuid,
                         label=_clean_str(row.get(label_col)) if label_col is not None else None,
-                        category=_clean_str(row.get(category_col)) if category_col is not None else None,
+                        category=category_value,
                         severity=severity_val,
                         attributes=attrs,
                         geom=from_shape(geom, srid=4326),
