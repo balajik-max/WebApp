@@ -3118,7 +3118,6 @@ body {
   background: var(--surface-2);
   font-weight: 600;
   color: var(--ink);
-}
   font-size: 11px;
 }
 
@@ -5747,6 +5746,7 @@ body {
   color: var(--ink-dim);
   font-size: 10px;
   font-weight: 700;
+}
 /* ── MAP CURSOR COORDINATE READOUT ───────────────────────────────────── */
 .map__coord-readout {
   position: absolute;
