@@ -1,28 +1,28 @@
 """
-Analytics overview endpoint — powers the left dashboard panel.
+Analytics endpoints.
 
   GET /api/v1/analytics/overview
+  GET /api/v1/analytics/features
+
+Every result is calculated from the same optional dataset/category scope.
+The category parameters are repeatable, so callers can select zero, one,
+or any number of categories without changing the endpoint shape.
 """
 from __future__ import annotations
 
 from datetime import datetime, timezone
-
 import uuid
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import case, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import require_any
 from app.db.session import get_db
-from app.models import (
-    Dataset,
-    DatasetStatus,
-    Feature,
-    ReviewItem,
-    ReviewStatus,
-)
+from app.models import Dataset, DatasetStatus, Feature, ReviewItem, ReviewStatus
 from app.schemas.workflow import (
+    AnalyticsFeaturePage,
+    AnalyticsFeatureRow,
     AnalyticsOverview,
     CategoryBreakdown,
     IngestionTrendPoint,
@@ -33,13 +33,28 @@ from app.schemas.workflow import (
 
 router = APIRouter()
 
-# raster_pixel rows are the RasterReader's internal sample grid (kept for
-# the feature table / severity / AI-summary pipeline) — not real surveyed
-# assets. The map already hides them from its feature layers/legend/top
-# severity list; every analytics query below excludes them too so "Features
-# Mapped", category/severity breakdowns, and the trend line all describe
-# actual surveyed infrastructure, not raster-sampling implementation detail.
+# RasterReader sample pixels are implementation detail, not surveyed assets.
 _NOT_RASTER_SAMPLE = Feature.category.is_distinct_from("raster_pixel")
+_CATEGORY_EXPR = func.coalesce(func.nullif(func.trim(Feature.category), ""), "uncategorized")
+
+
+def _clean_categories(values: list[str] | None) -> list[str]:
+    cleaned = sorted({value.strip() for value in values or [] if value.strip()})
+    if any(len(value) > 128 for value in cleaned):
+        raise HTTPException(status_code=400, detail="category values must be at most 128 characters")
+    return cleaned
+
+
+def _feature_conditions(
+    dataset_ids: list[uuid.UUID] | None,
+    categories: list[str],
+) -> list[object]:
+    conditions: list[object] = [_NOT_RASTER_SAMPLE]
+    if dataset_ids:
+        conditions.append(Feature.dataset_id.in_(dataset_ids))
+    if categories:
+        conditions.append(_CATEGORY_EXPR.in_(categories))
+    return conditions
 
 
 @router.get(
@@ -50,149 +65,267 @@ _NOT_RASTER_SAMPLE = Feature.category.is_distinct_from("raster_pixel")
 async def analytics_overview(
     dataset_id: list[uuid.UUID] | None = Query(
         default=None,
-        description="Scope every figure to one or more datasets (mirrors the map's dataset selection).",
+        description="Restrict every figure to one or more datasets. Repeat for multiple values.",
+    ),
+    category: list[str] | None = Query(
+        default=None,
+        description="Restrict every figure to one or more categories. Repeat for multiple values.",
     ),
     db: AsyncSession = Depends(get_db),
 ) -> AnalyticsOverview:
-    scoped = bool(dataset_id)
+    dataset_ids = list(dict.fromkeys(dataset_id or []))
+    categories = _clean_categories(category)
+    feature_conditions = _feature_conditions(dataset_ids, categories)
 
-    # ---- Dataset counts ------------------------------------------------
-    ds_stmt = select(Dataset.status, func.count(Dataset.id))
-    if scoped:
-        ds_stmt = ds_stmt.where(Dataset.id.in_(dataset_id))
-    ds_rows = (await db.execute(ds_stmt.group_by(Dataset.status))).all()
-    total_datasets = sum(count for _, count in ds_rows)
-    by_status: dict[DatasetStatus, int] = {s: c for s, c in ds_rows}
-
-    # ---- Feature count -------------------------------------------------
-    feature_stmt = select(func.count(Feature.id)).where(_NOT_RASTER_SAMPLE)
-    if scoped:
-        feature_stmt = feature_stmt.where(Feature.dataset_id.in_(dataset_id))
-    total_features = (await db.execute(feature_stmt)).scalar_one() or 0
-
-    # ---- Review item counts (aggregate + breakdown) --------------------
-    review_stmt = select(ReviewItem.status, func.count(ReviewItem.id))
-    if scoped:
-        review_stmt = review_stmt.join(Feature, Feature.id == ReviewItem.feature_id).where(
-            Feature.dataset_id.in_(dataset_id)
+    # Dataset status counts. With a category filter, only datasets that really
+    # contain a matching feature contribute to the scoped survey count.
+    if categories:
+        ds_stmt = (
+            select(Dataset.status, func.count(func.distinct(Dataset.id)))
+            .join(Feature, Feature.dataset_id == Dataset.id)
+            .where(*feature_conditions)
+            .group_by(Dataset.status)
         )
-    review_rows = (await db.execute(review_stmt.group_by(ReviewItem.status))).all()
-    total_reviews = sum(count for _, count in review_rows)
-    status_breakdown = [StatusBreakdown(status=s, count=c) for s, c in review_rows]
-    open_reviews = sum(
-        c for s, c in review_rows if s in (ReviewStatus.OPEN, ReviewStatus.REVIEWING, ReviewStatus.IN_PROGRESS)
-    )
-    resolved_reviews = sum(c for s, c in review_rows if s == ReviewStatus.RESOLVED)
+    else:
+        ds_stmt = select(Dataset.status, func.count(Dataset.id))
+        if dataset_ids:
+            ds_stmt = ds_stmt.where(Dataset.id.in_(dataset_ids))
+        ds_stmt = ds_stmt.group_by(Dataset.status)
 
-    # ---- Ward breakdown (features + open/resolved counts per ward) -----
-    ward_conditions = [Dataset.ward.isnot(None), _NOT_RASTER_SAMPLE]
-    if scoped:
-        ward_conditions.append(Dataset.id.in_(dataset_id))
-    ward_rows = (
+    ds_rows = (await db.execute(ds_stmt)).all()
+    total_datasets = sum(int(count) for _, count in ds_rows)
+    by_status: dict[DatasetStatus, int] = {status: int(count) for status, count in ds_rows}
+
+    # Feature total and average severity come from the full matching scope,
+    # not from the top-category chart subset.
+    feature_stats = (
+        await db.execute(
+            select(
+                func.count(Feature.id).label("total"),
+                func.avg(Feature.severity).label("average_severity"),
+            ).where(*feature_conditions)
+        )
+    ).one()
+    total_features = int(feature_stats.total or 0)
+    average_severity = round(float(feature_stats.average_severity or 0.0), 3)
+
+    # Review counts always join back to the exact feature scope.
+    review_rows = (
+        await db.execute(
+            select(ReviewItem.status, func.count(ReviewItem.id))
+            .join(Feature, Feature.id == ReviewItem.feature_id)
+            .where(*feature_conditions)
+            .group_by(ReviewItem.status)
+        )
+    ).all()
+    total_reviews = sum(int(count) for _, count in review_rows)
+    status_breakdown = [StatusBreakdown(status=status, count=int(count)) for status, count in review_rows]
+    open_reviews = sum(
+        int(count)
+        for status, count in review_rows
+        if status in (ReviewStatus.OPEN, ReviewStatus.REVIEWING, ReviewStatus.IN_PROGRESS)
+    )
+    resolved_reviews = sum(
+        int(count) for status, count in review_rows if status == ReviewStatus.RESOLVED
+    )
+
+    # Ward feature totals and review totals are aggregated separately. This
+    # prevents a feature with multiple review items from being counted more
+    # than once in the feature_count column.
+    ward_feature_rows = (
         await db.execute(
             select(
                 Dataset.ward.label("ward"),
                 func.count(Feature.id).label("feature_count"),
-                func.count(ReviewItem.id).filter(
+            )
+            .join(Feature, Feature.dataset_id == Dataset.id)
+            .where(Dataset.ward.isnot(None), *feature_conditions)
+            .group_by(Dataset.ward)
+        )
+    ).all()
+
+    ward_review_rows = (
+        await db.execute(
+            select(
+                Dataset.ward.label("ward"),
+                func.count(ReviewItem.id)
+                .filter(
                     ReviewItem.status.in_(
                         [ReviewStatus.OPEN, ReviewStatus.REVIEWING, ReviewStatus.IN_PROGRESS]
                     )
-                ).label("open_reviews"),
-                func.count(ReviewItem.id).filter(
-                    ReviewItem.status == ReviewStatus.RESOLVED
-                ).label("resolved_reviews"),
+                )
+                .label("open_reviews"),
+                func.count(ReviewItem.id)
+                .filter(ReviewItem.status == ReviewStatus.RESOLVED)
+                .label("resolved_reviews"),
             )
             .join(Feature, Feature.dataset_id == Dataset.id)
-            .outerjoin(ReviewItem, ReviewItem.feature_id == Feature.id)
-            .where(*ward_conditions)
+            .join(ReviewItem, ReviewItem.feature_id == Feature.id)
+            .where(Dataset.ward.isnot(None), *feature_conditions)
             .group_by(Dataset.ward)
-            .order_by(func.count(Feature.id).desc())
-            .limit(30)
         )
     ).all()
 
+    review_by_ward = {
+        row.ward: (int(row.open_reviews or 0), int(row.resolved_reviews or 0))
+        for row in ward_review_rows
+    }
     ward_breakdown = [
         WardBreakdown(
-            ward=r.ward or "unassigned",
-            feature_count=int(r.feature_count or 0),
-            open_reviews=int(r.open_reviews or 0),
-            resolved_reviews=int(r.resolved_reviews or 0),
+            ward=row.ward or "unassigned",
+            feature_count=int(row.feature_count or 0),
+            open_reviews=review_by_ward.get(row.ward, (0, 0))[0],
+            resolved_reviews=review_by_ward.get(row.ward, (0, 0))[1],
         )
-        for r in ward_rows
+        for row in sorted(ward_feature_rows, key=lambda item: int(item.feature_count or 0), reverse=True)
     ]
 
-    # ---- Category breakdown (what kind of asset each point represents) --
-    category_expr = func.coalesce(Feature.category, "uncategorized")
-    category_stmt = select(
-        category_expr.label("category"),
-        func.count(Feature.id).label("count"),
-        func.avg(Feature.severity).label("avg_severity"),
-    ).where(_NOT_RASTER_SAMPLE)
-    if scoped:
-        category_stmt = category_stmt.where(Feature.dataset_id.in_(dataset_id))
+    # No top-20 cap: the selector and detail table receive every real
+    # category in the matching dataset scope.
     category_rows = (
-        await db.execute(category_stmt.group_by(category_expr).order_by(func.count(Feature.id).desc()).limit(20))
+        await db.execute(
+            select(
+                _CATEGORY_EXPR.label("category"),
+                func.count(Feature.id).label("count"),
+                func.avg(Feature.severity).label("avg_severity"),
+            )
+            .where(*feature_conditions)
+            .group_by(_CATEGORY_EXPR)
+            .order_by(func.count(Feature.id).desc(), _CATEGORY_EXPR.asc())
+        )
     ).all()
     category_breakdown = [
         CategoryBreakdown(
-            category=r.category,
-            count=int(r.count),
-            avg_severity=round(float(r.avg_severity or 0.0), 3),
+            category=row.category,
+            count=int(row.count or 0),
+            avg_severity=round(float(row.avg_severity or 0.0), 3),
         )
-        for r in category_rows
+        for row in category_rows
     ]
 
-    # ---- Severity distribution (low <0.34, medium <0.67, high >=0.67) ---
     severity_case = case(
         (Feature.severity < 0.34, "low"),
         (Feature.severity < 0.67, "medium"),
         else_="high",
     )
-    severity_stmt = select(severity_case.label("bucket"), func.count(Feature.id).label("count")).where(
-        _NOT_RASTER_SAMPLE
-    )
-    if scoped:
-        severity_stmt = severity_stmt.where(Feature.dataset_id.in_(dataset_id))
-    severity_rows = (await db.execute(severity_stmt.group_by(severity_case))).all()
-    severity_by_bucket = {r.bucket: int(r.count) for r in severity_rows}
+    severity_rows = (
+        await db.execute(
+            select(severity_case.label("bucket"), func.count(Feature.id).label("count"))
+            .where(*feature_conditions)
+            .group_by(severity_case)
+        )
+    ).all()
+    severity_by_bucket = {row.bucket: int(row.count or 0) for row in severity_rows}
     severity_breakdown = [
-        SeverityBucket(bucket=b, count=severity_by_bucket.get(b, 0)) for b in ("low", "medium", "high")
+        SeverityBucket(bucket=bucket, count=severity_by_bucket.get(bucket, 0))
+        for bucket in ("low", "medium", "high")
     ]
 
-    # ---- Ingestion trend (real growth over time, from each feature's ----
-    # ---- actual created_at — NOT simulated/interpolated data) -----------
     day_expr = func.date(Feature.created_at)
-    trend_stmt = select(day_expr.label("day"), func.count(Feature.id).label("c")).where(_NOT_RASTER_SAMPLE)
-    if scoped:
-        trend_stmt = trend_stmt.where(Feature.dataset_id.in_(dataset_id))
-    trend_rows = (await db.execute(trend_stmt.group_by(day_expr).order_by(day_expr))).all()
+    trend_rows = (
+        await db.execute(
+            select(day_expr.label("day"), func.count(Feature.id).label("count"))
+            .where(*feature_conditions)
+            .group_by(day_expr)
+            .order_by(day_expr)
+        )
+    ).all()
     cumulative = 0
     ingestion_trend: list[IngestionTrendPoint] = []
-    for r in trend_rows:
-        cumulative += int(r.c)
+    for row in trend_rows:
+        added = int(row.count or 0)
+        cumulative += added
         ingestion_trend.append(
             IngestionTrendPoint(
-                date=r.day.isoformat() if hasattr(r.day, "isoformat") else str(r.day),
-                features_added=int(r.c),
+                date=row.day.isoformat() if hasattr(row.day, "isoformat") else str(row.day),
+                features_added=added,
                 cumulative_features=cumulative,
             )
         )
 
     return AnalyticsOverview(
-        total_datasets=int(total_datasets),
+        total_datasets=total_datasets,
         ready_datasets=int(by_status.get(DatasetStatus.READY, 0)),
         processing_datasets=int(
-            by_status.get(DatasetStatus.PROCESSING, 0) + by_status.get(DatasetStatus.QUEUED, 0)
+            by_status.get(DatasetStatus.PROCESSING, 0)
+            + by_status.get(DatasetStatus.QUEUED, 0)
         ),
         failed_datasets=int(by_status.get(DatasetStatus.FAILED, 0)),
-        total_features=int(total_features),
-        total_review_items=int(total_reviews),
-        open_reviews=int(open_reviews),
-        resolved_reviews=int(resolved_reviews),
+        total_features=total_features,
+        average_severity=average_severity,
+        total_review_items=total_reviews,
+        open_reviews=open_reviews,
+        resolved_reviews=resolved_reviews,
         status_breakdown=status_breakdown,
         ward_breakdown=ward_breakdown,
         category_breakdown=category_breakdown,
         severity_breakdown=severity_breakdown,
         ingestion_trend=ingestion_trend,
         generated_at=datetime.now(timezone.utc),
+    )
+
+
+@router.get(
+    "/features",
+    response_model=AnalyticsFeaturePage,
+    dependencies=[Depends(require_any)],
+    summary="Paginated feature rows for the currently applied Analytics scope",
+)
+async def analytics_features(
+    dataset_id: list[uuid.UUID] | None = Query(default=None),
+    category: list[str] | None = Query(default=None),
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+    db: AsyncSession = Depends(get_db),
+) -> AnalyticsFeaturePage:
+    dataset_ids = list(dict.fromkeys(dataset_id or []))
+    categories = _clean_categories(category)
+    conditions = _feature_conditions(dataset_ids, categories)
+
+    total = int(
+        (
+            await db.execute(select(func.count(Feature.id)).where(*conditions))
+        ).scalar_one()
+        or 0
+    )
+
+    rows = (
+        await db.execute(
+            select(
+                Feature.id,
+                Feature.dataset_id,
+                Dataset.name.label("dataset_name"),
+                Dataset.ward,
+                Feature.label,
+                _CATEGORY_EXPR.label("category"),
+                Feature.severity,
+                func.GeometryType(Feature.geom).label("geometry_type"),
+                Feature.created_at,
+            )
+            .join(Dataset, Dataset.id == Feature.dataset_id)
+            .where(*conditions)
+            .order_by(Feature.severity.desc(), Feature.created_at, Feature.id)
+            .limit(limit)
+            .offset(offset)
+        )
+    ).all()
+
+    return AnalyticsFeaturePage(
+        total=total,
+        limit=limit,
+        offset=offset,
+        rows=[
+            AnalyticsFeatureRow(
+                id=row.id,
+                dataset_id=row.dataset_id,
+                dataset_name=row.dataset_name,
+                ward=row.ward,
+                label=row.label,
+                category=row.category,
+                severity=float(row.severity or 0.0),
+                geometry_type=str(row.geometry_type or "Unknown"),
+                created_at=row.created_at,
+            )
+            for row in rows
+        ],
     )
