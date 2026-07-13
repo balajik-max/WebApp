@@ -567,6 +567,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
   const [attributeTable, setAttributeTable] = useState<LayerAttributeTableState | null>(null);
   const [streetPickMode, setStreetPickMode] = useState(false);
   const [streetViewTarget, setStreetViewTarget] = useState<{ latitude: number; longitude: number } | null>(null);
+  const [loadedFeatures, setLoadedFeatures] = useState<UrbanFeature[]>([]);
   const streetPickModeRef = useRef(false);
   const streetPickConsumedRef = useRef(false);
   const [pendingFocusFeatureId, setPendingFocusFeatureId] = useState<string | null>(focusFeatureId ?? null);
@@ -1180,6 +1181,10 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     // data to be discarded precisely while zooming.
     if (!src) return;
     src.setData(data as unknown as GeoJSON.FeatureCollection);
+    // Keep the exact dashboard snapshot available to Street View. The
+    // panorama applies the same client-side layer visibility controls and
+    // creates nearby, georeferenced markers without issuing another request.
+    setLoadedFeatures(data.features);
 
     // Cache coordinates for every Point feature so the AI highlight layer
     // can place its circles correctly even when highlights arrive after load.
@@ -2057,6 +2062,8 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
         <GoogleStreetView
           latitude={streetViewTarget.latitude}
           longitude={streetViewTarget.longitude}
+          features={loadedFeatures}
+          hiddenCategories={hiddenCategories}
           onClose={() => setStreetViewTarget(null)}
         />
       )}
