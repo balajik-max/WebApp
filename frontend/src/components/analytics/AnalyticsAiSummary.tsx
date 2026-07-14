@@ -1,22 +1,35 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import { aiReport, type AiAnswer } from "../../lib/ai";
 
 interface Props {
   datasetIds: string[];
+  datasetNames?: string[];
   categories: string[];
+  ward?: string | null;
+  severityBuckets?: Array<"low" | "medium" | "high">;
+  disabledReason?: string | null;
 }
 
-export function AnalyticsAiSummary({ datasetIds, categories }: Props) {
+export function AnalyticsAiSummary({
+  datasetIds,
+  datasetNames = [],
+  categories,
+  ward = null,
+  severityBuckets = [],
+  disabledReason = null,
+}: Props) {
   const [answer, setAnswer] = useState<AiAnswer | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [elapsed, setElapsed] = useState(0);
   const timerRef = useRef<number | null>(null);
-  const scopeKey = useMemo(
-    () => `${[...datasetIds].sort().join(",")}|${[...categories].sort().join(",")}`,
-    [categories, datasetIds]
-  );
+  const scopeKey = JSON.stringify({
+    datasetIds: [...datasetIds].sort(),
+    categories: [...categories].sort(),
+    ward,
+    severityBuckets: [...severityBuckets].sort(),
+  });
 
   useEffect(() => {
     setAnswer(null);
@@ -41,6 +54,8 @@ export function AnalyticsAiSummary({ datasetIds, categories }: Props) {
       const response = await aiReport({
         dataset_ids: datasetIds,
         categories,
+        ward: ward || undefined,
+        severity_buckets: severityBuckets,
         all_datasets: datasetIds.length === 0,
         max_features: 25,
       });
@@ -71,10 +86,22 @@ export function AnalyticsAiSummary({ datasetIds, categories }: Props) {
       </div>
       <div className="chart-card__body">
         <p className="analytics-ai-card__note">
-          SQL/PostGIS calculates totals, categories, severity, and priority features. Ollama writes only the explanatory narrative from those verified facts.
+          SQL/PostGIS calculates totals, categories, severity, data-quality findings, and priority scores. Ollama writes only the explanatory narrative from those verified facts.
         </p>
+        <div className="analytics-ai-scope">
+          <span><b>Datasets:</b> {datasetNames.length === 0 ? "All datasets" : datasetNames.join(", ")}</span>
+          <span><b>Categories:</b> {categories.length === 0 ? "All categories" : categories.join(", ")}</span>
+          <span><b>Ward:</b> {ward || "All wards"}</span>
+          <span><b>Severity:</b> {severityBuckets.length === 0 ? "All levels" : severityBuckets.join(", ")}</span>
+        </div>
+        {disabledReason && <div className="analytics-ai-disabled-note">{disabledReason}</div>}
         {!answer && !loading && (
-          <button type="button" className="analytics-ai-card__button" onClick={() => void generate()}>
+          <button
+            type="button"
+            className="analytics-ai-card__button"
+            onClick={() => void generate()}
+            disabled={Boolean(disabledReason)}
+          >
             Generate AI summary
           </button>
         )}
@@ -96,7 +123,7 @@ export function AnalyticsAiSummary({ datasetIds, categories }: Props) {
             <div className="analytics-ai-card__report">
               <ReactMarkdown>{answer.answer_markdown}</ReactMarkdown>
             </div>
-            <button type="button" className="analytics-ai-card__regenerate" onClick={() => void generate()} disabled={loading}>
+            <button type="button" className="analytics-ai-card__regenerate" onClick={() => void generate()} disabled={loading || Boolean(disabledReason)}>
               Regenerate for this scope
             </button>
           </>

@@ -20,6 +20,8 @@ from typing import Any
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.services.analytics.quality import build_quality_report
+
 
 @dataclass(slots=True)
 class GroundedContext:
@@ -337,6 +339,16 @@ class TopFeatureFact:
 
 
 @dataclass(slots=True)
+class QualityFindingFact:
+    title: str
+    severity: str
+    affected_count: int
+    affected_percentage: float
+    priority_score: int
+    rule: str
+
+
+@dataclass(slots=True)
 class ReportFacts:
     scope_label: str
     total_features: int
@@ -347,6 +359,8 @@ class ReportFacts:
     categories: list[CategoryFact]
     top_features: list[TopFeatureFact]
     severity_buckets: dict[str, int]  # low/medium/high
+    quality_score: float | None
+    quality_findings: list[QualityFindingFact]
 
 
 async def build_report_facts(
@@ -356,6 +370,7 @@ async def build_report_facts(
     ward: str | None,
     dataset_ids: list[uuid.UUID] | None = None,
     categories: list[str] | None = None,
+    severity_buckets: list[str] | None = None,
     allow_all: bool = False,
     top_feature_limit: int = 8,
 ) -> ReportFacts | None:
@@ -364,6 +379,11 @@ async def build_report_facts(
         combined_dataset_ids.append(dataset_id)
 
     cleaned_categories = sorted({value.strip() for value in categories or [] if value.strip()})
+    cleaned_severity_buckets = sorted(
+        {value.strip().lower() for value in severity_buckets or [] if value.strip()}
+    )
+    if any(value not in {"low", "medium", "high"} for value in cleaned_severity_buckets):
+        return None
     if not allow_all and not combined_dataset_ids and ward is None:
         return None
 
@@ -380,6 +400,15 @@ async def build_report_facts(
             "COALESCE(NULLIF(BTRIM(f.category), ''), 'uncategorized') = ANY(:categories)"
         )
         params["categories"] = cleaned_categories
+    if cleaned_severity_buckets:
+        severity_conditions: list[str] = []
+        if "low" in cleaned_severity_buckets:
+            severity_conditions.append("f.severity < 0.34")
+        if "medium" in cleaned_severity_buckets:
+            severity_conditions.append("(f.severity >= 0.34 AND f.severity < 0.67)")
+        if "high" in cleaned_severity_buckets:
+            severity_conditions.append("f.severity >= 0.67")
+        conditions.append("(" + " OR ".join(severity_conditions) + ")")
     where_clause = " AND ".join(conditions)
 
     stats_sql = text(
@@ -414,7 +443,8 @@ async def build_report_facts(
 
     top_sql = text(
         f"""
-        SELECT f.id::text AS id, f.label AS label,
+        SELECT f.id::text AS id,
+               COALESCE(NULLIF(BTRIM(f.label), ''), f.attributes ->> 'FID', f.id::text) AS label,
                COALESCE(NULLIF(BTRIM(f.category), ''), 'uncategorized') AS category,
                f.severity AS severity, d.name AS dataset_name
         FROM features f
@@ -459,6 +489,14 @@ async def build_report_facts(
     review_rows = (await db.execute(review_sql, params)).mappings().all()
     review_summary = ", ".join(f"{row['status']}={row['c']}" for row in review_rows) or "no review items"
 
+    quality_report = await build_quality_report(
+        db,
+        dataset_ids=combined_dataset_ids,
+        categories=cleaned_categories,
+        wards=[ward] if ward else [],
+        severity_buckets=cleaned_severity_buckets,  # type: ignore[arg-type]
+    )
+
     if ward:
         scope_label = f"ward {ward}"
     elif combined_dataset_ids:
@@ -474,6 +512,8 @@ async def build_report_facts(
         if len(cleaned_categories) > 8:
             category_label += f", and {len(cleaned_categories) - 8} more"
         scope_label += f" | categories: {category_label}"
+    if cleaned_severity_buckets:
+        scope_label += f" | severity: {', '.join(cleaned_severity_buckets)}"
 
     return ReportFacts(
         scope_label=scope_label,
@@ -501,6 +541,18 @@ async def build_report_facts(
             for row in top_rows
         ],
         severity_buckets=severity_buckets,
+        quality_score=quality_report.overall_score,
+        quality_findings=[
+            QualityFindingFact(
+                title=finding.title,
+                severity=finding.severity,
+                affected_count=finding.affected_count,
+                affected_percentage=finding.affected_percentage,
+                priority_score=finding.priority_score,
+                rule=finding.rule,
+            )
+            for finding in quality_report.findings[:8]
+        ],
     )
 
 

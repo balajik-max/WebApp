@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useOutletContext } from "react-router-dom";
 import {
   Area,
@@ -19,16 +19,23 @@ import {
   fetchCategories,
   fetchDatasets,
   fetchOverview,
+  type AnalyticsCrossFilters,
   type AnalyticsOverview,
+  type AnalyticsSeverityBucket,
   type CategoryOption,
   type DatasetRow,
   type IngestionTrendPoint,
+  type ManholeReadinessFieldKey,
 } from "../lib/workflow";
 import { colorForCategory } from "../lib/categoryColors";
 import { AnalyticsScopeBar } from "../components/analytics/AnalyticsScopeBar";
 import { AnalyticsCategoryMap } from "../components/analytics/AnalyticsCategoryMap";
 import { AnalyticsFeatureTable } from "../components/analytics/AnalyticsFeatureTable";
 import { AnalyticsAiSummary } from "../components/analytics/AnalyticsAiSummary";
+import { AnalyticsFilterChips } from "../components/analytics/AnalyticsFilterChips";
+import { AnalyticsQualityPanel } from "../components/analytics/AnalyticsQualityPanel";
+import { AnalyticsExportPanel } from "../components/analytics/AnalyticsExportPanel";
+import { AnalyticsManholeReadiness } from "../components/analytics/AnalyticsManholeReadiness";
 
 const STATUS_COLORS: Record<string, string> = {
   open: "#3b82f6",
@@ -44,6 +51,16 @@ const SEVERITY_COLORS: Record<string, string> = {
   high: "#ef4444",
 };
 const ANALYTICS_SCOPE_STORAGE_KEY = "davangere.analytics.scope.v1";
+const MANHOLE_READINESS_LABELS: Record<ManholeReadinessFieldKey, string> = {
+  depth: "Depth",
+  bottom_level: "Bottom Level",
+  top_level: "Top Level",
+  condition: "Condition",
+  pipe_type: "Pipe Type",
+  diameter: "Diameter",
+  image_reference: "Image Reference",
+};
+const MANHOLE_READINESS_KEYS = new Set(Object.keys(MANHOLE_READINESS_LABELS));
 
 function formatNum(value: number | undefined): string {
   return value == null ? "—" : value.toLocaleString();
@@ -55,11 +72,19 @@ function stableValues(values: string[]) {
   );
 }
 
+function sameValues(a: string[], b: string[]) {
+  return stableValues(a).join("\u0000") === stableValues(b).join("\u0000");
+}
+
 interface StoredAnalyticsScope {
   draftDatasetIds: string[];
   draftCategories: string[];
   appliedDatasetIds: string[];
   appliedCategories: string[];
+  activeCategory: string | null;
+  activeWard: string | null;
+  activeSeverityBucket: AnalyticsSeverityBucket | null;
+  activeMissingField: ManholeReadinessFieldKey | null;
 }
 
 function stringArray(value: unknown): string[] {
@@ -78,6 +103,19 @@ function readStoredAnalyticsScope(fallbackDatasetIds: string[]): StoredAnalytics
       draftCategories: stringArray(parsed.draftCategories),
       appliedDatasetIds: stringArray(parsed.appliedDatasetIds),
       appliedCategories: stringArray(parsed.appliedCategories),
+      activeCategory: typeof parsed.activeCategory === "string" ? parsed.activeCategory : null,
+      activeWard: typeof parsed.activeWard === "string" ? parsed.activeWard : null,
+      activeSeverityBucket:
+        parsed.activeSeverityBucket === "low" ||
+        parsed.activeSeverityBucket === "medium" ||
+        parsed.activeSeverityBucket === "high"
+          ? parsed.activeSeverityBucket
+          : null,
+      activeMissingField:
+        typeof parsed.activeMissingField === "string" &&
+        MANHOLE_READINESS_KEYS.has(parsed.activeMissingField)
+          ? parsed.activeMissingField as ManholeReadinessFieldKey
+          : null,
     };
   } catch {
     const datasets = stableValues(fallbackDatasetIds);
@@ -86,6 +124,10 @@ function readStoredAnalyticsScope(fallbackDatasetIds: string[]): StoredAnalytics
       draftCategories: [],
       appliedDatasetIds: datasets,
       appliedCategories: [],
+      activeCategory: null,
+      activeWard: null,
+      activeSeverityBucket: null,
+      activeMissingField: null,
     };
   }
 }
@@ -114,21 +156,55 @@ export function AnalyticsView() {
   const [draftCategories, setDraftCategories] = useState<string[]>(initialScope.draftCategories);
   const [appliedDatasetIds, setAppliedDatasetIds] = useState<string[]>(initialScope.appliedDatasetIds);
   const [appliedCategories, setAppliedCategories] = useState<string[]>(initialScope.appliedCategories);
+  const [activeCategory, setActiveCategory] = useState<string | null>(initialScope.activeCategory);
+  const [activeWard, setActiveWard] = useState<string | null>(initialScope.activeWard);
+  const [activeSeverityBucket, setActiveSeverityBucket] = useState<AnalyticsSeverityBucket | null>(
+    initialScope.activeSeverityBucket
+  );
+  const [activeMissingField, setActiveMissingField] = useState<ManholeReadinessFieldKey | null>(
+    initialScope.activeMissingField
+  );
   const [overview, setOverview] = useState<AnalyticsOverview | null>(null);
   const [loadingDatasets, setLoadingDatasets] = useState(true);
   const [loadingCategories, setLoadingCategories] = useState(true);
   const [analyzing, setAnalyzing] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [analysisVersion, setAnalysisVersion] = useState(0);
+  const spatialSectionRef = useRef<HTMLElement | null>(null);
 
   const draftDatasetKey = useMemo(
     () => stableValues(draftDatasetIds).join(","),
     [draftDatasetIds]
   );
-  const appliedScopeKey = useMemo(
-    () => `${stableValues(appliedDatasetIds).join(",")}|${stableValues(appliedCategories).join(",")}`,
-    [appliedCategories, appliedDatasetIds]
+  const effectiveCategories = useMemo(
+    () => activeCategory ? [activeCategory] : appliedCategories,
+    [activeCategory, appliedCategories]
   );
+  const effectiveSeverityBuckets = useMemo<AnalyticsSeverityBucket[]>(
+    () => activeSeverityBucket ? [activeSeverityBucket] : [],
+    [activeSeverityBucket]
+  );
+  const crossFilters = useMemo<AnalyticsCrossFilters>(
+    () => ({
+      wards: activeWard ? [activeWard] : [],
+      severityBuckets: effectiveSeverityBuckets,
+      missingField: activeMissingField,
+    }),
+    [activeMissingField, activeWard, effectiveSeverityBuckets]
+  );
+  const appliedScopeKey = useMemo(
+    () => JSON.stringify({
+      datasetIds: stableValues(appliedDatasetIds),
+      categories: stableValues(effectiveCategories),
+      ward: activeWard,
+      severity: activeSeverityBucket,
+      missingField: activeMissingField,
+    }),
+    [activeMissingField, activeSeverityBucket, activeWard, appliedDatasetIds, effectiveCategories]
+  );
+  const scopeDirty =
+    !sameValues(draftDatasetIds, appliedDatasetIds) ||
+    !sameValues(draftCategories, appliedCategories);
 
   useEffect(() => {
     try {
@@ -139,13 +215,26 @@ export function AnalyticsView() {
           draftCategories: stableValues(draftCategories),
           appliedDatasetIds: stableValues(appliedDatasetIds),
           appliedCategories: stableValues(appliedCategories),
+          activeCategory,
+          activeWard,
+          activeSeverityBucket,
+          activeMissingField,
         } satisfies StoredAnalyticsScope)
       );
     } catch {
       // Storage can be disabled by browser policy. In that case the page
       // continues to work normally for the current mounted session.
     }
-  }, [appliedCategories, appliedDatasetIds, draftCategories, draftDatasetIds]);
+  }, [
+    activeMissingField,
+    activeCategory,
+    activeSeverityBucket,
+    activeWard,
+    appliedCategories,
+    appliedDatasetIds,
+    draftCategories,
+    draftDatasetIds,
+  ]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -184,7 +273,7 @@ export function AnalyticsView() {
     const controller = new AbortController();
     setAnalyzing(true);
     setError(null);
-    fetchOverview(appliedDatasetIds, appliedCategories, controller.signal)
+    fetchOverview(appliedDatasetIds, effectiveCategories, controller.signal, crossFilters)
       .then(setOverview)
       .catch((caught: Error) => {
         if (caught.name !== "AbortError") setError(`Live analytics unavailable: ${caught.message}`);
@@ -199,6 +288,10 @@ export function AnalyticsView() {
   function analyze() {
     setAppliedDatasetIds(stableValues(draftDatasetIds));
     setAppliedCategories(stableValues(draftCategories));
+    setActiveCategory(null);
+    setActiveWard(null);
+    setActiveSeverityBucket(null);
+    setActiveMissingField(null);
     setAnalysisVersion((value) => value + 1);
   }
 
@@ -207,8 +300,46 @@ export function AnalyticsView() {
     setDraftCategories([]);
     setAppliedDatasetIds([]);
     setAppliedCategories([]);
+    setActiveCategory(null);
+    setActiveWard(null);
+    setActiveSeverityBucket(null);
+    setActiveMissingField(null);
     setAnalysisVersion((value) => value + 1);
   }
+
+  const toggleCategoryFilter = useCallback((category: string) => {
+    setActiveMissingField(null);
+    setActiveCategory((current) => current === category ? null : category);
+  }, []);
+
+  const toggleWardFilter = useCallback((ward: string) => {
+    setActiveWard((current) => current === ward ? null : ward);
+  }, []);
+
+  const toggleSeverityFilter = useCallback((bucket: AnalyticsSeverityBucket) => {
+    setActiveSeverityBucket((current) => current === bucket ? null : bucket);
+  }, []);
+
+  const clearCrossFilters = useCallback(() => {
+    setActiveCategory(null);
+    setActiveWard(null);
+    setActiveSeverityBucket(null);
+    setActiveMissingField(null);
+  }, []);
+
+  const selectMissingManholeField = useCallback((
+    field: ManholeReadinessFieldKey,
+    _label: string
+  ) => {
+    const manholeCategory =
+      categoryOptions.find((option) => option.category.trim().toLowerCase() === "manhole")
+        ?.category ?? "Manhole";
+    setActiveCategory(manholeCategory);
+    setActiveMissingField(field);
+    window.requestAnimationFrame(() => {
+      spatialSectionRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+    });
+  }, [categoryOptions]);
 
   const appliedDatasetNames = useMemo(() => {
     const byId = new Map(datasets.map((dataset) => [dataset.id, dataset.name]));
@@ -291,9 +422,14 @@ export function AnalyticsView() {
             {appliedDatasetIds.length === 0
               ? "Analyzing all datasets"
               : `Analyzing ${appliedDatasetNames.join(", ")}`}
-            {appliedCategories.length === 0
+            {effectiveCategories.length === 0
               ? " across all real categories."
-              : ` for ${appliedCategories.length} selected categor${appliedCategories.length === 1 ? "y" : "ies"}.`}
+              : ` for ${effectiveCategories.length} active categor${effectiveCategories.length === 1 ? "y" : "ies"}.`}
+            {activeWard ? ` Ward ${activeWard}.` : ""}
+            {activeSeverityBucket ? ` ${activeSeverityBucket} severity only.` : ""}
+            {activeMissingField
+              ? ` Showing Manholes missing ${MANHOLE_READINESS_LABELS[activeMissingField]}.`
+              : ""}
           </p>
         </div>
         {overview && (
@@ -317,6 +453,23 @@ export function AnalyticsView() {
         onCategoryChange={setDraftCategories}
         onAnalyze={analyze}
         onReset={resetScope}
+      />
+
+      <AnalyticsFilterChips
+        category={activeCategory}
+        ward={activeWard}
+        severityBucket={activeSeverityBucket}
+        missingFieldLabel={
+          activeMissingField ? MANHOLE_READINESS_LABELS[activeMissingField] : null
+        }
+        onClearCategory={() => {
+          setActiveCategory(null);
+          setActiveMissingField(null);
+        }}
+        onClearWard={() => setActiveWard(null)}
+        onClearSeverity={() => setActiveSeverityBucket(null)}
+        onClearMissingField={() => setActiveMissingField(null)}
+        onClearAll={clearCrossFilters}
       />
 
       {error && <div className="analytics-page__error">{error}</div>}
@@ -384,7 +537,14 @@ export function AnalyticsView() {
                     <YAxis type="category" dataKey="category" width={130} tick={{ fill: "var(--ink-dim)", fontSize: 10 }} axisLine={false} tickLine={false} />
                     <Tooltip contentStyle={{ background: "var(--surface-2)", border: "1px solid var(--edge)", borderRadius: 8, fontSize: 12, color: "var(--ink)" }} />
                     <Bar dataKey="count" name="Features" radius={[0, 6, 6, 0]}>
-                      {topCategories.map((category) => <Cell key={category.category} fill={colorForCategory(category.category)} />)}
+                      {topCategories.map((category) => (
+                        <Cell
+                          key={category.category}
+                          fill={colorForCategory(category.category)}
+                          className="analytics-clickable-chart-item"
+                          onClick={() => toggleCategoryFilter(category.category)}
+                        />
+                      ))}
                     </Bar>
                   </BarChart>
                 </ResponsiveContainer>
@@ -414,16 +574,27 @@ export function AnalyticsView() {
                     <YAxis type="category" dataKey="name" tick={{ fill: "var(--ink-dim)", fontSize: 12, fontWeight: 600 }} axisLine={false} tickLine={false} width={80} />
                     <Tooltip contentStyle={{ background: "var(--surface-2)", border: "1px solid var(--edge)", borderRadius: 8, fontSize: 12, color: "var(--ink)" }} />
                     <Bar dataKey="value" radius={[0, 6, 6, 0]}>
-                      {severityData.map((entry) => <Cell key={entry.name} fill={entry.color} />)}
+                      {severityData.map((entry) => (
+                        <Cell
+                          key={entry.name}
+                          fill={entry.color}
+                          className="analytics-clickable-chart-item"
+                          onClick={() => toggleSeverityFilter(entry.name.toLowerCase() as AnalyticsSeverityBucket)}
+                        />
+                      ))}
                     </Bar>
                   </BarChart>
                 </ResponsiveContainer>
                 <div className="analytics-severity-summary">
                   {severityData.map((item) => (
-                    <div key={item.name}>
+                    <button
+                      type="button"
+                      key={item.name}
+                      onClick={() => toggleSeverityFilter(item.name.toLowerCase() as AnalyticsSeverityBucket)}
+                    >
                       <strong style={{ color: item.color }}>{item.value.toLocaleString()}</strong>
                       <span>{item.name} ({item.percentage}%)</span>
-                    </div>
+                    </button>
                   ))}
                 </div>
               </div>
@@ -491,7 +662,15 @@ export function AnalyticsView() {
                   <XAxis type="number" tick={{ fill: "var(--ink-mute)", fontSize: 11 }} axisLine={false} tickLine={false} />
                   <YAxis type="category" dataKey="ward" tick={{ fill: "var(--ink-dim)", fontSize: 11 }} axisLine={false} tickLine={false} width={90} />
                   <Tooltip contentStyle={{ background: "var(--surface-2)", border: "1px solid var(--edge)", borderRadius: 8, fontSize: 12, color: "var(--ink)" }} />
-                  <Bar dataKey="feature_count" name="Features" fill="var(--accent)" radius={[0, 6, 6, 0]} />
+                  <Bar dataKey="feature_count" name="Features" fill="var(--accent)" radius={[0, 6, 6, 0]}>
+                    {wardData.map((item) => (
+                      <Cell
+                        key={item.ward}
+                        className="analytics-clickable-chart-item"
+                        onClick={() => toggleWardFilter(item.ward)}
+                      />
+                    ))}
+                  </Bar>
                 </BarChart>
               </ResponsiveContainer>
             ) : (
@@ -511,11 +690,16 @@ export function AnalyticsView() {
             {heatmapData.length > 0 ? (
               <div className="analytics-risk-grid">
                 {heatmapData.map((item) => (
-                  <div key={item.category} style={{ background: `${item.color}15`, borderColor: `${item.color}55` }}>
+                  <button
+                    type="button"
+                    key={item.category}
+                    style={{ background: `${item.color}15`, borderColor: `${item.color}55` }}
+                    onClick={() => toggleCategoryFilter(item.category)}
+                  >
                     <span title={item.category}>{item.category}</span>
                     <strong style={{ color: item.color }}>{item.avgSeverity.toFixed(2)}</strong>
                     <small>{item.severityLevel} · {item.count.toLocaleString()} features</small>
-                  </div>
+                  </button>
                 ))}
               </div>
             ) : (
@@ -542,10 +726,44 @@ export function AnalyticsView() {
         </div>
       </section>
 
-      <section className="chart-grid chart-grid--2 analytics-spatial-grid">
-        <AnalyticsCategoryMap datasetIds={appliedDatasetIds} categories={appliedCategories} />
-        <AnalyticsFeatureTable datasetIds={appliedDatasetIds} categories={appliedCategories} />
+      <AnalyticsManholeReadiness
+        datasetIds={appliedDatasetIds}
+        filters={{
+          wards: activeWard ? [activeWard] : [],
+          severityBuckets: effectiveSeverityBuckets,
+        }}
+        activeField={activeMissingField}
+        onSelectMissing={selectMissingManholeField}
+        onClear={() => setActiveMissingField(null)}
+      />
+
+      <section ref={spatialSectionRef} className="chart-grid chart-grid--2 analytics-spatial-grid">
+        <AnalyticsCategoryMap
+          datasetIds={appliedDatasetIds}
+          categories={effectiveCategories}
+          filters={crossFilters}
+          onCategoryFilter={toggleCategoryFilter}
+        />
+        <AnalyticsFeatureTable
+          datasetIds={appliedDatasetIds}
+          categories={effectiveCategories}
+          filters={crossFilters}
+        />
       </section>
+
+      <AnalyticsQualityPanel
+        datasetIds={appliedDatasetIds}
+        categories={effectiveCategories}
+        filters={crossFilters}
+        onCategoryFilter={toggleCategoryFilter}
+      />
+
+      <AnalyticsExportPanel
+        datasetIds={appliedDatasetIds}
+        categories={effectiveCategories}
+        filters={crossFilters}
+        disabledReason={scopeDirty ? "Click Analyze to apply the draft dataset/category changes before exporting." : null}
+      />
 
       {overview && overview.category_breakdown.length > 0 && (
         <section className="chart-card" data-testid="category-table-card">
@@ -573,7 +791,20 @@ export function AnalyticsView() {
                   {overview.category_breakdown.map((row) => {
                     const percentage = totalCategoryCount > 0 ? (row.count / totalCategoryCount) * 100 : 0;
                     return (
-                      <tr key={row.category}>
+                      <tr
+                        key={row.category}
+                        className="analytics-clickable-row"
+                        role="button"
+                        tabIndex={0}
+                        aria-pressed={activeCategory === row.category}
+                        onClick={() => toggleCategoryFilter(row.category)}
+                        onKeyDown={(event) => {
+                          if (event.key === "Enter" || event.key === " ") {
+                            event.preventDefault();
+                            toggleCategoryFilter(row.category);
+                          }
+                        }}
+                      >
                         <td><span className="cat-dot" style={{ background: colorForCategory(row.category) }} /></td>
                         <td className="cat-name">{row.category}</td>
                         <td className="cat-count" style={{ textAlign: "right" }}>{formatNum(row.count)}</td>
@@ -594,7 +825,20 @@ export function AnalyticsView() {
         </section>
       )}
 
-      <AnalyticsAiSummary datasetIds={appliedDatasetIds} categories={appliedCategories} />
+      <AnalyticsAiSummary
+        datasetIds={appliedDatasetIds}
+        datasetNames={appliedDatasetNames}
+        categories={effectiveCategories}
+        ward={activeWard}
+        severityBuckets={effectiveSeverityBuckets}
+        disabledReason={
+          scopeDirty
+            ? "Apply the draft dataset/category changes before generating a new AI summary."
+            : activeMissingField
+              ? "Clear the Manhole readiness filter before generating an AI summary; AI reports currently use dataset, category, ward, and severity scope only."
+              : null
+        }
+      />
     </div>
   );
 }

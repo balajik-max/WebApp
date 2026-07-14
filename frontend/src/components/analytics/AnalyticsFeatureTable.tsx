@@ -3,6 +3,7 @@ import { createPortal } from "react-dom";
 import { useNavigate } from "react-router-dom";
 import {
   fetchAnalyticsFeatureTable,
+  type AnalyticsCrossFilters,
   type AnalyticsFeaturePage,
   type AnalyticsFeatureRow,
 } from "../../lib/workflow";
@@ -13,6 +14,7 @@ const TABLE_STATE_KEY = "davangere.analytics.feature-table.v1";
 interface Props {
   datasetIds: string[];
   categories: string[];
+  filters?: AnalyticsCrossFilters;
 }
 
 interface RowMenuState {
@@ -47,7 +49,7 @@ function readTableState(scopeKey: string): StoredTableState | null {
   }
 }
 
-export function AnalyticsFeatureTable({ datasetIds, categories }: Props) {
+export function AnalyticsFeatureTable({ datasetIds, categories, filters = {} }: Props) {
   const navigate = useNavigate();
   const [offset, setOffset] = useState(0);
   const [page, setPage] = useState<AnalyticsFeaturePage | null>(null);
@@ -56,8 +58,14 @@ export function AnalyticsFeatureTable({ datasetIds, categories }: Props) {
   const [selectedRowId, setSelectedRowId] = useState<string | null>(null);
   const [rowMenu, setRowMenu] = useState<RowMenuState | null>(null);
   const scopeKey = useMemo(
-    () => `${[...datasetIds].sort().join(",")}|${[...categories].sort().join(",")}`,
-    [categories, datasetIds]
+    () => JSON.stringify({
+      datasetIds: [...datasetIds].sort(),
+      categories: [...categories].sort(),
+      wards: [...(filters.wards ?? [])].sort(),
+      severityBuckets: [...(filters.severityBuckets ?? [])].sort(),
+      missingField: filters.missingField ?? null,
+    }),
+    [categories, datasetIds, filters.missingField, filters.severityBuckets, filters.wards]
   );
 
   useEffect(() => {
@@ -82,7 +90,7 @@ export function AnalyticsFeatureTable({ datasetIds, categories }: Props) {
     const controller = new AbortController();
     setLoading(true);
     setError(null);
-    fetchAnalyticsFeatureTable(datasetIds, categories, PAGE_SIZE, offset, controller.signal)
+    fetchAnalyticsFeatureTable(datasetIds, categories, PAGE_SIZE, offset, controller.signal, filters)
       .then(setPage)
       .catch((caught: Error) => {
         if (caught.name !== "AbortError") setError(caught.message);
@@ -91,7 +99,9 @@ export function AnalyticsFeatureTable({ datasetIds, categories }: Props) {
         if (!controller.signal.aborted) setLoading(false);
       });
     return () => controller.abort();
-  }, [categories, datasetIds, offset, scopeKey]);
+    // scopeKey contains the normalized dataset/category/cross-filter scope.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [offset, scopeKey]);
 
   useEffect(() => {
     if (!rowMenu) return;

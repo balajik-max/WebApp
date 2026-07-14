@@ -1,6 +1,23 @@
 /** Analytics + workflow API helpers. */
-import { apiDelete, apiGet, apiPatch, apiPost } from "./api";
+
+import { apiDelete, apiDownload, apiGet, apiPatch, apiPost } from "./api";
 import type { FeatureCollectionResponse } from "./types";
+
+export type AnalyticsSeverityBucket = "low" | "medium" | "high";
+export type ManholeReadinessFieldKey =
+  | "depth"
+  | "bottom_level"
+  | "top_level"
+  | "condition"
+  | "pipe_type"
+  | "diameter"
+  | "image_reference";
+
+export interface AnalyticsCrossFilters {
+  wards?: string[];
+  severityBuckets?: AnalyticsSeverityBucket[];
+  missingField?: ManholeReadinessFieldKey | null;
+}
 
 export interface StatusBreakdown {
   status: string;
@@ -72,11 +89,10 @@ export interface DatasetRow {
 export function fetchOverview(
   datasetIds: string[] = [],
   categories: string[] = [],
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  filters: AnalyticsCrossFilters = {}
 ) {
-  const params = new URLSearchParams();
-  for (const id of datasetIds) params.append("dataset_id", id);
-  for (const category of categories) params.append("category", category);
+  const params = analyticsScopeParams(datasetIds, categories, filters);
   const query = params.toString();
   return apiGet<AnalyticsOverview>(
     `/api/v1/analytics/overview${query ? `?${query}` : ""}`,
@@ -156,21 +172,38 @@ export interface AnalyticsFeaturePage {
   rows: AnalyticsFeatureRow[];
 }
 
-function analyticsScopeParams(datasetIds: string[], categories: string[]) {
+function analyticsScopeParams(
+  datasetIds: string[],
+  categories: string[],
+  filters: AnalyticsCrossFilters = {}
+) {
   const params = new URLSearchParams();
   for (const id of datasetIds) params.append("dataset_id", id);
   for (const category of categories) params.append("category", category);
+  for (const ward of filters.wards ?? []) params.append("ward", ward);
+  for (const bucket of filters.severityBuckets ?? []) params.append("severity_bucket", bucket);
+  if (filters.missingField) params.set("missing_field", filters.missingField);
   return params;
 }
 
 export function fetchAnalyticsFeatures(
   datasetIds: string[],
   categories: string[],
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  filters: AnalyticsCrossFilters = {}
 ) {
-  const params = analyticsScopeParams(datasetIds, categories);
-  params.set("bbox", "-180,-90,180,90");
+  const params = analyticsScopeParams(datasetIds, categories, filters);
   params.set("limit", "5000");
+  if (filters.missingField) {
+    params.delete("category");
+    params.delete("missing_field");
+    params.set("field", filters.missingField);
+    return apiGet<FeatureCollectionResponse>(
+      `/api/v1/analytics/manhole-readiness/features?${params.toString()}`,
+      signal
+    );
+  }
+  params.set("bbox", "-180,-90,180,90");
   params.set("exclude_internal", "true");
   return apiGet<FeatureCollectionResponse>(`/api/v1/features?${params.toString()}`, signal);
 }
@@ -180,12 +213,121 @@ export function fetchAnalyticsFeatureTable(
   categories: string[],
   limit: number,
   offset: number,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  filters: AnalyticsCrossFilters = {}
 ) {
-  const params = analyticsScopeParams(datasetIds, categories);
+  const params = analyticsScopeParams(datasetIds, categories, filters);
   params.set("limit", String(limit));
   params.set("offset", String(offset));
   return apiGet<AnalyticsFeaturePage>(`/api/v1/analytics/features?${params.toString()}`, signal);
+}
+
+
+export interface ManholeReadinessFieldResult {
+  key: ManholeReadinessFieldKey;
+  label: string;
+  aliases: string[];
+  available_count: number;
+  missing_count: number;
+  completeness_percentage: number;
+  recommended_action: string;
+}
+
+export interface ManholeReadinessReport {
+  total_manhole_features: number;
+  fields: ManholeReadinessFieldResult[];
+  methodology: string;
+  generated_at: string;
+}
+
+export function fetchManholeReadiness(
+  datasetIds: string[],
+  signal?: AbortSignal,
+  filters: Pick<AnalyticsCrossFilters, "wards" | "severityBuckets"> = {}
+) {
+  const params = analyticsScopeParams(datasetIds, [], filters);
+  const query = params.toString();
+  return apiGet<ManholeReadinessReport>(
+    `/api/v1/analytics/manhole-readiness${query ? `?${query}` : ""}`,
+    signal
+  );
+}
+
+export interface AnalyticsQualityComponent {
+  key: string;
+  label: string;
+  score: number;
+  weight: number;
+  passed: number;
+  failed: number;
+  explanation: string;
+}
+
+export interface AnalyticsFinding {
+  id: string;
+  title: string;
+  description: string;
+  rule: string;
+  severity: "low" | "medium" | "high" | "critical";
+  finding_type: "geometry" | "attribute" | "consistency" | "operational";
+  affected_count: number;
+  affected_percentage: number;
+  priority_score: number;
+  feature_ids: string[];
+  category: string | null;
+  attribute: string | null;
+}
+
+export interface AnalyticsQualityReport {
+  total_features: number;
+  overall_score: number | null;
+  components: AnalyticsQualityComponent[];
+  findings: AnalyticsFinding[];
+  methodology: string;
+  generated_at: string;
+}
+
+export function fetchAnalyticsQuality(
+  datasetIds: string[],
+  categories: string[],
+  signal?: AbortSignal,
+  filters: AnalyticsCrossFilters = {}
+) {
+  const params = analyticsScopeParams(datasetIds, categories, filters);
+  const query = params.toString();
+  return apiGet<AnalyticsQualityReport>(
+    `/api/v1/analytics/quality${query ? `?${query}` : ""}`,
+    signal
+  );
+}
+
+
+
+export type AnalyticsExportFormat = "csv" | "xlsx" | "pdf" | "geojson";
+
+export async function downloadAnalyticsExport(
+  format: AnalyticsExportFormat,
+  datasetIds: string[],
+  categories: string[],
+  filters: AnalyticsCrossFilters = {},
+  signal?: AbortSignal
+) {
+  const params = analyticsScopeParams(datasetIds, categories, filters);
+  params.set("format", format);
+  const result = await apiDownload(`/api/v1/analytics/export?${params.toString()}`, signal);
+  const fallbackName = `analytics_export.${format === "xlsx" ? "xlsx" : format}`;
+  const objectUrl = URL.createObjectURL(result.blob);
+  try {
+    const link = document.createElement("a");
+    link.href = objectUrl;
+    link.download = result.filename || fallbackName;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+  } finally {
+    window.setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
+  }
+  return result.filename || fallbackName;
 }
 
 export interface FeatureTableRow {

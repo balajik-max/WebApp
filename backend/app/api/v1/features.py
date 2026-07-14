@@ -343,6 +343,10 @@ async def list_features_in_viewport(
         description="Restrict to one or more categories. Repeat the parameter for multiple values.",
     ),
     severity: int | None = Query(default=None, description="Minimum severity threshold"),
+    severity_bucket: list[str] | None = Query(
+        default=None,
+        description="Optional Analytics cross-filter. Repeat low, medium, or high.",
+    ),
     dataset_id: list[uuid.UUID] | None = Query(
         default=None,
         description=(
@@ -440,6 +444,23 @@ async def list_features_in_viewport(
     if severity is not None:
         conditions.append("f.severity >= :severity")
         params["severity"] = float(severity)
+    if severity_bucket:
+        buckets = sorted({value.strip().lower() for value in severity_bucket if value.strip()})
+        invalid_buckets = [value for value in buckets if value not in {"low", "medium", "high"}]
+        if invalid_buckets:
+            raise HTTPException(
+                status_code=400,
+                detail="severity_bucket must be one of low, medium, high",
+            )
+        bucket_conditions: list[str] = []
+        if "low" in buckets:
+            bucket_conditions.append("f.severity < 0.34")
+        if "medium" in buckets:
+            bucket_conditions.append("(f.severity >= 0.34 AND f.severity < 0.67)")
+        if "high" in buckets:
+            bucket_conditions.append("f.severity >= 0.67")
+        if bucket_conditions:
+            conditions.append("(" + " OR ".join(bucket_conditions) + ")")
     if dataset_id:
         conditions.append("f.dataset_id = ANY(:dataset_ids)")
         params["dataset_ids"] = dataset_id
