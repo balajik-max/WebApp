@@ -3224,6 +3224,29 @@ function HoverTooltip({ hover }: { hover: HoverInfo | null }) {
 }
 
 function PhotoViewer({ photo, onClose }: { photo: { url: string; label: string } | null; onClose: () => void }) {
+  // Keep the latest close handler without forcing the keydown effect to
+  // re-subscribe on every parent render (the parent passes a fresh inline
+  // `onClose` each time). This lets the effect depend only on `photo`.
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
+
+  // Close via Escape using the exact same handler as the Close button below
+  // the image. The listener is registered only while the preview is open and
+  // is fully removed on close/unmount, so it can never accumulate or fire when
+  // the preview is hidden. stopPropagation prevents the global MapCanvas Escape
+  // handler (measurement tool / Look Around) from also reacting.
+  useEffect(() => {
+    if (!photo) return;
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Escape" || event.repeat) return;
+      event.preventDefault();
+      event.stopPropagation();
+      onCloseRef.current();
+    };
+    document.addEventListener("keydown", handleKeyDown);
+    return () => document.removeEventListener("keydown", handleKeyDown);
+  }, [photo]);
+
   if (!photo) return null;
   return (
     <div
