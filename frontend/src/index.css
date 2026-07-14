@@ -151,7 +151,7 @@ body {
 .workspace {
   height: 100vh;
   display: grid;
-  grid-template-rows: 52px 1fr;
+  grid-template-rows: 52px auto 1fr;
   background: var(--bg);
 }
 
@@ -172,6 +172,9 @@ body {
   gap: 10px;
   padding-right: 16px;
   border-right: 1px solid var(--edge);
+  text-decoration: none;
+  color: inherit;
+  cursor: pointer;
 }
 
 .workspace__mark {
@@ -200,21 +203,60 @@ body {
   letter-spacing: -0.01em;
 }
 
-.workspace__subtitle {
-  font-size: 11px;
-  color: var(--ink-mute);
-  margin-top: 1px;
-}
-
-.workspace__subtitle b {
-  color: var(--ink-dim);
-  font-weight: 500;
-}
-
 .workspace__right {
   display: flex;
   align-items: center;
   gap: 8px;
+}
+
+.user-avatar {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, var(--accent) 0%, #0d9488 100%);
+  color: white;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 13px;
+  font-weight: 700;
+  flex-shrink: 0;
+  box-shadow: var(--shadow-glow), var(--shadow-sm);
+  border: none;
+  cursor: pointer;
+  user-select: none;
+  transition: transform var(--transition-fast), box-shadow var(--transition-fast);
+}
+
+.user-avatar:hover {
+  transform: scale(1.06);
+}
+
+.user-avatar:active {
+  transform: scale(0.96);
+}
+
+.workspace__subbar {
+  display: flex;
+  align-items: center;
+  padding-top: 6px;
+  padding-bottom: 6px;
+  padding-left: 16px;
+  /* Matches the fixed-position right panel's width (290px, see
+     .workspace-panel) so content pushed to the far right via
+     margin-left: auto (the Measure button) lands in the subbar's visible
+     strip instead of underneath that panel, which stacks above the subbar
+     on the map route. */
+  padding-right: calc(16px + 290px);
+  background: var(--surface);
+  border-bottom: 1px solid var(--edge);
+  z-index: 99;
+}
+
+.workspace__subbar .filters input,
+.workspace__subbar .filters select,
+.workspace__subbar .filters button {
+  height: 26px;
 }
 
 .workspace__body {
@@ -226,14 +268,48 @@ body {
 /* ── TABS ─────────────────────────────────────────────────────────────── */
 .tabs {
   display: flex;
-  gap: 2px;
-  background: var(--surface-2);
-  border: 1px solid var(--edge);
-  border-radius: var(--radius-md);
-  padding: 3px;
+  justify-content: center;
+  justify-self: center;
+}
+
+.tabs__list {
+  position: relative;
+  display: flex;
+  gap: 32px;
+}
+
+/* The single shared active-tab background — positioned/sized via inline
+   style (measured from the real active tab's DOM rect) and moved with a
+   transform so switching tabs animates one element sliding, instead of one
+   background disappearing on the old tab while a separate one appears on
+   the new tab. z-index 0 keeps it behind the tab labels; pointer-events
+   none keeps it from ever intercepting clicks meant for the tabs. */
+.tabs__indicator {
+  position: absolute;
+  top: 0;
+  left: 0;
+  height: 100%;
+  z-index: 0;
+  pointer-events: none;
+  background: var(--accent);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-sm);
+  will-change: transform, width;
+  /* No transition until is-animation-ready is added (next animation frame
+     after first measurement) — prevents a fly-in from the left/MAP position
+     when a route other than /map is opened directly. */
+  transition: none;
+}
+
+.tabs__list.is-animation-ready .tabs__indicator {
+  transition:
+    transform 320ms cubic-bezier(0.22, 1, 0.36, 1),
+    width 320ms cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 .tabs a {
+  position: relative;
+  z-index: 2;
   padding: 6px 18px;
   font-size: 11px;
   font-weight: 600;
@@ -241,19 +317,30 @@ body {
   text-transform: uppercase;
   color: var(--ink-mute);
   text-decoration: none;
+  background: transparent;
   border-radius: var(--radius-sm);
-  transition: all var(--transition-fast);
+  transition: color 180ms ease;
 }
 
+/* Subtle only — must not read as a second competing pill behind the
+   sliding green indicator. */
 .tabs a:hover {
   color: var(--ink);
-  background: var(--surface-3);
 }
 
 .tabs a.active {
-  background: var(--accent);
   color: var(--accent-ink);
-  box-shadow: var(--shadow-sm);
+}
+
+.tabs a:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tabs__list.is-animation-ready .tabs__indicator {
+    transition-duration: 1ms;
+  }
 }
 
 /* ── BUTTONS ──────────────────────────────────────────────────────────── */
@@ -358,6 +445,7 @@ body {
 /* ── FILTERS ──────────────────────────────────────────────────────────── */
 .filters {
   display: flex;
+  flex: 1;
   gap: 6px;
   align-items: center;
 }
@@ -404,11 +492,36 @@ body {
 .filters button.ghost { background: transparent; color: var(--ink-dim); border: 1px solid var(--edge); }
 .filters button.ghost:hover { background: var(--surface-3); color: var(--ink); }
 
+/* Top-bar Measure button — mirrors the Reset/Apply controls in the filter
+   row, pushed to the extreme right of the subbar via margin-left: auto. */
+.filters button.topbar-measure-btn {
+  width: 32px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  /* Pushes this button (and only this one) to the far right of the
+     .filters flex row, away from the ward/category/severity/Apply/Reset
+     group that stays packed on the left. */
+  margin-left: auto;
+}
+
+.filters button.topbar-measure-btn svg {
+  width: 16px;
+  height: 16px;
+}
+
+.filters button.topbar-measure-btn--active {
+  background: var(--accent);
+  color: var(--accent-ink);
+  border-color: var(--accent);
+}
+
 /* Searchable category multi-select. Kept inside the existing filter slot so
    it occupies the same top-bar position as the native category select. */
 .category-picker {
   position: relative;
-  width: 220px;
+  width: 140px;
 }
 
 .filters .category-picker__trigger {
@@ -1181,47 +1294,18 @@ body {
 }
 
 .map-page--dual {
-  grid-template-columns: 56px 340px 1fr;
+  grid-template-columns: 290px 1fr;
 }
 
 .map-page--triple {
-  grid-template-columns: 56px 340px 1fr 380px;
+  grid-template-columns: 290px 1fr 290px;
+  transition: grid-template-columns var(--transition-base);
 }
 
-/* ── TOOL RAIL (far-left icon toolbar) ───────────────────────────────── */
-.tool-rail {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 6px;
-  padding: 12px 0;
-  background: var(--surface);
-  border-right: 1px solid var(--edge);
-}
-
-.tool-rail__btn {
-  width: 36px;
-  height: 36px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: transparent;
-  border: 1px solid transparent;
-  border-radius: var(--radius-md);
-  color: var(--ink-mute);
-  cursor: pointer;
-  transition: all var(--transition-fast);
-}
-
-.tool-rail__btn:hover {
-  background: var(--surface-3);
-  color: var(--ink);
-}
-
-.tool-rail__btn--active {
-  background: var(--accent);
-  border-color: var(--accent);
-  color: var(--accent-ink);
+/* Third column mirrors .workspace-panel--collapsed's width so the map (1fr)
+   reflows into the space the right panel gives up as it shrinks. */
+.map-page--triple.map-page--report-collapsed {
+  grid-template-columns: 290px 1fr 30px;
 }
 
 /* ── MAP CANVAS ───────────────────────────────────────────────────────── */
@@ -1252,29 +1336,6 @@ body {
   background: var(--surface);
   border-right: 1px solid var(--edge);
   overflow: hidden;
-}
-
-.command-center__header {
-  padding: 16px;
-  border-bottom: 1px solid var(--edge);
-  background: var(--surface);
-}
-
-.command-center__eyebrow {
-  font-size: 9px;
-  font-weight: 700;
-  letter-spacing: 0.14em;
-  text-transform: uppercase;
-  color: var(--accent);
-  margin-bottom: 4px;
-}
-
-.command-center__title {
-  font-size: 18px;
-  font-weight: 700;
-  color: var(--ink);
-  letter-spacing: -0.02em;
-  line-height: 1.2;
 }
 
 .command-center__body {
@@ -1926,6 +1987,423 @@ body {
   accent-color: var(--accent);
 }
 
+/* ── DATA SOURCE SELECTOR (compact trigger + popover) ─────────────────── */
+@keyframes dss-pop {
+  from { opacity: 0; transform: translateY(-4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.dss {
+  margin-bottom: 16px;
+}
+
+.dss-trigger {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 10px 12px;
+  background: var(--surface-2);
+  border: 1px solid var(--edge);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-xs);
+  cursor: pointer;
+  text-align: left;
+  font: inherit;
+  color: var(--ink);
+  transition: border-color var(--transition-fast), background var(--transition-fast),
+    box-shadow var(--transition-fast);
+}
+
+.dss-trigger:hover {
+  border-color: var(--edge-strong);
+  background: var(--surface-3);
+  box-shadow: var(--shadow-sm);
+}
+
+.dss-trigger--open,
+.dss-trigger:focus-visible {
+  border-color: var(--accent);
+  background: var(--accent-muted);
+  box-shadow: var(--shadow-glow);
+  outline: none;
+}
+
+.dss-trigger__icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  flex-shrink: 0;
+  color: var(--accent);
+}
+
+.dss-trigger__icon svg {
+  width: 20px;
+  height: 20px;
+}
+
+.dss-trigger__body {
+  flex: 1;
+  min-width: 0;
+}
+
+.dss-trigger__main {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.dss-trigger__title {
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--ink-mute);
+}
+
+.dss-trigger__count {
+  flex-shrink: 0;
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--accent);
+  background: var(--accent-muted);
+  padding: 1px 7px;
+  border-radius: var(--radius-full);
+}
+
+.dss-trigger__sub-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 2px;
+}
+
+.dss-trigger__sub {
+  font-size: 10.5px;
+  color: var(--ink-dim);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dss-trigger__chevron {
+  display: inline-flex;
+  flex-shrink: 0;
+  color: var(--ink-mute);
+  transition: transform var(--transition-base);
+}
+
+.dss-trigger__chevron svg {
+  width: 15px;
+  height: 15px;
+}
+
+.dss-trigger__chevron--up {
+  transform: rotate(180deg);
+}
+
+.dss-panel {
+  position: fixed;
+  z-index: 1200;
+  background: var(--surface);
+  border: 1px solid var(--edge-strong);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-xl);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  animation: dss-pop 0.15s ease;
+}
+
+.dss-panel__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--edge);
+}
+
+.dss-panel__title {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--ink);
+}
+
+.dss-selectall {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--ink);
+  cursor: pointer;
+  user-select: none;
+}
+
+/* Row height (53px, measured from the rendered .dss-row) x 4 visible rows,
+   plus the 3 inter-row gaps (flex `gap: 4px`) between them — the list stays
+   fixed at this height so a 5th+ source only appears on scroll instead of
+   growing the panel. */
+.dss-panel__list {
+  --dss-row-height: 53px;
+  --dss-row-gap: 4px;
+  --dss-list-pad: 6px;
+  --dss-visible-rows: 4;
+  --dss-list-height: calc(
+    var(--dss-row-height) * var(--dss-visible-rows)
+    + var(--dss-row-gap) * (var(--dss-visible-rows) - 1)
+    + var(--dss-list-pad) * 2
+  );
+  height: var(--dss-list-height);
+  min-height: var(--dss-list-height);
+  max-height: var(--dss-list-height);
+  flex: 0 0 var(--dss-list-height);
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: var(--dss-list-pad);
+  display: flex;
+  flex-direction: column;
+  gap: var(--dss-row-gap);
+  scrollbar-gutter: stable;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(15, 157, 145, 0.4) transparent;
+  overscroll-behavior: contain;
+  box-sizing: border-box;
+}
+
+.dss-panel__list::-webkit-scrollbar {
+  width: 6px;
+}
+
+.dss-panel__list::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.dss-panel__list::-webkit-scrollbar-thumb {
+  background: rgba(15, 157, 145, 0.35);
+  border-radius: 999px;
+}
+
+.dss-panel__list::-webkit-scrollbar-thumb:hover {
+  background: rgba(15, 157, 145, 0.55);
+}
+
+.dss-clear {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--accent);
+  background: transparent;
+  border: 1px solid var(--edge-strong);
+  border-radius: var(--radius-xs);
+  padding: 4px 8px;
+  cursor: pointer;
+  user-select: none;
+  transition: background var(--transition-fast), border-color var(--transition-fast);
+}
+
+.dss-clear:hover {
+  background: var(--accent-muted);
+  border-color: var(--accent);
+}
+
+.dss-clear:focus-visible {
+  box-shadow: 0 0 0 3px var(--accent-muted);
+}
+
+.dss-empty {
+  padding: 18px 10px;
+  text-align: center;
+  color: var(--ink-mute);
+  font-size: 11px;
+}
+
+.dss-row-shell {
+  border-radius: var(--radius-md);
+}
+
+.dss-row-shell--expanded .dss-row {
+  border-bottom-left-radius: 0;
+  border-bottom-right-radius: 0;
+}
+
+.dss-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: var(--dss-row-height);
+  min-height: var(--dss-row-height);
+  max-height: var(--dss-row-height);
+  flex: 0 0 var(--dss-row-height);
+  box-sizing: border-box;
+  padding: 8px 10px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  transition: background var(--transition-fast), border-color var(--transition-fast);
+}
+
+.dss-row:hover {
+  background: var(--surface-3);
+}
+
+.dss-row--active {
+  background: var(--accent-muted);
+  border-color: var(--accent);
+}
+
+.dss-row--active:hover {
+  background: var(--accent-strong);
+}
+
+.dss-row--disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+
+.dss-row--disabled:hover {
+  background: transparent;
+}
+
+.dss-checkbox {
+  position: relative;
+  width: 18px;
+  height: 18px;
+  flex-shrink: 0;
+  margin: 0;
+  appearance: none;
+  -webkit-appearance: none;
+  border: 1.5px solid var(--edge-strong);
+  border-radius: var(--radius-xs);
+  background: var(--surface-3);
+  cursor: pointer;
+  transition: background var(--transition-base), border-color var(--transition-base);
+}
+
+.dss-checkbox::after {
+  content: "";
+  position: absolute;
+  left: 5px;
+  top: 1px;
+  width: 5px;
+  height: 10px;
+  border: solid var(--accent-ink);
+  border-width: 0 2px 2px 0;
+  transform: rotate(45deg) scale(0);
+  transition: transform var(--transition-base);
+}
+
+.dss-checkbox:checked {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+.dss-checkbox:checked::after {
+  transform: rotate(45deg) scale(1);
+}
+
+.dss-checkbox:focus-visible {
+  box-shadow: 0 0 0 3px var(--accent-muted);
+}
+
+.dss-checkbox:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.dss-row__icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  flex-shrink: 0;
+  color: var(--ink-dim);
+}
+
+.dss-row__icon svg {
+  width: 18px;
+  height: 18px;
+}
+
+.dss-row__info {
+  flex: 1;
+  min-width: 0;
+}
+
+.dss-row__name {
+  display: block;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--ink);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.dss-row__meta {
+  display: block;
+  font-size: 10px;
+  color: var(--ink-mute);
+  margin-top: 2px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.dss-row__meta strong {
+  color: var(--accent);
+  font-weight: 700;
+}
+
+.dss-panel__audit {
+  padding: 0 6px 6px;
+}
+
+.dss-panel__audit .command-center__audit-btn {
+  width: 100%;
+}
+
+.dss-panel__audit-error {
+  margin-top: 6px;
+  padding: 8px 10px;
+  background: var(--danger-muted);
+  border-radius: var(--radius-sm);
+  color: var(--danger);
+  font-size: 11px;
+}
+
+.dss-panel__error {
+  padding: 8px 10px;
+  margin: 6px;
+  background: var(--danger-muted);
+  border-radius: var(--radius-sm);
+  color: var(--danger);
+  font-size: 11px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .dss-panel {
+    animation: none;
+  }
+}
+
+@media (max-width: 640px) {
+  .dss-panel {
+    max-width: calc(100vw - 24px);
+  }
+}
+
 /* ── SEVERITY LIST ────────────────────────────────────────────────────── */
 .severity-item {
   display: flex;
@@ -2042,6 +2520,109 @@ body {
   background: var(--surface);
   border-left: 1px solid var(--edge);
   overflow: hidden;
+  /* Pinned to the viewport so it visually extends up alongside the second
+     nav bar (.workspace__subbar) instead of only starting below it — its
+     top edge lines up with the bottom of the first nav bar (.workspace__
+     topbar, 52px) same as the left Command Center panel already does. Its
+     grid column in .map-page--triple is left empty as a same-width spacer
+     so the map/left panel don't reflow to fill the gap. z-index sits above
+     the subbar (99) so it visually covers the subbar's row on the right
+     edge, but below the topbar (100) so the avatar stays on top. */
+  position: fixed;
+  top: 52px;
+  right: 0;
+  bottom: 0;
+  width: 290px;
+  z-index: 99;
+  transition: width var(--transition-base);
+}
+
+/* Collapsed: shrinks to a thin strip exactly half the width of the AI
+   assistant FAB below it (60px wide → 30px). */
+.workspace-panel--collapsed {
+  width: 30px;
+}
+
+.workspace-panel__welcome {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--edge);
+  background: var(--surface);
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink);
+  transition: padding var(--transition-base);
+}
+
+/* At 30px the panel is narrower than the welcome bar's normal padding —
+   drop to a minimal pad so the collapse button stays centered without
+   clipping against the panel edge. */
+.workspace-panel--collapsed .workspace-panel__welcome {
+  padding: 14px 4px;
+  justify-content: center;
+}
+
+.workspace-panel__welcome-text {
+  overflow: hidden;
+  white-space: nowrap;
+  opacity: 1;
+  transition: opacity var(--transition-fast);
+}
+
+.workspace-panel--collapsed .workspace-panel__welcome-text {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.workspace-panel__collapse-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 1px solid var(--edge);
+  border-radius: var(--radius-full);
+  background: var(--surface-2);
+  color: var(--ink-dim);
+  cursor: pointer;
+  transition: background var(--transition-fast), color var(--transition-fast), transform var(--transition-base);
+}
+
+.workspace-panel__collapse-btn svg {
+  width: 13px;
+  height: 13px;
+  transition: transform var(--transition-base);
+}
+
+.workspace-panel__collapse-btn:hover {
+  background: var(--accent-muted);
+  color: var(--accent);
+}
+
+.workspace-panel__collapse-btn:focus-visible {
+  box-shadow: 0 0 0 3px var(--accent-muted);
+  outline: none;
+}
+
+.workspace-panel__collapse-btn--collapsed svg {
+  transform: rotate(180deg);
+}
+
+/* Fade out everything below the header while collapsing/expanding, so the
+   inner report content doesn't visibly clip as the bar narrows. */
+.workspace-panel__head,
+.workspace-panel > div:not(.workspace-panel__welcome) {
+  transition: opacity var(--transition-fast);
+}
+
+.workspace-panel--collapsed .workspace-panel__head,
+.workspace-panel--collapsed > div:not(.workspace-panel__welcome) {
+  opacity: 0;
+  pointer-events: none;
 }
 
 .workspace-panel__head {
@@ -2079,6 +2660,104 @@ body {
 .workspace-panel__sub b {
   color: var(--accent);
   font-weight: 600;
+}
+
+/* ── SUPPORTING FILES IMPORT ─────────────────────────────────────────── */
+.workspace-panel__import {
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--edge);
+  background: var(--surface);
+}
+
+.workspace-panel__import-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  width: 100%;
+  padding: 8px 10px;
+  background: var(--surface-2);
+  border: 1px dashed var(--edge-strong);
+  border-radius: var(--radius-sm);
+  color: var(--ink-dim);
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background var(--transition-fast), border-color var(--transition-fast), color var(--transition-fast);
+}
+
+.workspace-panel__import-btn svg {
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+}
+
+.workspace-panel__import-btn:hover {
+  background: var(--accent-muted);
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.workspace-panel__import-btn:focus-visible {
+  box-shadow: 0 0 0 3px var(--accent-muted);
+  outline: none;
+}
+
+.workspace-panel__import-hint {
+  margin-top: 6px;
+  font-size: 10px;
+  color: var(--ink-mute);
+  text-align: center;
+}
+
+.workspace-panel__import-list {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 8px;
+}
+
+.workspace-panel__import-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 8px;
+  background: var(--surface-2);
+  border-radius: var(--radius-sm);
+  font-size: 10px;
+  color: var(--ink-dim);
+}
+
+.workspace-panel__import-item-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.workspace-panel__import-item-remove {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--ink-mute);
+  cursor: pointer;
+}
+
+.workspace-panel__import-item-remove svg {
+  width: 10px;
+  height: 10px;
+}
+
+.workspace-panel__import-item-remove:hover {
+  color: var(--danger);
 }
 
 .workspace-panel__close {
@@ -2560,6 +3239,299 @@ body {
 
 .map-compass:hover { background: var(--surface-3); color: var(--ink); }
 
+/* ── ZOOM SLIDER (Google Earth Pro-style, horizontal) ───────────────────── */
+.map-zoom-slider {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 8px;
+  height: 32px;
+  background: var(--glass-strong);
+  backdrop-filter: blur(16px) saturate(1.4);
+  border: 1px solid var(--edge);
+  border-radius: var(--radius-full);
+  box-shadow: var(--shadow-md);
+  user-select: none;
+}
+
+.map-zoom-slider__btn {
+  flex-shrink: 0;
+  width: 20px;
+  height: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: none;
+  border-radius: 50%;
+  color: var(--ink-dim);
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.map-zoom-slider__btn:hover { background: var(--surface-3); color: var(--ink); }
+
+.map-zoom-slider__track {
+  position: relative;
+  width: 120px;
+  height: 4px;
+  background: var(--surface-3);
+  border-radius: var(--radius-full);
+  cursor: pointer;
+  touch-action: none;
+}
+
+.map-zoom-slider__fill {
+  position: absolute;
+  top: 0;
+  left: 0;
+  height: 100%;
+  background: var(--accent);
+  border-radius: var(--radius-full);
+  pointer-events: none;
+}
+
+.map-zoom-slider__thumb {
+  position: absolute;
+  top: 50%;
+  width: 14px;
+  height: 14px;
+  background: var(--accent);
+  border: 2px solid var(--surface);
+  border-radius: 50%;
+  box-shadow: var(--shadow-sm);
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+}
+
+/* ── LOOK AROUND COMPASS (Google Earth Pro-style, original design) ─────── */
+.look-around-compass {
+  position: absolute;
+  top: 60px;
+  right: 12px;
+  z-index: 10;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+}
+
+.look-around-compass__ring {
+  position: relative;
+  width: 80px;
+  height: 80px;
+  border-radius: 50%;
+  background: var(--glass-strong);
+  backdrop-filter: blur(16px) saturate(1.4);
+  border: 1px solid var(--edge);
+  box-shadow: var(--shadow-md);
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+  transition: box-shadow var(--transition-fast), border-color var(--transition-fast);
+}
+
+.look-around-compass__ring:hover {
+  border-color: var(--accent);
+  box-shadow: var(--shadow-lg);
+}
+
+.look-around-compass__ring:active { cursor: grabbing; }
+
+.look-around-compass--active .look-around-compass__ring {
+  border-color: var(--accent);
+  box-shadow: var(--shadow-glow), var(--shadow-md);
+}
+
+/* Rotates as one unit with the ring's drag gesture so the N/E/S/W ticks
+   always show true compass directions relative to the map, independent of
+   the fixed (non-rotating) directional buttons layered on top. */
+.look-around-compass__dial {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  transition: transform var(--transition-fast);
+}
+
+.look-around-compass__tick {
+  position: absolute;
+  left: 50%;
+  top: 4px;
+  width: 2px;
+  height: 8px;
+  background: var(--ink-ghost);
+  border-radius: var(--radius-full);
+  transform-origin: 50% 36px;
+}
+
+.look-around-compass__tick--n { background: var(--accent); height: 10px; }
+.look-around-compass__tick--e { transform: translateX(-50%) rotate(90deg); }
+.look-around-compass__tick--s { transform: translateX(-50%) rotate(180deg); }
+.look-around-compass__tick--w { transform: translateX(-50%) rotate(270deg); }
+.look-around-compass__tick--n { transform: translateX(-50%) rotate(0deg); }
+
+.look-around-compass__n {
+  position: absolute;
+  top: 2px;
+  left: 50%;
+  width: 18px;
+  height: 18px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: none;
+  border-radius: 50%;
+  color: var(--accent);
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+  cursor: pointer;
+  transition: background var(--transition-fast), color var(--transition-fast);
+}
+
+.look-around-compass__n:hover { background: var(--surface-3); }
+
+.look-around-compass__dir {
+  position: absolute;
+  width: 22px;
+  height: 22px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: none;
+  border-radius: 50%;
+  color: var(--ink-dim);
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.look-around-compass__dir svg { width: 15px; height: 15px; }
+
+.look-around-compass__dir:hover:not(:disabled) { background: var(--surface-3); color: var(--ink); }
+.look-around-compass__dir:active:not(:disabled) { background: var(--accent-muted); color: var(--accent); }
+.look-around-compass__dir:disabled { opacity: 0.3; cursor: not-allowed; }
+.look-around-compass__dir:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+.look-around-compass__dir--left { left: 2px; top: 50%; transform: translateY(-50%); }
+.look-around-compass__dir--right { right: 2px; top: 50%; transform: translateY(-50%); }
+.look-around-compass__dir--up { top: 2px; left: 50%; transform: translateX(-50%); }
+.look-around-compass__dir--down { bottom: 2px; left: 50%; transform: translateX(-50%); }
+
+.look-around-compass__centre {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: 32px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--surface-2);
+  border: 1px solid var(--edge);
+  border-radius: 50%;
+  color: var(--ink-dim);
+  cursor: pointer;
+  box-shadow: var(--shadow-xs);
+  transition: all var(--transition-fast);
+}
+
+.look-around-compass__centre svg { width: 17px; height: 17px; }
+
+.look-around-compass__centre:hover:not(:disabled) { color: var(--ink); border-color: var(--accent); }
+.look-around-compass__centre:disabled { opacity: 0.4; cursor: not-allowed; }
+.look-around-compass__centre:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+.look-around-compass--active .look-around-compass__centre {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-ink);
+  box-shadow: var(--shadow-glow);
+}
+
+.look-around-compass__tooltip {
+  position: absolute;
+  top: -34px;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 5px 10px;
+  background: var(--surface-elev);
+  border: 1px solid var(--edge);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-sm);
+  color: var(--ink);
+  font-size: 11px;
+  font-weight: 500;
+  white-space: nowrap;
+  pointer-events: none;
+  z-index: 11;
+}
+
+.look-around-compass__collapse {
+  width: 18px;
+  height: 18px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--glass-strong);
+  border: 1px solid var(--edge);
+  border-radius: 50%;
+  color: var(--ink-mute);
+  font-size: 11px;
+  line-height: 1;
+  cursor: pointer;
+  box-shadow: var(--shadow-xs);
+  transition: all var(--transition-fast);
+}
+
+.look-around-compass__collapse:hover { color: var(--ink); background: var(--surface-3); }
+
+.look-around-compass--collapsed {
+  position: absolute;
+  top: 60px;
+  right: 12px;
+  z-index: 10;
+  width: 36px;
+  height: 36px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--glass-strong);
+  backdrop-filter: blur(16px) saturate(1.4);
+  border: 1px solid var(--edge);
+  border-radius: 50%;
+  box-shadow: var(--shadow-md);
+  color: var(--ink-dim);
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.look-around-compass--collapsed:hover { border-color: var(--accent); color: var(--ink); }
+
+@media (prefers-reduced-motion: reduce) {
+  .look-around-compass__ring,
+  .look-around-compass__dial,
+  .look-around-compass__dir,
+  .look-around-compass__centre,
+  .look-around-compass__n {
+    transition: none;
+  }
+}
+
+@media (max-width: 640px) {
+  .look-around-compass__ring { width: 64px; height: 64px; }
+  .look-around-compass__centre { width: 28px; height: 28px; }
+  .look-around-compass__dir { width: 24px; height: 24px; }
+}
+
 /* ── FEATURE COUNT ────────────────────────────────────────────────────── */
 .feature-count {
   position: absolute;
@@ -2668,8 +3640,8 @@ body {
   bottom: 96px;
   right: 24px;
   z-index: 499;
-  width: 420px;
-  max-height: 600px;
+  width: 340px;
+  max-height: 460px;
   background: var(--glass-strong);
   backdrop-filter: blur(24px) saturate(1.4);
   border: 1px solid var(--edge-strong);
@@ -2687,7 +3659,7 @@ body {
 }
 
 .ai-panel__head {
-  padding: 20px;
+  padding: 14px 16px;
   background: linear-gradient(180deg, var(--accent-muted) 0%, transparent 100%);
   border-bottom: 1px solid var(--edge);
 }
@@ -3481,14 +4453,6 @@ body {
   margin-bottom: 24px;
   animation: slideUp 0.5s ease;
 }
-.ds-header__eyebrow {
-  font-size: 10px;
-  font-weight: 700;
-  letter-spacing: 0.14em;
-  text-transform: uppercase;
-  color: var(--accent);
-  margin-bottom: 4px;
-}
 .ds-header__title {
   font-size: 24px;
   font-weight: 800;
@@ -3545,31 +4509,54 @@ body {
 .ds-stat--danger { border-color: var(--danger); background: var(--danger-muted); }
 .ds-stat--danger .ds-stat__value { color: var(--danger); }
 
-/* Main Grid: Upload + Sidebar */
+/* Main Grid: 2 rows, each its own independent upload/formats width split —
+   upload (75%) | formats (25%)
+   tips   (25%) | uploaded (75%)
+   A single CSS Grid can't give each row its own column ratio (columns are
+   shared across all rows), so this is two flex rows stacked in a column;
+   each row's two cards split 100% of the width by flex-basis. */
+.datasets-page-main-grid,
 .ds-grid {
-  display: grid;
-  grid-template-columns: 1fr 300px;
-  gap: 20px;
-  margin-bottom: 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  margin-bottom: 16px;
   animation: slideUp 0.5s ease 0.1s both;
 }
+
+/* Stretch (rather than flex-start) so each row's shorter card matches the
+   height of its taller sibling: Upload matches Supported Formats, and Tips
+   matches Uploaded Datasets' fixed 406px card. */
+.ds-grid__row {
+  display: flex;
+  align-items: stretch;
+  gap: 18px;
+}
+
+.ds-grid__row > .ds-grid__upload { flex: 0 0 75%; min-width: 0; }
+.ds-grid__row > .ds-grid__formats { flex: 0 0 calc(25% - 18px); min-width: 0; }
+.ds-grid__row > .ds-grid__tips { flex: 0 0 calc(25% - 18px); min-width: 0; display: flex; }
+.ds-grid__row > .ds-grid__uploaded { flex: 0 0 75%; min-width: 0; }
 
 /* Upload Card */
 .ds-upload-card {
   background: var(--surface);
   border: 1px solid var(--edge);
   border-radius: var(--radius-xl);
-  padding: 24px;
+  padding: 20px;
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
 }
 .ds-upload-card__header {
   display: flex;
   align-items: center;
-  gap: 14px;
-  margin-bottom: 20px;
+  gap: 12px;
+  margin-bottom: 12px;
 }
 .ds-upload-card__icon {
-  width: 48px;
-  height: 48px;
+  width: 36px;
+  height: 36px;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -3592,7 +4579,7 @@ body {
 .ds-dropzone {
   border: 2px dashed var(--edge-strong);
   border-radius: var(--radius-lg);
-  padding: 32px;
+  padding: 32px 18px;
   text-align: center;
   transition: all var(--transition-base);
   cursor: pointer;
@@ -3619,7 +4606,7 @@ body {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 12px;
+  gap: 6px;
   cursor: pointer;
 }
 .ds-dropzone__icon-wrap {
@@ -3722,13 +4709,13 @@ body {
 .ds-fields {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: 16px;
-  margin-top: 16px;
+  gap: 12px;
+  margin-top: 12px;
 }
 .ds-field {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 4px;
 }
 .ds-field__label {
   display: flex;
@@ -3740,7 +4727,7 @@ body {
   letter-spacing: 0.02em;
 }
 .ds-field__input {
-  height: 40px;
+  height: 32px;
   padding: 0 12px;
   background: var(--surface-2);
   border: 1px solid var(--edge);
@@ -3787,8 +4774,8 @@ body {
   justify-content: center;
   gap: 10px;
   width: 100%;
-  height: 48px;
-  margin-top: 16px;
+  height: 38px;
+  margin-top: 12px;
   background: linear-gradient(135deg, var(--accent) 0%, #0d9488 100%);
   color: white;
   border: none;
@@ -3834,12 +4821,6 @@ body {
   animation: spin 0.7s linear infinite;
 }
 
-/* Sidebar */
-.ds-sidebar {
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-}
 .ds-info-card {
   background: var(--surface);
   border: 1px solid var(--edge);
@@ -3911,7 +4892,7 @@ body {
 }
 
 /* Tips */
-.ds-info-card--tips { border-color: var(--accent); border-style: dashed; }
+.ds-info-card--tips { border-color: var(--accent); border-style: dashed; box-sizing: border-box; }
 .ds-tips-list {
   list-style: none;
   display: flex;
@@ -3944,14 +4925,25 @@ body {
   border: 1px solid var(--edge);
   border-radius: var(--radius-xl);
   overflow: hidden;
+  min-width: 0;
+  /* Fixed height = card header (65) + column header (34) + 5 rows (305) + borders (2) = 406px.
+     The card never grows or shrinks with dataset count. */
+  height: 406px;
+  min-height: 406px;
+  max-height: 406px;
+  display: flex;
+  flex-direction: column;
   animation: slideUp 0.5s ease 0.2s both;
 }
 .ds-table-header {
+  flex: 0 0 65px;
+  height: 65px;
   display: flex;
   align-items: center;
   justify-content: space-between;
   padding: 16px 20px;
   border-bottom: 1px solid var(--edge);
+  box-sizing: border-box;
 }
 .ds-table-header__left {
   display: flex;
@@ -4009,13 +5001,54 @@ body {
 
 /* Table */
 .ds-table {
-  width: 100%;
+  /* Wrapper that keeps the column header and the scrolling rows region
+     vertically stacked and aligned. Horizontal scroll (when narrow)
+     moves the header and rows together so columns stay aligned. */
+  flex: 0 0 339px; /* column header (34) + rows region (305) */
+  min-width: 640px;
+  display: flex;
+  flex-direction: column;
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+.ds-table__scroll {
+  /* Fixed: exactly 5 dataset rows (305px). Never grows, so the
+     6th+ row stays hidden below the fold until the user scrolls. */
+  flex: 0 0 305px;
+  height: 305px;
+  min-height: 305px;
+  max-height: 305px;
+  min-width: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+  scrollbar-width: thin;
+  scrollbar-color: var(--edge-strong) transparent;
+}
+.ds-table__scroll::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+.ds-table__scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+.ds-table__scroll::-webkit-scrollbar-thumb {
+  background: var(--edge-strong);
+  border-radius: 999px;
+}
+.ds-table__scroll::-webkit-scrollbar-thumb:hover {
+  background: var(--ink-ghost);
 }
 .ds-table__head {
+  flex: 0 0 34px;
+  height: 34px;
   display: grid;
-  grid-template-columns: 2fr 120px 90px 80px 100px 110px 120px;
+  grid-template-columns: minmax(0, 2.4fr) minmax(0, 1fr) minmax(0, 0.8fr) minmax(0, 0.7fr) minmax(0, 0.9fr) minmax(0, 1fr) 130px;
   gap: 8px;
-  padding: 10px 20px;
+  /* right padding 28px (20px + 8px scrollbar gutter) keeps the
+     Actions column aligned with the scrolling rows below it. */
+  padding: 10px 28px 10px 20px;
   background: var(--surface-2);
   border-bottom: 1px solid var(--edge);
 }
@@ -4029,8 +5062,14 @@ body {
 .ds-table__th--actions { text-align: right; }
 
 .ds-table__row {
+  height: 61px;
+  min-height: 61px;
+  max-height: 61px;
+  flex: 0 0 61px;
+  box-sizing: border-box;
+  overflow: hidden;
   display: grid;
-  grid-template-columns: 2fr 120px 90px 80px 100px 110px 120px;
+  grid-template-columns: minmax(0, 2.4fr) minmax(0, 1fr) minmax(0, 0.8fr) minmax(0, 0.7fr) minmax(0, 0.9fr) minmax(0, 1fr) 130px;
   gap: 8px;
   padding: 14px 20px;
   border-bottom: 1px solid var(--edge);
@@ -4223,11 +5262,14 @@ body {
 
 /* Empty State */
 .ds-table__empty {
+  min-height: 305px;
   display: flex;
   flex-direction: column;
   align-items: center;
+  justify-content: center;
   gap: 12px;
   padding: 48px 32px;
+  box-sizing: border-box;
   color: var(--ink-mute);
   font-size: 13px;
 }
@@ -5733,6 +6775,24 @@ body {
   color: var(--ink-mute);
 }
 
+/* ── MAP BOTTOM-RIGHT STATUS BAR (coordinates + fixed-size scale chip) ─── */
+/* Single positioned wrapper for both boxes so they can never drift apart
+   or independently overlap something else — matches the existing
+   bottom-right spacing (8px) previously used by the coordinate box alone.
+   Not pointer-events: none at this level because MapLibre's own controls
+   sit in the same corner of the map; the boxes themselves stay
+   non-interactive individually instead. */
+.map__status-bar {
+  position: absolute;
+  bottom: 8px;
+  right: 8px;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  pointer-events: none;
+}
+
 /* ── AI SPATIAL AUDIT — ANOMALY ALERT CARD ───────────────────────────── */
 .anomaly-card {
   position: absolute;
@@ -5875,9 +6935,20 @@ body {
 .map__coord-readout {
   position: absolute;
   bottom: 8px;
-  right: 44px;
+  right: 8px;
   z-index: 10;
-  padding: 4px 10px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  pointer-events: none;
+}
+
+.map__status-box {
+  height: 22px;
+  box-sizing: border-box;
+  padding: 0 10px;
+  display: flex;
+  align-items: center;
   background: var(--glass-strong);
   backdrop-filter: blur(16px) saturate(1.4);
   border: 1px solid var(--edge);
@@ -5886,7 +6957,23 @@ body {
   font-size: 10.5px;
   color: var(--ink-dim);
   white-space: nowrap;
-  pointer-events: none;
+}
+
+.map__coord-readout {
+  flex: 0 0 auto;
+}
+
+/* Fixed-size scale/distance chip — width never changes with its text
+   ("200 m" vs "2 km" vs "10 km"), only the label inside updates. Sized to
+   fit the widest realistic value ("10 km") with the same padding/border/
+   radius as the coordinate box. */
+.map__scale-readout {
+  width: 64px;
+  min-width: 64px;
+  max-width: 64px;
+  flex: 0 0 64px;
+  justify-content: center;
+  overflow: hidden;
 }
 
 /* ── RULER PANEL (Google Earth Pro-style measurement dialog) ─────────── */
@@ -5897,9 +6984,9 @@ body {
    mode never changes the element's containing block out from under it. */
 .ruler-panel {
   position: fixed;
-  /* Below .workspace__topbar (z-index: 100) so the panel starts clear of
-     the header instead of colliding with it. */
-  top: 76px;
+  /* Below .workspace__topbar and .workspace__subbar (z-index: 100/99) so
+     the panel starts clear of the header instead of colliding with it. */
+  top: 108px;
   left: 50%;
   transform: translateX(-50%);
   /* Above the topbar and other floating chrome so the whole panel —
@@ -6207,7 +7294,7 @@ body {
 }
 
 /* ── RESPONSIVE ───────────────────────────────────────────────────────── */
-@media (max-width: 1024px) {
+@media (max-width: 1260px) {
   .login__left {
     display: none;
   }
@@ -6227,21 +7314,19 @@ body {
     box-shadow: var(--shadow-xl);
   }
   .ds-grid {
-    grid-template-columns: 1fr;
+    gap: 14px;
   }
-  .ds-sidebar {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 16px;
+  .ds-grid__row {
+    gap: 14px;
+  }
+  .ds-upload-card {
+    width: 100%;
   }
 }
 
 @media (max-width: 768px) {
   .map-page--dual {
     grid-template-columns: 1fr;
-  }
-  .tool-rail {
-    display: none;
   }
   .command-center {
     position: fixed;
@@ -6271,11 +7356,33 @@ body {
   .ds-stats {
     flex-wrap: wrap;
   }
-  .ds-grid {
-    grid-template-columns: 1fr;
+  .ds-grid__row {
+    flex-direction: column;
   }
-  .ds-sidebar {
-    grid-template-columns: 1fr;
+  .ds-grid__row > .ds-grid__upload,
+  .ds-grid__row > .ds-grid__formats,
+  .ds-grid__row > .ds-grid__tips,
+  .ds-grid__row > .ds-grid__uploaded {
+    flex: 1 1 auto;
+    width: 100%;
+  }
+  .ds-upload-card {
+    width: 100%;
+    min-width: 0;
+  }
+  .ds-table-section {
+    height: 406px;
+    min-height: 406px;
+    max-height: 406px;
+  }
+  .ds-table__scroll {
+    overflow-y: auto;
+    overflow-x: hidden;
+    scrollbar-gutter: stable;
+  }
+  .ds-table {
+    min-width: 0;
+    flex: 0 0 339px;
   }
   .ds-fields {
     grid-template-columns: 1fr;
@@ -6288,6 +7395,10 @@ body {
     flex-direction: column;
     gap: 8px;
     padding: 16px;
+    flex: 0 0 auto;
+    height: auto;
+    min-height: 0;
+    max-height: none;
     border-bottom: 1px solid var(--edge);
   }
   .ds-table__td--actions {
@@ -6356,6 +7467,49 @@ body {
   color: var(--danger);
 }
 
+/* ── PROFILE PAGE ─────────────────────────────────────────────────────── */
+.profile-page {
+  height: 100%;
+  overflow-y: auto;
+  display: flex;
+  justify-content: center;
+  padding: 40px 20px;
+  background: var(--bg);
+}
+
+.profile-page__inner {
+  width: 100%;
+  max-width: 560px;
+  height: fit-content;
+}
+
+.profile-back {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 16px;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--ink-mute);
+  text-decoration: none;
+  transition: color var(--transition-fast);
+}
+
+.profile-back:hover {
+  color: var(--ink);
+}
+
+.profile-card {
+  width: 100%;
+  max-width: 560px;
+  height: fit-content;
+  background: var(--surface);
+  border: 1px solid var(--edge);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-sm);
+  overflow: hidden;
+}
+
 /* ── DATASET/CATEGORY ANALYTICS WORKBENCH ───────────────────────────── */
 .analytics-page__eyebrow,
 .analytics-card-eyebrow,
@@ -6390,6 +7544,145 @@ body {
   border: 1px solid var(--edge);
   border-radius: var(--radius-lg);
   box-shadow: var(--shadow-sm);
+}
+
+.profile-card__header {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 28px 28px 24px;
+  border-bottom: 1px solid var(--edge);
+}
+
+.profile-card__avatar {
+  width: 64px;
+  height: 64px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, var(--accent) 0%, #0d9488 100%);
+  color: white;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 26px;
+  font-weight: 700;
+  flex-shrink: 0;
+  box-shadow: var(--shadow-glow), var(--shadow-sm);
+}
+
+.profile-card__name {
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--ink);
+  letter-spacing: -0.01em;
+}
+
+.profile-card__role {
+  font-size: 12.5px;
+  color: var(--ink-mute);
+  margin-top: 2px;
+}
+
+.profile-card__section {
+  padding: 20px 28px;
+  border-bottom: 1px solid var(--edge);
+}
+
+.profile-card__section--actions {
+  border-bottom: none;
+}
+
+.profile-card__section-title {
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--ink-mute);
+  margin-bottom: 14px;
+}
+
+.profile-card__grid {
+  display: grid;
+  grid-template-columns: 130px 1fr;
+  row-gap: 12px;
+  column-gap: 12px;
+  margin: 0;
+}
+
+.profile-card__grid dt {
+  font-size: 12.5px;
+  color: var(--ink-mute);
+  font-weight: 500;
+}
+
+.profile-card__grid dd {
+  font-size: 12.5px;
+  color: var(--ink);
+  font-weight: 600;
+  margin: 0;
+  word-break: break-word;
+}
+
+.profile-card__mono {
+  font-family: var(--font-mono);
+  font-size: 11.5px !important;
+}
+
+.profile-card__theme-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 13px;
+  color: var(--ink);
+}
+
+.profile-card__theme-toggle {
+  display: flex;
+  background: var(--surface-2);
+  border: 1px solid var(--edge);
+  border-radius: var(--radius-md);
+  padding: 3px;
+  gap: 2px;
+}
+
+.profile-card__theme-btn {
+  padding: 6px 16px;
+  font-size: 11.5px;
+  font-weight: 600;
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-sm);
+  color: var(--ink-mute);
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.profile-card__theme-btn:hover {
+  color: var(--ink);
+}
+
+.profile-card__theme-btn--active {
+  background: var(--accent);
+  color: var(--accent-ink);
+  box-shadow: var(--shadow-sm);
+}
+
+.profile-card__signout {
+  width: 100%;
+  padding: 10px;
+  font-size: 12.5px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  background: var(--danger-muted);
+  border: 1px solid var(--danger);
+  border-radius: var(--radius-md);
+  color: var(--danger);
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.profile-card__signout:hover {
+  background: var(--danger);
+  color: white;
 }
 
 .analytics-scope__intro h3 {

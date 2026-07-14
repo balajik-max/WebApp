@@ -245,7 +245,7 @@ export function AiAssistant({ filter, selectedFeature, onAiHighlights }: Props) 
               placeholder={
                 selectedFeature
                   ? "Ask about the selected feature or ward…"
-                  : "Ask about the selected ward or dataset (set the ward filter first)…"
+                  : "Type your question here…"
               }
               rows={2}
               disabled={pendingKind !== null}

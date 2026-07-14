@@ -1,4 +1,4 @@
-import { useState, useCallback, useRef } from "react";
+import { useEffect, useState, useCallback, useRef } from "react";
 import { MapCanvas, type MapCanvasHandle } from "../components/MapCanvas";
 import { WardReportPanel } from "../components/WardReportPanel";
 import { AiAssistant } from "../components/AiAssistant";
@@ -10,22 +10,33 @@ interface LayoutCtx {
   filter: FeatureFilter;
   selectedDatasets: DatasetRow[];
   setSelectedDatasets: (rows: DatasetRow[]) => void;
+  onMeasureChange: (active: boolean) => void;
+  registerMeasure: (api: { toggle: () => void }) => void;
 }
 
 export function MapView() {
-  const { filter, selectedDatasets, setSelectedDatasets } = useOutletContext<LayoutCtx>();
+  const { filter, selectedDatasets, setSelectedDatasets, onMeasureChange, registerMeasure } =
+    useOutletContext<LayoutCtx>();
   const [selected, setSelected] = useState<UrbanFeature | null>(null);
   const [aiHighlights, setAiHighlights] = useState<AiHighlight[]>([]);
+  const [reportPanelCollapsed, setReportPanelCollapsed] = useState(false);
   const mapRef = useRef<MapCanvasHandle | null>(null);
   const [searchParams, setSearchParams] = useSearchParams();
   const locateFeatureId = searchParams.get("locateFeature") ?? undefined;
 
+  // Bridge the map's imperative Measure toggle up to the top navigation bar.
+  // The sole authoritative Measure state stays inside MapCanvas; this only
+  // hands the existing handler to the topbar button.
+  useEffect(() => {
+    registerMeasure({ toggle: () => mapRef.current?.toggleMeasure() });
+    return () => {
+      registerMeasure({ toggle: () => {} });
+      onMeasureChange(false);
+    };
+  }, [registerMeasure, onMeasureChange]);
+
   const handleSelect = useCallback((feature: UrbanFeature | null) => {
     setSelected(feature);
-  }, []);
-
-  const handleCloseReport = useCallback(() => {
-    mapRef.current?.clearDatasets();
   }, []);
 
   const handleFeatureLocated = useCallback(() => {
@@ -36,7 +47,7 @@ export function MapView() {
 
   return (
     <div
-      className={`map-page${selectedDatasets.length > 0 ? " map-page--triple" : " map-page--dual"}`}
+      className={`map-page map-page--triple${reportPanelCollapsed ? " map-page--report-collapsed" : ""}`}
       data-testid="map-page"
     >
       <MapCanvas
@@ -48,10 +59,13 @@ export function MapView() {
         aiHighlights={aiHighlights}
         focusFeatureId={locateFeatureId}
         onFocusHandled={handleFeatureLocated}
+        onMeasureChange={onMeasureChange}
       />
-      {selectedDatasets.length > 0 && (
-        <WardReportPanel datasets={selectedDatasets} onClose={handleCloseReport} />
-      )}
+      <WardReportPanel
+        datasets={selectedDatasets}
+        collapsed={reportPanelCollapsed}
+        onToggleCollapsed={() => setReportPanelCollapsed((v) => !v)}
+      />
       <AiAssistant
         filter={filter}
         selectedFeature={selected}
