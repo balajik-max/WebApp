@@ -544,9 +544,14 @@ const DETECTION_MODE_ANOMALY_TYPE: Record<Exclude<DetectionMode, null>, string> 
 // elsewhere — these need to read clearly as a choropleth at a glance, not
 // blend into the basemap at the low opacity used for the normal severity
 // fill (see DRAINS_MODE_FILL_OPACITY below).
-const BUILDING_DEFAULT_COLOR = "#15803d"; // dark green — not (meaningfully) encroached
-const BUILDING_RED_COLOR = "#b91c1c"; // dark red — fully/critically encroached
-const BUILDING_YELLOW_COLOR = "#b45309"; // dark amber — partially encroached
+// Deliberately a true red/gold/green trio, not two dark brownish-orange
+// tones — #b91c1c red and the old #b45309 amber read as near-identical at
+// 0.75 fill opacity over a cream basemap, which is why crossed (red) and
+// grazed (yellow) buildings were hard to tell apart by eye. Matches the
+// --danger/--warn/--ok tokens used by the AI Alert card badges.
+const BUILDING_DEFAULT_COLOR = "#16a34a"; // green — not (meaningfully) encroached
+const BUILDING_RED_COLOR = "#dc2626"; // red — drain crosses straight through
+const BUILDING_YELLOW_COLOR = "#eab308"; // gold/yellow — partial graze, no full crossing
 const DRAINS_MODE_FILL_OPACITY = 0.75;
 const DEFAULT_FILL_OPACITY = 0.35;
 
@@ -565,9 +570,9 @@ function buildBuildingColorExpression(
 }
 
 const ANOMALY_BADGE_COLOR: Record<SpatialAnomaly["color"], string> = {
-  red: "#b91c1c",
-  yellow: "#b45309",
-  green: "#15803d",
+  red: BUILDING_RED_COLOR,
+  yellow: BUILDING_YELLOW_COLOR,
+  green: BUILDING_DEFAULT_COLOR,
 };
 
 const ANOMALY_TYPE_LABEL: Record<SpatialAnomaly["anomaly_type"], string> = {
@@ -589,10 +594,11 @@ function summarizeAnomalyForTooltip(a: SpatialAnomaly): { color: SpatialAnomaly[
       ? `Redundant — cluster of ${m.cluster_size ?? "?"}`
       : `Borderline — ${m.nearest_neighbor_m ?? "?"}m from nearest`;
   } else if (a.anomaly_type === "drain_encroachment") {
-    const pct = m.overlap_pct ? Number(m.overlap_pct) : 0;
-    metric = pct > 0
-      ? `Drain crosses ${pct.toFixed(1)}% of building`
-      : `Building near drain — ${m.drain_touch_distance_m ?? "?"}m away`;
+    const ratioPct = m.crossing_ratio_pct ? Number(m.crossing_ratio_pct) : 0;
+    const areaTxt = `${m.overlap_area_m2 ?? "?"}m² encroached of ${m.building_area_m2 ?? "?"}m² footprint`;
+    metric = m.drain_crosses_building
+      ? `Drain crosses straight through this building — spans ${ratioPct.toFixed(0)}% of its own width (${areaTxt})`
+      : `Building touches the drain line, only a partial clip — spans ${ratioPct.toFixed(0)}% of its own width (${areaTxt})`;
   } else if (a.anomaly_type === "manhole_status") {
     metric = m.nearest_drain_category
       ? `Nearest drain: ${m.nearest_drain_category} (${m.nearest_drain_distance_m ?? "?"}m)`
@@ -866,6 +872,22 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     fetchDatasets(ctrl.signal).then(setDatasets).catch(() => {});
     return () => ctrl.abort();
   }, []);
+
+  // If a previously-active dataset was deleted (e.g. removed and the same
+  // GDB re-uploaded, which mints a brand-new dataset_id), its old id can
+  // otherwise linger forever in activeDatasetIds — it's only ever added/
+  // removed by explicit toggle clicks, never reconciled against the real
+  // dataset list. A stale id here silently poisons "Run Spatial Audit"
+  // (it 404s on the deleted dataset) and viewport fetches, so drop
+  // anything no longer present the moment the dataset list refreshes.
+  useEffect(() => {
+    if (datasets.length === 0) return;
+    const validIds = new Set(datasets.map((d) => d.id));
+    setActiveDatasetIds((current) => {
+      const pruned = current.filter((id) => validIds.has(id));
+      return pruned.length === current.length ? current : pruned;
+    });
+  }, [datasets]);
 
   useEffect(() => {
     const ctrl = new AbortController();
@@ -1650,6 +1672,12 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     const targetClasses = new Set(DETECTION_MODE_TARGET_CLASSES[detectionMode]);
     const toHide = new Set<string>();
     for (const { category } of categoryStats) {
+      // Geotagged site photos have no canonical class of their own (they're
+      // reference imagery, not a surveyed asset type) — without this
+      // exemption they'd get swept into "hide everything not in this
+      // mode's target classes" and vanish the instant any AI Detection
+      // mode is picked, even though they're still useful context.
+      if (category === "site_photo") continue;
       const canonicalClass = classMap[category];
       if (!canonicalClass || !targetClasses.has(canonicalClass)) toHide.add(category);
     }
@@ -1729,18 +1757,32 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     setAiOverlayEnabled((v) => !v);
   }, []);
 
-  const runAudit = useCallback(async (datasetId: string) => {
+  // The Data Sources panel is explicitly multi-select ("multiple can be
+  // shown together"), so the audit must run for every currently-active
+  // dataset, not just the first one — otherwise a second/duplicate dataset
+  // toggled on alongside an already-audited one silently never gets its
+  // own spatial_anomalies rows (AI Detection then looks "broken" for it,
+  // when really its audit was simply never triggered).
+  const runAudit = useCallback(async (datasetIds: string[]) => {
+    if (datasetIds.length === 0) return;
     setAuditRunning(true);
     setAuditError(null);
-    try {
-      await runSpatialAudit(datasetId);
-      const rows = await fetchAnomalies(datasetId);
-      setAnomalies((prev) => [...prev.filter((a) => a.dataset_id !== datasetId), ...rows]);
-    } catch (e) {
-      setAuditError((e as Error).message);
-    } finally {
-      setAuditRunning(false);
+    // One dataset failing (e.g. a stale id left over from a deleted+
+    // re-uploaded dataset) must not stop the rest of the batch from being
+    // audited — collect failures and surface them together at the end
+    // instead of aborting on the first one.
+    const failures: string[] = [];
+    for (const datasetId of datasetIds) {
+      try {
+        await runSpatialAudit(datasetId);
+        const rows = await fetchAnomalies(datasetId);
+        setAnomalies((prev) => [...prev.filter((a) => a.dataset_id !== datasetId), ...rows]);
+      } catch (e) {
+        failures.push((e as Error).message);
+      }
     }
+    if (failures.length > 0) setAuditError(failures.join("; "));
+    setAuditRunning(false);
   }, []);
 
   const selectedAnomaly = anomalies.find((a) => a.id === selectedAnomalyId) ?? null;
@@ -2493,7 +2535,7 @@ function CommandCenter({
   hiddenCategories: Set<string>;
   onToggleCategory: (category: string) => void;
   onSetAllCategoriesVisible: (visible: boolean) => void;
-  onRunAudit: (datasetId: string) => void;
+  onRunAudit: (datasetIds: string[]) => void;
   auditRunning: boolean;
   auditError: string | null;
   onOpenAttributeTable: (category: string) => void;
@@ -2561,7 +2603,7 @@ function CommandCenter({
                 type="button"
                 className="command-center__audit-btn"
                 disabled={auditRunning}
-                onClick={() => onRunAudit(activeDatasetIds[0])}
+                onClick={() => onRunAudit(activeDatasetIds)}
                 data-testid="run-spatial-audit"
               >
                 {auditRunning ? "Running Spatial Audit…" : "Run Spatial Audit"}
