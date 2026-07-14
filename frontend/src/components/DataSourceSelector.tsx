@@ -17,6 +17,9 @@ interface DataSourceSelectorProps {
   rasterSettingsById: Record<string, RasterDisplaySettings>;
   onChangeRasterSettings: (datasetId: string, patch: Partial<RasterDisplaySettings>) => void;
   flyError: string | null;
+  onRunAudit: (datasetIds: string[]) => void;
+  auditRunning: boolean;
+  auditError: string | null;
 }
 
 function DatasetTypeIcon({ fileType }: { fileType: string }) {
@@ -49,6 +52,9 @@ export function DataSourceSelector({
   rasterSettingsById,
   onChangeRasterSettings,
   flyError,
+  onRunAudit,
+  auditRunning,
+  auditError,
 }: DataSourceSelectorProps) {
   const [open, setOpen] = useState(false);
   const triggerRef = useRef<HTMLButtonElement>(null);
@@ -191,6 +197,23 @@ export function DataSourceSelector({
               </label>
             )}
           </div>
+
+          {activeDatasetIds.length > 0 && (
+            <div className="dss-panel__audit">
+              <button
+                type="button"
+                className="command-center__audit-btn"
+                disabled={auditRunning}
+                onClick={() => onRunAudit(activeDatasetIds)}
+                data-testid="run-spatial-audit"
+              >
+                {auditRunning ? "Running Spatial Audit…" : "Run Spatial Audit"}
+              </button>
+              {auditError && (
+                <div className="dss-panel__audit-error">{auditError}</div>
+              )}
+            </div>
+          )}
 
           <div className="dss-panel__list">
             {datasets.length === 0 ? (

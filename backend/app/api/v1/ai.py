@@ -11,19 +11,27 @@ All four endpoints share the same structural guarantee:
 from __future__ import annotations
 
 import logging
+import uuid
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import require_any
 from app.db.session import get_db
+from app.models.spatial_anomaly import AnomalyStatus, SpatialAnomaly
 from app.schemas.ai import (
     AiAnswer,
+    AnomalyExplainResponse,
+    AnomalyStatusUpdate,
+    AuditRunRequest,
+    AuditRunResponse,
     NLQueryRequest,
     RecommendRequest,
     ReportRequest,
     SpacingRequest,
+    SpatialAnomalyOut,
 )
 from app.services.ai import (
     AI_DISCLAIMER,
@@ -39,6 +47,7 @@ from app.services.ai_context import (
     build_recommend_context,
     build_report_facts,
 )
+from app.services.spatial_audit import run_spatial_audit
 
 log = logging.getLogger("davangere.api.ai")
 router = APIRouter()
@@ -139,14 +148,31 @@ def _facts_crib_sheet(facts: ReportFacts) -> str:
     summary="Full ward/dataset-level neighbourhood regeneration report",
 )
 async def report(body: ReportRequest, db: AsyncSession = Depends(get_db)) -> AiAnswer:
-    if body.dataset_id is None and body.ward is None:
-        raise HTTPException(status_code=400, detail="Provide either dataset_id or ward")
+    dataset_ids = list(dict.fromkeys(body.dataset_ids))
+    if body.dataset_id is not None and body.dataset_id not in dataset_ids:
+        dataset_ids.append(body.dataset_id)
+    categories = sorted({value.strip() for value in body.categories if value.strip()})
+    if any(len(value) > 128 for value in categories):
+        raise HTTPException(status_code=400, detail="category values must be at most 128 characters")
+    if not body.all_datasets and not dataset_ids and body.ward is None:
+        raise HTTPException(
+            status_code=400,
+            detail="Provide dataset_id, dataset_ids, ward, or set all_datasets=true",
+        )
 
     from app.core.config import get_settings
     settings = get_settings()
     model = settings.ollama_model
 
-    facts = await build_report_facts(db, dataset_id=body.dataset_id, ward=body.ward)
+    facts = await build_report_facts(
+        db,
+        dataset_id=None,
+        dataset_ids=dataset_ids,
+        ward=body.ward,
+        categories=categories,
+        allow_all=body.all_datasets,
+        top_feature_limit=min(body.max_features, 25),
+    )
     if facts is None:
         return _insufficient("report", model, {"reason": "no matching features"})
 
@@ -500,3 +526,206 @@ async def spacing(body: SpacingRequest, db: AsyncSession = Depends(get_db)) -> A
         needed_feature_ids=facts.needed_feature_ids,
             needed_locations=[{"id": loc.id, "lon": loc.lon, "lat": loc.lat, "reason": loc.reason} for loc in facts.needed_locations],
     )
+
+
+# ---------------------------------------------------------------------------
+# Spatial Audit Engine (Phase 1) — pole redundancy, drain encroachment,
+# manhole status. All geometry math lives in app.services.spatial_audit;
+# these endpoints only run it, persist/read results, and (lazily) narrate
+# a single finding via the same anti-hallucination run_grounded_completion
+# used everywhere else in this file.
+# ---------------------------------------------------------------------------
+def _anomaly_fact_sheet(row: SpatialAnomaly) -> str:
+    """Turn one SpatialAnomaly's raw `anomaly_metadata` into a labeled,
+    human-readable fact sheet for the LLM — a Python dict repr is harder
+    for a small local model to quote accurately than plain labeled lines."""
+    m = row.anomaly_metadata
+    lines = [
+        f"ANOMALY_TYPE: {row.anomaly_type.value}",
+        f"COLOR: {row.color.value}",
+        f"SEVERITY_SCORE_0_100: {row.severity_score:.0f}",
+        f"WARD: {row.ward or 'unknown'}",
+    ]
+
+    if row.anomaly_type.value == "drain_encroachment":
+        crosses = bool(m.get("drain_crosses_building"))
+        lines += [
+            "The building genuinely touches the drain's raw centerline (verified geometrically — a real shared point, not an estimate or a buffer)."
+            ,
+            f"The drain runs {m.get('drain_chord_length_m')} m through this building's interior, which is {m.get('crossing_ratio_pct')}% of the building's own average width ({m.get('building_span_m')} m) — "
+            + ("this is a FULL CROSSING: the drain runs most/all of the way across the building, entering one side and exiting the other." if crosses
+               else "this is a PARTIAL CLIP: the drain only cuts through a fraction of the building (a corner or an edge), not the whole structure."),
+            f"Estimated encroached area, assuming a {m.get('drain_buffer_m')} m channel half-width either side of the drain centerline: {m.get('overlap_area_m2')} m^2 ({m.get('overlap_pct')}% of this building's {m.get('building_area_m2')} m^2 footprint) — this area figure is illustrative of scale, the chord length/ratio above is the exact finding",
+            f"Drain category/categories involved: {m.get('drain_categories')}",
+        ]
+    elif row.anomaly_type.value == "pole_redundancy":
+        if row.color.value == "green":
+            lines += [
+                f"This pole was kept as the representative asset for a cluster of {m.get('cluster_size')} closely-spaced poles.",
+                f"Category: {m.get('this_category')}",
+            ]
+        elif row.color.value == "red":
+            lines += [
+                f"This pole sits in a cluster of {m.get('cluster_size')} poles within {m.get('eps_m')} m of each other — redundant.",
+                f"Category: {m.get('this_category')}; the pole kept instead was category {m.get('kept_category')}",
+            ]
+        else:
+            lines += [
+                f"Nearest same-family pole is {m.get('nearest_neighbor_m')} m away — inside the {m.get('yellow_band_m')} m borderline band but not tight enough to count as a redundant cluster (threshold {m.get('eps_m')} m).",
+            ]
+    elif row.anomaly_type.value == "manhole_status":
+        lines += [
+            f"Nearest drain: {m.get('nearest_drain_category') or 'none found'}, {m.get('nearest_drain_distance_m')} m away (search radius {m.get('max_search_radius_m')} m).",
+        ]
+
+    return "\n".join(lines)
+
+
+def _anomaly_out(row: SpatialAnomaly, lon: float, lat: float) -> SpatialAnomalyOut:
+    return SpatialAnomalyOut(
+        id=row.id,
+        dataset_id=row.dataset_id,
+        ward=row.ward,
+        anomaly_type=row.anomaly_type.value,
+        color=row.color.value,
+        severity_score=row.severity_score,
+        status=row.status.value,
+        lon=lon,
+        lat=lat,
+        feature_ids=list(row.feature_ids),
+        anomaly_metadata=row.anomaly_metadata,
+        explanation_text=row.explanation_text,
+        created_at=row.created_at,
+    )
+
+
+@router.post(
+    "/audit",
+    response_model=AuditRunResponse,
+    dependencies=[Depends(require_any)],
+    summary="Run the spatial audit engine (pole redundancy, drain encroachment, manhole status) for a dataset",
+)
+async def run_audit(body: AuditRunRequest, db: AsyncSession = Depends(get_db)) -> AuditRunResponse:
+    try:
+        summary = await run_spatial_audit(body.dataset_id, db)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    ward_row = (
+        await db.execute(
+            select(SpatialAnomaly.ward).where(SpatialAnomaly.dataset_id == body.dataset_id).limit(1)
+        )
+    ).scalar_one_or_none()
+
+    return AuditRunResponse(
+        dataset_id=body.dataset_id,
+        ward=ward_row,
+        pole_redundancy=summary.pole_redundancy,
+        drain_encroachment=summary.drain_encroachment,
+        manhole_status=summary.manhole_status,
+    )
+
+
+@router.get(
+    "/audit/anomalies",
+    response_model=list[SpatialAnomalyOut],
+    dependencies=[Depends(require_any)],
+    summary="List persisted spatial audit findings as map-ready points",
+)
+async def list_anomalies(
+    dataset_id: uuid.UUID,
+    status_filter: str | None = None,
+    db: AsyncSession = Depends(get_db),
+) -> list[SpatialAnomalyOut]:
+    stmt = (
+        select(SpatialAnomaly, func.ST_X(SpatialAnomaly.geom), func.ST_Y(SpatialAnomaly.geom))
+        .where(SpatialAnomaly.dataset_id == dataset_id)
+    )
+    if status_filter:
+        stmt = stmt.where(SpatialAnomaly.status == status_filter)
+    rows = (await db.execute(stmt)).all()
+    return [_anomaly_out(row, lon, lat) for row, lon, lat in rows]
+
+
+@router.post(
+    "/audit/anomalies/{anomaly_id}/explain",
+    response_model=AnomalyExplainResponse,
+    dependencies=[Depends(require_any)],
+    summary="Get (or lazily generate) a plain-English explanation for one specific finding",
+)
+async def explain_anomaly(anomaly_id: uuid.UUID, db: AsyncSession = Depends(get_db)) -> AnomalyExplainResponse:
+    row = (
+        await db.execute(select(SpatialAnomaly).where(SpatialAnomaly.id == anomaly_id))
+    ).scalar_one_or_none()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Anomaly not found")
+
+    if row.explanation_text:
+        return AnomalyExplainResponse(
+            id=row.id,
+            explanation_text=row.explanation_text,
+            explanation_model=row.explanation_model or "",
+            cached=True,
+        )
+
+    crib = _anomaly_fact_sheet(row)
+    prompt = (
+        "You are a senior municipal infrastructure auditor writing a finding "
+        "note for a civil engineer who will act on it. Using ONLY the FACTS "
+        "below, write 3-5 sentences covering, in order: (1) exactly what was "
+        "found, citing the specific percentage/distance/count figures given, "
+        "(2) why it matters in practical civic terms (drainage flow, fire "
+        "access, over-illumination cost, etc.), and (3) one concrete, "
+        "actionable recommendation. Be direct and precise, not vague — write "
+        "like an expert who has personally verified these numbers, not a "
+        "chatbot hedging. Never state a number that is not present in FACTS, "
+        "and never mention that you were given 'facts' or metadata — just "
+        "report the finding. If FACTS says the drain's centerline crosses "
+        "straight through the building, your very first sentence must say "
+        "so plainly (e.g. 'the drain runs directly through this building') "
+        "before any percentage — the crossing itself is the headline, the "
+        "percentage is supporting detail, never the other way around. If "
+        "FACTS gives an encroached/overlapping area in square meters, you "
+        "MUST state that exact area figure (not just the percentage) "
+        "somewhere in the finding — engineers need the physical area, not "
+        "only a ratio.\n\n"
+        f"FACTS:\n{crib}"
+    )
+    reply = await run_grounded_completion(context=crib, user_prompt=prompt, num_predict=280, num_ctx=1024)
+
+    row.explanation_text = reply.text
+    row.explanation_model = reply.model
+    await db.commit()
+
+    return AnomalyExplainResponse(
+        id=row.id, explanation_text=reply.text, explanation_model=reply.model, cached=False
+    )
+
+
+@router.patch(
+    "/audit/anomalies/{anomaly_id}",
+    response_model=SpatialAnomalyOut,
+    dependencies=[Depends(require_any)],
+    summary="Update a finding's review status (open/reviewing/resolved/dismissed)",
+)
+async def update_anomaly_status(
+    anomaly_id: uuid.UUID, body: AnomalyStatusUpdate, db: AsyncSession = Depends(get_db)
+) -> SpatialAnomalyOut:
+    row = (
+        await db.execute(select(SpatialAnomaly).where(SpatialAnomaly.id == anomaly_id))
+    ).scalar_one_or_none()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Anomaly not found")
+
+    row.status = AnomalyStatus(body.status)
+    await db.commit()
+    await db.refresh(row)
+
+    lon, lat = (
+        await db.execute(
+            select(func.ST_X(SpatialAnomaly.geom), func.ST_Y(SpatialAnomaly.geom)).where(
+                SpatialAnomaly.id == anomaly_id
+            )
+        )
+    ).one()
+    return _anomaly_out(row, lon, lat)

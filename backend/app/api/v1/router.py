@@ -5,6 +5,7 @@ from app.api.v1 import (
     ai,
     analytics,
     auth,
+    classification,
     datasets,
     features,
     health,
@@ -21,3 +22,4 @@ api_router.include_router(review_items.router, prefix="/v1/review-items", tags=[
 api_router.include_router(survey_requests.router, prefix="/v1/survey-requests", tags=["survey-requests"])
 api_router.include_router(analytics.router, prefix="/v1/analytics", tags=["analytics"])
 api_router.include_router(ai.router, prefix="/v1/ai", tags=["ai"])
+api_router.include_router(classification.router, prefix="/v1/classification", tags=["classification"])
