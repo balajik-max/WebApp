@@ -29,10 +29,20 @@ class RecommendRequest(BaseModel):
 
 
 class ReportRequest(BaseModel):
-    """Generate a full ward/dataset-level planning report. Exactly one scope required."""
+    """Generate a grounded planning report for a ward or Analytics scope.
+
+    ``dataset_id`` is retained for the existing Map report panel. Analytics
+    uses the repeatable ``dataset_ids`` and ``categories`` fields.
+    """
 
     dataset_id: uuid.UUID | None = None
+    dataset_ids: list[uuid.UUID] = Field(default_factory=list, max_length=200)
     ward: str | None = Field(default=None, max_length=128)
+    categories: list[str] = Field(default_factory=list, max_length=500)
+    severity_buckets: list[Literal["low", "medium", "high"]] = Field(
+        default_factory=list, max_length=3
+    )
+    all_datasets: bool = False
     max_features: int = Field(default=120, ge=1, le=300)
 
 
@@ -72,3 +82,43 @@ class AiAnswer(BaseModel):
     redundant_feature_ids: list[str] = Field(default_factory=list)
     needed_feature_ids: list[str] = Field(default_factory=list)
     needed_locations: list[NeededLocation] = Field(default_factory=list)
+
+
+# ---------- Spatial audit engine (Phase 1) --------------------------------
+class AuditRunRequest(BaseModel):
+    dataset_id: uuid.UUID
+
+
+class AuditRunResponse(BaseModel):
+    dataset_id: uuid.UUID
+    ward: str | None
+    pole_redundancy: dict[str, int]
+    drain_encroachment: dict[str, int]
+    manhole_status: dict[str, int]
+
+
+class SpatialAnomalyOut(BaseModel):
+    id: uuid.UUID
+    dataset_id: uuid.UUID
+    ward: str | None
+    anomaly_type: str
+    color: str
+    severity_score: float
+    status: str
+    lon: float
+    lat: float
+    feature_ids: list[uuid.UUID]
+    anomaly_metadata: dict[str, Any]
+    explanation_text: str | None
+    created_at: datetime
+
+
+class AnomalyExplainResponse(BaseModel):
+    id: uuid.UUID
+    explanation_text: str
+    explanation_model: str
+    cached: bool
+
+
+class AnomalyStatusUpdate(BaseModel):
+    status: Literal["open", "reviewing", "resolved", "dismissed"]

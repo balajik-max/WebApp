@@ -150,12 +150,32 @@ class IngestionTrendPoint(BaseModel):
     cumulative_features: int
 
 
+class AnalyticsFeatureRow(BaseModel):
+    id: uuid.UUID
+    dataset_id: uuid.UUID
+    dataset_name: str
+    ward: str | None = None
+    label: str | None = None
+    category: str
+    severity: float
+    geometry_type: str
+    created_at: datetime
+
+
+class AnalyticsFeaturePage(BaseModel):
+    total: int
+    limit: int
+    offset: int
+    rows: list[AnalyticsFeatureRow]
+
+
 class AnalyticsOverview(BaseModel):
     total_datasets: int
     ready_datasets: int
     processing_datasets: int
     failed_datasets: int
     total_features: int
+    average_severity: float
     total_review_items: int
     open_reviews: int
     resolved_reviews: int
@@ -164,6 +184,57 @@ class AnalyticsOverview(BaseModel):
     category_breakdown: list[CategoryBreakdown]
     severity_breakdown: list[SeverityBucket]
     ingestion_trend: list[IngestionTrendPoint]
+    generated_at: datetime
+
+
+class AnalyticsQualityComponent(BaseModel):
+    key: str
+    label: str
+    score: float
+    weight: int
+    passed: int
+    failed: int
+    explanation: str
+
+
+class AnalyticsFinding(BaseModel):
+    id: str
+    title: str
+    description: str
+    rule: str
+    severity: Literal["low", "medium", "high", "critical"]
+    finding_type: Literal["geometry", "attribute", "consistency", "operational"]
+    affected_count: int
+    affected_percentage: float
+    priority_score: int
+    feature_ids: list[uuid.UUID] = Field(default_factory=list)
+    category: str | None = None
+    attribute: str | None = None
+
+
+class AnalyticsQualityReport(BaseModel):
+    total_features: int
+    overall_score: float | None
+    components: list[AnalyticsQualityComponent]
+    findings: list[AnalyticsFinding]
+    methodology: str
+    generated_at: datetime
+
+
+class ManholeReadinessFieldResult(BaseModel):
+    key: str
+    label: str
+    aliases: list[str]
+    available_count: int
+    missing_count: int
+    completeness_percentage: float
+    recommended_action: str
+
+
+class ManholeReadinessReport(BaseModel):
+    total_manhole_features: int
+    fields: list[ManholeReadinessFieldResult]
+    methodology: str
     generated_at: datetime
 
 

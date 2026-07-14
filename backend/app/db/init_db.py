@@ -20,11 +20,13 @@ from app.db.session import SessionLocal, engine
 from app.models import User, UserRole  # noqa: F401  (import to register all models)
 from app.models import (  # noqa: F401
     ActivityLog,
+    CategoryClassMap,
     Comment,
     Dataset,
     Feature,
     FeatureVersion,
     ReviewItem,
+    SpatialAnomaly,
     SurveyRequest,
 )
 
@@ -49,6 +51,18 @@ async def _ensure_spatial_index() -> None:
             text(
                 "CREATE INDEX IF NOT EXISTS idx_features_attributes_gin "
                 "ON features USING GIN (attributes jsonb_path_ops);"
+            )
+        )
+        await conn.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS idx_spatial_anomalies_geom "
+                "ON spatial_anomalies USING GIST (geom);"
+            )
+        )
+        await conn.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS idx_spatial_anomalies_dataset_type_color "
+                "ON spatial_anomalies (dataset_id, anomaly_type, color);"
             )
         )
 

@@ -39,8 +39,15 @@ export const aiQuery = (body: {
 export const aiRecommend = (body: { feature_id: string }) =>
   apiPost<AiAnswer>("/api/v1/ai/recommend", body);
 
-export const aiReport = (body: { dataset_id?: string; ward?: string; max_features?: number }) =>
-  apiPost<AiAnswer>("/api/v1/ai/report", body);
+export const aiReport = (body: {
+  dataset_id?: string;
+  dataset_ids?: string[];
+  ward?: string;
+  categories?: string[];
+  severity_buckets?: Array<"low" | "medium" | "high">;
+  all_datasets?: boolean;
+  max_features?: number;
+}) => apiPost<AiAnswer>("/api/v1/ai/report", body);
 
 export const aiSpacing = (body: {
   dataset_id?: string;

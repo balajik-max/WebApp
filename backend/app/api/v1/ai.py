@@ -11,19 +11,27 @@ All four endpoints share the same structural guarantee:
 from __future__ import annotations
 
 import logging
+import uuid
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import require_any
 from app.db.session import get_db
+from app.models.spatial_anomaly import AnomalyStatus, SpatialAnomaly
 from app.schemas.ai import (
     AiAnswer,
+    AnomalyExplainResponse,
+    AnomalyStatusUpdate,
+    AuditRunRequest,
+    AuditRunResponse,
     NLQueryRequest,
     RecommendRequest,
     ReportRequest,
     SpacingRequest,
+    SpatialAnomalyOut,
 )
 from app.services.ai import (
     AI_DISCLAIMER,
@@ -39,6 +47,7 @@ from app.services.ai_context import (
     build_recommend_context,
     build_report_facts,
 )
+from app.services.spatial_audit import run_spatial_audit
 
 log = logging.getLogger("davangere.api.ai")
 router = APIRouter()
@@ -97,6 +106,22 @@ def _render_facts_markdown(facts: ReportFacts) -> str:
     )
     lines.append("")
 
+    lines.append("## Verified Data Quality Findings")
+    if facts.quality_score is not None:
+        lines.append(f"- Overall deterministic data quality score: **{facts.quality_score:.1f}/100**")
+    if facts.quality_findings:
+        lines.append("")
+        lines.append("| Priority | Severity | Finding | Affected |")
+        lines.append("|---:|---|---|---:|")
+        for finding in facts.quality_findings:
+            lines.append(
+                f"| {finding.priority_score} | {finding.severity} | {finding.title} | "
+                f"{finding.affected_count} ({finding.affected_percentage:.1f}%) |"
+            )
+    else:
+        lines.append("- No configured quality issue was found in this scope.")
+    lines.append("")
+
     lines.append("## Key Findings")
     if facts.top_features:
         lines.append("Highest-severity individual features on record:")
@@ -117,6 +142,12 @@ def _facts_crib_sheet(facts: ReportFacts) -> str:
     examples = "\n".join(
         f"  - {f.label} ({f.category}), severity {f.severity:.2f}" for f in facts.top_features
     ) or "  - none"
+    quality_findings = "\n".join(
+        f"  - priority={finding.priority_score}; severity={finding.severity}; "
+        f"finding={finding.title}; affected={finding.affected_count} "
+        f"({finding.affected_percentage:.1f}%); rule={finding.rule}"
+        for finding in facts.quality_findings
+    ) or "  - none"
     return (
         f"SCOPE: {facts.scope_label}\n"
         f"TOTAL_FEATURES: {facts.total_features}\n"
@@ -125,6 +156,8 @@ def _facts_crib_sheet(facts: ReportFacts) -> str:
         f"SEVERITY_BUCKETS: high={facts.severity_buckets['high']}, "
         f"medium={facts.severity_buckets['medium']}, low={facts.severity_buckets['low']}\n"
         f"REVIEW_BACKLOG: {facts.review_summary}\n"
+        f"DATA_QUALITY_SCORE: {facts.quality_score if facts.quality_score is not None else 'not available'}\n"
+        f"VERIFIED_QUALITY_FINDINGS (exact backend-calculated values; never alter):\n{quality_findings}\n"
         f"HIGH_SEVERITY_EXAMPLES (real labels — cite verbatim only, never alter):\n{examples}"
     )
 
@@ -139,14 +172,32 @@ def _facts_crib_sheet(facts: ReportFacts) -> str:
     summary="Full ward/dataset-level neighbourhood regeneration report",
 )
 async def report(body: ReportRequest, db: AsyncSession = Depends(get_db)) -> AiAnswer:
-    if body.dataset_id is None and body.ward is None:
-        raise HTTPException(status_code=400, detail="Provide either dataset_id or ward")
+    dataset_ids = list(dict.fromkeys(body.dataset_ids))
+    if body.dataset_id is not None and body.dataset_id not in dataset_ids:
+        dataset_ids.append(body.dataset_id)
+    categories = sorted({value.strip() for value in body.categories if value.strip()})
+    if any(len(value) > 128 for value in categories):
+        raise HTTPException(status_code=400, detail="category values must be at most 128 characters")
+    if not body.all_datasets and not dataset_ids and body.ward is None:
+        raise HTTPException(
+            status_code=400,
+            detail="Provide dataset_id, dataset_ids, ward, or set all_datasets=true",
+        )
 
     from app.core.config import get_settings
     settings = get_settings()
     model = settings.ollama_model
 
-    facts = await build_report_facts(db, dataset_id=body.dataset_id, ward=body.ward)
+    facts = await build_report_facts(
+        db,
+        dataset_id=None,
+        dataset_ids=dataset_ids,
+        ward=body.ward,
+        categories=categories,
+        severity_buckets=list(dict.fromkeys(body.severity_buckets)),
+        allow_all=body.all_datasets,
+        top_feature_limit=min(body.max_features, 25),
+    )
     if facts is None:
         return _insufficient("report", model, {"reason": "no matching features"})
 
@@ -167,7 +218,7 @@ async def report(body: ReportRequest, db: AsyncSession = Depends(get_db)) -> AiA
         "planning report. The front half (already written, shown below as "
         "FACTS) covers the Executive Summary, Study Area, Existing "
         "Situation, and Key Findings — do not repeat or restate those.\n\n"
-        "Using ONLY the FACTS below, write these remaining sections, using "
+        "Using ONLY the FACTS below, including the verified quality findings, write these remaining sections, using "
         "exactly these headers in order:\n\n"
         "`## Quality of Life Implications` — plain-language consequences "
         "for residents that plausibly follow from the categories/severity "
@@ -500,3 +551,151 @@ async def spacing(body: SpacingRequest, db: AsyncSession = Depends(get_db)) -> A
         needed_feature_ids=facts.needed_feature_ids,
             needed_locations=[{"id": loc.id, "lon": loc.lon, "lat": loc.lat, "reason": loc.reason} for loc in facts.needed_locations],
     )
+
+
+# ---------------------------------------------------------------------------
+# Spatial Audit Engine (Phase 1) — pole redundancy, drain encroachment,
+# manhole status. All geometry math lives in app.services.spatial_audit;
+# these endpoints only run it, persist/read results, and (lazily) narrate
+# a single finding via the same anti-hallucination run_grounded_completion
+# used everywhere else in this file.
+# ---------------------------------------------------------------------------
+def _anomaly_out(row: SpatialAnomaly, lon: float, lat: float) -> SpatialAnomalyOut:
+    return SpatialAnomalyOut(
+        id=row.id,
+        dataset_id=row.dataset_id,
+        ward=row.ward,
+        anomaly_type=row.anomaly_type.value,
+        color=row.color.value,
+        severity_score=row.severity_score,
+        status=row.status.value,
+        lon=lon,
+        lat=lat,
+        feature_ids=list(row.feature_ids),
+        anomaly_metadata=row.anomaly_metadata,
+        explanation_text=row.explanation_text,
+        created_at=row.created_at,
+    )
+
+
+@router.post(
+    "/audit",
+    response_model=AuditRunResponse,
+    dependencies=[Depends(require_any)],
+    summary="Run the spatial audit engine (pole redundancy, drain encroachment, manhole status) for a dataset",
+)
+async def run_audit(body: AuditRunRequest, db: AsyncSession = Depends(get_db)) -> AuditRunResponse:
+    try:
+        summary = await run_spatial_audit(body.dataset_id, db)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    ward_row = (
+        await db.execute(
+            select(SpatialAnomaly.ward).where(SpatialAnomaly.dataset_id == body.dataset_id).limit(1)
+        )
+    ).scalar_one_or_none()
+
+    return AuditRunResponse(
+        dataset_id=body.dataset_id,
+        ward=ward_row,
+        pole_redundancy=summary.pole_redundancy,
+        drain_encroachment=summary.drain_encroachment,
+        manhole_status=summary.manhole_status,
+    )
+
+
+@router.get(
+    "/audit/anomalies",
+    response_model=list[SpatialAnomalyOut],
+    dependencies=[Depends(require_any)],
+    summary="List persisted spatial audit findings as map-ready points",
+)
+async def list_anomalies(
+    dataset_id: uuid.UUID,
+    status_filter: str | None = None,
+    db: AsyncSession = Depends(get_db),
+) -> list[SpatialAnomalyOut]:
+    stmt = (
+        select(SpatialAnomaly, func.ST_X(SpatialAnomaly.geom), func.ST_Y(SpatialAnomaly.geom))
+        .where(SpatialAnomaly.dataset_id == dataset_id)
+    )
+    if status_filter:
+        stmt = stmt.where(SpatialAnomaly.status == status_filter)
+    rows = (await db.execute(stmt)).all()
+    return [_anomaly_out(row, lon, lat) for row, lon, lat in rows]
+
+
+@router.post(
+    "/audit/anomalies/{anomaly_id}/explain",
+    response_model=AnomalyExplainResponse,
+    dependencies=[Depends(require_any)],
+    summary="Get (or lazily generate) a plain-English explanation for one specific finding",
+)
+async def explain_anomaly(anomaly_id: uuid.UUID, db: AsyncSession = Depends(get_db)) -> AnomalyExplainResponse:
+    row = (
+        await db.execute(select(SpatialAnomaly).where(SpatialAnomaly.id == anomaly_id))
+    ).scalar_one_or_none()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Anomaly not found")
+
+    if row.explanation_text:
+        return AnomalyExplainResponse(
+            id=row.id,
+            explanation_text=row.explanation_text,
+            explanation_model=row.explanation_model or "",
+            cached=True,
+        )
+
+    crib = (
+        f"ANOMALY_TYPE: {row.anomaly_type.value}\n"
+        f"COLOR: {row.color.value}\n"
+        f"SEVERITY_SCORE_0_100: {row.severity_score:.0f}\n"
+        f"WARD: {row.ward or 'unknown'}\n"
+        f"FACTS (verified, never invent numbers not shown here):\n{row.anomaly_metadata}"
+    )
+    prompt = (
+        "Using ONLY the FACTS below, write a short (2-4 sentence) plain-English "
+        "explanation of this single finding for a municipal engineer, in the "
+        "style: what was found, why it matters, and a one-line recommended "
+        "action. Never state a number that is not present in FACTS.\n\n"
+        f"FACTS:\n{crib}"
+    )
+    reply = await run_grounded_completion(context=crib, user_prompt=prompt, num_predict=250, num_ctx=1024)
+
+    row.explanation_text = reply.text
+    row.explanation_model = reply.model
+    await db.commit()
+
+    return AnomalyExplainResponse(
+        id=row.id, explanation_text=reply.text, explanation_model=reply.model, cached=False
+    )
+
+
+@router.patch(
+    "/audit/anomalies/{anomaly_id}",
+    response_model=SpatialAnomalyOut,
+    dependencies=[Depends(require_any)],
+    summary="Update a finding's review status (open/reviewing/resolved/dismissed)",
+)
+async def update_anomaly_status(
+    anomaly_id: uuid.UUID, body: AnomalyStatusUpdate, db: AsyncSession = Depends(get_db)
+) -> SpatialAnomalyOut:
+    row = (
+        await db.execute(select(SpatialAnomaly).where(SpatialAnomaly.id == anomaly_id))
+    ).scalar_one_or_none()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Anomaly not found")
+
+    row.status = AnomalyStatus(body.status)
+    await db.commit()
+    await db.refresh(row)
+
+    lon, lat = (
+        await db.execute(
+            select(func.ST_X(SpatialAnomaly.geom), func.ST_Y(SpatialAnomaly.geom)).where(
+                SpatialAnomaly.id == anomaly_id
+            )
+        )
+    ).one()
+    return _anomaly_out(row, lon, lat)

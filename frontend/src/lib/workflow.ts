@@ -1,5 +1,23 @@
 /** Analytics + workflow API helpers. */
-import { apiDelete, apiGet, apiPatch, apiPost } from "./api";
+
+import { apiDelete, apiDownload, apiGet, apiPatch, apiPost } from "./api";
+import type { FeatureCollectionResponse } from "./types";
+
+export type AnalyticsSeverityBucket = "low" | "medium" | "high";
+export type ManholeReadinessFieldKey =
+  | "depth"
+  | "bottom_level"
+  | "top_level"
+  | "condition"
+  | "pipe_type"
+  | "diameter"
+  | "image_reference";
+
+export interface AnalyticsCrossFilters {
+  wards?: string[];
+  severityBuckets?: AnalyticsSeverityBucket[];
+  missingField?: ManholeReadinessFieldKey | null;
+}
 
 export interface StatusBreakdown {
   status: string;
@@ -37,6 +55,7 @@ export interface AnalyticsOverview {
   processing_datasets: number;
   failed_datasets: number;
   total_features: number;
+  average_severity: number;
   total_review_items: number;
   open_reviews: number;
   resolved_reviews: number;
@@ -67,17 +86,22 @@ export interface DatasetRow {
   updated_at: string;
 }
 
-export function fetchOverview(datasetIds?: string[], signal?: AbortSignal) {
-  if (!datasetIds || datasetIds.length === 0) {
-    return apiGet<AnalyticsOverview>("/api/v1/analytics/overview", signal);
-  }
-  const params = new URLSearchParams();
-  for (const id of datasetIds) params.append("dataset_id", id);
-  return apiGet<AnalyticsOverview>(`/api/v1/analytics/overview?${params.toString()}`, signal);
+export function fetchOverview(
+  datasetIds: string[] = [],
+  categories: string[] = [],
+  signal?: AbortSignal,
+  filters: AnalyticsCrossFilters = {}
+) {
+  const params = analyticsScopeParams(datasetIds, categories, filters);
+  const query = params.toString();
+  return apiGet<AnalyticsOverview>(
+    `/api/v1/analytics/overview${query ? `?${query}` : ""}`,
+    signal
+  );
 }
 
-export function fetchDatasets(signal?: AbortSignal) {
-  return apiGet<DatasetRow[]>("/api/v1/datasets?limit=50", signal);
+export function fetchDatasets(signal?: AbortSignal, limit = 50) {
+  return apiGet<DatasetRow[]>(`/api/v1/datasets?limit=${limit}`, signal);
 }
 
 export function deleteDataset(id: string, signal?: AbortSignal) {
@@ -114,11 +138,196 @@ export interface CategoryOption {
   count: number;
 }
 
-export function fetchCategories(ward: string | undefined, signal?: AbortSignal) {
-  const qs = ward ? `?ward=${encodeURIComponent(ward)}` : "";
-  return apiGet<{ categories: CategoryOption[] }>(`/api/v1/features/categories${qs}`, signal).then(
-    (r) => r.categories
+export function fetchCategories(
+  ward: string | undefined,
+  signal?: AbortSignal,
+  datasetIds: string[] = []
+) {
+  const params = new URLSearchParams();
+  if (ward) params.set("ward", ward);
+  for (const id of datasetIds) params.append("dataset_id", id);
+  const query = params.toString();
+  return apiGet<{ categories: CategoryOption[] }>(
+    `/api/v1/features/categories${query ? `?${query}` : ""}`,
+    signal
+  ).then((response) => response.categories);
+}
+
+export interface AnalyticsFeatureRow {
+  id: string;
+  dataset_id: string;
+  dataset_name: string;
+  ward: string | null;
+  label: string | null;
+  category: string;
+  severity: number;
+  geometry_type: string;
+  created_at: string;
+}
+
+export interface AnalyticsFeaturePage {
+  total: number;
+  limit: number;
+  offset: number;
+  rows: AnalyticsFeatureRow[];
+}
+
+function analyticsScopeParams(
+  datasetIds: string[],
+  categories: string[],
+  filters: AnalyticsCrossFilters = {}
+) {
+  const params = new URLSearchParams();
+  for (const id of datasetIds) params.append("dataset_id", id);
+  for (const category of categories) params.append("category", category);
+  for (const ward of filters.wards ?? []) params.append("ward", ward);
+  for (const bucket of filters.severityBuckets ?? []) params.append("severity_bucket", bucket);
+  if (filters.missingField) params.set("missing_field", filters.missingField);
+  return params;
+}
+
+export function fetchAnalyticsFeatures(
+  datasetIds: string[],
+  categories: string[],
+  signal?: AbortSignal,
+  filters: AnalyticsCrossFilters = {}
+) {
+  const params = analyticsScopeParams(datasetIds, categories, filters);
+  params.set("limit", "5000");
+  if (filters.missingField) {
+    params.delete("category");
+    params.delete("missing_field");
+    params.set("field", filters.missingField);
+    return apiGet<FeatureCollectionResponse>(
+      `/api/v1/analytics/manhole-readiness/features?${params.toString()}`,
+      signal
+    );
+  }
+  params.set("bbox", "-180,-90,180,90");
+  params.set("exclude_internal", "true");
+  return apiGet<FeatureCollectionResponse>(`/api/v1/features?${params.toString()}`, signal);
+}
+
+export function fetchAnalyticsFeatureTable(
+  datasetIds: string[],
+  categories: string[],
+  limit: number,
+  offset: number,
+  signal?: AbortSignal,
+  filters: AnalyticsCrossFilters = {}
+) {
+  const params = analyticsScopeParams(datasetIds, categories, filters);
+  params.set("limit", String(limit));
+  params.set("offset", String(offset));
+  return apiGet<AnalyticsFeaturePage>(`/api/v1/analytics/features?${params.toString()}`, signal);
+}
+
+
+export interface ManholeReadinessFieldResult {
+  key: ManholeReadinessFieldKey;
+  label: string;
+  aliases: string[];
+  available_count: number;
+  missing_count: number;
+  completeness_percentage: number;
+  recommended_action: string;
+}
+
+export interface ManholeReadinessReport {
+  total_manhole_features: number;
+  fields: ManholeReadinessFieldResult[];
+  methodology: string;
+  generated_at: string;
+}
+
+export function fetchManholeReadiness(
+  datasetIds: string[],
+  signal?: AbortSignal,
+  filters: Pick<AnalyticsCrossFilters, "wards" | "severityBuckets"> = {}
+) {
+  const params = analyticsScopeParams(datasetIds, [], filters);
+  const query = params.toString();
+  return apiGet<ManholeReadinessReport>(
+    `/api/v1/analytics/manhole-readiness${query ? `?${query}` : ""}`,
+    signal
   );
+}
+
+export interface AnalyticsQualityComponent {
+  key: string;
+  label: string;
+  score: number;
+  weight: number;
+  passed: number;
+  failed: number;
+  explanation: string;
+}
+
+export interface AnalyticsFinding {
+  id: string;
+  title: string;
+  description: string;
+  rule: string;
+  severity: "low" | "medium" | "high" | "critical";
+  finding_type: "geometry" | "attribute" | "consistency" | "operational";
+  affected_count: number;
+  affected_percentage: number;
+  priority_score: number;
+  feature_ids: string[];
+  category: string | null;
+  attribute: string | null;
+}
+
+export interface AnalyticsQualityReport {
+  total_features: number;
+  overall_score: number | null;
+  components: AnalyticsQualityComponent[];
+  findings: AnalyticsFinding[];
+  methodology: string;
+  generated_at: string;
+}
+
+export function fetchAnalyticsQuality(
+  datasetIds: string[],
+  categories: string[],
+  signal?: AbortSignal,
+  filters: AnalyticsCrossFilters = {}
+) {
+  const params = analyticsScopeParams(datasetIds, categories, filters);
+  const query = params.toString();
+  return apiGet<AnalyticsQualityReport>(
+    `/api/v1/analytics/quality${query ? `?${query}` : ""}`,
+    signal
+  );
+}
+
+
+
+export type AnalyticsExportFormat = "csv" | "xlsx" | "pdf" | "geojson";
+
+export async function downloadAnalyticsExport(
+  format: AnalyticsExportFormat,
+  datasetIds: string[],
+  categories: string[],
+  filters: AnalyticsCrossFilters = {},
+  signal?: AbortSignal
+) {
+  const params = analyticsScopeParams(datasetIds, categories, filters);
+  params.set("format", format);
+  const result = await apiDownload(`/api/v1/analytics/export?${params.toString()}`, signal);
+  const fallbackName = `analytics_export.${format === "xlsx" ? "xlsx" : format}`;
+  const objectUrl = URL.createObjectURL(result.blob);
+  try {
+    const link = document.createElement("a");
+    link.href = objectUrl;
+    link.download = result.filename || fallbackName;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+  } finally {
+    window.setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
+  }
+  return result.filename || fallbackName;
 }
 
 export interface FeatureTableRow {
@@ -302,3 +511,77 @@ export const createSurveyRequest = (body: {
   latitude: number;
   longitude: number;
 }) => apiPost<SurveyRequestRow>("/api/v1/survey-requests", body);
+
+// ---------------------- AI spatial audit engine ----------------------------
+export type AnomalyType = "pole_redundancy" | "drain_encroachment" | "manhole_status";
+export type AnomalyColor = "red" | "yellow" | "green";
+export type AnomalyStatus = "open" | "reviewing" | "resolved" | "dismissed";
+
+export interface AuditRunResult {
+  dataset_id: string;
+  ward: string | null;
+  pole_redundancy: Record<string, number>;
+  drain_encroachment: Record<string, number>;
+  manhole_status: Record<string, number>;
+}
+
+export interface SpatialAnomaly {
+  id: string;
+  dataset_id: string;
+  ward: string | null;
+  anomaly_type: AnomalyType;
+  color: AnomalyColor;
+  severity_score: number;
+  status: AnomalyStatus;
+  lon: number;
+  lat: number;
+  feature_ids: string[];
+  anomaly_metadata: Record<string, unknown>;
+  explanation_text: string | null;
+  created_at: string;
+}
+
+export interface AnomalyExplanation {
+  id: string;
+  explanation_text: string;
+  explanation_model: string;
+  cached: boolean;
+}
+
+export const runSpatialAudit = (datasetId: string, signal?: AbortSignal) =>
+  apiPost<AuditRunResult>("/api/v1/ai/audit", { dataset_id: datasetId }, signal);
+
+export const fetchAnomalies = (datasetId: string, statusFilter?: AnomalyStatus, signal?: AbortSignal) => {
+  const qs = new URLSearchParams({ dataset_id: datasetId });
+  if (statusFilter) qs.set("status_filter", statusFilter);
+  return apiGet<SpatialAnomaly[]>(`/api/v1/ai/audit/anomalies?${qs.toString()}`, signal);
+};
+
+export const explainAnomaly = (anomalyId: string, signal?: AbortSignal) =>
+  apiPost<AnomalyExplanation>(`/api/v1/ai/audit/anomalies/${anomalyId}/explain`, {}, signal);
+
+export const updateAnomalyStatus = (anomalyId: string, status: AnomalyStatus) =>
+  apiPatch<SpatialAnomaly>(`/api/v1/ai/audit/anomalies/${anomalyId}`, { status });
+
+// ---------------------- category -> canonical class mapping ----------------
+export interface CategoryClassMapping {
+  raw_category: string;
+  canonical_class: string;
+  match_method: "exact" | "fuzzy" | "embedding" | "manual";
+  confidence: number;
+}
+
+export const fetchCanonicalClasses = (signal?: AbortSignal) =>
+  apiGet<string[]>("/api/v1/classification/classes", signal);
+
+export const fetchUnclassifiedCategories = (signal?: AbortSignal) =>
+  apiGet<CategoryClassMapping[]>("/api/v1/classification/unclassified", signal);
+
+export const fetchAllClassMappings = (signal?: AbortSignal) =>
+  apiGet<CategoryClassMapping[]>("/api/v1/classification", signal);
+
+export const assignCanonicalClass = (rawCategory: string, canonicalClass: string) =>
+  apiPatch<CategoryClassMapping>(
+    `/api/v1/classification/${encodeURIComponent(rawCategory)}`,
+    { canonical_class: canonicalClass }
+  );
