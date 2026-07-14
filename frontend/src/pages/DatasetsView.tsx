@@ -964,9 +964,6 @@ export function DatasetsView() {
       </div>
 
       {/* ── UNCLASSIFIED CATEGORIES (spatial audit classifier review) ── */}
-      </div>
-      </div>
-
       <UnclassifiedCategoriesPanel />
 
       {/* ── ATTRIBUTE TABLE OVERLAY ─────────────────────────────────── */}
