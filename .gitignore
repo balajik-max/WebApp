@@ -53,3 +53,6 @@ postgres-data/
 
 # Ollama
 ollama-data/
+
+# Extracted sample data (generated from sample archives, not source)
+sample_data/extracted_gdb/
