@@ -362,7 +362,6 @@ export function DatasetsView() {
       {/* ── HEADER ──────────────────────────────────────────────────── */}
       <header className="ds-header">
         <div className="ds-header__left">
-          <div className="ds-header__eyebrow">Data Management</div>
           <h1 className="ds-header__title">Survey Datasets</h1>
           <p className="ds-header__sub">Upload, manage, and analyze geospatial survey data for Davangere city</p>
         </div>
@@ -398,9 +397,10 @@ export function DatasetsView() {
 
       {/* ── MAIN GRID ───────────────────────────────────────────────── */}
       <div className="ds-grid">
+      <div className="ds-grid__row">
 
         {/* ── UPLOAD SECTION ────────────────────────────────────────── */}
-        <section className="ds-upload-card">
+        <section className="ds-upload-card ds-grid__upload">
           <div className="ds-upload-card__header">
             <div className="ds-upload-card__icon">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" width="24" height="24">
@@ -512,7 +512,7 @@ export function DatasetsView() {
             ) : !uploadFile ? (
               <label htmlFor="dz-file" className="ds-dropzone__content">
                 <div className="ds-dropzone__icon-wrap">
-                  <svg viewBox="0 0 48 48" fill="none" width="48" height="48">
+                  <svg viewBox="0 0 48 48" fill="none" width="30" height="30">
                     <rect x="4" y="4" width="40" height="40" rx="8" stroke="currentColor" strokeWidth="2" strokeDasharray="4 4" opacity="0.3" />
                     <path d="M24 16v16M16 24h16" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
                   </svg>
@@ -656,8 +656,8 @@ export function DatasetsView() {
           </button>
         </section>
 
-        {/* ── SIDEBAR INFO ──────────────────────────────────────────── */}
-        <aside className="ds-sidebar">
+        {/* ── SUPPORTED FORMATS ─────────────────────────────────────── */}
+        <section className="ds-grid__formats">
           <div className="ds-info-card">
             <div className="ds-info-card__header">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" width="18" height="18">
@@ -713,7 +713,13 @@ export function DatasetsView() {
               </li>
             </ul>
           </div>
+        </section>
 
+      </div>
+      <div className="ds-grid__row">
+
+        {/* ── TIPS ──────────────────────────────────────────────────── */}
+        <section className="ds-grid__tips">
           <div className="ds-info-card ds-info-card--tips">
             <div className="ds-info-card__header">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" width="18" height="18">
@@ -728,13 +734,16 @@ export function DatasetsView() {
               <li>Name datasets descriptively for easy identification</li>
               <li>Assign ward names for spatial filtering</li>
               <li>Photos need real GPS EXIF data (most phone/survey cameras add this automatically) — photos without it are skipped</li>
+              <li>Drop a whole File Geodatabase (.gdb) folder directly — it's zipped in your browser before upload</li>
+              <li>Batches of photos can be selected together and are bundled into a single dataset automatically</li>
+              <li>GeoTIFF rasters support live color and clarity adjustments from the dataset's display settings</li>
+              <li>Large uploads run in the background — you can keep working while a dataset finishes processing</li>
             </ul>
           </div>
-        </aside>
-      </div>
+        </section>
 
       {/* ── DATASETS TABLE ──────────────────────────────────────────── */}
-      <section className="ds-table-section">
+      <section className="ds-table-section ds-grid__uploaded">
         <div className="ds-table-header">
           <div className="ds-table-header__left">
             <h2 className="ds-table-header__title">
@@ -773,6 +782,8 @@ export function DatasetsView() {
             <div className="ds-table__th">Uploaded</div>
             <div className="ds-table__th ds-table__th--actions">Actions</div>
           </div>
+
+          <div className="ds-table__scroll" role="rowgroup">
 
           {rows && rows.length > 0 ? (
             rows.map((d, i) => (
@@ -877,8 +888,12 @@ export function DatasetsView() {
               <span className="ds-table__empty-hint">Upload your first survey dataset above to get started</span>
             </div>
           )}
+          </div>
         </div>
       </section>
+
+      </div>
+      </div>
 
       {/* ── ATTRIBUTE TABLE OVERLAY ─────────────────────────────────── */}
       {openTableFor && (
