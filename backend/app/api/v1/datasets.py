@@ -187,6 +187,37 @@ _ZIP_GIS_EXTS = {".shp", ".dbf", ".shx", ".prj", ".gpkg"}
 _ZIP_OBJ_EXTS = {".obj"}
 
 
+def _validate_zipped_shapefile(payload: bytes) -> None:
+    """Require a complete, unambiguous shapefile before queueing ingestion."""
+    import zipfile
+    from pathlib import PurePosixPath
+
+    try:
+        with zipfile.ZipFile(io.BytesIO(payload)) as zf:
+            names = [name.replace("\\", "/") for name in zf.namelist() if not name.endswith("/")]
+    except zipfile.BadZipFile as exc:
+        raise HTTPException(status_code=400, detail="Uploaded ZIP file is invalid") from exc
+
+    shp_names = [name for name in names if PurePosixPath(name).suffix.lower() == ".shp"]
+    if not shp_names:
+        return
+    if len(shp_names) != 1:
+        raise HTTPException(
+            status_code=400,
+            detail="A shapefile ZIP must contain exactly one .shp file",
+        )
+
+    shp_path = PurePosixPath(shp_names[0])
+    members = {name.casefold() for name in names}
+    required = (".dbf", ".shx", ".prj")
+    missing = [suffix for suffix in required if str(shp_path.with_suffix(suffix)).casefold() not in members]
+    if missing:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Shapefile ZIP is missing required companion file(s): {', '.join(missing)}",
+        )
+
+
 def _classify(filename: str, payload: bytes | None = None) -> DatasetFileType:
     ext = Path(filename).suffix.lower()
     if ext == ".zip" and payload:
@@ -253,6 +284,13 @@ async def upload_dataset(
     # Basic magic-byte validation for common file types
     ext = Path(file.filename).suffix.lower()
     _validate_file_magic(payload, ext)
+    if ext == ".shp":
+        raise HTTPException(
+            status_code=400,
+            detail="Upload the .shp together with its .dbf, .shx, and .prj files as one ZIP",
+        )
+    if ext == ".zip":
+        _validate_zipped_shapefile(payload)
 
     # 2. Ensure the bucket exists (idempotent) then push the object.
     await ensure_bucket()
@@ -549,6 +587,9 @@ async def dataset_feature_table(
     # Rank fields by actual data coverage across the complete dataset. This
     # keeps populated survey readings at the front and moves fields that are
     # entirely null/blank to the far right, consistently on every page.
+    # Leading-underscore keys (e.g. _canonical_class) are internal spatial
+    # audit engine bookkeeping, not survey attributes — never surface them
+    # in the user-facing attribute table.
     column_rows = (
         await db.execute(
             text(
@@ -571,6 +612,7 @@ async def dataset_feature_table(
             {"dataset_id": dataset_id},
         )
     ).all()
+    column_rows = [row for row in column_rows if not row[0].startswith("_")]
 
     return {
         "total": int(total),

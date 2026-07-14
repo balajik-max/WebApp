@@ -31,6 +31,7 @@ log = logging.getLogger("davangere.ingestion")
 _IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp"}
 _GIS_EXTS = {".shp", ".dbf", ".shx", ".prj", ".gpkg"}
 _OBJ_EXTS = {".obj"}
+_PROCESSING_ERROR_MAX_LENGTH = 2048
 
 
 def _pick_zip_reader(local_path: Path) -> DatasetReader:
@@ -73,7 +74,7 @@ async def _set_status(
             log.warning("Dataset %s vanished before status update", dataset_id)
             return
         ds.status = status
-        ds.processing_error = error
+        ds.processing_error = error[:_PROCESSING_ERROR_MAX_LENGTH] if error else None
         if result_payload is not None:
             merged = dict(ds.dataset_metadata or {})
             merged["ingestion"] = result_payload

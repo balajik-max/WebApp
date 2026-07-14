@@ -7,6 +7,7 @@
 set -e
 
 MODEL="${OLLAMA_MODEL:-qwen2.5:7b-instruct}"
+EMBED_MODEL="${OLLAMA_EMBED_MODEL:-nomic-embed-text}"
 
 echo "[ollama-bootstrap] starting ollama server in background..."
 ollama serve &
@@ -31,12 +32,21 @@ until ollama list >/dev/null 2>&1; do
 done
 echo "[ollama-bootstrap] api is up."
 
-# Pull model if missing.
+# Pull chat model if missing.
 if ! ollama list 2>/dev/null | awk '{print $1}' | grep -qx "${MODEL}"; then
   echo "[ollama-bootstrap] pulling ${MODEL} (first-run only)..."
   ollama pull "${MODEL}" || echo "[ollama-bootstrap] pull failed; model can be pulled later"
 else
   echo "[ollama-bootstrap] ${MODEL} already present"
+fi
+
+# Pull embedding model if missing (used for category-name semantic matching,
+# not chat/narration).
+if ! ollama list 2>/dev/null | awk '{print $1}' | grep -qx "${EMBED_MODEL}"; then
+  echo "[ollama-bootstrap] pulling ${EMBED_MODEL} (first-run only)..."
+  ollama pull "${EMBED_MODEL}" || echo "[ollama-bootstrap] pull failed; model can be pulled later"
+else
+  echo "[ollama-bootstrap] ${EMBED_MODEL} already present"
 fi
 
 echo "[ollama-bootstrap] ready. attaching to server pid=${SERVER_PID}"

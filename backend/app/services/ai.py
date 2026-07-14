@@ -94,6 +94,32 @@ def _blocking_chat(*, model: str, system: str, user: str, num_ctx: int = 4096, n
     return str(resp)
 
 
+def _blocking_embed(*, model: str, texts: list[str]) -> list[list[float]]:
+    resp = _client().embed(model=model, input=texts)
+    embeddings = resp.embeddings if hasattr(resp, "embeddings") else resp.get("embeddings")
+    return [list(vec) for vec in embeddings]
+
+
+async def embed_texts(texts: list[str]) -> list[list[float]]:
+    """Embed one or more strings with the local embedding model (nomic-embed-text
+    by default). Used ONLY for semantic category-name matching (e.g. resolving
+    "solar_light_pole" to the canonical Illumination_Asset class) — never for
+    geometric/spatial reasoning, which stays deterministic PostGIS/Python math.
+    """
+    if not texts:
+        return []
+    settings = get_settings()
+
+    def _do() -> list[list[float]]:
+        return _blocking_embed(model=settings.ollama_embed_model, texts=texts)
+
+    try:
+        return await asyncio.to_thread(_do)
+    except Exception as exc:  # noqa: BLE001
+        log.exception("Ollama embedding call failed")
+        raise RuntimeError(f"ollama_embed_error: {exc}") from exc
+
+
 async def run_grounded_completion(
     *,
     context: str,

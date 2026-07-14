@@ -2,16 +2,19 @@ import React, { useCallback, useEffect, useRef, useState } from "react";
 import JSZip from "jszip";
 import { deleteDataset, fetchDatasets, updateDataset, type DatasetRow } from "../lib/workflow";
 import { AttributeTable } from "../components/AttributeTable";
+import { UnclassifiedCategoriesPanel } from "../components/UnclassifiedCategoriesPanel";
 
 const REFRESH_MS = 4000;
 
 const ACCEPTED_EXTENSIONS = [
-  ".geojson", ".json", ".zip", ".gpkg", ".kml", ".csv", ".tsv", ".xlsx", ".xls",
+  ".geojson", ".json", ".zip", ".shp", ".dbf", ".shx", ".prj", ".cpg", ".gpkg", ".kml", ".csv", ".tsv", ".xlsx", ".xls",
   ".tif", ".tiff", ".geotiff", ".obj",
   ".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp",
 ];
 
 const IMAGE_EXTENSIONS = [".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp"];
+const SHAPEFILE_EXTENSIONS = [".shp", ".dbf", ".shx", ".prj", ".cpg"];
+const REQUIRED_SHAPEFILE_EXTENSIONS = [".shp", ".dbf", ".shx", ".prj"];
 
 // File System Access API — not yet in TS's DOM lib. Only Chromium ships it;
 // callers must feature-detect `window.showDirectoryPicker` before use.
@@ -235,6 +238,34 @@ async function zipCollectedFiles(name: string, files: { path: string; file: File
   return new File([blob], `${name}.zip`, { type: "application/zip" });
 }
 
+function validateShapefileBundle(files: File[]): { stem: string; files: File[] } {
+  const components = files.filter((file) => SHAPEFILE_EXTENSIONS.includes(extensionOf(file.name)));
+  if (components.length !== files.length) {
+    throw new Error("A shapefile selection can only contain .shp, .dbf, .shx, .prj, and optional .cpg files.");
+  }
+
+  const shpFiles = components.filter((file) => extensionOf(file.name) === ".shp");
+  if (shpFiles.length !== 1) {
+    throw new Error("Select exactly one .shp file together with its supporting files.");
+  }
+
+  const stem = shpFiles[0].name.replace(/\.shp$/i, "");
+  const matching = components.filter(
+    (file) => file.name.replace(/\.[^.]+$/, "").toLocaleLowerCase() === stem.toLocaleLowerCase()
+  );
+  if (matching.length !== components.length) {
+    throw new Error(`All shapefile components must use the same basename as "${shpFiles[0].name}".`);
+  }
+
+  const extensions = new Set(matching.map((file) => extensionOf(file.name)));
+  const missing = REQUIRED_SHAPEFILE_EXTENSIONS.filter((extension) => !extensions.has(extension));
+  if (missing.length > 0) {
+    throw new Error(`Missing required shapefile component${missing.length === 1 ? "" : "s"}: ${missing.join(", ")}.`);
+  }
+
+  return { stem, files: matching };
+}
+
 function getFileIcon(type: string): React.ReactNode {
   // Map common variations to their base types
   const typeMap: Record<string, string> = {
@@ -318,6 +349,70 @@ export function DatasetsView() {
       const guess = guessWardFromFilename(f.name);
       if (guess) setUploadWard(guess);
     }
+  }
+
+  async function pickShapefileBundle(files: File[]) {
+    setUploadError(null);
+    setZipping(true);
+    try {
+      const bundle = validateShapefileBundle(files);
+      const zipped = await zipCollectedFiles(
+        bundle.stem,
+        bundle.files.map((file) => ({ path: file.name, file }))
+      );
+      pickFile(zipped);
+    } catch (err) {
+      setUploadFile(null);
+      setUploadError((err as Error).message);
+    } finally {
+      setZipping(false);
+    }
+  }
+
+  async function pickFiles(files: File[]) {
+    if (files.length === 0) return;
+    const allImages = files.every((file) => IMAGE_EXTENSIONS.includes(extensionOf(file.name)));
+    const allShapefileComponents = files.every((file) => SHAPEFILE_EXTENSIONS.includes(extensionOf(file.name)));
+    const isObjBundle = files.length > 1 && files.some((file) => extensionOf(file.name) === ".obj");
+
+    if (allImages && files.length > 1) {
+      await pickMultiplePhotos(files);
+      return;
+    }
+    if (allShapefileComponents) {
+      await pickShapefileBundle(files);
+      return;
+    }
+    if (files.length === 1 && extensionOf(files[0].name) === ".obj") {
+      // A bare .obj needs its .mtl/textures/metadata.xml pulled in from
+      // disk automatically — see pickObjWithAutoCompanions for why this
+      // can't just be pickFile(files[0]).
+      await pickObjWithAutoCompanions(files[0]);
+      return;
+    }
+    if (isObjBundle) {
+      // Manual multi-select of a .obj plus its .mtl/textures together.
+      const name = files.find((f) => extensionOf(f.name) === ".obj")!.name.replace(/\.[^/.]+$/, "");
+      setZipping(true);
+      try {
+        const zipped = await zipCollectedFiles(name, files.map((file) => ({ path: file.name, file })));
+        pickFile(zipped);
+      } catch (err) {
+        setUploadError(`Couldn't bundle 3D model files: ${(err as Error).message}`);
+      } finally {
+        setZipping(false);
+      }
+      return;
+    }
+    if (files.length === 1) {
+      pickFile(files[0]);
+      return;
+    }
+
+    setUploadFile(null);
+    setUploadError(
+      "Multiple files must be a batch of photos, one shapefile bundle (.shp + .dbf + .shx + .prj), or a 3D model bundle (.obj + .mtl + textures)."
+    );
   }
 
   // Several individually selected/dropped photos are bundled into one zip
@@ -409,47 +504,15 @@ export function DatasetsView() {
     await runObjAutoLoad(file);
   }
 
-  function handleMultipleFiles(files: File[]) {
-    if (files.length === 0) return;
-    if (files.length === 1) {
-      if (extensionOf(files[0].name) === ".obj") {
-        void pickObjWithAutoCompanions(files[0]);
-      } else {
-        pickFile(files[0]);
-      }
-      return;
-    }
-    const allImages = files.every((f) => IMAGE_EXTENSIONS.includes(extensionOf(f.name)));
-    const isObjBundle = files.some((f) => extensionOf(f.name) === ".obj");
-    if (allImages) {
-      void pickMultiplePhotos(files);
-    } else if (isObjBundle) {
-      const name = files.find((f) => extensionOf(f.name) === ".obj")!.name.replace(/\.[^/.]+$/, "");
-      setZipping(true);
-      zipCollectedFiles(name, files.map((file) => ({ path: file.name, file })))
-        .then((zipped) => {
-          setZipping(false);
-          pickFile(zipped);
-        })
-        .catch((err) => {
-          setZipping(false);
-          setUploadError(`Couldn't bundle 3D model files: ${(err as Error).message}`);
-        });
-    } else {
-      setUploadError(
-        "Multiple files selected — only a batch of photos or a 3D model bundle (.obj + .mtl + textures) can be combined. Other formats must be selected one at a time, or as a folder."
-      );
-    }
-  }
-
   // A dropped/browsed folder is supported if it's a File Geodatabase (by
-  // name), a folder full of photos (checked by content, since a photo
-  // folder has no special naming convention), or a 3D model folder/tree
-  // (contains an .obj somewhere) — the latter is what makes a folder one
-  // level up from the .obj (i.e. containing a metadata.xml geo-reference
-  // sibling to the model's own folder) work, since these collectors
-  // already walk subfolders and grab everything, unfiltered. Anything else
-  // is rejected with a clear reason before we waste time zipping it.
+  // name), a shapefile bundle, a folder full of photos (checked by content,
+  // since a photo folder has no special naming convention), or a 3D model
+  // folder/tree (contains an .obj somewhere) — the latter is what makes a
+  // folder one level up from the .obj (i.e. containing a metadata.xml
+  // geo-reference sibling to the model's own folder) work, since these
+  // collectors already walk subfolders and grab everything, unfiltered.
+  // Anything else is rejected with a clear reason before we waste time
+  // zipping it.
   async function pickFolder(name: string, collectFiles: () => Promise<{ path: string; file: File }[]>) {
     setUploadError(null);
     setZipping(true);
@@ -458,13 +521,21 @@ export function DatasetsView() {
       const isGdb = name.toLowerCase().endsWith(".gdb");
       const isAllImages = files.length > 0 && files.every(({ file }) => IMAGE_EXTENSIONS.includes(extensionOf(file.name)));
       const isObjModel = files.some(({ file }) => extensionOf(file.name) === ".obj");
-      if (!isGdb && !isAllImages && !isObjModel) {
+      const isShapefile = files.length > 0 && files.every(({ file }) => SHAPEFILE_EXTENSIONS.includes(extensionOf(file.name)));
+      if (!isGdb && !isAllImages && !isShapefile && !isObjModel) {
         setUploadError(
-          `"${name}" doesn't look like a File Geodatabase (.gdb), a folder of photos, or a 3D model folder — other folder types aren't supported, only individual files.`
+          `"${name}" doesn't look like a File Geodatabase (.gdb), a shapefile folder, a folder of photos, or a 3D model folder — other folder types aren't supported, only individual files.`
         );
         return;
       }
-      const zipped = await zipCollectedFiles(name, files);
+      let archiveName = name;
+      let filesToZip = files;
+      if (isShapefile) {
+        const bundle = validateShapefileBundle(files.map(({ file }) => file));
+        archiveName = bundle.stem;
+        filesToZip = bundle.files.map((file) => ({ path: file.name, file }));
+      }
+      const zipped = await zipCollectedFiles(archiveName, filesToZip);
       pickFile(zipped);
       if (isObjModel) {
         const xmlFiles = files.filter(({ file }) => extensionOf(file.name) === ".xml");
@@ -650,7 +721,7 @@ export function DatasetsView() {
               }
 
               const files = Array.from(e.dataTransfer.files ?? []);
-              handleMultipleFiles(files);
+              void pickFiles(files);
             }}
             onSubmit={submit}
             data-testid="dropzone"
@@ -659,11 +730,11 @@ export function DatasetsView() {
               id="dz-file"
               ref={fileInputRef}
               type="file"
+              accept={ACCEPTED_EXTENSIONS.join(",")}
               multiple
               data-testid="dropzone-file"
               onChange={(e) => {
-                const files = Array.from(e.target.files ?? []);
-                handleMultipleFiles(files);
+                void pickFiles(Array.from(e.target.files ?? []));
                 e.target.value = "";
               }}
               disabled={uploadBusy}
@@ -711,8 +782,8 @@ export function DatasetsView() {
 
             {zipping ? (
               <div className="ds-dropzone__content">
-                <span className="ds-dropzone__label">Reading folder & zipping it in your browser…</span>
-                <span className="ds-dropzone__hint">Large .gdb folders / photo batches may take a few seconds.</span>
+                <span className="ds-dropzone__label">Validating and bundling files in your browser...</span>
+                <span className="ds-dropzone__hint">Shapefiles, large .gdb folders, and photo batches may take a few seconds.</span>
               </div>
             ) : !uploadFile ? (
               <label htmlFor="dz-file" className="ds-dropzone__content">
@@ -723,7 +794,7 @@ export function DatasetsView() {
                   </svg>
                 </div>
                 <span className="ds-dropzone__label">
-                  {dragOver ? "Drop file(s) or a folder here" : "Drag & drop your file, photos, a .gdb folder, or a folder of photos here"}
+                  {dragOver ? "Drop file(s) or a folder here" : "Drag & drop data, all shapefile components, or a supported folder here"}
                 </span>
                 <span className="ds-dropzone__hint">
                   or <span className="ds-dropzone__browse">browse files</span>
@@ -736,7 +807,7 @@ export function DatasetsView() {
                       folderInputRef.current?.click();
                     }}
                   >
-                    browse a folder (.gdb or photos)
+                    browse a folder (.shp, .gdb, or photos)
                   </span>
                   {" · "}
                   <span
@@ -892,7 +963,7 @@ export function DatasetsView() {
               <li>
                 <span className="ds-format-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" width="14" height="14"><path d="M9 20l-5.447-2.724A1 1 0 013 16.382V5.618a1 1 0 011.447-.894L9 7m0 13l6-3m-6 3V7m6 10l5.447 2.724A1 1 0 0021 18.382V7.618a1 1 0 00-.553-.894L15 4m0 13V4m0 0L9 7" strokeLinecap="round" strokeLinejoin="round" /></svg></span>
                 <span className="ds-format-name">Shapefile</span>
-                <span className="ds-format-desc">.zip with .shp + files</span>
+                <span className="ds-format-desc">Select .shp + .dbf + .shx + .prj together</span>
               </li>
               <li>
                 <span className="ds-format-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" width="14" height="14"><path d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z" /><path d="M15 11a3 3 0 11-6 0 3 3 0 016 0z" /></svg></span>
@@ -945,7 +1016,8 @@ export function DatasetsView() {
               <h3>Tips for Best Results</h3>
             </div>
             <ul className="ds-tips-list">
-              <li>Ensure shapefiles include .shx and .dbf files</li>
+              <li>Select .shp, .dbf, .shx, and .prj together; .cpg is included when present</li>
+              <li>Projected shapefiles are automatically converted to WGS84 for the web map</li>
               <li>CSV files should have latitude/longitude columns</li>
               <li>Use consistent coordinate systems (WGS84 / EPSG:4326)</li>
               <li>Name datasets descriptively for easy identification</li>
@@ -1102,6 +1174,9 @@ export function DatasetsView() {
           )}
         </div>
       </section>
+
+      {/* ── UNCLASSIFIED CATEGORIES (spatial audit classifier review) ── */}
+      <UnclassifiedCategoriesPanel />
 
       {/* ── ATTRIBUTE TABLE OVERLAY ─────────────────────────────────── */}
       {openTableFor && (
