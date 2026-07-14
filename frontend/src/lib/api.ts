@@ -139,3 +139,42 @@ export async function apiPut<T>(
   }
   return body as T;
 }
+
+export interface ApiDownloadResult {
+  blob: Blob;
+  filename: string | null;
+}
+
+function filenameFromDisposition(value: string | null): string | null {
+  if (!value) return null;
+  const encoded = value.match(/filename\*=UTF-8''([^;]+)/i);
+  if (encoded?.[1]) {
+    try {
+      return decodeURIComponent(encoded[1].replace(/^"|"$/g, ""));
+    } catch {
+      return encoded[1].replace(/^"|"$/g, "");
+    }
+  }
+  const plain = value.match(/filename="?([^";]+)"?/i);
+  return plain?.[1]?.trim() ?? null;
+}
+
+export async function apiDownload(
+  path: string,
+  signal?: AbortSignal
+): Promise<ApiDownloadResult> {
+  const res = await doFetch(path, {
+    method: "GET",
+    credentials: "include",
+    headers: { Accept: "*/*" },
+    signal,
+  });
+  if (!res.ok) {
+    const body = await parseBody(res);
+    throw new ApiError(res.status, `${res.status} ${res.statusText}`, body);
+  }
+  return {
+    blob: await res.blob(),
+    filename: filenameFromDisposition(res.headers.get("content-disposition")),
+  };
+}

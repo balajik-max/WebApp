@@ -39,6 +39,9 @@ class ReportRequest(BaseModel):
     dataset_ids: list[uuid.UUID] = Field(default_factory=list, max_length=200)
     ward: str | None = Field(default=None, max_length=128)
     categories: list[str] = Field(default_factory=list, max_length=500)
+    severity_buckets: list[Literal["low", "medium", "high"]] = Field(
+        default_factory=list, max_length=3
+    )
     all_datasets: bool = False
     max_features: int = Field(default=120, ge=1, le=300)
 
