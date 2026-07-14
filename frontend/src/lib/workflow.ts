@@ -1,6 +1,14 @@
 /** Analytics + workflow API helpers. */
+
 import { apiDelete, apiGet, apiPatch, apiPost } from "./api";
 import type { FeatureCollectionResponse } from "./types";
+
+export type AnalyticsSeverityBucket = "low" | "medium" | "high";
+
+export interface AnalyticsCrossFilters {
+  wards?: string[];
+  severityBuckets?: AnalyticsSeverityBucket[];
+}
 
 export interface StatusBreakdown {
   status: string;
@@ -72,11 +80,10 @@ export interface DatasetRow {
 export function fetchOverview(
   datasetIds: string[] = [],
   categories: string[] = [],
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  filters: AnalyticsCrossFilters = {}
 ) {
-  const params = new URLSearchParams();
-  for (const id of datasetIds) params.append("dataset_id", id);
-  for (const category of categories) params.append("category", category);
+  const params = analyticsScopeParams(datasetIds, categories, filters);
   const query = params.toString();
   return apiGet<AnalyticsOverview>(
     `/api/v1/analytics/overview${query ? `?${query}` : ""}`,
@@ -156,19 +163,26 @@ export interface AnalyticsFeaturePage {
   rows: AnalyticsFeatureRow[];
 }
 
-function analyticsScopeParams(datasetIds: string[], categories: string[]) {
+function analyticsScopeParams(
+  datasetIds: string[],
+  categories: string[],
+  filters: AnalyticsCrossFilters = {}
+) {
   const params = new URLSearchParams();
   for (const id of datasetIds) params.append("dataset_id", id);
   for (const category of categories) params.append("category", category);
+  for (const ward of filters.wards ?? []) params.append("ward", ward);
+  for (const bucket of filters.severityBuckets ?? []) params.append("severity_bucket", bucket);
   return params;
 }
 
 export function fetchAnalyticsFeatures(
   datasetIds: string[],
   categories: string[],
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  filters: AnalyticsCrossFilters = {}
 ) {
-  const params = analyticsScopeParams(datasetIds, categories);
+  const params = analyticsScopeParams(datasetIds, categories, filters);
   params.set("bbox", "-180,-90,180,90");
   params.set("limit", "5000");
   params.set("exclude_internal", "true");
@@ -180,12 +194,62 @@ export function fetchAnalyticsFeatureTable(
   categories: string[],
   limit: number,
   offset: number,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  filters: AnalyticsCrossFilters = {}
 ) {
-  const params = analyticsScopeParams(datasetIds, categories);
+  const params = analyticsScopeParams(datasetIds, categories, filters);
   params.set("limit", String(limit));
   params.set("offset", String(offset));
   return apiGet<AnalyticsFeaturePage>(`/api/v1/analytics/features?${params.toString()}`, signal);
+}
+
+
+export interface AnalyticsQualityComponent {
+  key: string;
+  label: string;
+  score: number;
+  weight: number;
+  passed: number;
+  failed: number;
+  explanation: string;
+}
+
+export interface AnalyticsFinding {
+  id: string;
+  title: string;
+  description: string;
+  rule: string;
+  severity: "low" | "medium" | "high" | "critical";
+  finding_type: "geometry" | "attribute" | "consistency" | "operational";
+  affected_count: number;
+  affected_percentage: number;
+  priority_score: number;
+  feature_ids: string[];
+  category: string | null;
+  attribute: string | null;
+}
+
+export interface AnalyticsQualityReport {
+  total_features: number;
+  overall_score: number | null;
+  components: AnalyticsQualityComponent[];
+  findings: AnalyticsFinding[];
+  methodology: string;
+  generated_at: string;
+}
+
+export function fetchAnalyticsQuality(
+  datasetIds: string[],
+  categories: string[],
+  signal?: AbortSignal,
+  filters: AnalyticsCrossFilters = {}
+) {
+  const params = analyticsScopeParams(datasetIds, categories, filters);
+  const query = params.toString();
+  return apiGet<AnalyticsQualityReport>(
+    `/api/v1/analytics/quality${query ? `?${query}` : ""}`,
+    signal
+  );
 }
 
 export interface FeatureTableRow {

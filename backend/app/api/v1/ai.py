@@ -97,6 +97,22 @@ def _render_facts_markdown(facts: ReportFacts) -> str:
     )
     lines.append("")
 
+    lines.append("## Verified Data Quality Findings")
+    if facts.quality_score is not None:
+        lines.append(f"- Overall deterministic data quality score: **{facts.quality_score:.1f}/100**")
+    if facts.quality_findings:
+        lines.append("")
+        lines.append("| Priority | Severity | Finding | Affected |")
+        lines.append("|---:|---|---|---:|")
+        for finding in facts.quality_findings:
+            lines.append(
+                f"| {finding.priority_score} | {finding.severity} | {finding.title} | "
+                f"{finding.affected_count} ({finding.affected_percentage:.1f}%) |"
+            )
+    else:
+        lines.append("- No configured quality issue was found in this scope.")
+    lines.append("")
+
     lines.append("## Key Findings")
     if facts.top_features:
         lines.append("Highest-severity individual features on record:")
@@ -117,6 +133,12 @@ def _facts_crib_sheet(facts: ReportFacts) -> str:
     examples = "\n".join(
         f"  - {f.label} ({f.category}), severity {f.severity:.2f}" for f in facts.top_features
     ) or "  - none"
+    quality_findings = "\n".join(
+        f"  - priority={finding.priority_score}; severity={finding.severity}; "
+        f"finding={finding.title}; affected={finding.affected_count} "
+        f"({finding.affected_percentage:.1f}%); rule={finding.rule}"
+        for finding in facts.quality_findings
+    ) or "  - none"
     return (
         f"SCOPE: {facts.scope_label}\n"
         f"TOTAL_FEATURES: {facts.total_features}\n"
@@ -125,6 +147,8 @@ def _facts_crib_sheet(facts: ReportFacts) -> str:
         f"SEVERITY_BUCKETS: high={facts.severity_buckets['high']}, "
         f"medium={facts.severity_buckets['medium']}, low={facts.severity_buckets['low']}\n"
         f"REVIEW_BACKLOG: {facts.review_summary}\n"
+        f"DATA_QUALITY_SCORE: {facts.quality_score if facts.quality_score is not None else 'not available'}\n"
+        f"VERIFIED_QUALITY_FINDINGS (exact backend-calculated values; never alter):\n{quality_findings}\n"
         f"HIGH_SEVERITY_EXAMPLES (real labels — cite verbatim only, never alter):\n{examples}"
     )
 
@@ -161,6 +185,7 @@ async def report(body: ReportRequest, db: AsyncSession = Depends(get_db)) -> AiA
         dataset_ids=dataset_ids,
         ward=body.ward,
         categories=categories,
+        severity_buckets=list(dict.fromkeys(body.severity_buckets)),
         allow_all=body.all_datasets,
         top_feature_limit=min(body.max_features, 25),
     )
@@ -184,7 +209,7 @@ async def report(body: ReportRequest, db: AsyncSession = Depends(get_db)) -> AiA
         "planning report. The front half (already written, shown below as "
         "FACTS) covers the Executive Summary, Study Area, Existing "
         "Situation, and Key Findings — do not repeat or restate those.\n\n"
-        "Using ONLY the FACTS below, write these remaining sections, using "
+        "Using ONLY the FACTS below, including the verified quality findings, write these remaining sections, using "
         "exactly these headers in order:\n\n"
         "`## Quality of Life Implications` — plain-language consequences "
         "for residents that plausibly follow from the categories/severity "

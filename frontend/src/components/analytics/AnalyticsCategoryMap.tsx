@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import maplibregl, { GeoJSONSource, LngLatBounds, Map as MapLibreMap } from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
 import { colorForCategory } from "../../lib/categoryColors";
-import { fetchAnalyticsFeatures } from "../../lib/workflow";
+import { fetchAnalyticsFeatures, type AnalyticsCrossFilters } from "../../lib/workflow";
 import type { FeatureCollectionResponse, UrbanFeature } from "../../lib/types";
 
 const SOURCE_ID = "analytics-features";
@@ -80,19 +80,31 @@ function withAnalyticsColors(collection: FeatureCollectionResponse): FeatureColl
 interface Props {
   datasetIds: string[];
   categories: string[];
+  filters?: AnalyticsCrossFilters;
+  onCategoryFilter?: (category: string) => void;
 }
 
-export function AnalyticsCategoryMap({ datasetIds, categories }: Props) {
+export function AnalyticsCategoryMap({ datasetIds, categories, filters = {}, onCategoryFilter }: Props) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<MapLibreMap | null>(null);
   const loadedRef = useRef(false);
   const dataRef = useRef<FeatureCollectionResponse>(EMPTY_COLLECTION);
+  const onCategoryFilterRef = useRef(onCategoryFilter);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<FeatureCollectionResponse>(EMPTY_COLLECTION);
+  useEffect(() => {
+    onCategoryFilterRef.current = onCategoryFilter;
+  }, [onCategoryFilter]);
+
   const scopeKey = useMemo(
-    () => `${[...datasetIds].sort().join(",")}|${[...categories].sort().join(",")}`,
-    [categories, datasetIds]
+    () => JSON.stringify({
+      datasetIds: [...datasetIds].sort(),
+      categories: [...categories].sort(),
+      wards: [...(filters.wards ?? [])].sort(),
+      severityBuckets: [...(filters.severityBuckets ?? [])].sort(),
+    }),
+    [categories, datasetIds, filters.severityBuckets, filters.wards]
   );
 
   useEffect(() => {
@@ -173,6 +185,16 @@ export function AnalyticsCategoryMap({ datasetIds, categories }: Props) {
       category.textContent = String(properties.category || "uncategorized");
       severity.textContent = `Severity ${Number(properties.severity || 0).toFixed(2)}`;
       content.append(title, category, severity);
+      if (onCategoryFilterRef.current && properties.category) {
+        const filterButton = document.createElement("button");
+        filterButton.type = "button";
+        filterButton.className = "analytics-map-popup__filter";
+        filterButton.textContent = "Filter this category";
+        filterButton.addEventListener("click", () => {
+          onCategoryFilterRef.current?.(String(properties.category));
+        });
+        content.append(filterButton);
+      }
       popup.setLngLat(event.lngLat).setDOMContent(content).addTo(map);
     });
     map.on("mouseenter", clickableLayers, () => { map.getCanvas().style.cursor = "pointer"; });
@@ -190,7 +212,7 @@ export function AnalyticsCategoryMap({ datasetIds, categories }: Props) {
     const controller = new AbortController();
     setLoading(true);
     setError(null);
-    fetchAnalyticsFeatures(datasetIds, categories, controller.signal)
+    fetchAnalyticsFeatures(datasetIds, categories, controller.signal, filters)
       .then((response) => {
         const colored = withAnalyticsColors(response);
         dataRef.current = colored;
@@ -208,7 +230,7 @@ export function AnalyticsCategoryMap({ datasetIds, categories }: Props) {
         if (!controller.signal.aborted) setLoading(false);
       });
     return () => controller.abort();
-  }, [categories, datasetIds, scopeKey]);
+  }, [scopeKey]);
 
   return (
     <article className="chart-card analytics-map-card" data-testid="analytics-map-card">

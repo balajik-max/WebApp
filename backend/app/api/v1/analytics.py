@@ -3,6 +3,7 @@ Analytics endpoints.
 
   GET /api/v1/analytics/overview
   GET /api/v1/analytics/features
+  GET /api/v1/analytics/quality
 
 Every result is calculated from the same optional dataset/category scope.
 The category parameters are repeatable, so callers can select zero, one,
@@ -13,7 +14,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, Query
 from sqlalchemy import case, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -24,6 +25,7 @@ from app.schemas.workflow import (
     AnalyticsFeaturePage,
     AnalyticsFeatureRow,
     AnalyticsOverview,
+    AnalyticsQualityReport,
     CategoryBreakdown,
     IngestionTrendPoint,
     SeverityBucket,
@@ -31,30 +33,16 @@ from app.schemas.workflow import (
     WardBreakdown,
 )
 
+from app.services.analytics.quality import build_quality_report
+from app.services.analytics.scope import (
+    CATEGORY_EXPR,
+    clean_categories,
+    clean_severity_buckets,
+    clean_wards,
+    feature_conditions,
+)
+
 router = APIRouter()
-
-# RasterReader sample pixels are implementation detail, not surveyed assets.
-_NOT_RASTER_SAMPLE = Feature.category.is_distinct_from("raster_pixel")
-_CATEGORY_EXPR = func.coalesce(func.nullif(func.trim(Feature.category), ""), "uncategorized")
-
-
-def _clean_categories(values: list[str] | None) -> list[str]:
-    cleaned = sorted({value.strip() for value in values or [] if value.strip()})
-    if any(len(value) > 128 for value in cleaned):
-        raise HTTPException(status_code=400, detail="category values must be at most 128 characters")
-    return cleaned
-
-
-def _feature_conditions(
-    dataset_ids: list[uuid.UUID] | None,
-    categories: list[str],
-) -> list[object]:
-    conditions: list[object] = [_NOT_RASTER_SAMPLE]
-    if dataset_ids:
-        conditions.append(Feature.dataset_id.in_(dataset_ids))
-    if categories:
-        conditions.append(_CATEGORY_EXPR.in_(categories))
-    return conditions
 
 
 @router.get(
@@ -71,25 +59,39 @@ async def analytics_overview(
         default=None,
         description="Restrict every figure to one or more categories. Repeat for multiple values.",
     ),
+    ward: list[str] | None = Query(
+        default=None,
+        description="Optional cross-filter by one or more dataset wards.",
+    ),
+    severity_bucket: list[str] | None = Query(
+        default=None,
+        description="Optional cross-filter. Repeat low, medium, or high values.",
+    ),
     db: AsyncSession = Depends(get_db),
 ) -> AnalyticsOverview:
     dataset_ids = list(dict.fromkeys(dataset_id or []))
-    categories = _clean_categories(category)
-    feature_conditions = _feature_conditions(dataset_ids, categories)
+    categories = clean_categories(category)
+    wards = clean_wards(ward)
+    severity_buckets = clean_severity_buckets(severity_bucket)
+    scoped_feature_conditions = feature_conditions(
+        dataset_ids, categories, wards, severity_buckets
+    )
 
     # Dataset status counts. With a category filter, only datasets that really
     # contain a matching feature contribute to the scoped survey count.
-    if categories:
+    if categories or severity_buckets:
         ds_stmt = (
             select(Dataset.status, func.count(func.distinct(Dataset.id)))
             .join(Feature, Feature.dataset_id == Dataset.id)
-            .where(*feature_conditions)
+            .where(*scoped_feature_conditions)
             .group_by(Dataset.status)
         )
     else:
         ds_stmt = select(Dataset.status, func.count(Dataset.id))
         if dataset_ids:
             ds_stmt = ds_stmt.where(Dataset.id.in_(dataset_ids))
+        if wards:
+            ds_stmt = ds_stmt.where(Dataset.ward.in_(wards))
         ds_stmt = ds_stmt.group_by(Dataset.status)
 
     ds_rows = (await db.execute(ds_stmt)).all()
@@ -103,7 +105,7 @@ async def analytics_overview(
             select(
                 func.count(Feature.id).label("total"),
                 func.avg(Feature.severity).label("average_severity"),
-            ).where(*feature_conditions)
+            ).where(*scoped_feature_conditions)
         )
     ).one()
     total_features = int(feature_stats.total or 0)
@@ -114,7 +116,7 @@ async def analytics_overview(
         await db.execute(
             select(ReviewItem.status, func.count(ReviewItem.id))
             .join(Feature, Feature.id == ReviewItem.feature_id)
-            .where(*feature_conditions)
+            .where(*scoped_feature_conditions)
             .group_by(ReviewItem.status)
         )
     ).all()
@@ -139,7 +141,7 @@ async def analytics_overview(
                 func.count(Feature.id).label("feature_count"),
             )
             .join(Feature, Feature.dataset_id == Dataset.id)
-            .where(Dataset.ward.isnot(None), *feature_conditions)
+            .where(Dataset.ward.isnot(None), *scoped_feature_conditions)
             .group_by(Dataset.ward)
         )
     ).all()
@@ -161,7 +163,7 @@ async def analytics_overview(
             )
             .join(Feature, Feature.dataset_id == Dataset.id)
             .join(ReviewItem, ReviewItem.feature_id == Feature.id)
-            .where(Dataset.ward.isnot(None), *feature_conditions)
+            .where(Dataset.ward.isnot(None), *scoped_feature_conditions)
             .group_by(Dataset.ward)
         )
     ).all()
@@ -185,13 +187,13 @@ async def analytics_overview(
     category_rows = (
         await db.execute(
             select(
-                _CATEGORY_EXPR.label("category"),
+                CATEGORY_EXPR.label("category"),
                 func.count(Feature.id).label("count"),
                 func.avg(Feature.severity).label("avg_severity"),
             )
-            .where(*feature_conditions)
-            .group_by(_CATEGORY_EXPR)
-            .order_by(func.count(Feature.id).desc(), _CATEGORY_EXPR.asc())
+            .where(*scoped_feature_conditions)
+            .group_by(CATEGORY_EXPR)
+            .order_by(func.count(Feature.id).desc(), CATEGORY_EXPR.asc())
         )
     ).all()
     category_breakdown = [
@@ -211,7 +213,7 @@ async def analytics_overview(
     severity_rows = (
         await db.execute(
             select(severity_case.label("bucket"), func.count(Feature.id).label("count"))
-            .where(*feature_conditions)
+            .where(*scoped_feature_conditions)
             .group_by(severity_case)
         )
     ).all()
@@ -225,7 +227,7 @@ async def analytics_overview(
     trend_rows = (
         await db.execute(
             select(day_expr.label("day"), func.count(Feature.id).label("count"))
-            .where(*feature_conditions)
+            .where(*scoped_feature_conditions)
             .group_by(day_expr)
             .order_by(day_expr)
         )
@@ -274,13 +276,17 @@ async def analytics_overview(
 async def analytics_features(
     dataset_id: list[uuid.UUID] | None = Query(default=None),
     category: list[str] | None = Query(default=None),
+    ward: list[str] | None = Query(default=None),
+    severity_bucket: list[str] | None = Query(default=None),
     limit: int = Query(default=50, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
     db: AsyncSession = Depends(get_db),
 ) -> AnalyticsFeaturePage:
     dataset_ids = list(dict.fromkeys(dataset_id or []))
-    categories = _clean_categories(category)
-    conditions = _feature_conditions(dataset_ids, categories)
+    categories = clean_categories(category)
+    wards = clean_wards(ward)
+    severity_buckets = clean_severity_buckets(severity_bucket)
+    conditions = feature_conditions(dataset_ids, categories, wards, severity_buckets)
 
     total = int(
         (
@@ -297,7 +303,7 @@ async def analytics_features(
                 Dataset.name.label("dataset_name"),
                 Dataset.ward,
                 Feature.label,
-                _CATEGORY_EXPR.label("category"),
+                CATEGORY_EXPR.label("category"),
                 Feature.severity,
                 func.GeometryType(Feature.geom).label("geometry_type"),
                 Feature.created_at,
@@ -328,4 +334,30 @@ async def analytics_features(
             )
             for row in rows
         ],
+    )
+
+
+@router.get(
+    "/quality",
+    response_model=AnalyticsQualityReport,
+    dependencies=[Depends(require_any)],
+    summary="Deterministic data-quality score, verified findings, and priority ranking",
+)
+async def analytics_quality(
+    dataset_id: list[uuid.UUID] | None = Query(default=None),
+    category: list[str] | None = Query(default=None),
+    ward: list[str] | None = Query(default=None),
+    severity_bucket: list[str] | None = Query(default=None),
+    db: AsyncSession = Depends(get_db),
+) -> AnalyticsQualityReport:
+    dataset_ids = list(dict.fromkeys(dataset_id or []))
+    categories = clean_categories(category)
+    wards = clean_wards(ward)
+    severity_buckets = clean_severity_buckets(severity_bucket)
+    return await build_quality_report(
+        db,
+        dataset_ids=dataset_ids,
+        categories=categories,
+        wards=wards,
+        severity_buckets=severity_buckets,
     )
