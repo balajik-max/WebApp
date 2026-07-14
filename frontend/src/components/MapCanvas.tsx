@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, useCallback, useImperativeHandle, useMemo, forwardRef } from "react";
+﻿import { useEffect, useRef, useState, useCallback, useImperativeHandle, useMemo, forwardRef } from "react";
 import { createPortal } from "react-dom";
 import maplibregl, { Map as MLMap, MapMouseEvent, GeoJSONSource } from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
@@ -17,6 +17,7 @@ import { AttributeTable } from "./AttributeTable";
 import { PanoramaViewer } from "./PanoramaViewer";
 import { GoogleStreetView } from "./GoogleStreetView";
 import { AnomalyAlertCard } from "./AnomalyAlertCard";
+import { LookAroundCompass, DEFAULT_MAP_PITCH, MAX_MAP_PITCH } from "./LookAroundCompass";
 
 interface Props {
   filter: FeatureFilter;
@@ -35,6 +36,10 @@ interface Props {
   focusFeatureId?: string;
   /** Clears the one-shot route request after the feature has been handled. */
   onFocusHandled?: () => void;
+  /** Notifies a parent (the top navigation bar) whenever the authoritative
+   * Measure visibility changes, so a mirrored top-bar button can stay in sync
+   * without duplicating the real Measure state owned here. */
+  onMeasureChange?: (active: boolean) => void;
 }
 
 const DAVANGERE_CENTER: [number, number] = [75.9218, 14.4644];
@@ -56,19 +61,19 @@ const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "";
 const rasterSourceId = (datasetId: string) => `raster-preview-${datasetId}`;
 const rasterLayerId = (datasetId: string) => `raster-preview-layer-${datasetId}`;
 
-type RasterColorMode = "rgb" | "grayscale" | "enhanced";
+export type RasterColorMode = "rgb" | "grayscale" | "enhanced";
 
-interface RasterDisplaySettings {
+export interface RasterDisplaySettings {
   colorMode: RasterColorMode;
   clarity: number;
 }
 
-const DEFAULT_RASTER_SETTINGS: RasterDisplaySettings = {
+export const DEFAULT_RASTER_SETTINGS: RasterDisplaySettings = {
   colorMode: "grayscale",
   clarity: 0,
 };
 
-const COLOR_MODE_OPTIONS: Array<{ value: RasterColorMode; label: string }> = [
+export const COLOR_MODE_OPTIONS: Array<{ value: RasterColorMode; label: string }> = [
   { value: "rgb", label: "RGB" },
   { value: "grayscale", label: "Grayscale" },
   { value: "enhanced", label: "Enhanced" },
@@ -87,7 +92,7 @@ function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value));
 }
 
-function resolveRasterSettings(settings?: Partial<RasterDisplaySettings>): RasterDisplaySettings {
+export function resolveRasterSettings(settings?: Partial<RasterDisplaySettings>): RasterDisplaySettings {
   return {
     colorMode: settings?.colorMode ?? DEFAULT_RASTER_SETTINGS.colorMode,
     clarity: clamp(settings?.clarity ?? DEFAULT_RASTER_SETTINGS.clarity, 0, 2),
@@ -254,6 +259,34 @@ function haversineDistance(a: [number, number], b: [number, number]): number {
   const sinDLon = Math.sin(dLon / 2);
   const h = sinDLat * sinDLat + Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * sinDLon * sinDLon;
   return 2 * EARTH_RADIUS_M * Math.asin(Math.min(1, Math.sqrt(h)));
+}
+
+/** "Nice" round scale-bar distances (metric), same ladder a cartographic
+ * scale bar picks from — used to turn a raw pixel-to-meters measurement
+ * into a label like "200 m" or "2 km" instead of an arbitrary number. */
+const NICE_SCALE_METERS = [
+  1, 2, 5, 10, 20, 50, 100, 200, 500,
+  1000, 2000, 5000, 10000, 20000, 50000, 100000, 200000, 500000, 1000000,
+];
+
+function formatNiceScaleMeters(meters: number): string {
+  return meters >= 1000 ? `${meters / 1000} km` : `${meters} m`;
+}
+
+/** Picks the largest "nice" round distance that still fits within the given
+ * pixel budget at the map's current resolution — the same approach a
+ * cartographic scale bar uses, just without drawing a proportional line:
+ * the label always fits in a fixed-width box because the box shows the
+ * chosen round number's text ("2 km"), never the sample width itself. */
+function pickNiceScaleLabel(metersPerPixel: number, maxWidthPx: number): string {
+  if (!Number.isFinite(metersPerPixel) || metersPerPixel <= 0) return "";
+  const maxMeters = metersPerPixel * maxWidthPx;
+  let chosen = NICE_SCALE_METERS[0];
+  for (const candidate of NICE_SCALE_METERS) {
+    if (candidate > maxMeters) break;
+    chosen = candidate;
+  }
+  return formatNiceScaleMeters(chosen);
 }
 
 /** Initial compass bearing in degrees [0, 360) from point a to point b. */
@@ -628,10 +661,14 @@ interface HoverInfo {
 interface LayerAttributeTableState extends LayerFeatureTableFilter {
   sourceLabel: string;
 }
-export interface MapCanvasHandle { clearDatasets: () => void; }
+export interface MapCanvasHandle {
+  clearDatasets: () => void;
+  toggleMeasure: () => void;
+  isMeasureActive: () => boolean;
+}
 
 export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
-  { filter, onFeatureSelect, onActiveDatasetsChange, initialActiveDatasets, aiHighlights, focusFeatureId, onFocusHandled },
+  { filter, onFeatureSelect, onActiveDatasetsChange, initialActiveDatasets, aiHighlights, focusFeatureId, onFocusHandled, onMeasureChange },
   ref
 ) {
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -720,7 +757,21 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     if (focusFeatureId) setPendingFocusFeatureId(focusFeatureId);
   }, [focusFeatureId]);
 
+  // Look Around mode takes over map dragging to change bearing/pitch, which
+  // would conflict with every other pointer-driven tool (street-view pick,
+  // measurement). Turning any of those on force-exits Look Around first;
+  // deliberately one-directional so it never has to reach into their
+  // internal cancellation logic.
+  const deactivateLookAround = useCallback(() => {
+    if (!lookAroundActiveRef.current) return;
+    lookAroundActiveRef.current = false;
+    setLookAroundActive(false);
+    const canvas = mapRef.current?.getCanvas();
+    if (canvas) canvas.style.cursor = "";
+  }, []);
+
   const toggleStreetPickMode = useCallback(() => {
+    deactivateLookAround();
     setStreetPickMode((current) => {
       const next = !current;
       streetPickModeRef.current = next;
@@ -728,7 +779,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
       if (canvas) canvas.style.cursor = next ? "crosshair" : "";
       return next;
     });
-  }, []);
+  }, [deactivateLookAround]);
 
   // Ruler / measurement tool (Google Earth Pro-style dialog: Line, Path,
   // Polygon, Circle) — off by default. `measureActiveRef`/`measurePointsRef`
@@ -774,6 +825,34 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
 
   // Live cursor position readout (bottom-right, Google-Earth-style).
   const [cursorLngLat, setCursorLngLat] = useState<[number, number] | null>(null);
+
+  // Text-only scale label ("200 m", "1 km", ...) shown in a fixed-size box
+  // next to the coordinate readout — replaces MapLibre's built-in
+  // ScaleControl, whose DOM element resizes its bar width on every zoom
+  // (correct for a real proportional scale bar, but causes the visible
+  // status chip to grow/shrink, which looked unstable).
+  const [mapScaleLabel, setMapScaleLabel] = useState("");
+
+  // Drives the horizontal zoom slider (Google Earth Pro-style) — mirrors
+  // the map's actual zoom so the thumb stays in sync with wheel/pinch/
+  // keyboard zoom, not just drags on the slider itself.
+  const [mapZoom, setMapZoom] = useState(DAVANGERE_ZOOM);
+
+  // Drives the round compass control — mirrors the map's actual bearing so
+  // it stays in sync with right-click-drag rotation, not just the compass
+  // dial itself.
+  const [mapBearing, setMapBearing] = useState(0);
+  // Mirrors the map's actual pitch (3D tilt) for the Look Around compass's
+  // up/down buttons and drag-to-look interaction.
+  const [mapPitch, setMapPitch] = useState(0);
+
+  // Look Around mode (compass centre button): while active, dragging
+  // anywhere on the map changes bearing/pitch instead of panning. Mirrored
+  // into a ref for the same reason streetPickMode/measureActive are —
+  // map event handlers registered once on "load" need the latest value
+  // without becoming stale closures.
+  const [lookAroundActive, setLookAroundActive] = useState(false);
+  const lookAroundActiveRef = useRef(false);
 
   // Keep a fast lookup: featureId → "redundant" | "needed" for tooltip + hover
   const aiStatusRef = useRef<Map<string, "redundant" | "needed">>(new Map());
@@ -1202,6 +1281,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
       closeMeasureSafely();
       return;
     }
+    deactivateLookAround();
     measureActiveRef.current = true;
     setMeasureActive(true);
     beginNewSession();
@@ -1216,7 +1296,29 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     // Close any ordinary data-layer tooltip that happened to be open the
     // instant measurement mode was activated.
     suspendDataLayerInteraction();
-  }, [closeMeasureSafely, flushMeasureSources, cancelScheduledMeasurePreviewUpdate, beginNewSession, setMeasurePhase, syncMeasureCursor, suspendDataLayerInteraction]);
+  }, [closeMeasureSafely, deactivateLookAround, flushMeasureSources, cancelScheduledMeasurePreviewUpdate, beginNewSession, setMeasurePhase, syncMeasureCursor, suspendDataLayerInteraction]);
+
+  // Toggling Look Around on defers to the same "other tools win" rule as
+  // toggleStreetPickMode: it force-exits measurement/street-view-pick first
+  // rather than teaching those tools about Look Around.
+  const toggleLookAround = useCallback(() => {
+    if (lookAroundActiveRef.current) {
+      deactivateLookAround();
+      return;
+    }
+    if (measureActiveRef.current) closeMeasureSafely();
+    if (streetPickModeRef.current) toggleStreetPickMode();
+    lookAroundActiveRef.current = true;
+    setLookAroundActive(true);
+  }, [deactivateLookAround, closeMeasureSafely, toggleStreetPickMode]);
+
+  // Double-click the compass centre resets bearing AND pitch (unlike the
+  // "N" button, which only resets bearing) without touching centre/zoom.
+  const resetLookAroundCamera = useCallback(() => {
+    const map = mapRef.current;
+    if (!map) return;
+    map.easeTo({ bearing: 0, pitch: DEFAULT_MAP_PITCH, duration: 300 });
+  }, []);
 
   // Switching modes reuses the same cancellation path: the previous tool's
   // unfinished geometry is wiped (via resetMeasureTempState) before the new
@@ -1313,6 +1415,80 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     return () => { map.dragRotate.enable(); };
   }, [mapReady, measureDrawingActive]);
 
+  // Look Around mode: left-click-drag anywhere on the map changes bearing
+  // (horizontal movement) and pitch (vertical movement) instead of panning.
+  // dragPan is disabled for the duration so the two gestures don't fight,
+  // and the cursor swaps to signal the camera-look interaction per the
+  // same pattern streetPickMode uses for its crosshair cursor.
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !mapReady || !lookAroundActive) return;
+    map.dragPan.disable();
+    const canvas = map.getCanvas();
+    canvas.style.cursor = "grab";
+
+    let dragging = false;
+    let activePointerId: number | null = null;
+    let lastX = 0;
+    let lastY = 0;
+    // Pointer Events (not mouse-only) so the same handlers cover touch and
+    // pen input, matching the pointer-capture pattern already used by the
+    // ruler panel drag and the zoom slider/compass ring above.
+    //
+    // Look-around drag deliberately bypasses MapLibre's easeTo/inertia path
+    // (setBearing/setPitch are synchronous, no animation) so the camera
+    // tracks the pointer 1:1 with zero added latency, matching the "click
+    // and drag to look around" gesture's expected immediacy.
+    const handleDown = (e: PointerEvent) => {
+      if (e.button !== 0) return;
+      dragging = true;
+      activePointerId = e.pointerId;
+      lastX = e.clientX;
+      lastY = e.clientY;
+      canvas.style.cursor = "grabbing";
+      canvas.setPointerCapture(e.pointerId);
+    };
+    const handleMove = (e: PointerEvent) => {
+      if (!dragging || e.pointerId !== activePointerId) return;
+      const dx = e.clientX - lastX;
+      const dy = e.clientY - lastY;
+      lastX = e.clientX;
+      lastY = e.clientY;
+      // 0.3 deg/px keeps a full-width drag well under a full turn — tuned
+      // to feel similar to MapLibre's own dragRotate sensitivity.
+      map.setBearing(map.getBearing() + dx * 0.3);
+      map.setPitch(Math.min(MAX_MAP_PITCH, Math.max(0, map.getPitch() - dy * 0.3)));
+    };
+    const stopDragging = (e?: PointerEvent) => {
+      if (e && canvas.hasPointerCapture(e.pointerId)) canvas.releasePointerCapture(e.pointerId);
+      dragging = false;
+      activePointerId = null;
+      canvas.style.cursor = "grab";
+    };
+    const handleBlur = () => stopDragging();
+    canvas.addEventListener("pointerdown", handleDown);
+    canvas.addEventListener("pointermove", handleMove);
+    canvas.addEventListener("pointerup", stopDragging);
+    canvas.addEventListener("pointercancel", stopDragging);
+    // A pointer that leaves the window entirely (e.g. dragged off-screen)
+    // must not leave `dragging` stuck true — matches the blur-safety the
+    // task calls out for the press-and-hold rotate buttons. Pointer capture
+    // already keeps pointerup/pointermove firing on this canvas even off-
+    // element, but window blur (e.g. alt-tab mid-drag) isn't a pointer
+    // event at all, so it needs its own listener.
+    window.addEventListener("blur", handleBlur);
+
+    return () => {
+      canvas.removeEventListener("pointerdown", handleDown);
+      canvas.removeEventListener("pointermove", handleMove);
+      canvas.removeEventListener("pointerup", stopDragging);
+      canvas.removeEventListener("pointercancel", stopDragging);
+      window.removeEventListener("blur", handleBlur);
+      map.dragPan.enable();
+      canvas.style.cursor = "";
+    };
+  }, [mapReady, lookAroundActive]);
+
   // Escape deactivates the active measurement TOOL only — it cancels any
   // unfinished shape (preserving completed ones), returns the phase to
   // "inactive" so map clicks stop being consumed by measurement, and
@@ -1329,6 +1505,12 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
       if (e.key !== "Escape") return;
       const target = e.target as HTMLElement | null;
       if (target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable)) {
+        return;
+      }
+      if (lookAroundActiveRef.current) {
+        e.preventDefault();
+        e.stopPropagation();
+        deactivateLookAround();
         return;
       }
       if (!measureActiveRef.current) return;
@@ -1921,7 +2103,39 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     scheduleFetch();
   }, [filter, scheduleFetch, clearAllRasterOverlays, onActiveDatasetsChange]);
 
-  useImperativeHandle(ref, () => ({ clearDatasets: clearAllDatasets }), [clearAllDatasets]);
+  // Bulk toggle used by the Data Sources "Select All" control. Selecting every
+  // dataset activates the full set at once without per-dataset camera moves;
+  // deselecting reuses the same global clear path as the old "Show all" button.
+  const setAllDatasets = useCallback((active: boolean) => {
+    setFlyError(null);
+    if (!active) {
+      clearAllDatasets();
+      return;
+    }
+    const next = datasets.map((d) => d.id);
+    setActiveDatasetIds(next);
+    filterRef.current = { datasetIds: next };
+    onActiveDatasetsChange?.(datasets);
+    datasets.forEach((d) => addRasterOverlay(d));
+    scheduleFetch();
+  }, [datasets, clearAllDatasets, addRasterOverlay, scheduleFetch, onActiveDatasetsChange]);
+
+  useImperativeHandle(
+    ref,
+    () => ({
+      clearDatasets: clearAllDatasets,
+      toggleMeasure: () => toggleMeasureActive(),
+      isMeasureActive: () => measureActiveRef.current,
+    }),
+    [clearAllDatasets, toggleMeasureActive]
+  );
+
+  // Mirror the authoritative Measure visibility up to any parent (the top
+  // navigation bar) so its button can reflect the active state without owning
+  // a second copy of the real state.
+  useEffect(() => {
+    onMeasureChange?.(measureActive);
+  }, [measureActive, onMeasureChange]);
 
   useEffect(() => {
     // Only a *real* ward/category/severity constraint should override an
@@ -1967,13 +2181,57 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
       // stop looking sharp Ã¢â‚¬â€ 20 was capping that closer inspection even
       // with the basemap turned off. MapLibre's practical ceiling is ~24.
       maxZoom: 24,
-      attributionControl: { compact: true },
+      attributionControl: false,
       transformRequest: (url) =>
         API_BASE && url.startsWith(API_BASE) ? { url, credentials: "include" } : { url },
     });
     mapRef.current = map;
-    map.addControl(new maplibregl.NavigationControl({ visualizePitch: false }), "top-right");
-    map.addControl(new maplibregl.ScaleControl({ unit: "metric" }), "bottom-left");
+
+    // Keeps the custom horizontal zoom slider's thumb synced to the map's
+    // actual zoom regardless of how it changed (wheel, pinch, double-click,
+    // the slider itself, or a programmatic flyTo/fitBounds).
+    const handleZoom = () => setMapZoom(map.getZoom());
+    map.on("zoom", handleZoom);
+
+    // Fixed-size scale label (replaces MapLibre's built-in ScaleControl,
+    // whose bar DOM element resizes on every zoom — correct for a real
+    // scale bar, but made the bottom-right status chip visibly grow/shrink,
+    // which the fixed-width box design below cannot show a proportional
+    // line for anyway). Measures the geographic distance spanned by a fixed
+    // 100px sample near the map's horizontal center, then rounds it to the
+    // nearest "nice" cartographic value (200 m, 1 km, 2 km, ...) — the same
+    // logic a scale bar uses internally, just rendered as text instead of a
+    // proportional-width line.
+    const SCALE_SAMPLE_PX = 100;
+    const updateScaleLabel = () => {
+      const canvas = map.getCanvas();
+      const midY = canvas.clientHeight / 2;
+      const midX = canvas.clientWidth / 2;
+      const left = map.unproject([midX - SCALE_SAMPLE_PX / 2, midY]);
+      const right = map.unproject([midX + SCALE_SAMPLE_PX / 2, midY]);
+      const meters = haversineDistance([left.lng, left.lat], [right.lng, right.lat]);
+      const metersPerPixel = meters / SCALE_SAMPLE_PX;
+      setMapScaleLabel(pickNiceScaleLabel(metersPerPixel, SCALE_SAMPLE_PX));
+    };
+    updateScaleLabel();
+    // zoomend/moveend (not the continuous "zoom"/"move") — a text label
+    // only needs to be accurate once the camera settles, not on every
+    // intermediate animation frame, so this avoids the extra render churn
+    // a proportional bar's live-resize would otherwise require.
+    map.on("zoomend", updateScaleLabel);
+    map.on("moveend", updateScaleLabel);
+    map.on("resize", updateScaleLabel);
+
+    // Keeps the compass dial synced to the map's actual bearing regardless
+    // of how it changed (right-click-drag, the compass itself, or a
+    // programmatic rotateTo/easeTo).
+    const handleRotate = () => setMapBearing(map.getBearing());
+    map.on("rotate", handleRotate);
+
+    // Keeps the Look Around compass's up/down state synced to the map's
+    // actual pitch regardless of how it changed.
+    const handlePitch = () => setMapPitch(map.getPitch());
+    map.on("pitch", handlePitch);
 
     // Live cursor coordinate readout — map-wide (not tied to feature
     // layers), so it works over empty map area too, not just on features.
@@ -2407,13 +2665,12 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
 
   return (
     <>
-      <ToolRail measureActive={measureActive} onToggleMeasure={toggleMeasureActive} />
       <CommandCenter
         datasets={datasets}
         activeDatasetIds={activeDatasetIds}
         flyError={flyError}
         onSelectDataset={toggleDataset}
-        onClearDataset={clearAllDatasets}
+        onSelectAllDatasets={setAllDatasets}
         expandedDatasetId={expandedDatasetId}
         onToggleDatasetSettings={(datasetId) => {
           setExpandedDatasetId((current) => (current === datasetId ? null : datasetId));
@@ -2453,7 +2710,29 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
             onStale={handleAnomalyStale}
           />
         )}
-        <CoordinateReadout lngLat={cursorLngLat} />
+        <MapStatusBar lngLat={cursorLngLat} scaleLabel={mapScaleLabel} />
+        <ZoomSlider
+          zoom={mapZoom}
+          minZoom={4}
+          maxZoom={24}
+          onChange={(next) => mapRef.current?.setZoom(next)}
+        />
+        <LookAroundCompass
+          bearing={mapBearing}
+          pitch={mapPitch}
+          lookAroundActive={lookAroundActive}
+          mapReady={mapReady}
+          onRotate={(next) => mapRef.current?.setBearing(next)}
+          onResetNorth={() => mapRef.current?.easeTo({ bearing: 0, duration: 300 })}
+          onStep={(deltaBearing) => mapRef.current?.setBearing(mapRef.current.getBearing() + deltaBearing)}
+          onPitchStep={(deltaPitch) => {
+            const map = mapRef.current;
+            if (!map) return;
+            map.setPitch(Math.min(MAX_MAP_PITCH, Math.max(0, map.getPitch() + deltaPitch)));
+          }}
+          onToggleLookAround={toggleLookAround}
+          onResetCamera={resetLookAroundCamera}
+        />
         {measureActive && (
           <RulerPanel
             tab={measureTab}
@@ -2521,12 +2800,12 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
 });
 
 function CommandCenter({
-  datasets, activeDatasetIds, flyError, onSelectDataset, onClearDataset, expandedDatasetId, onToggleDatasetSettings,
+  datasets, activeDatasetIds, flyError, onSelectDataset, onSelectAllDatasets, expandedDatasetId, onToggleDatasetSettings,
   rasterSettingsById, onChangeRasterSettings, categoryStats, hiddenCategories, onToggleCategory,
   onSetAllCategoriesVisible, onRunAudit, auditRunning, auditError, onOpenAttributeTable, status: _status,
 }: {
   datasets: DatasetRow[]; activeDatasetIds: string[]; flyError: string | null; onSelectDataset: (d: DatasetRow) => void;
-  onClearDataset: () => void;
+  onSelectAllDatasets: (active: boolean) => void;
   expandedDatasetId: string | null;
   onToggleDatasetSettings: (datasetId: string) => void;
   rasterSettingsById: Record<string, RasterDisplaySettings>;
@@ -2571,10 +2850,6 @@ function CommandCenter({
 
   return (
     <aside className="command-center" data-testid="command-center">
-      <div className="command-center__header">
-        <div className="command-center__eyebrow">Command Center</div>
-        <div className="command-center__title">Urban<br/>Intelligence</div>
-      </div>
       <div className="command-center__body">
         {datasets.length > 0 && (
           <div className="command-center__section">
@@ -2584,7 +2859,7 @@ function CommandCenter({
                 <button
                   type="button"
                   className="command-center__text-btn"
-                  onClick={onClearDataset}
+                  onClick={() => onSelectAllDatasets(false)}
                   data-testid="clear-dataset-filter"
                 >
                   Show all
@@ -3132,16 +3407,6 @@ function formatDms(value: number, positiveSuffix: string, negativeSuffix: string
   return `${degrees}°${String(minutes).padStart(2, "0")}'${seconds.toFixed(2).padStart(5, "0")}" ${suffix}`;
 }
 
-function CoordinateReadout({ lngLat }: { lngLat: [number, number] | null }) {
-  if (!lngLat) return null;
-  const [lng, lat] = lngLat;
-  return (
-    <div className="map__coord-readout" data-testid="map-coord-readout">
-      {formatDms(lat, "N", "S")}&nbsp;&nbsp;{formatDms(lng, "E", "W")}
-    </div>
-  );
-}
-
 function MapLegend({ entries }: { entries: LegendEntry[] }) {
   if (entries.length === 0) return null;
   return (
@@ -3157,29 +3422,6 @@ function MapLegend({ entries }: { entries: LegendEntry[] }) {
     </div>
   );
 }
-
-
-function ToolRail({ measureActive, onToggleMeasure }: { measureActive: boolean; onToggleMeasure: () => void }) {
-  return (
-    <nav className="tool-rail" data-testid="tool-rail" aria-label="Map tools">
-      <button
-        type="button"
-        className={`tool-rail__btn${measureActive ? " tool-rail__btn--active" : ""}`}
-        onClick={onToggleMeasure}
-        title="Measure distance"
-        aria-label="Measure distance"
-        aria-pressed={measureActive}
-        data-testid="tool-rail-measure"
-      >
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" width="18" height="18">
-          <rect x="2.5" y="7.5" width="19" height="9" rx="1.5" transform="rotate(-45 12 12)" />
-          <path d="M8.5 10.5l1 1M11 8l1.5 1.5M14 5.5l1 1" transform="rotate(-45 12 12)" />
-        </svg>
-      </button>
-    </nav>
-  );
-}
-
 /** Google Earth Pro-style "Ruler" dialog for the Line measurement tool. */
 const MEASURE_TAB_OPTIONS: Array<{ value: MeasureTab; label: string }> = [
   { value: "line", label: "Line" },

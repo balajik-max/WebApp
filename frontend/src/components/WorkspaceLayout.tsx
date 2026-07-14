@@ -1,7 +1,6 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
-import { useTheme } from "../context/ThemeContext";
 import type { FeatureFilter } from "../lib/types";
 import { searchFeatureFids, type FidSearchResult } from "../lib/features";
 import { fetchCategories, fetchWards, type CategoryOption, type WardOption, type DatasetRow } from "../lib/workflow";
@@ -244,6 +243,115 @@ function CategoryMultiSelect({ options, value, onChange }: CategoryMultiSelectPr
   );
 }
 
+const TABS = [
+  { to: "/map", label: "Map", testId: "tab-map" },
+  { to: "/datasets", label: "Datasets", testId: "tab-datasets" },
+  { to: "/analytics", label: "Analytics", testId: "tab-analytics" },
+] as const;
+
+/** Which tab a pathname belongs to — the single mapping used both to render
+ * NavLink's own `active` class (for aria-current, focus, etc.) and to
+ * position the shared sliding indicator, so there's only ever one source of
+ * truth for "which tab is active" (never local click state + pathname as
+ * two separate answers that can disagree). */
+function tabIndexForPath(pathname: string): number {
+  const index = TABS.findIndex((tab) => pathname.startsWith(tab.to));
+  return index === -1 ? 0 : index;
+}
+
+/**
+ * MAP / DATASETS / ANALYTICS tabs with one shared green sliding indicator
+ * (Google-Earth-Pro-nav-style, not per-tab backgrounds). The indicator is a
+ * single absolutely-positioned element measured against whichever tab is
+ * active and moved with a CSS transform — nothing is ever removed/recreated
+ * on route change, so it can never flash grey or disappear-and-reappear the
+ * way stacking two independent `.active` backgrounds on different DOM nodes
+ * would.
+ */
+function TabsNav({ pathname }: { pathname: string }) {
+  const tabRefs = useRef<(HTMLAnchorElement | null)[]>([]);
+  const listRef = useRef<HTMLDivElement | null>(null);
+  const [indicator, setIndicator] = useState<{ left: number; width: number } | null>(null);
+  // Starts false so the very first measurement is applied with transitions
+  // off (see the .is-animation-ready gate in CSS) — otherwise a direct load
+  // of /datasets or /analytics would visibly fly the indicator in from the
+  // left/MAP position instead of appearing already in place.
+  const [animationReady, setAnimationReady] = useState(false);
+
+  // The route is the single source of truth for which tab is "really"
+  // active (back/forward, direct URL, refresh all flow through pathname).
+  // visualActiveIndex additionally lets a click move the indicator the
+  // instant it happens, without waiting for the router's re-render —
+  // synced back to the real route below the moment pathname changes.
+  const activeIndex = tabIndexForPath(pathname);
+  const [visualActiveIndex, setVisualActiveIndex] = useState(activeIndex);
+  useEffect(() => {
+    setVisualActiveIndex(activeIndex);
+  }, [activeIndex]);
+
+  const measure = useCallback(() => {
+    const el = tabRefs.current[visualActiveIndex];
+    const list = listRef.current;
+    if (!el || !list) return;
+    const listRect = list.getBoundingClientRect();
+    const elRect = el.getBoundingClientRect();
+    setIndicator({ left: elRect.left - listRect.left, width: elRect.width });
+  }, [visualActiveIndex]);
+
+  // useLayoutEffect (not useEffect) so the measurement is applied before
+  // the browser paints — the indicator never visibly jumps from a stale
+  // position to the correct one on the same frame.
+  useLayoutEffect(() => {
+    measure();
+  }, [measure]);
+
+  // First-paint-only: position with transitions off, then flip
+  // animation-ready on the next frame so every subsequent move animates.
+  useLayoutEffect(() => {
+    const id = requestAnimationFrame(() => setAnimationReady(true));
+    return () => cancelAnimationFrame(id);
+  }, []);
+
+  // Keeps the indicator aligned across anything that can change tab
+  // geometry post-mount: viewport resize, font swap reflow, browser zoom,
+  // or the tab list itself changing width/spacing — without re-measuring
+  // on every unrelated render.
+  useEffect(() => {
+    const list = listRef.current;
+    if (!list || typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(() => measure());
+    observer.observe(list);
+    return () => observer.disconnect();
+  }, [measure]);
+
+  return (
+    <nav className="tabs" aria-label="Main application pages" data-testid="tabs">
+      <div className={`tabs__list${animationReady ? " is-animation-ready" : ""}`} ref={listRef} role="tablist">
+        {indicator && (
+          <span
+            className="tabs__indicator"
+            aria-hidden="true"
+            style={{ width: `${indicator.width}px`, transform: `translate3d(${indicator.left}px, 0, 0)` }}
+          />
+        )}
+        {TABS.map((tab, index) => (
+          <NavLink
+            key={tab.to}
+            to={tab.to}
+            data-testid={tab.testId}
+            ref={(el) => { tabRefs.current[index] = el; }}
+            onClick={() => setVisualActiveIndex(index)}
+            className={({ isActive }) => (isActive ? "active" : undefined)}
+            aria-current={index === activeIndex ? "page" : undefined}
+          >
+            {tab.label}
+          </NavLink>
+        ))}
+      </div>
+    </nav>
+  );
+}
+
 /**
  * WorkspaceLayout — the shell that hosts the three tab views.
  *
@@ -254,9 +362,9 @@ function CategoryMultiSelect({ options, value, onChange }: CategoryMultiSelectPr
  * out the moment you left it.
  */
 export function WorkspaceLayout() {
-  const { user, logout } = useAuth();
-  const { theme, toggle } = useTheme();
+  const { user } = useAuth();
   const location = useLocation();
+  const navigate = useNavigate();
 
   const [ward, setWard] = useState("");
   const [categories, setCategories] = useState<string[]>([]);
@@ -267,7 +375,23 @@ export function WorkspaceLayout() {
   const [selectedDatasets, setSelectedDatasets] = useState<DatasetRow[]>([]);
   const selectedDatasetIds = useMemo(() => selectedDatasets.map((dataset) => dataset.id), [selectedDatasets]);
 
+  // Display-only mirror of the Measure tool's active state, driven by MapCanvas
+  // (the sole owner of the real state) so the top-bar button can show the
+  // active state. `measureToggle` is the imperative handler registered by the
+  // map view — clicking the button calls the map's existing toggle.
+  const [measureActive, setMeasureActive] = useState(false);
+  const [measureToggle, setMeasureToggle] = useState<() => void>(() => () => {});
+  const registerMeasure = useCallback((api: { toggle: () => void }) => {
+    setMeasureToggle(() => api.toggle);
+  }, []);
+
   const showFilters = location.pathname.startsWith("/map");
+
+  // Reset only appears once Apply has actually been clicked — before that
+  // there's nothing to reset, so showing both buttons up front was just
+  // visual noise. Reset swaps back to showing Apply so the same slot is
+  // reused rather than the two buttons stacking side by side.
+  const [filtersApplied, setFiltersApplied] = useState(false);
 
   useEffect(() => {
     if (!showFilters) return;
@@ -301,6 +425,7 @@ export function WorkspaceLayout() {
     }
     if (severity.trim() && !Number.isNaN(Number(severity))) next.severity = Number(severity);
     setFilter(next);
+    setFiltersApplied(true);
   }
 
   function resetFilters() {
@@ -308,6 +433,7 @@ export function WorkspaceLayout() {
     setCategories([]);
     setSeverity("");
     setFilter({});
+    setFiltersApplied(false);
   }
 
   // Reflect the ward of the currently selected dataset(s) in the top-bar ward
@@ -320,14 +446,21 @@ export function WorkspaceLayout() {
   }, [setSelectedDatasets]);
 
   const outletContext = useMemo(
-    () => ({ filter, selectedDatasets, setSelectedDatasets: handleActiveDatasetsChange }),
-    [filter, selectedDatasets, handleActiveDatasetsChange]
+    () => ({
+      filter,
+      selectedDatasets,
+      setSelectedDatasets: handleActiveDatasetsChange,
+      measureActive,
+      onMeasureChange: setMeasureActive,
+      registerMeasure,
+    }),
+    [filter, selectedDatasets, handleActiveDatasetsChange, measureActive, registerMeasure]
   );
 
   return (
     <div className="workspace" data-testid="workspace">
       <header className="workspace__topbar" data-testid="topbar">
-        <div className="workspace__brand">
+        <NavLink to="/map" className="workspace__brand" data-testid="brand-home">
           <span className="workspace__mark" aria-hidden="true">
             <svg viewBox="0 0 24 24" fill="none">
               <circle cx="6" cy="18" r="2.1" fill="currentColor" />
@@ -342,62 +475,59 @@ export function WorkspaceLayout() {
               />
             </svg>
           </span>
-          <div>
-            <div className="workspace__title">Urban Intelligence</div>
-            <div className="workspace__subtitle" data-testid="topbar-user">
-              signed in as <b>{user?.name ?? "…"}</b> · {user?.role ?? "…"}
-            </div>
-          </div>
-        </div>
+          <div className="workspace__title">Urban Intelligence</div>
+        </NavLink>
 
-        <nav className="tabs" data-testid="tabs">
-          <NavLink to="/map" data-testid="tab-map">
-            Map
-          </NavLink>
-          <NavLink to="/datasets" data-testid="tab-datasets">
-            Datasets
-          </NavLink>
-          <NavLink to="/analytics" data-testid="tab-analytics">
-            Analytics
-          </NavLink>
-        </nav>
+        <TabsNav pathname={location.pathname} />
 
         <div className="workspace__right">
-          {showFilters && (
-            <form className="filters" onSubmit={applyFilters} data-testid="filter-form">
-              <select
-                data-testid="filter-ward"
-                value={ward}
-                onChange={(e) => setWard(e.target.value)}
-              >
-                <option value="">all wards</option>
-                {wardOptions.map((w) => (
-                  <option key={w.ward} value={w.ward}>
-                    {w.ward} ({w.feature_count})
-                  </option>
-                ))}
-                {ward && !wardOptions.some((w) => w.ward === ward) && (
-                  <option key={ward} value={ward}>
-                    {ward} (selected)
-                  </option>
-                )}
-              </select>
-              <CategoryMultiSelect
-                options={categoryOptions}
-                value={categories}
-                onChange={setCategories}
-              />
-              <FidSearch ward={ward || undefined} datasetIds={selectedDatasetIds} />
-              <input
-                data-testid="filter-severity"
-                placeholder="min severity"
-                value={severity}
-                onChange={(e) => setSeverity(e.target.value)}
-                inputMode="numeric"
-              />
-              <button type="submit" data-testid="filter-apply">
-                Apply
-              </button>
+          <button
+            type="button"
+            className="user-avatar"
+            onClick={() => navigate("/profile")}
+            data-testid="topbar-user"
+            title={user ? `${user.name} · ${user.role}` : "Profile"}
+            aria-label={user ? `Open profile for ${user.name}` : "Open profile"}
+          >
+            {(user?.name ?? "?").trim().charAt(0).toUpperCase()}
+          </button>
+        </div>
+      </header>
+
+      {showFilters && (
+        <header className="workspace__subbar" data-testid="subbar">
+          <form className="filters" onSubmit={applyFilters} data-testid="filter-form">
+            <FidSearch ward={ward || undefined} datasetIds={selectedDatasetIds} />
+            <select
+              data-testid="filter-ward"
+              value={ward}
+              onChange={(e) => setWard(e.target.value)}
+            >
+              <option value="">all wards</option>
+              {wardOptions.map((w) => (
+                <option key={w.ward} value={w.ward}>
+                  {w.ward} ({w.feature_count})
+                </option>
+              ))}
+              {ward && !wardOptions.some((w) => w.ward === ward) && (
+                <option key={ward} value={ward}>
+                  {ward} (selected)
+                </option>
+              )}
+            </select>
+            <CategoryMultiSelect
+              options={categoryOptions}
+              value={categories}
+              onChange={setCategories}
+            />
+            <input
+              data-testid="filter-severity"
+              placeholder="min severity"
+              value={severity}
+              onChange={(e) => setSeverity(e.target.value)}
+              inputMode="numeric"
+            />
+            {filtersApplied ? (
               <button
                 type="button"
                 className="ghost"
@@ -406,29 +536,32 @@ export function WorkspaceLayout() {
               >
                 Reset
               </button>
-            </form>
-          )}
-
-          <button
-            type="button"
-            className="icon-btn"
-            onClick={toggle}
-            data-testid="theme-toggle"
-            aria-label="Toggle theme"
-            title={`Switch to ${theme === "dark" ? "light" : "dark"} mode`}
-          >
-            {theme === "dark" ? "☀" : "☾"}
-          </button>
-          <button
-            type="button"
-            className="icon-btn icon-btn--text"
-            onClick={() => void logout()}
-            data-testid="logout"
-          >
-            Sign out
-          </button>
-        </div>
-      </header>
+            ) : (
+              <button type="submit" data-testid="filter-apply">
+                Apply
+              </button>
+            )}
+            <button
+              type="button"
+              className={`ghost topbar-measure-btn${
+                measureActive ? " topbar-measure-btn--active" : ""
+              }`}
+              onClick={measureToggle}
+              title="Measure"
+              aria-label="Open Measure tools"
+              aria-pressed={measureActive}
+              data-testid="topbar-measure"
+            >
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <rect x="2.5" y="8" width="19" height="8" rx="1.5" transform="rotate(-45 12 12)" />
+                <g transform="rotate(-45 12 12)">
+                  <path d="M6 8v3M9.5 8v2M13 8v3M16.5 8v2" />
+                </g>
+              </svg>
+            </button>
+          </form>
+        </header>
+      )}
 
       <main className="workspace__body" data-testid="workspace-body">
         <Outlet context={outletContext} />
@@ -448,7 +581,9 @@ export function useTabTitle(base = "Davangere Urban Survey") {
           ? "Datasets"
           : location.pathname.startsWith("/analytics")
             ? "Analytics"
-            : "";
+            : location.pathname.startsWith("/profile")
+              ? "Profile"
+              : "";
     document.title = label ? `${label} · ${base}` : base;
   }, [location.pathname, base]);
 }
