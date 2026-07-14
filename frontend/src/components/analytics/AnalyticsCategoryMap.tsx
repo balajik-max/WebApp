@@ -64,19 +64,31 @@ function fitToFeatures(map: MapLibreMap, features: UrbanFeature[]) {
 
 function withAnalyticsColors(
   collection: FeatureCollectionResponse,
-  missingField?: string | null
+  readinessField?: string | null
 ): FeatureCollectionResponse {
   return {
     ...collection,
     features: collection.features
       .filter((feature) => feature.geometry != null)
-      .map((feature) => ({
-        ...feature,
-        properties: {
-          ...feature.properties,
-          analytics_color: missingField ? "#ef4444" : colorForCategory(feature.properties.category),
-        },
-      })) as UrbanFeature[],
+      .map((feature) => {
+        const readinessStatus = String(feature.properties.readiness_status ?? "");
+        const readinessColor =
+          readinessStatus === "available"
+            ? "#22c55e"
+            : readinessStatus === "missing"
+              ? "#ef4444"
+              : null;
+        return {
+          ...feature,
+          properties: {
+            ...feature.properties,
+            analytics_color:
+              readinessField && readinessColor
+                ? readinessColor
+                : colorForCategory(feature.properties.category),
+          },
+        };
+      }) as UrbanFeature[],
   };
 }
 
@@ -106,9 +118,10 @@ export function AnalyticsCategoryMap({ datasetIds, categories, filters = {}, onC
       categories: [...categories].sort(),
       wards: [...(filters.wards ?? [])].sort(),
       severityBuckets: [...(filters.severityBuckets ?? [])].sort(),
-      missingField: filters.missingField ?? null,
+      readinessField: filters.readinessField ?? filters.missingField ?? null,
+      readinessStatus: filters.readinessField ? filters.readinessStatus ?? "all" : filters.missingField ? "missing" : null,
     }),
-    [categories, datasetIds, filters.missingField, filters.severityBuckets, filters.wards]
+    [categories, datasetIds, filters.missingField, filters.readinessField, filters.readinessStatus, filters.severityBuckets, filters.wards]
   );
 
   useEffect(() => {
@@ -189,15 +202,21 @@ export function AnalyticsCategoryMap({ datasetIds, categories, filters = {}, onC
       category.textContent = String(properties.category || "uncategorized");
       severity.textContent = `Severity ${Number(properties.severity || 0).toFixed(2)}`;
       content.append(title, category, severity);
-      if (properties.missing_field_label) {
+      if (properties.readiness_field_label) {
         const issue = document.createElement("div");
-        issue.className = "analytics-map-popup__issue";
-        issue.textContent = `${String(properties.missing_field_label)}: Missing`;
+        const readinessStatus = String(properties.readiness_status || "missing");
+        issue.className = `analytics-map-popup__issue analytics-map-popup__issue--${readinessStatus}`;
+        issue.textContent = `${String(properties.readiness_field_label)}: ${readinessStatus === "available" ? "Available" : "Missing"}`;
         content.append(issue);
+      }
+      if (properties.readiness_value) {
+        const value = document.createElement("small");
+        value.textContent = `Recorded value: ${String(properties.readiness_value)}`;
+        content.append(value);
       }
       if (properties.recommended_action) {
         const action = document.createElement("small");
-        action.textContent = String(properties.recommended_action);
+        action.textContent = `Recommended action: ${String(properties.recommended_action)}`;
         content.append(action);
       }
       if (onCategoryFilterRef.current && properties.category) {
@@ -229,7 +248,10 @@ export function AnalyticsCategoryMap({ datasetIds, categories, filters = {}, onC
     setError(null);
     fetchAnalyticsFeatures(datasetIds, categories, controller.signal, filters)
       .then((response) => {
-        const colored = withAnalyticsColors(response, filters.missingField);
+        const colored = withAnalyticsColors(
+          response,
+          filters.readinessField ?? filters.missingField ?? null
+        );
         dataRef.current = colored;
         setResult(colored);
         const map = mapRef.current;
@@ -249,6 +271,23 @@ export function AnalyticsCategoryMap({ datasetIds, categories, filters = {}, onC
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [scopeKey]);
 
+  const readinessCounts = useMemo(() => {
+    let available = 0;
+    let missing = 0;
+    for (const feature of result.features) {
+      const status = String(feature.properties.readiness_status ?? "");
+      if (status === "available") available += 1;
+      if (status === "missing") missing += 1;
+    }
+    return { available, missing };
+  }, [result.features]);
+  const activeReadinessField = filters.readinessField ?? filters.missingField ?? null;
+  const activeReadinessStatus = filters.readinessField
+    ? filters.readinessStatus ?? "all"
+    : filters.missingField
+      ? "missing"
+      : null;
+
   return (
     <article className="chart-card analytics-map-card" data-testid="analytics-map-card">
       <div className="chart-card__header">
@@ -260,13 +299,28 @@ export function AnalyticsCategoryMap({ datasetIds, categories, filters = {}, onC
       </div>
       <div className="analytics-map-wrap">
         <div ref={containerRef} className="analytics-map" />
+        {activeReadinessField && (
+          <div className="analytics-map-readiness-legend">
+            <strong>Readiness</strong>
+            {(activeReadinessStatus === "all" || activeReadinessStatus === "available") && (
+              <span><i className="is-available" /> Available: {readinessCounts.available.toLocaleString()}</span>
+            )}
+            {(activeReadinessStatus === "all" || activeReadinessStatus === "missing") && (
+              <span><i className="is-missing" /> Missing: {readinessCounts.missing.toLocaleString()}</span>
+            )}
+          </div>
+        )}
         {loading && <div className="analytics-map__overlay">Loading scoped features…</div>}
         {error && <div className="analytics-map__overlay analytics-map__overlay--error">Map unavailable: {error}</div>}
       </div>
       <div className="analytics-map__footer">
         <span>
-          {filters.missingField
-            ? "Red markers show Manholes missing the selected readiness field."
+          {activeReadinessField
+            ? activeReadinessStatus === "available"
+              ? "Green markers show Manholes with the selected field available."
+              : activeReadinessStatus === "missing"
+                ? "Red markers show Manholes missing the selected field."
+                : "Green markers are available; red markers are missing for the selected field."
             : "Read-only preview. Colours match the main Map category palette."}
         </span>
         {result.truncated && <b>Showing the first {result.limit.toLocaleString()} features; KPIs still use all matching rows.</b>}

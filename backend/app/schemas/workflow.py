@@ -160,6 +160,9 @@ class AnalyticsFeatureRow(BaseModel):
     severity: float
     geometry_type: str
     created_at: datetime
+    readiness_field_label: str | None = None
+    readiness_status: Literal["available", "missing"] | None = None
+    readiness_value: str | None = None
 
 
 class AnalyticsFeaturePage(BaseModel):
