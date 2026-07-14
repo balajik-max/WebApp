@@ -960,6 +960,9 @@ export function DatasetsView() {
         </div>
       </section>
 
+      </div>
+      </div>
+
       {/* ── UNCLASSIFIED CATEGORIES (spatial audit classifier review) ── */}
       </div>
       </div>

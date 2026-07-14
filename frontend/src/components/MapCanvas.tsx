@@ -1,4 +1,4 @@
-﻿import { useEffect, useRef, useState, useCallback, useImperativeHandle, useMemo, forwardRef } from "react";
+import { useEffect, useRef, useState, useCallback, useImperativeHandle, useMemo, forwardRef } from "react";
 import { createPortal } from "react-dom";
 import maplibregl, { Map as MLMap, MapMouseEvent, GeoJSONSource } from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
@@ -16,8 +16,9 @@ import {
 import { AttributeTable } from "./AttributeTable";
 import { PanoramaViewer } from "./PanoramaViewer";
 import { GoogleStreetView } from "./GoogleStreetView";
-import { AnomalyAlertCard } from "./AnomalyAlertCard";
 import { LookAroundCompass, DEFAULT_MAP_PITCH, MAX_MAP_PITCH } from "./LookAroundCompass";
+import { DataSourceSelector } from "./DataSourceSelector";
+import { AnomalyAlertCard } from "./AnomalyAlertCard";
 
 interface Props {
   filter: FeatureFilter;
@@ -2852,161 +2853,20 @@ function CommandCenter({
     <aside className="command-center" data-testid="command-center">
       <div className="command-center__body">
         {datasets.length > 0 && (
-          <div className="command-center__section">
-            <div className="command-center__section-head">
-              <span className="command-center__section-title">Data Sources</span>
-              {activeDatasetIds.length > 0 ? (
-                <button
-                  type="button"
-                  className="command-center__text-btn"
-                  onClick={() => onSelectAllDatasets(false)}
-                  data-testid="clear-dataset-filter"
-                >
-                  Show all
-                </button>
-              ) : (
-                <span className="command-center__section-count">{datasets.length}</span>
-              )}
-            </div>
-            {activeDatasetIds.length > 0 && (
-              <div style={{ fontSize: 10.5, color: "var(--ink-mute)", margin: "-2px 0 8px" }}>
-                Click a dataset again to deselect it - multiple can be shown together.
-              </div>
-            )}
-            {activeDatasetIds.length > 0 && (
-              <button
-                type="button"
-                className="command-center__audit-btn"
-                disabled={auditRunning}
-                onClick={() => onRunAudit(activeDatasetIds)}
-                data-testid="run-spatial-audit"
-              >
-                {auditRunning ? "Running Spatial Audit…" : "Run Spatial Audit"}
-              </button>
-            )}
-            {auditError && (
-              <div style={{ marginBottom: 8, padding: "8px 10px", background: "var(--danger-muted)", borderRadius: "var(--radius-sm)", color: "var(--danger)", fontSize: 11 }}>
-                {auditError}
-              </div>
-            )}
-            {datasets.map((d) => {
-              const isActive = activeDatasetIds.includes(d.id);
-              const hasRasterControls = d.status === "ready" && d.file_type === "geotiff" && Boolean(d.dataset_metadata?.raster_overlay);
-              const canOpenSettings = hasRasterControls && isActive;
-              const isExpanded = canOpenSettings && expandedDatasetId === d.id;
-              const rasterSettings = resolveRasterSettings(rasterSettingsById[d.id]);
-
-              return (
-                <div
-                  key={d.id}
-                  className={`dataset-card-shell${isExpanded ? " dataset-card-shell--expanded" : ""}`}
-                >
-                  <div
-                    className={`dataset-card${isActive ? " dataset-card--active" : ""}${d.status !== "ready" ? " dataset-card--disabled" : ""}`}
-                    onClick={() => d.status === "ready" && onSelectDataset(d)}
-                    data-testid={`map-dataset-${d.id}`}
-                  >
-                    <div
-                      className={`dataset-card__checkbox${isActive ? " dataset-card__checkbox--checked" : ""}`}
-                      aria-hidden="true"
-                    >
-                      <svg className="dataset-card__checkbox-mark" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3">
-                        <path d="M5 13l4 4L19 7" strokeLinecap="round" strokeLinejoin="round" />
-                      </svg>
-                    </div>
-                    <div className="dataset-card__info">
-                      <div className="dataset-card__name">{d.name}</div>
-                      <div className="dataset-card__meta">
-                        {d.ward ? (
-                          <><strong style={{ color: "var(--accent)", fontWeight: 700 }}>Ward {d.ward}</strong> · {d.file_type}</>
-                        ) : (
-                          <>All wards · {d.file_type}</>
-                        )}
-                      </div>
-                    </div>
-                    <div className="dataset-card__actions">
-                      {hasRasterControls ? (
-                        <button
-                          type="button"
-                          className={`dataset-card__gear${isExpanded ? " dataset-card__gear--active" : ""}`}
-                          aria-label={`Open display settings for ${d.name}`}
-                          aria-expanded={isExpanded}
-                          disabled={!canOpenSettings}
-                          onClick={(event) => {
-                            event.stopPropagation();
-                            if (!canOpenSettings) return;
-                            onToggleDatasetSettings(d.id);
-                          }}
-                        >
-                          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
-                            <circle cx="12" cy="12" r="3" />
-                            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z" />
-                          </svg>
-                        </button>
-                      ) : (
-                        <span className={`dataset-card__status dataset-card__status--${d.status}`}>{d.status}</span>
-                      )}
-                    </div>
-                  </div>
-                  {canOpenSettings && isExpanded && (
-                    <div
-                      className="dataset-card__settings"
-                      onClick={(event) => event.stopPropagation()}
-                    >
-                      <div className="dataset-card__settings-head">
-                        <div>
-                          <div className="dataset-card__settings-title">Display Settings</div>
-                          <div className="dataset-card__settings-copy">
-                            Default preview already looks correct. Use these only when you need a manual adjustment.
-                          </div>
-                        </div>
-                        <button
-                          type="button"
-                          className="dataset-card__reset"
-                          onClick={() => onChangeRasterSettings(d.id, DEFAULT_RASTER_SETTINGS)}
-                        >
-                          Reset
-                        </button>
-                      </div>
-                      <div className="dataset-card__settings-group">
-                        <div className="dataset-card__settings-label">Color Type</div>
-                        <div className="dataset-card__mode-row">
-                          {COLOR_MODE_OPTIONS.map((option) => (
-                            <button
-                              key={option.value}
-                              type="button"
-                              className={`dataset-card__mode-btn${rasterSettings.colorMode === option.value ? " dataset-card__mode-btn--active" : ""}`}
-                              onClick={() => onChangeRasterSettings(d.id, { colorMode: option.value })}
-                            >
-                            {option.label}
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-                      <div className="dataset-card__settings-group">
-                        <div className="dataset-card__slider-head">
-                          <span className="dataset-card__settings-label">Edge Clarity</span>
-                          <span className="dataset-card__slider-value">
-                            {rasterSettings.clarity.toFixed(2)}
-                          </span>
-                        </div>
-                        <input
-                          className="dataset-card__slider"
-                          type="range"
-                          min="0"
-                          max="2"
-                          step="0.05"
-                          value={rasterSettings.clarity}
-                          onChange={(event) => onChangeRasterSettings(d.id, { clarity: Number(event.target.value) })}
-                        />
-                      </div>
-                    </div>
-                  )}
-                </div>
-              );
-            })}
-            {flyError && <div style={{ marginTop: 8, padding: "8px 10px", background: "var(--danger-muted)", borderRadius: "var(--radius-sm)", color: "var(--danger)", fontSize: 11 }}>{flyError}</div>}
-          </div>
+          <DataSourceSelector
+            datasets={datasets}
+            activeDatasetIds={activeDatasetIds}
+            onSelectDataset={onSelectDataset}
+            onSelectAllDatasets={onSelectAllDatasets}
+            expandedDatasetId={expandedDatasetId}
+            onToggleDatasetSettings={onToggleDatasetSettings}
+            rasterSettingsById={rasterSettingsById}
+            onChangeRasterSettings={onChangeRasterSettings}
+            flyError={flyError}
+            onRunAudit={onRunAudit}
+            auditRunning={auditRunning}
+            auditError={auditError}
+          />
         )}
 
         {categoryStats.length > 0 && (
@@ -3116,6 +2976,7 @@ function CommandCenter({
     </aside>
   );
 }
+
 const DETECTION_MODE_LABEL: Record<Exclude<DetectionMode, null>, string> = {
   poles: "Poles",
   drains: "Drains",
@@ -3407,116 +3268,6 @@ function formatDms(value: number, positiveSuffix: string, negativeSuffix: string
   return `${degrees}°${String(minutes).padStart(2, "0")}'${seconds.toFixed(2).padStart(5, "0")}" ${suffix}`;
 }
 
-/** Bottom-right status strip: live cursor coordinates plus a fixed-size
- * scale/distance chip. Both boxes share one positioned wrapper so they can
- * never drift apart or overlap independently — the distance box's width
- * never changes with its text ("200 m" vs "2 km"), only the coordinate
- * box's content changes size (as the cursor moves over water/edge cases
- * that shorten the DMS string), which is why the distance box sits fixed
- * on the wrapper's right edge rather than being laid out purely by flex
- * order against a variable-width neighbour. */
-function MapStatusBar({ lngLat, scaleLabel }: { lngLat: [number, number] | null; scaleLabel: string }) {
-  if (!lngLat && !scaleLabel) return null;
-  return (
-    <div className="map__status-bar" data-testid="map-status-bar">
-      {lngLat && (
-        <div className="map__status-box map__coord-readout" data-testid="map-coord-readout">
-          {formatDms(lngLat[1], "N", "S")}&nbsp;&nbsp;{formatDms(lngLat[0], "E", "W")}
-        </div>
-      )}
-      {scaleLabel && (
-        <div className="map__status-box map__scale-readout" data-testid="map-scale-readout">
-          {scaleLabel}
-        </div>
-      )}
-    </div>
-  );
-}
-
-/** Google Earth Pro-style zoom control, laid out as a horizontal bar: a "−"
- * button, a draggable slider track, and a "+" button. Purely presentational —
- * the map's zoom is the single source of truth (passed in via `zoom`), and
- * every interaction (click ends, drag, track click) just calls `onChange`;
- * MapCanvas is the one that actually calls `map.setZoom()`. */
-function ZoomSlider({
-  zoom,
-  minZoom,
-  maxZoom,
-  onChange,
-}: {
-  zoom: number;
-  minZoom: number;
-  maxZoom: number;
-  onChange: (zoom: number) => void;
-}) {
-  const trackRef = useRef<HTMLDivElement | null>(null);
-  const range = maxZoom - minZoom;
-  const fraction = range > 0 ? Math.min(1, Math.max(0, (zoom - minZoom) / range)) : 0;
-
-  const zoomFromClientX = (clientX: number) => {
-    const rect = trackRef.current?.getBoundingClientRect();
-    if (!rect || rect.width === 0) return null;
-    const t = Math.min(1, Math.max(0, (clientX - rect.left) / rect.width));
-    return minZoom + t * range;
-  };
-
-  const handleTrackPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
-    const next = zoomFromClientX(e.clientX);
-    if (next !== null) onChange(next);
-    e.currentTarget.setPointerCapture(e.pointerId);
-    e.preventDefault();
-  };
-  const handleTrackPointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
-    if (!e.currentTarget.hasPointerCapture(e.pointerId)) return;
-    const next = zoomFromClientX(e.clientX);
-    if (next !== null) onChange(next);
-  };
-  const handleTrackPointerUp = (e: React.PointerEvent<HTMLDivElement>) => {
-    if (e.currentTarget.hasPointerCapture(e.pointerId)) {
-      e.currentTarget.releasePointerCapture(e.pointerId);
-    }
-  };
-
-  return (
-    <div className="map-zoom-slider" data-testid="map-zoom-slider">
-      <button
-        type="button"
-        className="map-zoom-slider__btn"
-        onClick={() => onChange(Math.max(minZoom, zoom - 1))}
-        aria-label="Zoom out"
-        data-testid="map-zoom-out"
-      >
-        −
-      </button>
-      <div
-        ref={trackRef}
-        className="map-zoom-slider__track"
-        onPointerDown={handleTrackPointerDown}
-        onPointerMove={handleTrackPointerMove}
-        onPointerUp={handleTrackPointerUp}
-        onPointerCancel={handleTrackPointerUp}
-        role="slider"
-        aria-label="Map zoom"
-        aria-valuemin={minZoom}
-        aria-valuemax={maxZoom}
-        aria-valuenow={Math.round(zoom * 10) / 10}
-      >
-        <div className="map-zoom-slider__fill" style={{ width: `${fraction * 100}%` }} />
-        <div className="map-zoom-slider__thumb" style={{ left: `${fraction * 100}%` }} />
-      </div>
-      <button
-        type="button"
-        className="map-zoom-slider__btn"
-        onClick={() => onChange(Math.min(maxZoom, zoom + 1))}
-        aria-label="Zoom in"
-        data-testid="map-zoom-in"
-      >
-        +
-      </button>
-    </div>
-  );
-}
-
 function MapLegend({ entries }: { entries: LegendEntry[] }) {
   if (entries.length === 0) return null;
   return (
@@ -3532,6 +3283,7 @@ function MapLegend({ entries }: { entries: LegendEntry[] }) {
     </div>
   );
 }
+
 /** Google Earth Pro-style "Ruler" dialog for the Line measurement tool. */
 const MEASURE_TAB_OPTIONS: Array<{ value: MeasureTab; label: string }> = [
   { value: "line", label: "Line" },
@@ -3819,6 +3571,116 @@ function RulerPanel({
           </button>
         </div>
       </div>
+    </div>
+  );
+}
+
+/** Bottom-right status strip: live cursor coordinates plus a fixed-size
+ * scale/distance chip. Both boxes share one positioned wrapper so they can
+ * never drift apart or overlap independently — the distance box's width
+ * never changes with its text ("200 m" vs "2 km"), only the coordinate
+ * box's content changes size (as the cursor moves over water/edge cases
+ * that shorten the DMS string), which is why the distance box sits fixed
+ * on the wrapper's right edge rather than being laid out purely by flex
+ * order against a variable-width neighbour. */
+function MapStatusBar({ lngLat, scaleLabel }: { lngLat: [number, number] | null; scaleLabel: string }) {
+  if (!lngLat && !scaleLabel) return null;
+  return (
+    <div className="map__status-bar" data-testid="map-status-bar">
+      {lngLat && (
+        <div className="map__status-box map__coord-readout" data-testid="map-coord-readout">
+          {formatDms(lngLat[1], "N", "S")}&nbsp;&nbsp;{formatDms(lngLat[0], "E", "W")}
+        </div>
+      )}
+      {scaleLabel && (
+        <div className="map__status-box map__scale-readout" data-testid="map-scale-readout">
+          {scaleLabel}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** Google Earth Pro-style zoom control, laid out as a horizontal bar: a "−"
+ * button, a draggable slider track, and a "+" button. Purely presentational —
+ * the map's zoom is the single source of truth (passed in via `zoom`), and
+ * every interaction (click ends, drag, track click) just calls `onChange`;
+ * MapCanvas is the one that actually calls `map.setZoom()`. */
+function ZoomSlider({
+  zoom,
+  minZoom,
+  maxZoom,
+  onChange,
+}: {
+  zoom: number;
+  minZoom: number;
+  maxZoom: number;
+  onChange: (zoom: number) => void;
+}) {
+  const trackRef = useRef<HTMLDivElement | null>(null);
+  const range = maxZoom - minZoom;
+  const fraction = range > 0 ? Math.min(1, Math.max(0, (zoom - minZoom) / range)) : 0;
+
+  const zoomFromClientX = (clientX: number) => {
+    const rect = trackRef.current?.getBoundingClientRect();
+    if (!rect || rect.width === 0) return null;
+    const t = Math.min(1, Math.max(0, (clientX - rect.left) / rect.width));
+    return minZoom + t * range;
+  };
+
+  const handleTrackPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    const next = zoomFromClientX(e.clientX);
+    if (next !== null) onChange(next);
+    e.currentTarget.setPointerCapture(e.pointerId);
+    e.preventDefault();
+  };
+  const handleTrackPointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (!e.currentTarget.hasPointerCapture(e.pointerId)) return;
+    const next = zoomFromClientX(e.clientX);
+    if (next !== null) onChange(next);
+  };
+  const handleTrackPointerUp = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (e.currentTarget.hasPointerCapture(e.pointerId)) {
+      e.currentTarget.releasePointerCapture(e.pointerId);
+    }
+  };
+
+  return (
+    <div className="map-zoom-slider" data-testid="map-zoom-slider">
+      <button
+        type="button"
+        className="map-zoom-slider__btn"
+        onClick={() => onChange(Math.max(minZoom, zoom - 1))}
+        aria-label="Zoom out"
+        data-testid="map-zoom-out"
+      >
+        −
+      </button>
+      <div
+        ref={trackRef}
+        className="map-zoom-slider__track"
+        onPointerDown={handleTrackPointerDown}
+        onPointerMove={handleTrackPointerMove}
+        onPointerUp={handleTrackPointerUp}
+        onPointerCancel={handleTrackPointerUp}
+        role="slider"
+        aria-label="Map zoom"
+        aria-valuemin={minZoom}
+        aria-valuemax={maxZoom}
+        aria-valuenow={Math.round(zoom * 10) / 10}
+      >
+        <div className="map-zoom-slider__fill" style={{ width: `${fraction * 100}%` }} />
+        <div className="map-zoom-slider__thumb" style={{ left: `${fraction * 100}%` }} />
+      </div>
+      <button
+        type="button"
+        className="map-zoom-slider__btn"
+        onClick={() => onChange(Math.min(maxZoom, zoom + 1))}
+        aria-label="Zoom in"
+        data-testid="map-zoom-in"
+      >
+        +
+      </button>
     </div>
   );
 }
