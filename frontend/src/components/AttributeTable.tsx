@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 import { useNavigate } from "react-router-dom";
 import {
@@ -8,6 +8,7 @@ import {
   type FeatureTableRow,
   type LayerFeatureTableFilter,
 } from "../lib/workflow";
+import { buildCsv, csvTimestamp, downloadCsv, normalizeCsvValue, sanitizeLayerName } from "../lib/csvExport";
 
 // Fetch in bounded API chunks, then combine them into one continuous table.
 // This avoids one oversized backend query while keeping pagination out of the
@@ -152,10 +153,32 @@ export function AttributeTable({ datasetId, datasetName, layerFilter, scopeLabel
   const leadingColumnSet = new Set(leadingColumns);
   const otherColumns = sourceColumns.filter((column) => !leadingColumnSet.has(column));
 
+  const canExport = Boolean(page) && !loading && page!.rows.length > 0;
+
+  const handleExportCsv = useCallback(() => {
+    if (!page || page.rows.length === 0) return;
+    // Column order exactly matches the on-screen Attribute Table (the UI-only
+    // `#` index column is intentionally omitted).
+    const exportHeaders = ["FID", ...leadingColumns, "category", "severity", "label", ...otherColumns];
+    const rows = page.rows.map((row) => {
+      const cells: string[] = [];
+      cells.push(normalizeCsvValue(row.fid));
+      for (const column of leadingColumns) cells.push(normalizeCsvValue(row.attributes[column]));
+      cells.push(normalizeCsvValue(row.category));
+      cells.push(row.severity.toFixed(2));
+      cells.push(normalizeCsvValue(row.label));
+      for (const column of otherColumns) cells.push(normalizeCsvValue(row.attributes[column]));
+      return cells;
+    });
+    const csv = buildCsv(exportHeaders, rows);
+    const filename = `attribute-table-${sanitizeLayerName(datasetName)}-${csvTimestamp()}.csv`;
+    downloadCsv(filename, csv);
+  }, [page, leadingColumns, otherColumns, datasetName]);
+
   return (
     <section className="attr-table-wrap" data-testid="attribute-table">
       <div className="attr-table-head">
-        <div>
+        <div className="attr-table-head__title">
           <h3>Attribute Table — {datasetName}</h3>
           {page && (
             <span className="grid-head__count">
@@ -165,9 +188,21 @@ export function AttributeTable({ datasetId, datasetName, layerFilter, scopeLabel
             </span>
           )}
         </div>
-        <button type="button" className="btn btn--danger btn--sm" onClick={onClose}>
-          Close
-        </button>
+        <div className="attr-table-head__actions">
+          <button
+            type="button"
+            className="btn btn--ghost btn--sm"
+            onClick={handleExportCsv}
+            disabled={!canExport}
+            title={!canExport ? "No rows available to export" : undefined}
+            aria-label={`Export ${datasetName} attribute table as CSV`}
+          >
+            Export CSV
+          </button>
+          <button type="button" className="btn btn--danger btn--sm" onClick={onClose}>
+            Close
+          </button>
+        </div>
       </div>
 
       {error && <div className="grid-error">{error}</div>}

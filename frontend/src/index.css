@@ -5400,10 +5400,23 @@ body {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 16px;
   padding: 16px 20px;
   background: var(--surface);
   border-bottom: 1px solid var(--edge);
   flex-shrink: 0;
+}
+
+.attr-table-head__title {
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.attr-table-head__actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
 }
 
 .attr-table-head h3 {
