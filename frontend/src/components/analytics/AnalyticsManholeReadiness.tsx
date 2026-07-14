@@ -4,13 +4,19 @@ import {
   type AnalyticsCrossFilters,
   type ManholeReadinessFieldKey,
   type ManholeReadinessReport,
+  type ManholeReadinessStatus,
 } from "../../lib/workflow";
 
 interface Props {
   datasetIds: string[];
   filters: Pick<AnalyticsCrossFilters, "wards" | "severityBuckets">;
   activeField: ManholeReadinessFieldKey | null;
-  onSelectMissing: (field: ManholeReadinessFieldKey, label: string) => void;
+  activeStatus: ManholeReadinessStatus | null;
+  onSelect: (
+    field: ManholeReadinessFieldKey,
+    label: string,
+    status: ManholeReadinessStatus
+  ) => void;
   onClear: () => void;
 }
 
@@ -24,7 +30,8 @@ export function AnalyticsManholeReadiness({
   datasetIds,
   filters,
   activeField,
-  onSelectMissing,
+  activeStatus,
+  onSelect,
   onClear,
 }: Props) {
   const [report, setReport] = useState<ManholeReadinessReport | null>(null);
@@ -63,7 +70,7 @@ export function AnalyticsManholeReadiness({
           <div className="analytics-card-eyebrow">Field verification</div>
           <h3 className="chart-card__title">Manhole Data Readiness</h3>
           <p className="analytics-readiness-card__intro">
-            Click a missing count to locate every affected Manhole on the map and in the feature table.
+            Click a card to compare all Manholes in green and red, or choose Available or Missing to isolate one status.
           </p>
         </div>
         <div className="analytics-readiness-card__summary">
@@ -72,7 +79,7 @@ export function AnalyticsManholeReadiness({
           </span>
           {activeField && (
             <button type="button" onClick={onClear} className="analytics-readiness-card__clear">
-              Show all Manholes
+              Clear readiness view
             </button>
           )}
         </div>
@@ -96,6 +103,17 @@ export function AnalyticsManholeReadiness({
                   <article
                     key={field.key}
                     className={`analytics-readiness-row analytics-readiness-row--${tone}${active ? " is-active" : ""}`}
+                    role="button"
+                    tabIndex={0}
+                    aria-pressed={active && activeStatus === "all"}
+                    onClick={() => onSelect(field.key, field.label, "all")}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter" || event.key === " ") {
+                        event.preventDefault();
+                        onSelect(field.key, field.label, "all");
+                      }
+                    }}
+                    title={`Show all ${report.total_manhole_features} Manholes by ${field.label} readiness`}
                   >
                     <div className="analytics-readiness-row__title">
                       <div>
@@ -108,15 +126,29 @@ export function AnalyticsManholeReadiness({
                       <i style={{ width: `${Math.max(0, Math.min(100, field.completeness_percentage))}%` }} />
                     </div>
                     <div className="analytics-readiness-row__counts">
-                      <span className="analytics-readiness-count analytics-readiness-count--available">
-                        <b>{field.available_count.toLocaleString()}</b> Available
-                      </span>
                       <button
                         type="button"
-                        className="analytics-readiness-count analytics-readiness-count--missing"
-                        onClick={() => onSelectMissing(field.key, field.label)}
+                        className={`analytics-readiness-count analytics-readiness-count--available${active && activeStatus === "available" ? " is-active" : ""}`}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          onSelect(field.key, field.label, "available");
+                        }}
+                        disabled={field.available_count === 0}
+                        aria-pressed={active && activeStatus === "available"}
+                        title={`Show ${field.available_count} Manholes with ${field.label}`}
+                      >
+                        <b>{field.available_count.toLocaleString()}</b> Available
+                        <span aria-hidden="true">→</span>
+                      </button>
+                      <button
+                        type="button"
+                        className={`analytics-readiness-count analytics-readiness-count--missing${active && activeStatus === "missing" ? " is-active" : ""}`}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          onSelect(field.key, field.label, "missing");
+                        }}
                         disabled={field.missing_count === 0}
-                        aria-pressed={active}
+                        aria-pressed={active && activeStatus === "missing"}
                         title={
                           field.missing_count === 0
                             ? `All ${field.label} values are available`

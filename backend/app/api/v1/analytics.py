@@ -39,11 +39,16 @@ from app.schemas.workflow import (
 from app.services.analytics.exports import AnalyticsExportFormat, build_analytics_export
 from app.services.analytics.quality import build_quality_report
 from app.services.analytics.readiness import (
+    attribute_readiness_status,
+    attribute_value,
     clean_missing_field,
+    clean_readiness_field,
+    clean_readiness_status,
     field_available_condition,
     get_readiness_field,
     manhole_category_condition,
     readiness_fields,
+    resolve_readiness_filter,
 )
 from app.services.analytics.scope import (
     CATEGORY_EXPR,
@@ -78,9 +83,17 @@ async def analytics_overview(
         default=None,
         description="Optional cross-filter. Repeat low, medium, or high values.",
     ),
+    readiness_field: str | None = Query(
+        default=None,
+        description="Optional Manhole readiness field, such as depth or bottom_level.",
+    ),
+    readiness_status: str | None = Query(
+        default=None,
+        description="Optional readiness state: all, available, or missing.",
+    ),
     missing_field: str | None = Query(
         default=None,
-        description="Optional Manhole readiness filter, such as depth or bottom_level.",
+        description="Deprecated missing-only Manhole readiness field.",
     ),
     db: AsyncSession = Depends(get_db),
 ) -> AnalyticsOverview:
@@ -88,14 +101,23 @@ async def analytics_overview(
     categories = clean_categories(category)
     wards = clean_wards(ward)
     severity_buckets = clean_severity_buckets(severity_bucket)
-    cleaned_missing_field = clean_missing_field(missing_field)
+    resolved_readiness_field, resolved_readiness_status = resolve_readiness_filter(
+        readiness_field=readiness_field,
+        readiness_status=readiness_status,
+        missing_field=missing_field,
+    )
     scoped_feature_conditions = feature_conditions(
-        dataset_ids, categories, wards, severity_buckets, cleaned_missing_field
+        dataset_ids,
+        categories,
+        wards,
+        severity_buckets,
+        readiness_field=resolved_readiness_field,
+        readiness_status=resolved_readiness_status,
     )
 
     # Dataset status counts. With a category filter, only datasets that really
     # contain a matching feature contribute to the scoped survey count.
-    if categories or severity_buckets or cleaned_missing_field:
+    if categories or severity_buckets or resolved_readiness_field:
         ds_stmt = (
             select(Dataset.status, func.count(func.distinct(Dataset.id)))
             .join(Feature, Feature.dataset_id == Dataset.id)
@@ -344,24 +366,31 @@ async def manhole_readiness(
 @router.get(
     "/manhole-readiness/features",
     dependencies=[Depends(require_any)],
-    summary="GeoJSON evidence for Manholes missing one readiness field",
+    summary="GeoJSON evidence for one Manhole readiness field",
 )
 async def manhole_readiness_features(
     field: str = Query(..., description="Readiness field key, such as depth or condition."),
+    status: str = Query(default="missing", description="all, available, or missing"),
     dataset_id: list[uuid.UUID] | None = Query(default=None),
     ward: list[str] | None = Query(default=None),
     severity_bucket: list[str] | None = Query(default=None),
     limit: int = Query(default=5000, ge=1, le=5000),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
-    field_key = clean_missing_field(field)
+    field_key = clean_readiness_field(field)
     assert field_key is not None
+    readiness_status = clean_readiness_status(status)
     field_spec = get_readiness_field(field_key)
     dataset_ids = list(dict.fromkeys(dataset_id or []))
     wards = clean_wards(ward)
     severity_buckets = clean_severity_buckets(severity_bucket)
     conditions = feature_conditions(
-        dataset_ids, [], wards, severity_buckets, field_key
+        dataset_ids,
+        [],
+        wards,
+        severity_buckets,
+        readiness_field=field_key,
+        readiness_status=readiness_status,
     )
 
     total = int(
@@ -388,6 +417,9 @@ async def manhole_readiness_features(
     features = []
     for row in rows:
         geometry = json.loads(row.geometry_json) if row.geometry_json else None
+        attributes = row.attributes if isinstance(row.attributes, dict) else {}
+        row_status = attribute_readiness_status(attributes, field_key)
+        row_value = attribute_value(attributes, field_key)
         features.append(
             {
                 "type": "Feature",
@@ -399,10 +431,14 @@ async def manhole_readiness_features(
                     "label": row.label,
                     "category": row.category,
                     "severity": float(row.severity or 0.0),
-                    "attributes": row.attributes if isinstance(row.attributes, dict) else {},
-                    "missing_field": field_key,
-                    "missing_field_label": field_spec.label,
-                    "recommended_action": field_spec.recommended_action,
+                    "attributes": attributes,
+                    "readiness_field": field_key,
+                    "readiness_field_label": field_spec.label,
+                    "readiness_status": row_status,
+                    "readiness_value": None if row_value is None else str(row_value),
+                    "recommended_action": (
+                        field_spec.recommended_action if row_status == "missing" else None
+                    ),
                 },
             }
         )
@@ -428,6 +464,8 @@ async def analytics_features(
     category: list[str] | None = Query(default=None),
     ward: list[str] | None = Query(default=None),
     severity_bucket: list[str] | None = Query(default=None),
+    readiness_field: str | None = Query(default=None),
+    readiness_status: str | None = Query(default=None),
     missing_field: str | None = Query(default=None),
     limit: int = Query(default=50, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
@@ -437,15 +475,22 @@ async def analytics_features(
     categories = clean_categories(category)
     wards = clean_wards(ward)
     severity_buckets = clean_severity_buckets(severity_bucket)
-    cleaned_missing_field = clean_missing_field(missing_field)
+    resolved_field, resolved_status = resolve_readiness_filter(
+        readiness_field=readiness_field,
+        readiness_status=readiness_status,
+        missing_field=missing_field,
+    )
     conditions = feature_conditions(
-        dataset_ids, categories, wards, severity_buckets, cleaned_missing_field
+        dataset_ids,
+        categories,
+        wards,
+        severity_buckets,
+        readiness_field=resolved_field,
+        readiness_status=resolved_status,
     )
 
     total = int(
-        (
-            await db.execute(select(func.count(Feature.id)).where(*conditions))
-        ).scalar_one()
+        (await db.execute(select(func.count(Feature.id)).where(*conditions))).scalar_one()
         or 0
     )
 
@@ -459,6 +504,7 @@ async def analytics_features(
                 Feature.label,
                 CATEGORY_EXPR.label("category"),
                 Feature.severity,
+                Feature.attributes,
                 func.GeometryType(Feature.geom).label("geometry_type"),
                 Feature.created_at,
             )
@@ -470,11 +516,17 @@ async def analytics_features(
         )
     ).all()
 
-    return AnalyticsFeaturePage(
-        total=total,
-        limit=limit,
-        offset=offset,
-        rows=[
+    field_spec = get_readiness_field(resolved_field) if resolved_field else None
+    response_rows = []
+    for row in rows:
+        attributes = row.attributes if isinstance(row.attributes, dict) else {}
+        row_status = (
+            attribute_readiness_status(attributes, resolved_field)
+            if resolved_field
+            else None
+        )
+        row_value = attribute_value(attributes, resolved_field) if resolved_field else None
+        response_rows.append(
             AnalyticsFeatureRow(
                 id=row.id,
                 dataset_id=row.dataset_id,
@@ -485,9 +537,17 @@ async def analytics_features(
                 severity=float(row.severity or 0.0),
                 geometry_type=str(row.geometry_type or "Unknown"),
                 created_at=row.created_at,
+                readiness_field_label=field_spec.label if field_spec else None,
+                readiness_status=row_status,
+                readiness_value=None if row_value is None else str(row_value),
             )
-            for row in rows
-        ],
+        )
+
+    return AnalyticsFeaturePage(
+        total=total,
+        limit=limit,
+        offset=offset,
+        rows=response_rows,
     )
 
 
@@ -502,6 +562,8 @@ async def analytics_quality(
     category: list[str] | None = Query(default=None),
     ward: list[str] | None = Query(default=None),
     severity_bucket: list[str] | None = Query(default=None),
+    readiness_field: str | None = Query(default=None),
+    readiness_status: str | None = Query(default=None),
     missing_field: str | None = Query(default=None),
     db: AsyncSession = Depends(get_db),
 ) -> AnalyticsQualityReport:
@@ -509,14 +571,19 @@ async def analytics_quality(
     categories = clean_categories(category)
     wards = clean_wards(ward)
     severity_buckets = clean_severity_buckets(severity_bucket)
-    cleaned_missing_field = clean_missing_field(missing_field)
+    resolved_field, resolved_status = resolve_readiness_filter(
+        readiness_field=readiness_field,
+        readiness_status=readiness_status,
+        missing_field=missing_field,
+    )
     return await build_quality_report(
         db,
         dataset_ids=dataset_ids,
         categories=categories,
         wards=wards,
         severity_buckets=severity_buckets,
-        missing_field=cleaned_missing_field,
+        readiness_field=resolved_field,
+        readiness_status=resolved_status,
     )
 
 
@@ -534,6 +601,8 @@ async def analytics_export(
     category: list[str] | None = Query(default=None),
     ward: list[str] | None = Query(default=None),
     severity_bucket: list[str] | None = Query(default=None),
+    readiness_field: str | None = Query(default=None),
+    readiness_status: str | None = Query(default=None),
     missing_field: str | None = Query(default=None),
     db: AsyncSession = Depends(get_db),
 ) -> Response:
@@ -541,7 +610,11 @@ async def analytics_export(
     categories = clean_categories(category)
     wards = clean_wards(ward)
     severity_buckets = clean_severity_buckets(severity_bucket)
-    cleaned_missing_field = clean_missing_field(missing_field)
+    resolved_field, resolved_status = resolve_readiness_filter(
+        readiness_field=readiness_field,
+        readiness_status=readiness_status,
+        missing_field=missing_field,
+    )
     content, media_type, filename = await build_analytics_export(
         db,
         export_format=format,
@@ -549,7 +622,8 @@ async def analytics_export(
         categories=categories,
         wards=wards,
         severity_buckets=severity_buckets,
-        missing_field=cleaned_missing_field,
+        readiness_field=resolved_field,
+        readiness_status=resolved_status,
     )
     return Response(
         content=content,

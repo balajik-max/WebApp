@@ -1,7 +1,7 @@
 """Shared, read-only Analytics scope helpers.
 
 Every Analytics endpoint uses these helpers so KPIs, charts, maps, tables,
-quality findings, and AI summaries stay on the same deterministic scope.
+quality findings, exports, and AI summaries stay on one deterministic scope.
 """
 from __future__ import annotations
 
@@ -12,7 +12,11 @@ from fastapi import HTTPException
 from sqlalchemy import and_, func, or_, select
 
 from app.models import Dataset, Feature
-from app.services.analytics.readiness import clean_missing_field, field_missing_condition
+from app.services.analytics.readiness import (
+    ReadinessStatus,
+    readiness_scope_condition,
+    resolve_readiness_filter,
+)
 
 SeverityBucketName = Literal["low", "medium", "high"]
 
@@ -61,11 +65,13 @@ def feature_conditions(
     wards: list[str] | None = None,
     severity_buckets: list[SeverityBucketName] | None = None,
     missing_field: str | None = None,
+    readiness_field: str | None = None,
+    readiness_status: str | None = None,
 ) -> list[object]:
     """Build reusable SQLAlchemy predicates for an Analytics scope.
 
-    All parameters are optional. Empty lists mean "all" and preserve the
-    existing API behaviour.
+    ``missing_field`` remains accepted for backwards compatibility and resolves
+    to ``readiness_status=missing``.
     """
     conditions: list[object] = [NOT_RASTER_SAMPLE]
     if dataset_ids:
@@ -84,7 +90,12 @@ def feature_conditions(
         if "high" in severity_buckets:
             bucket_conditions.append(Feature.severity >= 0.67)
         conditions.append(or_(*bucket_conditions))
-    cleaned_missing_field = clean_missing_field(missing_field)
-    if cleaned_missing_field:
-        conditions.append(field_missing_condition(cleaned_missing_field))
+
+    field, status = resolve_readiness_filter(
+        readiness_field=readiness_field,
+        readiness_status=readiness_status,
+        missing_field=missing_field,
+    )
+    if field and status:
+        conditions.append(readiness_scope_condition(field, status))
     return conditions

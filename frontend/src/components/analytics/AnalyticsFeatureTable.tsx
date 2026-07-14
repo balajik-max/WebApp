@@ -63,9 +63,10 @@ export function AnalyticsFeatureTable({ datasetIds, categories, filters = {} }: 
       categories: [...categories].sort(),
       wards: [...(filters.wards ?? [])].sort(),
       severityBuckets: [...(filters.severityBuckets ?? [])].sort(),
-      missingField: filters.missingField ?? null,
+      readinessField: filters.readinessField ?? filters.missingField ?? null,
+      readinessStatus: filters.readinessField ? filters.readinessStatus ?? "all" : filters.missingField ? "missing" : null,
     }),
-    [categories, datasetIds, filters.missingField, filters.severityBuckets, filters.wards]
+    [categories, datasetIds, filters.missingField, filters.readinessField, filters.readinessStatus, filters.severityBuckets, filters.wards]
   );
 
   useEffect(() => {
@@ -160,6 +161,7 @@ export function AnalyticsFeatureTable({ datasetIds, categories, filters = {} }: 
               <th>Dataset</th>
               <th>Ward</th>
               <th>Geometry</th>
+              {(filters.readinessField || filters.missingField) && <th>Readiness</th>}
               <th>Severity</th>
             </tr>
           </thead>
@@ -193,6 +195,14 @@ export function AnalyticsFeatureTable({ datasetIds, categories, filters = {} }: 
                 <td>{row.dataset_name}</td>
                 <td>{row.ward || "—"}</td>
                 <td>{row.geometry_type.replace(/^ST_/, "")}</td>
+                {(filters.readinessField || filters.missingField) && (
+                  <td>
+                    <span className={`analytics-readiness-status analytics-readiness-status--${row.readiness_status ?? "missing"}`}>
+                      {row.readiness_field_label}: {row.readiness_status === "available" ? "Available" : "Missing"}
+                    </span>
+                    {row.readiness_value && <small className="analytics-readiness-value">{row.readiness_value}</small>}
+                  </td>
+                )}
                 <td>
                   <span className={`analytics-severity analytics-severity--${severityLabel(row.severity).toLowerCase()}`}>
                     {severityLabel(row.severity)} · {row.severity.toFixed(2)}
@@ -201,10 +211,10 @@ export function AnalyticsFeatureTable({ datasetIds, categories, filters = {} }: 
               </tr>
             ))}
             {loading && (
-              <tr><td colSpan={6} className="analytics-feature-table__empty">Loading applied-scope rows…</td></tr>
+              <tr><td colSpan={(filters.readinessField || filters.missingField) ? 7 : 6} className="analytics-feature-table__empty">Loading applied-scope rows…</td></tr>
             )}
             {!loading && !error && page?.rows.length === 0 && (
-              <tr><td colSpan={6} className="analytics-feature-table__empty">No features match the applied scope.</td></tr>
+              <tr><td colSpan={(filters.readinessField || filters.missingField) ? 7 : 6} className="analytics-feature-table__empty">No features match the applied scope.</td></tr>
             )}
           </tbody>
         </table>

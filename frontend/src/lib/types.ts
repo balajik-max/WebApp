@@ -11,6 +11,12 @@ export interface FeatureProperties {
   category: string | null;
   severity: number;
   attributes: FeatureAttributes;
+  readiness_field?: string | null;
+  readiness_field_label?: string | null;
+  readiness_status?: "available" | "missing" | null;
+  readiness_value?: string | null;
+  recommended_action?: string | null;
+  analytics_color?: string;
 }
 
 export type FeatureGeometry =
