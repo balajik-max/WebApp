@@ -25,6 +25,9 @@ class ReaderResult:
     # (reprojected to EPSG:4326) so the map can show actual imagery
     # instead of sampled points — {"image_key": str, "bounds": [w,s,e,n]}.
     raster_overlay: dict | None = None
+    # Reader-specific metadata promoted onto Dataset.metadata. This keeps
+    # format details such as an OBJ model's CRS/origin available to the UI.
+    dataset_metadata: dict | None = None
 
 
 @runtime_checkable

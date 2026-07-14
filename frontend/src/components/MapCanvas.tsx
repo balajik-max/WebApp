@@ -19,6 +19,7 @@ import { GoogleStreetView } from "./GoogleStreetView";
 import { LookAroundCompass, DEFAULT_MAP_PITCH, MAX_MAP_PITCH } from "./LookAroundCompass";
 import { DataSourceSelector } from "./DataSourceSelector";
 import { AnomalyAlertCard } from "./AnomalyAlertCard";
+import { createObjModelLayer, objModelLayerId } from "./ObjModelLayer";
 
 interface Props {
   filter: FeatureFilter;
@@ -183,13 +184,18 @@ const TABLE_FOCUS_DURATION_MS = 8000;
 // Base (category-agnostic) filters for the layers above — kept as named
 // constants so the category-visibility checklist can AND a hidden-category
 // clause onto them without duplicating the geometry/role logic.
-const POLY_BASE_FILTER: maplibregl.FilterSpecification = ["in", ["geometry-type"], ["literal", ["Polygon", "MultiPolygon"]]];
+const POLY_BASE_FILTER: maplibregl.FilterSpecification = [
+  "all",
+  ["in", ["geometry-type"], ["literal", ["Polygon", "MultiPolygon"]]],
+  ["!=", ["get", "category"], "3d_model"],
+];
 const LINE_BASE_FILTER: maplibregl.FilterSpecification = ["in", ["geometry-type"], ["literal", ["LineString", "MultiLineString"]]];
 const POINT_BASE_FILTER: maplibregl.FilterSpecification = [
   "all",
   ["in", ["geometry-type"], ["literal", ["Point", "MultiPoint"]]],
   ["!=", ["get", "category"], "raster_pixel"],
   ["!=", ["get", "category"], "site_photo"],
+  ["!=", ["get", "category"], "3d_model"],
 ];
 const PHOTO_BASE_FILTER: maplibregl.FilterSpecification = ["==", ["get", "category"], "site_photo"];
 
@@ -704,6 +710,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     () => initialActiveDatasets?.map((d) => d.id) ?? []
   );
   const rasterLayersRef = useRef<Set<string>>(new Set());
+  const objModelLayersRef = useRef<Set<string>>(new Set());
   const [expandedDatasetId, setExpandedDatasetId] = useState<string | null>(null);
   const [rasterSettingsById, setRasterSettingsById] = useState<Record<string, RasterDisplaySettings>>({});
 
@@ -1731,6 +1738,34 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     for (const id of Array.from(rasterLayersRef.current)) removeRasterOverlay(id);
   }, [removeRasterOverlay]);
 
+  const addObjModel = useCallback((dataset: DatasetRow) => {
+    const map = mapRef.current;
+    const metadata = dataset.dataset_metadata?.model_3d;
+    if (!map || !map.isStyleLoaded() || !metadata?.render_anchor || !metadata.models?.length) return;
+    const layerId = objModelLayerId(dataset.id);
+    if (map.getLayer(layerId)) return;
+    try {
+      map.addLayer(createObjModelLayer(dataset, {
+        onError: (message) => setFlyError(message),
+      }));
+      objModelLayersRef.current.add(dataset.id);
+    } catch (error) {
+      setFlyError((error as Error).message);
+    }
+  }, []);
+
+  const removeObjModel = useCallback((datasetId: string) => {
+    const map = mapRef.current;
+    if (!map) return;
+    const layerId = objModelLayerId(datasetId);
+    if (map.getLayer(layerId)) map.removeLayer(layerId);
+    objModelLayersRef.current.delete(datasetId);
+  }, []);
+
+  const clearAllObjModels = useCallback(() => {
+    for (const id of Array.from(objModelLayersRef.current)) removeObjModel(id);
+  }, [removeObjModel]);
+
   const applyRasterDisplaySettings = useCallback((datasetId: string, nextSettings: RasterDisplaySettings) => {
     const map = mapRef.current;
     if (!map || !map.isStyleLoaded()) return;
@@ -1781,10 +1816,16 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     for (const id of Array.from(rasterLayersRef.current)) {
       if (!activeIds.has(id)) removeRasterOverlay(id);
     }
+    for (const id of Array.from(objModelLayersRef.current)) {
+      if (!activeIds.has(id)) removeObjModel(id);
+    }
     if (activeDatasetIds.length === 0) return;
     const matched = datasets.filter((d) => activeIds.has(d.id));
     if (matched.length === 0) return;
-    for (const d of matched) addRasterOverlay(d);
+    for (const d of matched) {
+      addRasterOverlay(d);
+      addObjModel(d);
+    }
     filterRef.current = { datasetIds: activeDatasetIds };
     scheduleFetch();
     // Only re-run when the map/datasets actually become ready or the
@@ -2081,28 +2122,35 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     if (isActive) {
       setExpandedDatasetId((current) => (current === dataset.id ? null : current));
       removeRasterOverlay(dataset.id);
+      removeObjModel(dataset.id);
       scheduleFetch();
       return;
     }
     addRasterOverlay(dataset);
+    addObjModel(dataset);
     // Load the complete updated dataset selection immediately. fitBounds
     // below changes only the camera and deliberately does not trigger a
     // second data request.
     scheduleFetch();
     try {
       const b = await fetchDatasetBounds(dataset.id);
+      if (dataset.dataset_metadata?.model_3d?.render_anchor) {
+        map.setPitch(58);
+        map.setBearing(-18);
+      }
       map.fitBounds([[b.min_lon, b.min_lat], [b.max_lon, b.max_lat]], { padding: 80, duration: 1000, maxZoom: 18 });
     } catch (e) { setFlyError((e as Error).message); }
-  }, [activeDatasetIds, datasets, filter, scheduleFetch, addRasterOverlay, removeRasterOverlay, onActiveDatasetsChange]);
+  }, [activeDatasetIds, datasets, filter, scheduleFetch, addRasterOverlay, removeRasterOverlay, addObjModel, removeObjModel, onActiveDatasetsChange]);
 
   const clearAllDatasets = useCallback(() => {
     setActiveDatasetIds([]);
     setExpandedDatasetId(null);
     filterRef.current = filter;
     clearAllRasterOverlays();
+    clearAllObjModels();
     onActiveDatasetsChange?.([]);
     scheduleFetch();
-  }, [filter, scheduleFetch, clearAllRasterOverlays, onActiveDatasetsChange]);
+  }, [filter, scheduleFetch, clearAllRasterOverlays, clearAllObjModels, onActiveDatasetsChange]);
 
   // Bulk toggle used by the Data Sources "Select All" control. Selecting every
   // dataset activates the full set at once without per-dataset camera moves;
@@ -2117,9 +2165,12 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     setActiveDatasetIds(next);
     filterRef.current = { datasetIds: next };
     onActiveDatasetsChange?.(datasets);
-    datasets.forEach((d) => addRasterOverlay(d));
+    datasets.forEach((d) => {
+      addRasterOverlay(d);
+      addObjModel(d);
+    });
     scheduleFetch();
-  }, [datasets, clearAllDatasets, addRasterOverlay, scheduleFetch, onActiveDatasetsChange]);
+  }, [datasets, clearAllDatasets, addRasterOverlay, addObjModel, scheduleFetch, onActiveDatasetsChange]);
 
   useImperativeHandle(
     ref,

@@ -8,13 +8,17 @@ const REFRESH_MS = 4000;
 
 const ACCEPTED_EXTENSIONS = [
   ".geojson", ".json", ".zip", ".shp", ".dbf", ".shx", ".prj", ".cpg", ".gpkg", ".kml", ".csv", ".tsv", ".xlsx", ".xls",
-  ".tif", ".tiff", ".geotiff", ".obj",
+  ".tif", ".tiff", ".geotiff", ".obj", ".mtl", ".xml",
   ".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp",
 ];
 
 const IMAGE_EXTENSIONS = [".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp"];
 const SHAPEFILE_EXTENSIONS = [".shp", ".dbf", ".shx", ".prj", ".cpg"];
 const REQUIRED_SHAPEFILE_EXTENSIONS = [".shp", ".dbf", ".shx", ".prj"];
+const OBJ_BUNDLE_EXTENSIONS = new Set([
+  ".obj", ".mtl", ".xml", ".prj", ".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tif", ".tiff",
+]);
+const OBJ_SIDECAR_EXTENSIONS = new Set([".mtl", ".xml"]);
 
 const FILE_TYPE_INFO: Record<string, { icon: React.ReactNode; label: string }> = {
   shapefile: {
@@ -176,6 +180,25 @@ function validateShapefileBundle(files: File[]): { stem: string; files: File[] }
   return { stem, files: matching };
 }
 
+function validateObjBundle(files: { path: string; file: File }[]): { name: string; files: { path: string; file: File }[] } {
+  const objFiles = files.filter(({ file }) => extensionOf(file.name) === ".obj");
+  if (objFiles.length === 0) throw new Error("An OBJ bundle must contain at least one .obj model file.");
+
+  const unsupported = files.filter(({ file }) => !OBJ_BUNDLE_EXTENSIONS.has(extensionOf(file.name)));
+  if (unsupported.length > 0) {
+    throw new Error(`Unsupported OBJ companion file: ${unsupported[0].file.name}.`);
+  }
+
+  const hasMetadata = files.some(({ file }) => file.name.toLocaleLowerCase() === "metadata.xml");
+  const hasPrj = files.some(({ file }) => extensionOf(file.name) === ".prj");
+  if (!hasMetadata && !hasPrj) {
+    throw new Error("Include metadata.xml (with SRS/EPSG and SRSOrigin) or a .prj file with the OBJ model.");
+  }
+
+  const firstStem = objFiles[0].file.name.replace(/\.obj$/i, "");
+  return { name: objFiles.length === 1 ? firstStem : "obj-models", files };
+}
+
 function getFileIcon(type: string): React.ReactNode {
   // Map common variations to their base types
   const typeMap: Record<string, string> = {
@@ -185,6 +208,10 @@ function getFileIcon(type: string): React.ReactNode {
   };
   const normalizedType = typeMap[type] ?? type;
   return FILE_TYPE_INFO[normalizedType]?.icon ?? <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" width="16" height="16"><path d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" strokeLinecap="round" strokeLinejoin="round" /></svg>;
+}
+
+function datasetDisplayType(dataset: DatasetRow): string {
+  return dataset.dataset_metadata?.model_3d?.format === "obj" ? "OBJ 3D" : dataset.file_type;
 }
 
 export function DatasetsView() {
@@ -244,6 +271,11 @@ export function DatasetsView() {
       );
       return;
     }
+    if (f && OBJ_SIDECAR_EXTENSIONS.has(extensionOf(f.name))) {
+      setUploadFile(null);
+      setUploadError(`Select "${f.name}" together with its .obj file, or choose the complete model folder.`);
+      return;
+    }
     setUploadError(null);
     setUploadFile(f);
     if (f && !uploadName.trim()) setUploadName(f.name.replace(/\.[^.]+$/, ""));
@@ -277,9 +309,24 @@ export function DatasetsView() {
 
   async function pickFiles(files: File[]) {
     if (files.length === 0) return;
+    const hasObj = files.some((file) => extensionOf(file.name) === ".obj");
     const allImages = files.every((file) => IMAGE_EXTENSIONS.includes(extensionOf(file.name)));
     const allShapefileComponents = files.every((file) => SHAPEFILE_EXTENSIONS.includes(extensionOf(file.name)));
 
+    if (hasObj && files.length > 1) {
+      setUploadError(null);
+      setZipping(true);
+      try {
+        const bundle = validateObjBundle(files.map((file) => ({ path: file.name, file })));
+        pickFile(await zipCollectedFiles(bundle.name, bundle.files));
+      } catch (err) {
+        setUploadFile(null);
+        setUploadError((err as Error).message);
+      } finally {
+        setZipping(false);
+      }
+      return;
+    }
     if (allImages && files.length > 1) {
       await pickMultiplePhotos(files);
       return;
@@ -295,7 +342,7 @@ export function DatasetsView() {
 
     setUploadFile(null);
     setUploadError(
-      "Multiple files must be one shapefile bundle (.shp + .dbf + .shx + .prj), or a batch of photos."
+      "Multiple files must be a shapefile bundle, an OBJ bundle, or a batch of photos."
     );
   }
 
@@ -319,24 +366,29 @@ export function DatasetsView() {
     }
   }
 
-  // Folders can contain a File Geodatabase, a shapefile bundle, or photos.
+  // Folders can contain a File Geodatabase, shapefile/OBJ bundle, or photos.
   async function pickFolder(name: string, collectFiles: () => Promise<{ path: string; file: File }[]>) {
     setUploadError(null);
     setZipping(true);
     try {
       const files = await collectFiles();
       const isGdb = name.toLowerCase().endsWith(".gdb");
+      const isObjBundle = files.some(({ file }) => extensionOf(file.name) === ".obj");
       const isAllImages = files.length > 0 && files.every(({ file }) => IMAGE_EXTENSIONS.includes(extensionOf(file.name)));
       const isShapefile = files.length > 0 && files.every(({ file }) => SHAPEFILE_EXTENSIONS.includes(extensionOf(file.name)));
-      if (!isGdb && !isAllImages && !isShapefile) {
+      if (!isGdb && !isObjBundle && !isAllImages && !isShapefile) {
         setUploadError(
-          `"${name}" must be a File Geodatabase (.gdb), a shapefile folder, or a folder of photos.`
+          `"${name}" must be a File Geodatabase (.gdb), shapefile folder, georeferenced OBJ folder, or folder of photos.`
         );
         return;
       }
       let archiveName = name;
       let filesToZip = files;
-      if (isShapefile) {
+      if (isObjBundle) {
+        const bundle = validateObjBundle(files);
+        archiveName = name || bundle.name;
+        filesToZip = bundle.files;
+      } else if (isShapefile) {
         const bundle = validateShapefileBundle(files.map(({ file }) => file));
         archiveName = bundle.stem;
         filesToZip = bundle.files.map((file) => ({ path: file.name, file }));
@@ -574,7 +626,7 @@ export function DatasetsView() {
             {zipping ? (
               <div className="ds-dropzone__content">
                 <span className="ds-dropzone__label">Validating and bundling files in your browser...</span>
-                <span className="ds-dropzone__hint">Shapefiles, large .gdb folders, and photo batches may take a few seconds.</span>
+                <span className="ds-dropzone__hint">Shapefiles, OBJ models, large .gdb folders, and photo batches may take a few seconds.</span>
               </div>
             ) : !uploadFile ? (
               <label htmlFor="dz-file" className="ds-dropzone__content">
@@ -585,7 +637,7 @@ export function DatasetsView() {
                   </svg>
                 </div>
                 <span className="ds-dropzone__label">
-                  {dragOver ? "Drop file(s) or a folder here" : "Drag & drop data, all shapefile components, or a supported folder here"}
+                  {dragOver ? "Drop file(s) or a folder here" : "Drag & drop data, shapefile/OBJ components, or a supported folder here"}
                 </span>
                 <span className="ds-dropzone__hint">
                   or <span className="ds-dropzone__browse">browse files</span>
@@ -598,7 +650,7 @@ export function DatasetsView() {
                       folderInputRef.current?.click();
                     }}
                   >
-                    browse a folder (.shp, .gdb, or photos)
+                    browse a folder (.shp, .gdb, .obj, or photos)
                   </span>
                   {" · "}
                   <span
@@ -761,7 +813,7 @@ export function DatasetsView() {
               <li>
                 <span className="ds-format-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" width="14" height="14"><path d="M14 10l-2 1m0 0l-2-1m2 1v2.5M20 7l-2 1m2-1l-2-1m2 1v2.5M14 4l-2-1-2 1M4 7l2-1M4 7l2 1M4 7v2.5M12 21l-2-1m2 1l2-1m-2 1v-2.5M6 18l-2-1v-2.5M18 18l2-1v-2.5" strokeLinecap="round" strokeLinejoin="round" /></svg></span>
                 <span className="ds-format-name">OBJ (3D)</span>
-                <span className="ds-format-desc">.obj 3D model files</span>
+                <span className="ds-format-desc">Folder with .obj + metadata.xml / .prj</span>
               </li>
               <li>
                 <span className="ds-format-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" width="14" height="14"><path d="M9 17v-2m3 2v-4m3 4v-6m2 10H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" strokeLinecap="round" strokeLinejoin="round" /></svg></span>
@@ -805,6 +857,7 @@ export function DatasetsView() {
               <li>Drop a whole File Geodatabase (.gdb) folder directly — it's zipped in your browser before upload</li>
               <li>Batches of photos can be selected together and are bundled into a single dataset automatically</li>
               <li>GeoTIFF rasters support live color and clarity adjustments from the dataset's display settings</li>
+              <li>OBJ survey models should be uploaded as a folder with metadata.xml (EPSG + origin), MTL, and textures</li>
               <li>Large uploads run in the background — you can keep working while a dataset finishes processing</li>
             </ul>
           </div>
@@ -863,7 +916,7 @@ export function DatasetsView() {
                 style={{ animationDelay: `${i * 50}ms` }}
               >
                 <div className="ds-table__td ds-table__td--name" title={d.description ?? d.name}>
-                  <span className="ds-table__file-icon">{getFileIcon(d.file_type)}</span>
+                  <span className="ds-table__file-icon">{getFileIcon(d.dataset_metadata?.model_3d ? "obj" : d.file_type)}</span>
                   <div className="ds-table__name-wrap">
                     <span className="ds-table__name">{d.name}</span>
                     {d.processing_error && (
@@ -902,7 +955,12 @@ export function DatasetsView() {
                   )}
                 </div>
                 <div className="ds-table__td">
-                  <span className="ds-table__badge ds-table__badge--type">{d.file_type}</span>
+                  <span
+                    className="ds-table__badge ds-table__badge--type"
+                    title={d.dataset_metadata?.model_3d?.source_crs}
+                  >
+                    {datasetDisplayType(d)}
+                  </span>
                 </div>
                 <div className="ds-table__td ds-table__td--mono">{formatBytes(d.size_bytes ?? 0)}</div>
                 <div className="ds-table__td">

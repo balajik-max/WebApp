@@ -9,7 +9,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from pathlib import Path
-from typing import BinaryIO
+from typing import Any, BinaryIO
 
 import boto3
 from botocore.client import Config
@@ -92,6 +92,21 @@ async def get_object_bytes(key: str) -> bytes:
     return await asyncio.to_thread(_do)
 
 
+async def open_object_stream(key: str) -> dict[str, Any]:
+    """Open an object for chunked API proxying without buffering it.
+
+    Large OBJ meshes can be hundreds of megabytes, so ``get_object_bytes``
+    would duplicate the entire model in backend memory before the first byte
+    reached the browser. The caller owns and must close the returned Body.
+    """
+    s = get_settings()
+
+    def _do() -> dict[str, Any]:
+        return _client().get_object(Bucket=s.s3_bucket, Key=key)
+
+    return await asyncio.to_thread(_do)
+
+
 async def delete_object(key: str) -> None:
     """Remove an object from the bucket. Safe to call even if it's already gone."""
     s = get_settings()
@@ -105,3 +120,30 @@ async def delete_object(key: str) -> None:
                 raise
 
     await asyncio.to_thread(_do)
+
+
+async def delete_objects_with_prefix(prefix: str, *, keep: set[str] | None = None) -> int:
+    """Delete objects under a dataset-owned prefix, optionally preserving keys."""
+    s = get_settings()
+    keep_keys = keep or set()
+
+    def _do() -> int:
+        client = _client()
+        deleted = 0
+        paginator = client.get_paginator("list_objects_v2")
+        for page in paginator.paginate(Bucket=s.s3_bucket, Prefix=prefix):
+            keys = [
+                item["Key"] for item in page.get("Contents", [])
+                if item["Key"] not in keep_keys
+            ]
+            for start in range(0, len(keys), 1000):
+                batch = keys[start:start + 1000]
+                if batch:
+                    client.delete_objects(
+                        Bucket=s.s3_bucket,
+                        Delete={"Objects": [{"Key": key} for key in batch], "Quiet": True},
+                    )
+                    deleted += len(batch)
+        return deleted
+
+    return await asyncio.to_thread(_do)

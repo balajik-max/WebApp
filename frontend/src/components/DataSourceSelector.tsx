@@ -22,7 +22,15 @@ interface DataSourceSelectorProps {
   auditError: string | null;
 }
 
-function DatasetTypeIcon({ fileType }: { fileType: string }) {
+function DatasetTypeIcon({ fileType, isModel3d = false }: { fileType: string; isModel3d?: boolean }) {
+  if (isModel3d) {
+    return (
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+        <path d="M12 2 3.5 6.5v11L12 22l8.5-4.5v-11L12 2Z" />
+        <path d="m3.5 6.5 8.5 5 8.5-5M12 11.5V22" />
+      </svg>
+    );
+  }
   const isRaster = fileType === "geotiff" || fileType.toLowerCase().includes("image");
   if (isRaster) {
     return (
@@ -222,6 +230,7 @@ export function DataSourceSelector({
               datasets.map((d) => {
                 const isActive = activeDatasetIds.includes(d.id);
                 const selectable = d.status === "ready";
+                const modelMetadata = d.dataset_metadata?.model_3d;
                 const hasRasterControls = d.status === "ready" && d.file_type === "geotiff" && Boolean(d.dataset_metadata?.raster_overlay);
                 const canOpenSettings = hasRasterControls && isActive;
                 const isExpanded = canOpenSettings && expandedDatasetId === d.id;
@@ -239,15 +248,15 @@ export function DataSourceSelector({
                         aria-label={d.name}
                       />
                       <span className="dss-row__icon" aria-hidden="true">
-                        <DatasetTypeIcon fileType={d.file_type} />
+                        <DatasetTypeIcon fileType={d.file_type} isModel3d={Boolean(modelMetadata)} />
                       </span>
                       <span className="dss-row__info">
                         <span className="dss-row__name" title={d.name}>{d.name}</span>
                         <span className="dss-row__meta">
                           {d.ward ? (
-                            <><strong>Ward {d.ward}</strong> · {d.file_type}</>
+                            <><strong>Ward {d.ward}</strong> · {modelMetadata ? `OBJ 3D · ${modelMetadata.source_crs}` : d.file_type}</>
                           ) : (
-                            <>All wards · {d.file_type}</>
+                            <>All wards · {modelMetadata ? `OBJ 3D · ${modelMetadata.source_crs}` : d.file_type}</>
                           )}
                         </span>
                       </span>

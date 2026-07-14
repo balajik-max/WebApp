@@ -31,6 +31,7 @@ from fastapi import (
 )
 from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
+from starlette.responses import StreamingResponse
 
 from app.api.deps import get_current_user, require_any
 from app.core.config import MAX_UPLOAD_BYTES
@@ -183,6 +184,7 @@ _SUFFIX_TO_TYPE: dict[str, DatasetFileType] = {
 
 _ZIP_IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp"}
 _ZIP_GIS_EXTS = {".shp", ".dbf", ".shx", ".prj", ".gpkg"}
+_ZIP_OBJ_EXTS = {".obj"}
 
 
 def _validate_zipped_shapefile(payload: bytes) -> None:
@@ -216,6 +218,69 @@ def _validate_zipped_shapefile(payload: bytes) -> None:
         )
 
 
+def _validate_zipped_obj_bundle(payload: bytes) -> None:
+    """Require survey OBJ bundles to carry explicit CRS metadata.
+
+    Standalone OBJ remains supported for backward compatibility. A bundle is
+    the accurate path for local-coordinate survey exports because it preserves
+    metadata.xml (EPSG + origin), MTL files, textures, and multiple blocks.
+    """
+    import zipfile
+    from pathlib import PurePosixPath
+    from xml.etree import ElementTree
+
+    from pyproj import CRS
+    from pyproj.exceptions import CRSError
+
+    try:
+        with zipfile.ZipFile(io.BytesIO(payload)) as zf:
+            infos = [info for info in zf.infolist() if not info.is_dir()]
+            obj_infos = [
+                info for info in infos
+                if PurePosixPath(info.filename.replace("\\", "/")).suffix.lower() == ".obj"
+            ]
+            if not obj_infos:
+                return
+            metadata_infos = [
+                info for info in infos
+                if PurePosixPath(info.filename.replace("\\", "/")).name.casefold() == "metadata.xml"
+            ]
+            prj_infos = [
+                info for info in infos
+                if PurePosixPath(info.filename.replace("\\", "/")).suffix.lower() == ".prj"
+            ]
+            if not metadata_infos and not prj_infos:
+                raise HTTPException(
+                    status_code=400,
+                    detail="OBJ bundles must include metadata.xml (with SRS/EPSG and SRSOrigin) or a .prj file",
+                )
+            for info in metadata_infos:
+                if info.file_size > 1024 * 1024:
+                    raise HTTPException(status_code=400, detail=f"OBJ metadata file '{info.filename}' is too large")
+                try:
+                    root = ElementTree.fromstring(zf.read(info))
+                except ElementTree.ParseError as exc:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"OBJ metadata file '{info.filename}' is invalid XML",
+                    ) from exc
+                srs = root.find(".//SRS")
+                if srs is None or not (srs.text or "").strip():
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"OBJ metadata file '{info.filename}' does not declare an SRS/EPSG code",
+                    )
+                try:
+                    CRS.from_user_input((srs.text or "").strip())
+                except CRSError as exc:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"OBJ metadata file '{info.filename}' declares an invalid SRS/EPSG code",
+                    ) from exc
+    except zipfile.BadZipFile as exc:
+        raise HTTPException(status_code=400, detail="Uploaded ZIP file is invalid") from exc
+
+
 def _classify(filename: str, payload: bytes | None = None) -> DatasetFileType:
     ext = Path(filename).suffix.lower()
     if ext == ".zip" and payload:
@@ -227,6 +292,8 @@ def _classify(filename: str, payload: bytes | None = None) -> DatasetFileType:
         try:
             with zipfile.ZipFile(io.BytesIO(payload)) as zf:
                 names = [n for n in zf.namelist() if not n.endswith("/")]
+            if any(Path(n).suffix.lower() in _ZIP_OBJ_EXTS for n in names):
+                return DatasetFileType.OTHER
             if not any(Path(n).suffix.lower() in _ZIP_GIS_EXTS or ".gdb/" in n.lower() for n in names):
                 if any(Path(n).suffix.lower() in _ZIP_IMAGE_EXTS for n in names):
                     return DatasetFileType.IMAGE
@@ -244,7 +311,7 @@ def _classify(filename: str, payload: bytes | None = None) -> DatasetFileType:
 async def upload_dataset(
     background_tasks: BackgroundTasks,
     response: Response,
-    file: UploadFile = File(..., description="Shapefile (.zip/.shp), .geojson, .csv, .xlsx"),
+    file: UploadFile = File(..., description="GIS, raster, tabular, photo, or OBJ/OBJ bundle"),
     name: str = Form(..., min_length=1, max_length=255),
     description: str | None = Form(default=None, max_length=1024),
     ward: str | None = Form(default=None, max_length=128),
@@ -286,6 +353,7 @@ async def upload_dataset(
         )
     if ext == ".zip":
         _validate_zipped_shapefile(payload)
+        _validate_zipped_obj_bundle(payload)
 
     # 2. Ensure the bucket exists (idempotent) then push the object.
     await ensure_bucket()
@@ -392,6 +460,52 @@ async def get_raster_preview(
     return Response(content=png_bytes, media_type="image/png")
 
 
+@router.get(
+    "/{dataset_id}/model-assets/{asset_path:path}",
+    dependencies=[Depends(require_any)],
+)
+async def get_model_asset(
+    dataset_id: uuid.UUID,
+    asset_path: str,
+    db: AsyncSession = Depends(get_db),
+) -> StreamingResponse:
+    """Stream an extracted OBJ/MTL/texture asset to the authenticated map."""
+    row = (await db.execute(select(Dataset).where(Dataset.id == dataset_id))).scalar_one_or_none()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+
+    model_metadata = (row.dataset_metadata or {}).get("model_3d") or {}
+    asset_keys = model_metadata.get("asset_keys") or {}
+    storage_key = asset_keys.get(asset_path)
+    if not storage_key:
+        raise HTTPException(status_code=404, detail="Model asset not found")
+
+    from app.services.storage import open_object_stream
+
+    try:
+        object_response = await open_object_stream(storage_key)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=404, detail="Model asset not found in storage") from exc
+
+    body = object_response["Body"]
+
+    def chunks():
+        try:
+            yield from body.iter_chunks(chunk_size=1024 * 1024)
+        finally:
+            body.close()
+
+    headers = {"Cache-Control": "private, max-age=3600"}
+    content_length = object_response.get("ContentLength")
+    if content_length is not None:
+        headers["Content-Length"] = str(content_length)
+    return StreamingResponse(
+        chunks(),
+        media_type=object_response.get("ContentType") or "application/octet-stream",
+        headers=headers,
+    )
+
+
 @router.patch(
     "/{dataset_id}",
     response_model=DatasetOut,
@@ -467,6 +581,9 @@ async def delete_dataset(
 
     if row.storage_key:
         await delete_object(row.storage_key)
+    from app.services.storage import delete_objects_with_prefix
+
+    await delete_objects_with_prefix(f"datasets/{dataset_id}/model-assets/")
 
     db.add(
         ActivityLog(

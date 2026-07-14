@@ -23,13 +23,14 @@ from app.models import (
     Dataset,
     DatasetStatus,
 )
-from app.services.readers import DatasetReader, GISReader, ImageReader, get_reader_for
+from app.services.readers import DatasetReader, GISReader, ImageReader, ObjReader, get_reader_for
 from app.services.storage import download_to_file
 
 log = logging.getLogger("davangere.ingestion")
 
 _IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp"}
 _GIS_EXTS = {".shp", ".dbf", ".shx", ".prj", ".gpkg"}
+_OBJ_EXTS = {".obj"}
 _PROCESSING_ERROR_MAX_LENGTH = 2048
 
 
@@ -46,6 +47,9 @@ def _pick_zip_reader(local_path: Path) -> DatasetReader:
     except zipfile.BadZipFile:
         return GISReader()  # let the existing reader produce its own clear error
 
+    has_obj = any(Path(n).suffix.lower() in _OBJ_EXTS for n in names)
+    if has_obj:
+        return ObjReader()
     has_gis = any(Path(n).suffix.lower() in _GIS_EXTS or ".gdb/" in n.lower() for n in names)
     if has_gis:
         return GISReader()
@@ -72,10 +76,14 @@ async def _set_status(
         ds.processing_error = error[:_PROCESSING_ERROR_MAX_LENGTH] if error else None
         if result_payload is not None:
             merged = dict(ds.dataset_metadata or {})
-            merged["ingestion"] = result_payload
-            raster_overlay = result_payload.pop("raster_overlay", None)
+            ingestion_summary = dict(result_payload)
+            raster_overlay = ingestion_summary.pop("raster_overlay", None)
+            reader_metadata = ingestion_summary.pop("dataset_metadata", None)
+            merged["ingestion"] = ingestion_summary
             if raster_overlay is not None:
                 merged["raster_overlay"] = raster_overlay
+            if reader_metadata:
+                merged.update(reader_metadata)
             ds.dataset_metadata = merged
 
         session.add(
@@ -156,6 +164,7 @@ async def ingest_dataset(*, dataset_id: uuid.UUID, storage_key: str, filename: s
                 "source_crs": result.source_crs,
                 "notes": result.notes,
                 "raster_overlay": result.raster_overlay,
+                "dataset_metadata": result.dataset_metadata,
             },
         )
     except Exception as exc:  # noqa: BLE001 — last-resort guard, see docstring
