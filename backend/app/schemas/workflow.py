@@ -187,6 +187,57 @@ class AnalyticsOverview(BaseModel):
     generated_at: datetime
 
 
+class AnalyticsQualityComponent(BaseModel):
+    key: str
+    label: str
+    score: float
+    weight: int
+    passed: int
+    failed: int
+    explanation: str
+
+
+class AnalyticsFinding(BaseModel):
+    id: str
+    title: str
+    description: str
+    rule: str
+    severity: Literal["low", "medium", "high", "critical"]
+    finding_type: Literal["geometry", "attribute", "consistency", "operational"]
+    affected_count: int
+    affected_percentage: float
+    priority_score: int
+    feature_ids: list[uuid.UUID] = Field(default_factory=list)
+    category: str | None = None
+    attribute: str | None = None
+
+
+class AnalyticsQualityReport(BaseModel):
+    total_features: int
+    overall_score: float | None
+    components: list[AnalyticsQualityComponent]
+    findings: list[AnalyticsFinding]
+    methodology: str
+    generated_at: datetime
+
+
+class ManholeReadinessFieldResult(BaseModel):
+    key: str
+    label: str
+    aliases: list[str]
+    available_count: int
+    missing_count: int
+    completeness_percentage: float
+    recommended_action: str
+
+
+class ManholeReadinessReport(BaseModel):
+    total_manhole_features: int
+    fields: list[ManholeReadinessFieldResult]
+    methodology: str
+    generated_at: datetime
+
+
 # ---------- Notifications -------------------------------------------------
 class NotificationOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
