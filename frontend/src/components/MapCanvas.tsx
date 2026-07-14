@@ -3268,16 +3268,6 @@ function formatDms(value: number, positiveSuffix: string, negativeSuffix: string
   return `${degrees}°${String(minutes).padStart(2, "0")}'${seconds.toFixed(2).padStart(5, "0")}" ${suffix}`;
 }
 
-function CoordinateReadout({ lngLat }: { lngLat: [number, number] | null }) {
-  if (!lngLat) return null;
-  const [lng, lat] = lngLat;
-  return (
-    <div className="map__coord-readout" data-testid="map-coord-readout">
-      {formatDms(lat, "N", "S")}&nbsp;&nbsp;{formatDms(lng, "E", "W")}
-    </div>
-  );
-}
-
 function MapLegend({ entries }: { entries: LegendEntry[] }) {
   if (entries.length === 0) return null;
   return (
@@ -3291,28 +3281,6 @@ function MapLegend({ entries }: { entries: LegendEntry[] }) {
         </div>
       ))}
     </div>
-  );
-}
-
-
-function ToolRail({ measureActive, onToggleMeasure }: { measureActive: boolean; onToggleMeasure: () => void }) {
-  return (
-    <nav className="tool-rail" data-testid="tool-rail" aria-label="Map tools">
-      <button
-        type="button"
-        className={`tool-rail__btn${measureActive ? " tool-rail__btn--active" : ""}`}
-        onClick={onToggleMeasure}
-        title="Measure distance"
-        aria-label="Measure distance"
-        aria-pressed={measureActive}
-        data-testid="tool-rail-measure"
-      >
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" width="18" height="18">
-          <rect x="2.5" y="7.5" width="19" height="9" rx="1.5" transform="rotate(-45 12 12)" />
-          <path d="M8.5 10.5l1 1M11 8l1.5 1.5M14 5.5l1 1" transform="rotate(-45 12 12)" />
-        </svg>
-      </button>
-    </nav>
   );
 }
 
