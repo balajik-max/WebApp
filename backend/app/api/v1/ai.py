@@ -535,6 +535,52 @@ async def spacing(body: SpacingRequest, db: AsyncSession = Depends(get_db)) -> A
 # a single finding via the same anti-hallucination run_grounded_completion
 # used everywhere else in this file.
 # ---------------------------------------------------------------------------
+def _anomaly_fact_sheet(row: SpatialAnomaly) -> str:
+    """Turn one SpatialAnomaly's raw `anomaly_metadata` into a labeled,
+    human-readable fact sheet for the LLM — a Python dict repr is harder
+    for a small local model to quote accurately than plain labeled lines."""
+    m = row.anomaly_metadata
+    lines = [
+        f"ANOMALY_TYPE: {row.anomaly_type.value}",
+        f"COLOR: {row.color.value}",
+        f"SEVERITY_SCORE_0_100: {row.severity_score:.0f}",
+        f"WARD: {row.ward or 'unknown'}",
+    ]
+
+    if row.anomaly_type.value == "drain_encroachment":
+        crosses = bool(m.get("drain_crosses_building"))
+        lines += [
+            "The building genuinely touches the drain's raw centerline (verified geometrically — a real shared point, not an estimate or a buffer)."
+            ,
+            f"The drain runs {m.get('drain_chord_length_m')} m through this building's interior, which is {m.get('crossing_ratio_pct')}% of the building's own average width ({m.get('building_span_m')} m) — "
+            + ("this is a FULL CROSSING: the drain runs most/all of the way across the building, entering one side and exiting the other." if crosses
+               else "this is a PARTIAL CLIP: the drain only cuts through a fraction of the building (a corner or an edge), not the whole structure."),
+            f"Estimated encroached area, assuming a {m.get('drain_buffer_m')} m channel half-width either side of the drain centerline: {m.get('overlap_area_m2')} m^2 ({m.get('overlap_pct')}% of this building's {m.get('building_area_m2')} m^2 footprint) — this area figure is illustrative of scale, the chord length/ratio above is the exact finding",
+            f"Drain category/categories involved: {m.get('drain_categories')}",
+        ]
+    elif row.anomaly_type.value == "pole_redundancy":
+        if row.color.value == "green":
+            lines += [
+                f"This pole was kept as the representative asset for a cluster of {m.get('cluster_size')} closely-spaced poles.",
+                f"Category: {m.get('this_category')}",
+            ]
+        elif row.color.value == "red":
+            lines += [
+                f"This pole sits in a cluster of {m.get('cluster_size')} poles within {m.get('eps_m')} m of each other — redundant.",
+                f"Category: {m.get('this_category')}; the pole kept instead was category {m.get('kept_category')}",
+            ]
+        else:
+            lines += [
+                f"Nearest same-family pole is {m.get('nearest_neighbor_m')} m away — inside the {m.get('yellow_band_m')} m borderline band but not tight enough to count as a redundant cluster (threshold {m.get('eps_m')} m).",
+            ]
+    elif row.anomaly_type.value == "manhole_status":
+        lines += [
+            f"Nearest drain: {m.get('nearest_drain_category') or 'none found'}, {m.get('nearest_drain_distance_m')} m away (search radius {m.get('max_search_radius_m')} m).",
+        ]
+
+    return "\n".join(lines)
+
+
 def _anomaly_out(row: SpatialAnomaly, lon: float, lat: float) -> SpatialAnomalyOut:
     return SpatialAnomalyOut(
         id=row.id,
@@ -622,21 +668,30 @@ async def explain_anomaly(anomaly_id: uuid.UUID, db: AsyncSession = Depends(get_
             cached=True,
         )
 
-    crib = (
-        f"ANOMALY_TYPE: {row.anomaly_type.value}\n"
-        f"COLOR: {row.color.value}\n"
-        f"SEVERITY_SCORE_0_100: {row.severity_score:.0f}\n"
-        f"WARD: {row.ward or 'unknown'}\n"
-        f"FACTS (verified, never invent numbers not shown here):\n{row.anomaly_metadata}"
-    )
+    crib = _anomaly_fact_sheet(row)
     prompt = (
-        "Using ONLY the FACTS below, write a short (2-4 sentence) plain-English "
-        "explanation of this single finding for a municipal engineer, in the "
-        "style: what was found, why it matters, and a one-line recommended "
-        "action. Never state a number that is not present in FACTS.\n\n"
+        "You are a senior municipal infrastructure auditor writing a finding "
+        "note for a civil engineer who will act on it. Using ONLY the FACTS "
+        "below, write 3-5 sentences covering, in order: (1) exactly what was "
+        "found, citing the specific percentage/distance/count figures given, "
+        "(2) why it matters in practical civic terms (drainage flow, fire "
+        "access, over-illumination cost, etc.), and (3) one concrete, "
+        "actionable recommendation. Be direct and precise, not vague — write "
+        "like an expert who has personally verified these numbers, not a "
+        "chatbot hedging. Never state a number that is not present in FACTS, "
+        "and never mention that you were given 'facts' or metadata — just "
+        "report the finding. If FACTS says the drain's centerline crosses "
+        "straight through the building, your very first sentence must say "
+        "so plainly (e.g. 'the drain runs directly through this building') "
+        "before any percentage — the crossing itself is the headline, the "
+        "percentage is supporting detail, never the other way around. If "
+        "FACTS gives an encroached/overlapping area in square meters, you "
+        "MUST state that exact area figure (not just the percentage) "
+        "somewhere in the finding — engineers need the physical area, not "
+        "only a ratio.\n\n"
         f"FACTS:\n{crib}"
     )
-    reply = await run_grounded_completion(context=crib, user_prompt=prompt, num_predict=250, num_ctx=1024)
+    reply = await run_grounded_completion(context=crib, user_prompt=prompt, num_predict=280, num_ctx=1024)
 
     row.explanation_text = reply.text
     row.explanation_model = reply.model

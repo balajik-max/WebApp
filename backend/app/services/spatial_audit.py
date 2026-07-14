@@ -11,10 +11,38 @@ Goal 1 — Pole redundancy: DBSCAN-cluster all Illumination_Asset features
 as one family). Within a cluster, one pole is kept (green), the rest are
 flagged redundant (red). Isolated-but-close poles are flagged yellow.
 
-Goal 2 — Building/drain encroachment: the total length of drain line
-crossing a building is divided by the building's span (perimeter / 4)
-to compute an encroachment percentage.  >= 80% -> RED (critical),
-> 0% -> YELLOW (partial entry / graze), 0% -> GREEN (no anomaly row).
+Goal 2 — Building/drain encroachment: whether a row exists at all is
+zero-tolerance, real geometry only — ST_Intersects(building, drain's
+raw centerline), no buffer, no distance allowance. A building with any
+visible gap to the drain is never flagged, full stop; this also covers
+"Building Extenstions" (mapped to the same canonical_class as Building,
+so a road-side extension that touches/crosses a drain is judged by
+exactly the same rule as the main structure, not skipped).
+
+Once a building genuinely touches a drain, RED vs YELLOW is NOT decided
+by ST_Crosses — that was tried and doesn't work here: ST_Crosses tests
+the drain's ENTIRE line (which runs on for tens/hundreds of metres past
+many other buildings) against this one polygon, so it reads "has
+interior points and exterior points" as true for nearly any real entry,
+even a shallow corner clip, because the rest of the line far away is
+obviously "outside" this building. That collapsed red/yellow into
+almost all red. Instead:
+  - Take just the piece of drain line inside THIS building
+    (ST_Intersection) and measure its length — `chord_len_m`.
+  - Compare it to the building's OWN size (`perimeter / 4`, its average
+    side length) — never another building's size, so a shared wall in a
+    row/terrace can't contaminate the measurement the way a shared
+    vicinity buffer did in an earlier attempt.
+  - `crossing_ratio = chord_len_m / building_span_m`
+  - RED   : crossing_ratio > DRAIN_CROSSING_RED_RATIO — the drain runs
+    most/all of the way across the building's own footprint.
+  - YELLOW: 0 < crossing_ratio <= DRAIN_CROSSING_RED_RATIO — the drain
+    only clips a fraction of the building (a corner, an edge).
+  - GREEN (no anomaly row): the building never touches any drain.
+DRAIN_BUFFER_M is separate and unrelated — it only estimates a physical
+channel width for the descriptive `overlap_pct`/`overlap_area_m2`
+figures shown in the tooltip/AI explanation, and plays no part in
+deciding whether a row exists or what color it gets.
 
 Goal 3 — Manhole status: for every Access_Point (manhole), find the nearest
 Drainage_Asset and read its labeled open/closed status. Every manhole gets
@@ -44,16 +72,16 @@ CLASS_EPS_M = {
 DEFAULT_EPS_M = 10.0
 YELLOW_BAND_MULTIPLIER = 1.5  # borderline = between eps and eps * this
 
-# Percentage-based drain encroachment: the total length of drain line
-# passing through a building is expressed as a percentage of the building's
-# "span" (= perimeter / 4, roughly the average side length). A drain that
-# cuts fully across the building reaches ~100 %, a corner graze is a small
-# percentage. Thresholds:
-#   >= DRAIN_ENCROACH_RED_THRESHOLD_PCT  -> RED   (full crossing / critical)
-#   > 0                                   -> YELLOW (partial / borderline)
-#   0                                     -> GREEN  (no anomaly row created)
-DRAIN_CONTACT_TOLERANCE_M = 0.25
-DRAIN_ENCROACH_RED_THRESHOLD_PCT = 80.0
+# Fraction of the building's OWN span (perimeter / 4) that the drain's
+# chord inside it must exceed to count as a full crossing (RED) rather
+# than a partial clip (YELLOW). See module docstring for why this
+# replaced a plain ST_Crosses check.
+DRAIN_CROSSING_RED_RATIO = 0.5
+
+# Used ONLY to estimate a physical channel width for the descriptive
+# overlap_pct/overlap_area_m2 figures (see module docstring) — never to
+# decide whether a building counts as touching a drain.
+DRAIN_BUFFER_M = 1.5
 
 # ST_ClusterDBSCAN's `eps` is measured in the units of its input geometry's
 # SRID — passing it raw EPSG:4326 geometry means "eps" is degrees (~111km
@@ -203,44 +231,40 @@ async def _detect_pole_redundancy(
 async def _detect_drain_encroachment(
     dataset_id: uuid.UUID, ward: str | None, db: AsyncSession
 ) -> dict[str, int]:
-    # Percentage-based: the total length of drain line crossing through a
-    # building is divided by the building's "span" (perimeter / 4, roughly
-    # the average side length) to get an encroachment percentage.
-    #   >= 80%      -> RED    (full/substantial crossing)
-    #   > 0%        -> YELLOW (partial entry / graze)
-    #   0%          -> GREEN  (no anomaly row)
+    # See module docstring: whether a row exists at all is a strict, real
+    # ST_Intersects against the drain's raw centerline (zero buffer, zero
+    # tolerance) — includes Building Extenstions, since it shares the same
+    # canonical_class as Building. RED vs YELLOW is then the length of
+    # drain actually inside the building vs. the building's OWN span (not
+    # a shared/neighbor-dependent denominator). DRAIN_BUFFER_M is separate
+    # — used only afterwards for the descriptive overlap_pct/area.
     rows = (
         await db.execute(
             text(
-                "WITH contacts AS ( "
+                "WITH near_drains AS ( "
                 "  SELECT b.id AS building_id, "
-                "         ST_X(ST_Centroid(b.geom)) AS x, "
-                "         ST_Y(ST_Centroid(b.geom)) AS y, "
-                "         d.id AS drain_id, "
-                "         d.category AS drain_category, "
-                "         d.attributes->>'LAYER' AS drain_layer, "
-                "         ST_Distance(b.geom::geography, d.geom::geography) AS dist_m, "
-                "         COALESCE(ST_Length(ST_Intersection(d.geom::geography, b.geom::geography)), 0) "
-                "           AS overlap_len_m, "
-                "         ST_Perimeter(b.geom::geography) AS building_perim_m "
+                "         ST_Union(ST_Buffer(d.geom::geography, :buffer_m)::geometry) AS drain_footprint, "
+                "         sum(ST_Length(ST_Intersection(d.geom::geography, b.geom::geography))) AS chord_len_m, "
+                "         array_agg(DISTINCT d.id) AS drain_ids, "
+                "         array_agg(DISTINCT d.category) AS drain_categories, "
+                "         array_agg(DISTINCT d.attributes->>'LAYER') AS drain_layers "
                 "  FROM features b "
                 "  JOIN features d ON d.dataset_id = b.dataset_id "
                 "    AND d.attributes->>'_canonical_class' = 'Drainage_Asset' "
                 "  WHERE b.dataset_id = :dataset_id "
                 "    AND b.attributes->>'_canonical_class' = 'Building' "
-                "    AND ST_DWithin(b.geom::geography, d.geom::geography, :tol) "
+                "    AND ST_Intersects(b.geom, d.geom) "
+                "  GROUP BY b.id "
                 ") "
-                "SELECT building_id, x, y, "
-                "       min(dist_m) AS min_dist_m, "
-                "       max(building_perim_m) AS building_perim_m, "
-                "       sum(overlap_len_m) AS total_overlap_len_m, "
-                "       array_agg(drain_id) AS drain_ids, "
-                "       array_agg(drain_category) AS drain_categories, "
-                "       array_agg(drain_layer) AS drain_layers "
-                "FROM contacts "
-                "GROUP BY building_id, x, y"
+                "SELECT b.id AS building_id, "
+                "       ST_X(ST_Centroid(b.geom)) AS x, ST_Y(ST_Centroid(b.geom)) AS y, "
+                "       nd.chord_len_m, nd.drain_ids, nd.drain_categories, nd.drain_layers, "
+                "       ST_Area(b.geom::geography) AS building_area_m2, "
+                "       ST_Perimeter(b.geom::geography) AS building_perim_m, "
+                "       ST_Area(ST_Intersection(b.geom::geography, nd.drain_footprint::geography)) AS overlap_area_m2 "
+                "FROM features b JOIN near_drains nd ON nd.building_id = b.id"
             ),
-            {"dataset_id": str(dataset_id), "tol": DRAIN_CONTACT_TOLERANCE_M},
+            {"dataset_id": str(dataset_id), "buffer_m": DRAIN_BUFFER_M},
         )
     ).mappings().all()
 
@@ -248,21 +272,22 @@ async def _detect_drain_encroachment(
     anomalies: list[SpatialAnomaly] = []
 
     for r in rows:
-        min_dist_m = float(r["min_dist_m"] or 0.0)
-        total_overlap_len_m = float(r["total_overlap_len_m"] or 0.0)
-        building_perim_m = float(r["building_perim_m"] or 1.0)
-        # Span = perimeter / 4 -> average side length of a rectangular
-        # building.  overlap / span * 100  gives the % of a full crossing.
-        pct = min(100.0, (total_overlap_len_m / (building_perim_m / 4)) * 100.0)
+        chord_len_m = float(r["chord_len_m"] or 0.0)
+        building_perim_m = float(r["building_perim_m"] or 0.0)
+        building_span_m = building_perim_m / 4.0
+        crossing_ratio = min(1.0, chord_len_m / building_span_m) if building_span_m > 0 else 0.0
 
-        if pct >= DRAIN_ENCROACH_RED_THRESHOLD_PCT:
+        building_area_m2 = float(r["building_area_m2"] or 0.0)
+        overlap_area_m2 = float(r["overlap_area_m2"] or 0.0)
+        pct = min(100.0, (overlap_area_m2 / building_area_m2) * 100.0) if building_area_m2 > 0 else 0.0
+
+        crosses = crossing_ratio > DRAIN_CROSSING_RED_RATIO
+        if crosses:
             color = AnomalyColor.RED
-            severity = 100.0
-        elif pct > 0:
-            color = AnomalyColor.YELLOW
-            severity = 50.0
+            severity = min(100.0, 60.0 + crossing_ratio * 40.0)
         else:
-            continue
+            color = AnomalyColor.YELLOW
+            severity = min(59.0, 20.0 + crossing_ratio * 78.0)
 
         counts[color.value] += 1
         anomalies.append(
@@ -271,15 +296,19 @@ async def _detect_drain_encroachment(
                 ward=ward,
                 anomaly_type=AnomalyType.DRAIN_ENCROACHMENT,
                 color=color,
-                severity_score=severity,
+                severity_score=round(severity, 1),
                 geom=f"SRID=4326;POINT({r['x']} {r['y']})",
                 feature_ids=[r["building_id"], *r["drain_ids"]],
                 anomaly_metadata={
                     "building_id": str(r["building_id"]),
-                    "drain_touch_distance_m": round(min_dist_m, 2),
-                    "drain_overlap_length_m": round(total_overlap_len_m, 2),
+                    "drain_crosses_building": crosses,
+                    "crossing_ratio_pct": round(crossing_ratio * 100.0, 1),
+                    "drain_chord_length_m": round(chord_len_m, 2),
+                    "building_span_m": round(building_span_m, 2),
                     "overlap_pct": round(pct, 1),
-                    "building_perim_m": round(building_perim_m, 2),
+                    "overlap_area_m2": round(overlap_area_m2, 2),
+                    "building_area_m2": round(building_area_m2, 2),
+                    "drain_buffer_m": DRAIN_BUFFER_M,
                     "drain_ids": [str(d) for d in r["drain_ids"]],
                     "drain_categories": r["drain_categories"],
                     "drain_layers": r["drain_layers"],
