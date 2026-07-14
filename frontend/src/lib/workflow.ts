@@ -1,6 +1,6 @@
 /** Analytics + workflow API helpers. */
 
-import { apiDelete, apiGet, apiPatch, apiPost } from "./api";
+import { apiDelete, apiDownload, apiGet, apiPatch, apiPost } from "./api";
 import type { FeatureCollectionResponse } from "./types";
 
 export type AnalyticsSeverityBucket = "low" | "medium" | "high";
@@ -250,6 +250,35 @@ export function fetchAnalyticsQuality(
     `/api/v1/analytics/quality${query ? `?${query}` : ""}`,
     signal
   );
+}
+
+
+
+export type AnalyticsExportFormat = "csv" | "xlsx" | "pdf" | "geojson";
+
+export async function downloadAnalyticsExport(
+  format: AnalyticsExportFormat,
+  datasetIds: string[],
+  categories: string[],
+  filters: AnalyticsCrossFilters = {},
+  signal?: AbortSignal
+) {
+  const params = analyticsScopeParams(datasetIds, categories, filters);
+  params.set("format", format);
+  const result = await apiDownload(`/api/v1/analytics/export?${params.toString()}`, signal);
+  const fallbackName = `analytics_export.${format === "xlsx" ? "xlsx" : format}`;
+  const objectUrl = URL.createObjectURL(result.blob);
+  try {
+    const link = document.createElement("a");
+    link.href = objectUrl;
+    link.download = result.filename || fallbackName;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+  } finally {
+    window.setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
+  }
+  return result.filename || fallbackName;
 }
 
 export interface FeatureTableRow {

@@ -14,7 +14,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 import uuid
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, Response
 from sqlalchemy import case, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -33,6 +33,7 @@ from app.schemas.workflow import (
     WardBreakdown,
 )
 
+from app.services.analytics.exports import AnalyticsExportFormat, build_analytics_export
 from app.services.analytics.quality import build_quality_report
 from app.services.analytics.scope import (
     CATEGORY_EXPR,
@@ -360,4 +361,43 @@ async def analytics_quality(
         categories=categories,
         wards=wards,
         severity_buckets=severity_buckets,
+    )
+
+
+@router.get(
+    "/export",
+    dependencies=[Depends(require_any)],
+    summary="Download the currently applied Analytics scope",
+)
+async def analytics_export(
+    format: AnalyticsExportFormat = Query(
+        default="xlsx",
+        description="Export format: csv, xlsx, pdf, or geojson.",
+    ),
+    dataset_id: list[uuid.UUID] | None = Query(default=None),
+    category: list[str] | None = Query(default=None),
+    ward: list[str] | None = Query(default=None),
+    severity_bucket: list[str] | None = Query(default=None),
+    db: AsyncSession = Depends(get_db),
+) -> Response:
+    dataset_ids = list(dict.fromkeys(dataset_id or []))
+    categories = clean_categories(category)
+    wards = clean_wards(ward)
+    severity_buckets = clean_severity_buckets(severity_bucket)
+    content, media_type, filename = await build_analytics_export(
+        db,
+        export_format=format,
+        dataset_ids=dataset_ids,
+        categories=categories,
+        wards=wards,
+        severity_buckets=severity_buckets,
+    )
+    return Response(
+        content=content,
+        media_type=media_type,
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "Cache-Control": "no-store",
+            "X-Content-Type-Options": "nosniff",
+        },
     )

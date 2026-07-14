@@ -33,6 +33,7 @@ import { AnalyticsFeatureTable } from "../components/analytics/AnalyticsFeatureT
 import { AnalyticsAiSummary } from "../components/analytics/AnalyticsAiSummary";
 import { AnalyticsFilterChips } from "../components/analytics/AnalyticsFilterChips";
 import { AnalyticsQualityPanel } from "../components/analytics/AnalyticsQualityPanel";
+import { AnalyticsExportPanel } from "../components/analytics/AnalyticsExportPanel";
 
 const STATUS_COLORS: Record<string, string> = {
   open: "#3b82f6",
@@ -689,6 +690,13 @@ export function AnalyticsView() {
         categories={effectiveCategories}
         filters={crossFilters}
         onCategoryFilter={toggleCategoryFilter}
+      />
+
+      <AnalyticsExportPanel
+        datasetIds={appliedDatasetIds}
+        categories={effectiveCategories}
+        filters={crossFilters}
+        disabledReason={scopeDirty ? "Click Analyze to apply the draft dataset/category changes before exporting." : null}
       />
 
       {overview && overview.category_breakdown.length > 0 && (
