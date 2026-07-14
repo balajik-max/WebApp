@@ -29,10 +29,17 @@ class RecommendRequest(BaseModel):
 
 
 class ReportRequest(BaseModel):
-    """Generate a full ward/dataset-level planning report. Exactly one scope required."""
+    """Generate a grounded planning report for a ward or Analytics scope.
+
+    ``dataset_id`` is retained for the existing Map report panel. Analytics
+    uses the repeatable ``dataset_ids`` and ``categories`` fields.
+    """
 
     dataset_id: uuid.UUID | None = None
+    dataset_ids: list[uuid.UUID] = Field(default_factory=list, max_length=200)
     ward: str | None = Field(default=None, max_length=128)
+    categories: list[str] = Field(default_factory=list, max_length=500)
+    all_datasets: bool = False
     max_features: int = Field(default=120, ge=1, le=300)
 
 

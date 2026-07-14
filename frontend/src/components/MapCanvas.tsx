@@ -589,10 +589,10 @@ function summarizeAnomalyForTooltip(a: SpatialAnomaly): { color: SpatialAnomaly[
       ? `Redundant — cluster of ${m.cluster_size ?? "?"}`
       : `Borderline — ${m.nearest_neighbor_m ?? "?"}m from nearest`;
   } else if (a.anomaly_type === "drain_encroachment") {
-    metric =
-      m.drain_overlap_length_m && Number(m.drain_overlap_length_m) > 0
-        ? `Building touches drain — ${m.drain_overlap_length_m}m on the line`
-        : `Building near drain — ${m.drain_touch_distance_m ?? "?"}m away`;
+    const pct = m.overlap_pct ? Number(m.overlap_pct) : 0;
+    metric = pct > 0
+      ? `Drain crosses ${pct.toFixed(1)}% of building`
+      : `Building near drain — ${m.drain_touch_distance_m ?? "?"}m away`;
   } else if (a.anomaly_type === "manhole_status") {
     metric = m.nearest_drain_category
       ? `Nearest drain: ${m.nearest_drain_category} (${m.nearest_drain_distance_m ?? "?"}m)`

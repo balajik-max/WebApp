@@ -148,14 +148,31 @@ def _facts_crib_sheet(facts: ReportFacts) -> str:
     summary="Full ward/dataset-level neighbourhood regeneration report",
 )
 async def report(body: ReportRequest, db: AsyncSession = Depends(get_db)) -> AiAnswer:
-    if body.dataset_id is None and body.ward is None:
-        raise HTTPException(status_code=400, detail="Provide either dataset_id or ward")
+    dataset_ids = list(dict.fromkeys(body.dataset_ids))
+    if body.dataset_id is not None and body.dataset_id not in dataset_ids:
+        dataset_ids.append(body.dataset_id)
+    categories = sorted({value.strip() for value in body.categories if value.strip()})
+    if any(len(value) > 128 for value in categories):
+        raise HTTPException(status_code=400, detail="category values must be at most 128 characters")
+    if not body.all_datasets and not dataset_ids and body.ward is None:
+        raise HTTPException(
+            status_code=400,
+            detail="Provide dataset_id, dataset_ids, ward, or set all_datasets=true",
+        )
 
     from app.core.config import get_settings
     settings = get_settings()
     model = settings.ollama_model
 
-    facts = await build_report_facts(db, dataset_id=body.dataset_id, ward=body.ward)
+    facts = await build_report_facts(
+        db,
+        dataset_id=None,
+        dataset_ids=dataset_ids,
+        ward=body.ward,
+        categories=categories,
+        allow_all=body.all_datasets,
+        top_feature_limit=min(body.max_features, 25),
+    )
     if facts is None:
         return _insufficient("report", model, {"reason": "no matching features"})
 

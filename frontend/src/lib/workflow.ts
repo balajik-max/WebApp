@@ -1,5 +1,6 @@
 /** Analytics + workflow API helpers. */
 import { apiDelete, apiGet, apiPatch, apiPost } from "./api";
+import type { FeatureCollectionResponse } from "./types";
 
 export interface StatusBreakdown {
   status: string;
@@ -37,6 +38,7 @@ export interface AnalyticsOverview {
   processing_datasets: number;
   failed_datasets: number;
   total_features: number;
+  average_severity: number;
   total_review_items: number;
   open_reviews: number;
   resolved_reviews: number;
@@ -67,17 +69,23 @@ export interface DatasetRow {
   updated_at: string;
 }
 
-export function fetchOverview(datasetIds?: string[], signal?: AbortSignal) {
-  if (!datasetIds || datasetIds.length === 0) {
-    return apiGet<AnalyticsOverview>("/api/v1/analytics/overview", signal);
-  }
+export function fetchOverview(
+  datasetIds: string[] = [],
+  categories: string[] = [],
+  signal?: AbortSignal
+) {
   const params = new URLSearchParams();
   for (const id of datasetIds) params.append("dataset_id", id);
-  return apiGet<AnalyticsOverview>(`/api/v1/analytics/overview?${params.toString()}`, signal);
+  for (const category of categories) params.append("category", category);
+  const query = params.toString();
+  return apiGet<AnalyticsOverview>(
+    `/api/v1/analytics/overview${query ? `?${query}` : ""}`,
+    signal
+  );
 }
 
-export function fetchDatasets(signal?: AbortSignal) {
-  return apiGet<DatasetRow[]>("/api/v1/datasets?limit=50", signal);
+export function fetchDatasets(signal?: AbortSignal, limit = 50) {
+  return apiGet<DatasetRow[]>(`/api/v1/datasets?limit=${limit}`, signal);
 }
 
 export function deleteDataset(id: string, signal?: AbortSignal) {
@@ -114,11 +122,70 @@ export interface CategoryOption {
   count: number;
 }
 
-export function fetchCategories(ward: string | undefined, signal?: AbortSignal) {
-  const qs = ward ? `?ward=${encodeURIComponent(ward)}` : "";
-  return apiGet<{ categories: CategoryOption[] }>(`/api/v1/features/categories${qs}`, signal).then(
-    (r) => r.categories
-  );
+export function fetchCategories(
+  ward: string | undefined,
+  signal?: AbortSignal,
+  datasetIds: string[] = []
+) {
+  const params = new URLSearchParams();
+  if (ward) params.set("ward", ward);
+  for (const id of datasetIds) params.append("dataset_id", id);
+  const query = params.toString();
+  return apiGet<{ categories: CategoryOption[] }>(
+    `/api/v1/features/categories${query ? `?${query}` : ""}`,
+    signal
+  ).then((response) => response.categories);
+}
+
+export interface AnalyticsFeatureRow {
+  id: string;
+  dataset_id: string;
+  dataset_name: string;
+  ward: string | null;
+  label: string | null;
+  category: string;
+  severity: number;
+  geometry_type: string;
+  created_at: string;
+}
+
+export interface AnalyticsFeaturePage {
+  total: number;
+  limit: number;
+  offset: number;
+  rows: AnalyticsFeatureRow[];
+}
+
+function analyticsScopeParams(datasetIds: string[], categories: string[]) {
+  const params = new URLSearchParams();
+  for (const id of datasetIds) params.append("dataset_id", id);
+  for (const category of categories) params.append("category", category);
+  return params;
+}
+
+export function fetchAnalyticsFeatures(
+  datasetIds: string[],
+  categories: string[],
+  signal?: AbortSignal
+) {
+  const params = analyticsScopeParams(datasetIds, categories);
+  params.set("bbox", "-180,-90,180,90");
+  params.set("limit", "5000");
+  params.set("exclude_internal", "true");
+  return apiGet<FeatureCollectionResponse>(`/api/v1/features?${params.toString()}`, signal);
+}
+
+export function fetchAnalyticsFeatureTable(
+  datasetIds: string[],
+  categories: string[],
+  limit: number,
+  offset: number,
+  signal?: AbortSignal
+) {
+  const params = analyticsScopeParams(datasetIds, categories);
+  params.set("limit", String(limit));
+  params.set("offset", String(offset));
+  return apiGet<AnalyticsFeaturePage>(`/api/v1/analytics/features?${params.toString()}`, signal);
 }
 
 export interface FeatureTableRow {
