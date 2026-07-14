@@ -5,7 +5,8 @@ import type { DatasetRow } from "../lib/workflow";
 
 interface Props {
   datasets: DatasetRow[];
-  onClose: () => void;
+  collapsed?: boolean;
+  onToggleCollapsed?: () => void;
 }
 
 /** Picks the scope for the report: prefer the ward of the first selected
@@ -19,13 +20,27 @@ function reportScope(datasets: DatasetRow[]): { ward?: string; dataset_id?: stri
   return { dataset_id: first.id, label: first.name };
 }
 
-export function WardReportPanel({ datasets, onClose }: Props) {
+const SUPPORTING_FILE_ACCEPT = ".pdf,.txt,.csv";
+
+export function WardReportPanel({ datasets, collapsed = false, onToggleCollapsed }: Props) {
   const [report, setReport] = useState<AiAnswer | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [elapsed, setElapsed] = useState(0);
   const timerRef = useRef<number | null>(null);
+  const [supportingFiles, setSupportingFiles] = useState<File[]>([]);
+  const supportingFileInputRef = useRef<HTMLInputElement | null>(null);
   const scope = reportScope(datasets);
+
+  function addSupportingFiles(files: FileList | null) {
+    if (!files || files.length === 0) return;
+    setSupportingFiles((prev) => [...prev, ...Array.from(files)]);
+    if (supportingFileInputRef.current) supportingFileInputRef.current.value = "";
+  }
+
+  function removeSupportingFile(index: number) {
+    setSupportingFiles((prev) => prev.filter((_, i) => i !== index));
+  }
 
   const run = useCallback(async () => {
     if (!scope || loading) return;
@@ -54,26 +69,97 @@ export function WardReportPanel({ datasets, onClose }: Props) {
 
   useEffect(() => () => { if (timerRef.current) clearInterval(timerRef.current); }, []);
 
-  if (!scope) return null;
-
   return (
-    <aside className="workspace-panel" data-testid="ward-report-panel">
-      <header className="workspace-panel__head">
-        <div>
-          <div className="workspace-panel__eyebrow">Neighbourhood Report</div>
-          {scope.wardName && (
-            <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: "0.06em", textTransform: "uppercase", color: "var(--accent)", marginBottom: 2 }}>
-              Ward {scope.wardName}
-            </div>
-          )}
-          <h2 className="workspace-panel__title" data-testid="ward-report-title">{scope.label}</h2>
-          <div className="workspace-panel__sub">
-            {datasets.length} dataset{datasets.length === 1 ? "" : "s"} selected · grounded in real survey data
-          </div>
-        </div>
-        <button type="button" className="workspace-panel__close" onClick={onClose} data-testid="ward-report-close">×</button>
-      </header>
+    <aside
+      className={`workspace-panel${collapsed ? " workspace-panel--collapsed" : ""}`}
+      data-testid="ward-report-panel"
+    >
+      <div className="workspace-panel__welcome" data-testid="ward-report-welcome">
+        <button
+          type="button"
+          className={`workspace-panel__collapse-btn${collapsed ? " workspace-panel__collapse-btn--collapsed" : ""}`}
+          onClick={onToggleCollapsed}
+          aria-label={collapsed ? "Expand AI planning panel" : "Collapse AI planning panel"}
+          aria-expanded={!collapsed}
+          data-testid="ward-report-collapse-toggle"
+        >
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+            <polyline points="9 6 15 12 9 18" />
+          </svg>
+        </button>
+        <span className="workspace-panel__welcome-text">Smart Urban Planning with AI</span>
+      </div>
 
+      {!collapsed && (
+        <div className="workspace-panel__import" data-testid="ward-report-import">
+          <input
+            ref={supportingFileInputRef}
+            type="file"
+            accept={SUPPORTING_FILE_ACCEPT}
+            multiple
+            onChange={(e) => addSupportingFiles(e.target.files)}
+            data-testid="ward-report-import-input"
+            style={{ display: "none" }}
+          />
+          <button
+            type="button"
+            className="workspace-panel__import-btn"
+            onClick={() => supportingFileInputRef.current?.click()}
+            data-testid="ward-report-import-btn"
+          >
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" />
+            </svg>
+            Import supporting files
+          </button>
+          <div className="workspace-panel__import-hint">PDF, TXT, or CSV to support AI analysis</div>
+
+          {supportingFiles.length > 0 && (
+            <ul className="workspace-panel__import-list">
+              {supportingFiles.map((file, i) => (
+                <li key={`${file.name}-${i}`} className="workspace-panel__import-item">
+                  <span className="workspace-panel__import-item-name" title={file.name}>{file.name}</span>
+                  <button
+                    type="button"
+                    className="workspace-panel__import-item-remove"
+                    onClick={() => removeSupportingFile(i)}
+                    aria-label={`Remove ${file.name}`}
+                  >
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M6 18L18 6M6 6l12 12" />
+                    </svg>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
+
+      {!collapsed && scope && (
+        <header className="workspace-panel__head">
+          <div>
+            <div className="workspace-panel__eyebrow">Neighbourhood Report</div>
+            {scope.wardName && (
+              <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: "0.06em", textTransform: "uppercase", color: "var(--accent)", marginBottom: 2 }}>
+                Ward {scope.wardName}
+              </div>
+            )}
+            <h2 className="workspace-panel__title" data-testid="ward-report-title">{scope.label}</h2>
+            <div className="workspace-panel__sub">
+              {datasets.length} dataset{datasets.length === 1 ? "" : "s"} selected · grounded in real survey data
+            </div>
+          </div>
+        </header>
+      )}
+
+      {!collapsed && !scope && (
+        <div style={{ padding: 16, color: "var(--ink-mute)", fontSize: 12 }}>
+          Select a dataset to generate a neighbourhood report.
+        </div>
+      )}
+
+      {!collapsed && scope && (
       <div style={{ flex: 1, overflowY: "auto", padding: 16 }}>
         {!report && !loading && !error && (
           <button
@@ -146,6 +232,7 @@ export function WardReportPanel({ datasets, onClose }: Props) {
           </div>
         )}
       </div>
+      )}
     </aside>
   );
 }
