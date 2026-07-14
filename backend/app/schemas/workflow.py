@@ -221,6 +221,23 @@ class AnalyticsQualityReport(BaseModel):
     generated_at: datetime
 
 
+class ManholeReadinessFieldResult(BaseModel):
+    key: str
+    label: str
+    aliases: list[str]
+    available_count: int
+    missing_count: int
+    completeness_percentage: float
+    recommended_action: str
+
+
+class ManholeReadinessReport(BaseModel):
+    total_manhole_features: int
+    fields: list[ManholeReadinessFieldResult]
+    methodology: str
+    generated_at: datetime
+
+
 # ---------- Notifications -------------------------------------------------
 class NotificationOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)

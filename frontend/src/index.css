@@ -6733,3 +6733,204 @@ body {
     text-align: left;
   }
 }
+
+/* Analytics Phase 4: Manhole Data Readiness ---------------------------- */
+.analytics-readiness-card {
+  overflow: hidden;
+}
+
+.analytics-readiness-card__header {
+  align-items: flex-start;
+  gap: 18px;
+}
+
+.analytics-readiness-card__intro {
+  margin: 6px 0 0;
+  max-width: 720px;
+  color: var(--ink-mute);
+  font-size: 0.86rem;
+  line-height: 1.5;
+}
+
+.analytics-readiness-card__summary {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 8px;
+}
+
+.analytics-readiness-card__clear {
+  border: 1px solid var(--edge);
+  border-radius: 8px;
+  background: var(--surface-2);
+  color: var(--ink-dim);
+  padding: 7px 11px;
+  font: inherit;
+  font-size: 0.75rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.analytics-readiness-card__clear:hover {
+  border-color: var(--blue);
+  color: var(--blue);
+}
+
+.analytics-readiness-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.analytics-readiness-row {
+  border: 1px solid var(--edge);
+  border-left: 4px solid var(--edge);
+  border-radius: 12px;
+  background: var(--surface-2);
+  padding: 14px;
+  transition: border-color 0.18s ease, box-shadow 0.18s ease, transform 0.18s ease;
+}
+
+.analytics-readiness-row--good {
+  border-left-color: var(--ok);
+}
+
+.analytics-readiness-row--warn {
+  border-left-color: var(--warn);
+}
+
+.analytics-readiness-row--danger {
+  border-left-color: var(--danger);
+}
+
+.analytics-readiness-row.is-active {
+  border-color: var(--danger);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--danger) 18%, transparent);
+  transform: translateY(-1px);
+}
+
+.analytics-readiness-row__title {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 14px;
+}
+
+.analytics-readiness-row__title > div {
+  min-width: 0;
+}
+
+.analytics-readiness-row__title strong {
+  display: block;
+  color: var(--ink);
+  font-size: 0.95rem;
+}
+
+.analytics-readiness-row__title small {
+  display: block;
+  margin-top: 4px;
+  color: var(--ink-mute);
+  font-size: 0.72rem;
+  line-height: 1.35;
+}
+
+.analytics-readiness-row__title > b {
+  flex: 0 0 auto;
+  color: var(--ink-dim);
+  font-size: 0.76rem;
+  white-space: nowrap;
+}
+
+.analytics-readiness-track {
+  height: 7px;
+  margin: 12px 0;
+  overflow: hidden;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--edge) 65%, transparent);
+}
+
+.analytics-readiness-track i {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--ok);
+}
+
+.analytics-readiness-row--warn .analytics-readiness-track i {
+  background: var(--warn);
+}
+
+.analytics-readiness-row--danger .analytics-readiness-track i {
+  background: var(--danger);
+}
+
+.analytics-readiness-row__counts {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.analytics-readiness-count {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  min-height: 38px;
+  border-radius: 9px;
+  font-size: 0.76rem;
+  font-weight: 700;
+}
+
+.analytics-readiness-count b {
+  font-size: 0.96rem;
+}
+
+.analytics-readiness-count--available {
+  border: 1px solid color-mix(in srgb, var(--ok) 35%, var(--edge));
+  background: color-mix(in srgb, var(--ok) 9%, var(--surface-2));
+  color: var(--ok);
+}
+
+button.analytics-readiness-count--missing {
+  border: 1px solid color-mix(in srgb, var(--danger) 40%, var(--edge));
+  background: color-mix(in srgb, var(--danger) 8%, var(--surface-2));
+  color: var(--danger);
+  font: inherit;
+  cursor: pointer;
+}
+
+button.analytics-readiness-count--missing:hover:not(:disabled),
+button.analytics-readiness-count--missing[aria-pressed="true"] {
+  border-color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 16%, var(--surface-2));
+}
+
+button.analytics-readiness-count--missing:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+
+.analytics-readiness-methodology {
+  margin-top: 14px;
+}
+
+.analytics-map-popup__issue {
+  margin-top: 7px;
+  color: #dc2626;
+  font-size: 0.78rem;
+  font-weight: 800;
+}
+
+@media (max-width: 900px) {
+  .analytics-readiness-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .analytics-readiness-card__header {
+    flex-direction: column;
+  }
+
+  .analytics-readiness-card__summary {
+    align-items: flex-start;
+  }
+}

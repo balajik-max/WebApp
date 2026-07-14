@@ -63,8 +63,9 @@ export function AnalyticsFeatureTable({ datasetIds, categories, filters = {} }: 
       categories: [...categories].sort(),
       wards: [...(filters.wards ?? [])].sort(),
       severityBuckets: [...(filters.severityBuckets ?? [])].sort(),
+      missingField: filters.missingField ?? null,
     }),
-    [categories, datasetIds, filters.severityBuckets, filters.wards]
+    [categories, datasetIds, filters.missingField, filters.severityBuckets, filters.wards]
   );
 
   useEffect(() => {

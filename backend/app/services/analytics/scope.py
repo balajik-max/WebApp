@@ -12,6 +12,7 @@ from fastapi import HTTPException
 from sqlalchemy import and_, func, or_, select
 
 from app.models import Dataset, Feature
+from app.services.analytics.readiness import clean_missing_field, field_missing_condition
 
 SeverityBucketName = Literal["low", "medium", "high"]
 
@@ -59,6 +60,7 @@ def feature_conditions(
     categories: list[str],
     wards: list[str] | None = None,
     severity_buckets: list[SeverityBucketName] | None = None,
+    missing_field: str | None = None,
 ) -> list[object]:
     """Build reusable SQLAlchemy predicates for an Analytics scope.
 
@@ -82,4 +84,7 @@ def feature_conditions(
         if "high" in severity_buckets:
             bucket_conditions.append(Feature.severity >= 0.67)
         conditions.append(or_(*bucket_conditions))
+    cleaned_missing_field = clean_missing_field(missing_field)
+    if cleaned_missing_field:
+        conditions.append(field_missing_condition(cleaned_missing_field))
     return conditions

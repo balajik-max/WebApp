@@ -37,6 +37,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models import Dataset, Feature
 from app.schemas.workflow import AnalyticsQualityReport
 from app.services.analytics.quality import build_quality_report
+from app.services.analytics.readiness import get_readiness_field
 from app.services.analytics.scope import CATEGORY_EXPR, SeverityBucketName, feature_conditions
 
 AnalyticsExportFormat = Literal["csv", "xlsx", "pdf", "geojson"]
@@ -70,6 +71,7 @@ class ExportSummary:
     wards: list[str]
     requested_categories: list[str]
     requested_severity_buckets: list[str]
+    requested_missing_field: str | None
     total_features: int
     average_severity: float
     severity_counts: dict[str, int]
@@ -100,6 +102,14 @@ def _scope_text(summary: ExportSummary) -> list[tuple[str, str]]:
             "Severity",
             ", ".join(summary.requested_severity_buckets) or "All severity buckets",
         ),
+        (
+            "Manhole readiness filter",
+            (
+                get_readiness_field(summary.requested_missing_field).label
+                if summary.requested_missing_field
+                else "None"
+            ),
+        ),
     ]
 
 
@@ -110,8 +120,11 @@ async def _build_summary(
     categories: list[str],
     wards: list[str],
     severity_buckets: list[SeverityBucketName],
+    missing_field: str | None,
 ) -> ExportSummary:
-    conditions = feature_conditions(dataset_ids, categories, wards, severity_buckets)
+    conditions = feature_conditions(
+        dataset_ids, categories, wards, severity_buckets, missing_field
+    )
 
     stats = (
         await db.execute(
@@ -167,6 +180,7 @@ async def _build_summary(
         wards=actual_wards if not wards else wards,
         requested_categories=categories,
         requested_severity_buckets=list(severity_buckets),
+        requested_missing_field=missing_field,
         total_features=total,
         average_severity=average_severity,
         severity_counts=severity_counts,
@@ -181,6 +195,7 @@ async def _load_detail_rows(
     categories: list[str],
     wards: list[str],
     severity_buckets: list[SeverityBucketName],
+    missing_field: str | None,
     total_features: int,
 ) -> list[ExportRow]:
     if total_features > _MAX_DETAIL_ROWS:
@@ -192,7 +207,9 @@ async def _load_detail_rows(
             ),
         )
 
-    conditions = feature_conditions(dataset_ids, categories, wards, severity_buckets)
+    conditions = feature_conditions(
+        dataset_ids, categories, wards, severity_buckets, missing_field
+    )
     rows = (
         await db.execute(
             select(
@@ -669,6 +686,7 @@ async def build_analytics_export(
     categories: list[str],
     wards: list[str],
     severity_buckets: list[SeverityBucketName],
+    missing_field: str | None = None,
 ) -> tuple[bytes, str, str]:
     """Return bytes, media type, and a safe download filename."""
     summary = await _build_summary(
@@ -677,6 +695,7 @@ async def build_analytics_export(
         categories=categories,
         wards=wards,
         severity_buckets=severity_buckets,
+        missing_field=missing_field,
     )
     stamp = summary.generated_at.strftime("%Y%m%d_%H%M%S")
 
@@ -687,6 +706,7 @@ async def build_analytics_export(
             categories=categories,
             wards=wards,
             severity_buckets=severity_buckets,
+            missing_field=missing_field,
         )
         return (
             _pdf_bytes(summary, quality),
@@ -700,6 +720,7 @@ async def build_analytics_export(
         categories=categories,
         wards=wards,
         severity_buckets=severity_buckets,
+        missing_field=missing_field,
         total_features=summary.total_features,
     )
 
@@ -718,6 +739,7 @@ async def build_analytics_export(
         categories=categories,
         wards=wards,
         severity_buckets=severity_buckets,
+        missing_field=missing_field,
     )
     return (
         _xlsx_bytes(rows, summary, quality),

@@ -79,8 +79,11 @@ export function AnalyticsExportPanel({
     const severityText = filters.severityBuckets?.length
       ? `, ${filters.severityBuckets.join(", ")} severity`
       : "";
-    return `${datasetText}, ${categoryText}${wardText}${severityText}`;
-  }, [categories.length, datasetIds.length, filters.severityBuckets, filters.wards]);
+    const readinessText = filters.missingField
+      ? `, missing ${filters.missingField.replaceAll("_", " ")}`
+      : "";
+    return `${datasetText}, ${categoryText}${wardText}${severityText}${readinessText}`;
+  }, [categories.length, datasetIds.length, filters.missingField, filters.severityBuckets, filters.wards]);
 
   async function runExport(format: AnalyticsExportFormat) {
     setExporting(format);

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useOutletContext } from "react-router-dom";
 import {
   Area,
@@ -25,6 +25,7 @@ import {
   type CategoryOption,
   type DatasetRow,
   type IngestionTrendPoint,
+  type ManholeReadinessFieldKey,
 } from "../lib/workflow";
 import { colorForCategory } from "../lib/categoryColors";
 import { AnalyticsScopeBar } from "../components/analytics/AnalyticsScopeBar";
@@ -34,6 +35,7 @@ import { AnalyticsAiSummary } from "../components/analytics/AnalyticsAiSummary";
 import { AnalyticsFilterChips } from "../components/analytics/AnalyticsFilterChips";
 import { AnalyticsQualityPanel } from "../components/analytics/AnalyticsQualityPanel";
 import { AnalyticsExportPanel } from "../components/analytics/AnalyticsExportPanel";
+import { AnalyticsManholeReadiness } from "../components/analytics/AnalyticsManholeReadiness";
 
 const STATUS_COLORS: Record<string, string> = {
   open: "#3b82f6",
@@ -49,6 +51,16 @@ const SEVERITY_COLORS: Record<string, string> = {
   high: "#ef4444",
 };
 const ANALYTICS_SCOPE_STORAGE_KEY = "davangere.analytics.scope.v1";
+const MANHOLE_READINESS_LABELS: Record<ManholeReadinessFieldKey, string> = {
+  depth: "Depth",
+  bottom_level: "Bottom Level",
+  top_level: "Top Level",
+  condition: "Condition",
+  pipe_type: "Pipe Type",
+  diameter: "Diameter",
+  image_reference: "Image Reference",
+};
+const MANHOLE_READINESS_KEYS = new Set(Object.keys(MANHOLE_READINESS_LABELS));
 
 function formatNum(value: number | undefined): string {
   return value == null ? "—" : value.toLocaleString();
@@ -72,6 +84,7 @@ interface StoredAnalyticsScope {
   activeCategory: string | null;
   activeWard: string | null;
   activeSeverityBucket: AnalyticsSeverityBucket | null;
+  activeMissingField: ManholeReadinessFieldKey | null;
 }
 
 function stringArray(value: unknown): string[] {
@@ -98,6 +111,11 @@ function readStoredAnalyticsScope(fallbackDatasetIds: string[]): StoredAnalytics
         parsed.activeSeverityBucket === "high"
           ? parsed.activeSeverityBucket
           : null,
+      activeMissingField:
+        typeof parsed.activeMissingField === "string" &&
+        MANHOLE_READINESS_KEYS.has(parsed.activeMissingField)
+          ? parsed.activeMissingField as ManholeReadinessFieldKey
+          : null,
     };
   } catch {
     const datasets = stableValues(fallbackDatasetIds);
@@ -109,6 +127,7 @@ function readStoredAnalyticsScope(fallbackDatasetIds: string[]): StoredAnalytics
       activeCategory: null,
       activeWard: null,
       activeSeverityBucket: null,
+      activeMissingField: null,
     };
   }
 }
@@ -142,12 +161,16 @@ export function AnalyticsView() {
   const [activeSeverityBucket, setActiveSeverityBucket] = useState<AnalyticsSeverityBucket | null>(
     initialScope.activeSeverityBucket
   );
+  const [activeMissingField, setActiveMissingField] = useState<ManholeReadinessFieldKey | null>(
+    initialScope.activeMissingField
+  );
   const [overview, setOverview] = useState<AnalyticsOverview | null>(null);
   const [loadingDatasets, setLoadingDatasets] = useState(true);
   const [loadingCategories, setLoadingCategories] = useState(true);
   const [analyzing, setAnalyzing] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [analysisVersion, setAnalysisVersion] = useState(0);
+  const spatialSectionRef = useRef<HTMLElement | null>(null);
 
   const draftDatasetKey = useMemo(
     () => stableValues(draftDatasetIds).join(","),
@@ -165,8 +188,9 @@ export function AnalyticsView() {
     () => ({
       wards: activeWard ? [activeWard] : [],
       severityBuckets: effectiveSeverityBuckets,
+      missingField: activeMissingField,
     }),
-    [activeWard, effectiveSeverityBuckets]
+    [activeMissingField, activeWard, effectiveSeverityBuckets]
   );
   const appliedScopeKey = useMemo(
     () => JSON.stringify({
@@ -174,8 +198,9 @@ export function AnalyticsView() {
       categories: stableValues(effectiveCategories),
       ward: activeWard,
       severity: activeSeverityBucket,
+      missingField: activeMissingField,
     }),
-    [activeSeverityBucket, activeWard, appliedDatasetIds, effectiveCategories]
+    [activeMissingField, activeSeverityBucket, activeWard, appliedDatasetIds, effectiveCategories]
   );
   const scopeDirty =
     !sameValues(draftDatasetIds, appliedDatasetIds) ||
@@ -193,6 +218,7 @@ export function AnalyticsView() {
           activeCategory,
           activeWard,
           activeSeverityBucket,
+          activeMissingField,
         } satisfies StoredAnalyticsScope)
       );
     } catch {
@@ -200,6 +226,7 @@ export function AnalyticsView() {
       // continues to work normally for the current mounted session.
     }
   }, [
+    activeMissingField,
     activeCategory,
     activeSeverityBucket,
     activeWard,
@@ -264,6 +291,7 @@ export function AnalyticsView() {
     setActiveCategory(null);
     setActiveWard(null);
     setActiveSeverityBucket(null);
+    setActiveMissingField(null);
     setAnalysisVersion((value) => value + 1);
   }
 
@@ -275,10 +303,12 @@ export function AnalyticsView() {
     setActiveCategory(null);
     setActiveWard(null);
     setActiveSeverityBucket(null);
+    setActiveMissingField(null);
     setAnalysisVersion((value) => value + 1);
   }
 
   const toggleCategoryFilter = useCallback((category: string) => {
+    setActiveMissingField(null);
     setActiveCategory((current) => current === category ? null : category);
   }, []);
 
@@ -294,7 +324,22 @@ export function AnalyticsView() {
     setActiveCategory(null);
     setActiveWard(null);
     setActiveSeverityBucket(null);
+    setActiveMissingField(null);
   }, []);
+
+  const selectMissingManholeField = useCallback((
+    field: ManholeReadinessFieldKey,
+    _label: string
+  ) => {
+    const manholeCategory =
+      categoryOptions.find((option) => option.category.trim().toLowerCase() === "manhole")
+        ?.category ?? "Manhole";
+    setActiveCategory(manholeCategory);
+    setActiveMissingField(field);
+    window.requestAnimationFrame(() => {
+      spatialSectionRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+    });
+  }, [categoryOptions]);
 
   const appliedDatasetNames = useMemo(() => {
     const byId = new Map(datasets.map((dataset) => [dataset.id, dataset.name]));
@@ -382,6 +427,9 @@ export function AnalyticsView() {
               : ` for ${effectiveCategories.length} active categor${effectiveCategories.length === 1 ? "y" : "ies"}.`}
             {activeWard ? ` Ward ${activeWard}.` : ""}
             {activeSeverityBucket ? ` ${activeSeverityBucket} severity only.` : ""}
+            {activeMissingField
+              ? ` Showing Manholes missing ${MANHOLE_READINESS_LABELS[activeMissingField]}.`
+              : ""}
           </p>
         </div>
         {overview && (
@@ -411,9 +459,16 @@ export function AnalyticsView() {
         category={activeCategory}
         ward={activeWard}
         severityBucket={activeSeverityBucket}
-        onClearCategory={() => setActiveCategory(null)}
+        missingFieldLabel={
+          activeMissingField ? MANHOLE_READINESS_LABELS[activeMissingField] : null
+        }
+        onClearCategory={() => {
+          setActiveCategory(null);
+          setActiveMissingField(null);
+        }}
         onClearWard={() => setActiveWard(null)}
         onClearSeverity={() => setActiveSeverityBucket(null)}
+        onClearMissingField={() => setActiveMissingField(null)}
         onClearAll={clearCrossFilters}
       />
 
@@ -671,7 +726,18 @@ export function AnalyticsView() {
         </div>
       </section>
 
-      <section className="chart-grid chart-grid--2 analytics-spatial-grid">
+      <AnalyticsManholeReadiness
+        datasetIds={appliedDatasetIds}
+        filters={{
+          wards: activeWard ? [activeWard] : [],
+          severityBuckets: effectiveSeverityBuckets,
+        }}
+        activeField={activeMissingField}
+        onSelectMissing={selectMissingManholeField}
+        onClear={() => setActiveMissingField(null)}
+      />
+
+      <section ref={spatialSectionRef} className="chart-grid chart-grid--2 analytics-spatial-grid">
         <AnalyticsCategoryMap
           datasetIds={appliedDatasetIds}
           categories={effectiveCategories}
@@ -765,7 +831,13 @@ export function AnalyticsView() {
         categories={effectiveCategories}
         ward={activeWard}
         severityBuckets={effectiveSeverityBuckets}
-        disabledReason={scopeDirty ? "Apply the draft dataset/category changes before generating a new AI summary." : null}
+        disabledReason={
+          scopeDirty
+            ? "Apply the draft dataset/category changes before generating a new AI summary."
+            : activeMissingField
+              ? "Clear the Manhole readiness filter before generating an AI summary; AI reports currently use dataset, category, ward, and severity scope only."
+              : null
+        }
       />
     </div>
   );

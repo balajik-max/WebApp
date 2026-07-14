@@ -62,7 +62,10 @@ function fitToFeatures(map: MapLibreMap, features: UrbanFeature[]) {
   else map.easeTo({ center: DAVANGERE_CENTER, zoom: 11, duration: 350 });
 }
 
-function withAnalyticsColors(collection: FeatureCollectionResponse): FeatureCollectionResponse {
+function withAnalyticsColors(
+  collection: FeatureCollectionResponse,
+  missingField?: string | null
+): FeatureCollectionResponse {
   return {
     ...collection,
     features: collection.features
@@ -71,7 +74,7 @@ function withAnalyticsColors(collection: FeatureCollectionResponse): FeatureColl
         ...feature,
         properties: {
           ...feature.properties,
-          analytics_color: colorForCategory(feature.properties.category),
+          analytics_color: missingField ? "#ef4444" : colorForCategory(feature.properties.category),
         },
       })) as UrbanFeature[],
   };
@@ -103,8 +106,9 @@ export function AnalyticsCategoryMap({ datasetIds, categories, filters = {}, onC
       categories: [...categories].sort(),
       wards: [...(filters.wards ?? [])].sort(),
       severityBuckets: [...(filters.severityBuckets ?? [])].sort(),
+      missingField: filters.missingField ?? null,
     }),
-    [categories, datasetIds, filters.severityBuckets, filters.wards]
+    [categories, datasetIds, filters.missingField, filters.severityBuckets, filters.wards]
   );
 
   useEffect(() => {
@@ -185,6 +189,17 @@ export function AnalyticsCategoryMap({ datasetIds, categories, filters = {}, onC
       category.textContent = String(properties.category || "uncategorized");
       severity.textContent = `Severity ${Number(properties.severity || 0).toFixed(2)}`;
       content.append(title, category, severity);
+      if (properties.missing_field_label) {
+        const issue = document.createElement("div");
+        issue.className = "analytics-map-popup__issue";
+        issue.textContent = `${String(properties.missing_field_label)}: Missing`;
+        content.append(issue);
+      }
+      if (properties.recommended_action) {
+        const action = document.createElement("small");
+        action.textContent = String(properties.recommended_action);
+        content.append(action);
+      }
       if (onCategoryFilterRef.current && properties.category) {
         const filterButton = document.createElement("button");
         filterButton.type = "button";
@@ -214,7 +229,7 @@ export function AnalyticsCategoryMap({ datasetIds, categories, filters = {}, onC
     setError(null);
     fetchAnalyticsFeatures(datasetIds, categories, controller.signal, filters)
       .then((response) => {
-        const colored = withAnalyticsColors(response);
+        const colored = withAnalyticsColors(response, filters.missingField);
         dataRef.current = colored;
         setResult(colored);
         const map = mapRef.current;
@@ -230,6 +245,8 @@ export function AnalyticsCategoryMap({ datasetIds, categories, filters = {}, onC
         if (!controller.signal.aborted) setLoading(false);
       });
     return () => controller.abort();
+    // scopeKey contains the normalized dataset/category/cross-filter scope.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [scopeKey]);
 
   return (
@@ -247,7 +264,11 @@ export function AnalyticsCategoryMap({ datasetIds, categories, filters = {}, onC
         {error && <div className="analytics-map__overlay analytics-map__overlay--error">Map unavailable: {error}</div>}
       </div>
       <div className="analytics-map__footer">
-        <span>Read-only preview. Colours match the main Map category palette.</span>
+        <span>
+          {filters.missingField
+            ? "Red markers show Manholes missing the selected readiness field."
+            : "Read-only preview. Colours match the main Map category palette."}
+        </span>
         {result.truncated && <b>Showing the first {result.limit.toLocaleString()} features; KPIs still use all matching rows.</b>}
       </div>
     </article>

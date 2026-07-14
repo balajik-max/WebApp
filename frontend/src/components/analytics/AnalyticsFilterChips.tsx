@@ -4,9 +4,11 @@ interface Props {
   category: string | null;
   ward: string | null;
   severityBucket: AnalyticsSeverityBucket | null;
+  missingFieldLabel: string | null;
   onClearCategory: () => void;
   onClearWard: () => void;
   onClearSeverity: () => void;
+  onClearMissingField: () => void;
   onClearAll: () => void;
 }
 
@@ -14,12 +16,18 @@ export function AnalyticsFilterChips({
   category,
   ward,
   severityBucket,
+  missingFieldLabel,
   onClearCategory,
   onClearWard,
   onClearSeverity,
+  onClearMissingField,
   onClearAll,
 }: Props) {
-  const activeCount = Number(Boolean(category)) + Number(Boolean(ward)) + Number(Boolean(severityBucket));
+  const activeCount =
+    Number(Boolean(category)) +
+    Number(Boolean(ward)) +
+    Number(Boolean(severityBucket)) +
+    Number(Boolean(missingFieldLabel));
   if (activeCount === 0) return null;
 
   return (
@@ -39,6 +47,11 @@ export function AnalyticsFilterChips({
         {severityBucket && (
           <button type="button" onClick={onClearSeverity} title="Clear severity cross-filter">
             Severity: {severityBucket}<span aria-hidden="true">×</span>
+          </button>
+        )}
+        {missingFieldLabel && (
+          <button type="button" onClick={onClearMissingField} title="Show all Manholes">
+            Missing field: {missingFieldLabel}<span aria-hidden="true">×</span>
           </button>
         )}
       </div>

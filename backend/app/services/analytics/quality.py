@@ -97,8 +97,11 @@ async def build_quality_report(
     categories: list[str],
     wards: list[str],
     severity_buckets: list[SeverityBucketName],
+    missing_field: str | None = None,
 ) -> AnalyticsQualityReport:
-    conditions = feature_conditions(dataset_ids, categories, wards, severity_buckets)
+    conditions = feature_conditions(
+        dataset_ids, categories, wards, severity_buckets, missing_field
+    )
 
     dimension = func.ST_Dimension(Feature.geom)
     measure = case(
