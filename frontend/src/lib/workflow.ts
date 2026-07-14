@@ -61,6 +61,13 @@ export interface DatasetRow {
   processing_error: string | null;
   dataset_metadata: {
     raster_overlay?: { image_key: string; bounds: [number, number, number, number] };
+    model_assets?: {
+      obj_key: string;
+      obj_filename: string;
+      mtl_key?: string;
+      mtl_filename?: string;
+      textures: Record<string, string>;
+    };
     [key: string]: unknown;
   };
   created_at: string;

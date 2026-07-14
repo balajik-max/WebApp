@@ -13,6 +13,17 @@ const ACCEPTED_EXTENSIONS = [
 
 const IMAGE_EXTENSIONS = [".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp"];
 
+// File System Access API — not yet in TS's DOM lib. Only Chromium ships it;
+// callers must feature-detect `window.showDirectoryPicker` before use.
+declare global {
+  interface FileSystemDirectoryHandle {
+    values(): AsyncIterableIterator<FileSystemHandle>;
+  }
+  interface Window {
+    showDirectoryPicker?: (options?: { mode?: "read" | "readwrite" }) => Promise<FileSystemDirectoryHandle>;
+  }
+}
+
 const FILE_TYPE_INFO: Record<string, { icon: React.ReactNode; label: string }> = {
   shapefile: {
     icon: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" width="16" height="16"><path d="M9 20l-5.447-2.724A1 1 0 013 16.382V5.618a1 1 0 011.447-.894L9 7m0 13l6-3m-6 3V7m6 10l5.447 2.724A1 1 0 0021 18.382V7.618a1 1 0 00-.553-.894L15 4m0 13V4m0 0L9 7" strokeLinecap="round" strokeLinejoin="round" /></svg>,
@@ -138,6 +149,85 @@ function collectPickedFolder(fileList: FileList): { name: string; files: { path:
   return { name: topFolder, files };
 }
 
+// Thrown when a granted folder is too big to walk automatically (e.g. the
+// user picked a whole drive by mistake) — distinct from AbortError/
+// SecurityError so the caller can give an actionable message instead of
+// treating it like a declined prompt.
+class FolderScanLimitError extends Error {}
+
+const MAX_SCAN_ENTRIES = 2000;
+const MAX_SCAN_DEPTH = 4;
+
+async function walkDirectoryHandle(
+  dirHandle: FileSystemDirectoryHandle,
+  basePath: string,
+  depth: number,
+  out: { path: string; file: File }[]
+): Promise<void> {
+  if (depth > MAX_SCAN_DEPTH) {
+    throw new FolderScanLimitError("That folder is nested too deep to scan automatically — choose the folder that directly contains the .obj (or its parent, if it has a metadata.xml).");
+  }
+  for await (const entry of dirHandle.values()) {
+    if (out.length > MAX_SCAN_ENTRIES) {
+      throw new FolderScanLimitError("That folder has too many files to scan automatically — choose a smaller folder, ideally the one that directly contains the .obj.");
+    }
+    const path = `${basePath}${entry.name}`;
+    if (entry.kind === "directory") {
+      await walkDirectoryHandle(entry as FileSystemDirectoryHandle, `${path}/`, depth + 1, out);
+    } else {
+      out.push({ path, file: await (entry as FileSystemFileHandle).getFile() });
+    }
+  }
+}
+
+// A ContextCapture/Bentley-style tiled mesh export (what the drone survey
+// pipeline behind this platform produces) carries its real-world anchor —
+// SRS + the point the OBJ's local meter offsets are measured from — in a
+// `metadata.xml` file. That file conventionally sits *next to* the tile
+// folder, not inside it (e.g. "3D MODEL/metadata.xml" alongside
+// "3D MODEL/Block0/Block0.obj") — sniff by content, not name, since the
+// convention isn't universal, and it may not be present at all.
+async function isGeoMetadataFile(file: File): Promise<boolean> {
+  if (extensionOf(file.name) !== ".xml" || file.size > 65_536) return false;
+  try {
+    return (await file.text()).includes("<SRSOrigin");
+  } catch {
+    return false;
+  }
+}
+
+// A single bare .obj (picked via the plain file input, or dropped as one
+// file) carries no path info a browser will ever hand us — there is no API
+// that goes from a File back to its siblings on disk. The only way to pull
+// in its .mtl/textures/geo-referencing without the user hand-picking them
+// is to ask for a folder via the File System Access API and read it
+// ourselves — walking subfolders too, since the geo-reference file is
+// often one level above wherever the .obj itself lives.
+async function collectObjCompanionsFromDisk(objFile: File): Promise<{ path: string; file: File }[]> {
+  // Deliberately not caught here — the picker throws "AbortError" when the
+  // user dismisses the dialog, and "SecurityError"/"NotAllowedError" when
+  // Chromium decided this call isn't tied to a fresh-enough user gesture
+  // (can happen chaining straight off an <input> change event). Callers
+  // need to tell those apart, so let the error propagate.
+  const dirHandle = await window.showDirectoryPicker!({ mode: "read" });
+  const found: { path: string; file: File }[] = [];
+  await walkDirectoryHandle(dirHandle, "", 0, found);
+
+  const collected: { path: string; file: File }[] = [];
+  for (const entry of found) {
+    const ext = extensionOf(entry.file.name);
+    if (ext === ".mtl" || IMAGE_EXTENSIONS.includes(ext) || entry.file.name === objFile.name) {
+      collected.push(entry);
+    } else if (ext === ".xml" && (await isGeoMetadataFile(entry.file))) {
+      collected.push(entry);
+    }
+  }
+  if (!collected.some((c) => c.file.name === objFile.name)) {
+    collected.push({ path: objFile.name, file: objFile });
+  }
+  return collected;
+}
+
 async function zipCollectedFiles(name: string, files: { path: string; file: File }[]): Promise<File> {
   const zip = new JSZip();
   for (const { path, file } of files) zip.file(path, file);
@@ -169,6 +259,8 @@ export function DatasetsView() {
   const [uploadProgress, setUploadProgress] = useState(0);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [uploadNotice, setUploadNotice] = useState<string | null>(null);
+  const [objAutoNotice, setObjAutoNotice] = useState<string | null>(null);
+  const [objAutoRetryFile, setObjAutoRetryFile] = useState<File | null>(null);
   const [removingId, setRemovingId] = useState<string | null>(null);
   const [openTableFor, setOpenTableFor] = useState<DatasetRow | null>(null);
   const [editingWardId, setEditingWardId] = useState<string | null>(null);
@@ -206,6 +298,8 @@ export function DatasetsView() {
   }, [refresh]);
 
   function pickFile(f: File | null) {
+    setObjAutoNotice(null);
+    setObjAutoRetryFile(null);
     if (f && !ACCEPTED_EXTENSIONS.includes(extensionOf(f.name))) {
       setUploadFile(null);
       setUploadError(
@@ -246,10 +340,116 @@ export function DatasetsView() {
     }
   }
 
-  // A dropped/browsed folder is only supported if it's a File Geodatabase
-  // (by name) OR a folder full of photos (checked by content, since a
-  // photo folder has no special naming convention) — anything else is
-  // rejected with a clear reason before we waste time zipping it.
+  // A bare .obj arriving alone (single browse-select or single drag/drop)
+  // never carries its .mtl/textures/metadata.xml — the browser hands us
+  // exactly the one File and nothing else. Rather than making the user
+  // hunt down and multi-select the companion files themselves, immediately
+  // ask for a folder (one native prompt) and pull the matching files in
+  // ourselves. Falls back to the bare file — with an explanation — when the
+  // API isn't supported, the user declines the prompt, or nothing is found.
+  //
+  // Shared by the automatic first attempt and the manual retry button below
+  // — the retry button exists because Chromium sometimes refuses to open a
+  // second native picker chained off an <input> change event (no fresh
+  // enough user gesture), in which case a real click is the only way to
+  // get a valid one.
+  async function runObjAutoLoad(file: File) {
+    setZipping(true);
+    setObjAutoRetryFile(null);
+    try {
+      const companions = await collectObjCompanionsFromDisk(file);
+      if (companions.length <= 1) {
+        pickFile(file);
+        setObjAutoNotice("⚠️ No .mtl or texture files were found next to this .obj — it will upload without materials.");
+        return;
+      }
+      const hasGeoMeta = companions.some((c) => extensionOf(c.file.name) === ".xml");
+      const name = file.name.replace(/\.[^/.]+$/, "");
+      const zipped = await zipCollectedFiles(name, companions);
+      pickFile(zipped);
+      if (hasGeoMeta) {
+        setObjAutoNotice("✓ Textures and geo-referencing (metadata.xml) loaded automatically.");
+      } else {
+        // Don't just warn and hope they know what to do — the metadata.xml
+        // (when it exists) is conventionally one level *above* wherever the
+        // .obj itself lives, so the folder they just granted was very
+        // plausibly the wrong one. Offer the retry button right here
+        // instead of making them notice a warning and manually reselect.
+        setObjAutoRetryFile(file);
+        setObjAutoNotice(
+          "⚠️ Textures loaded, but no metadata.xml was found, so this model's map position may be approximate. If the export has one, click below and pick the PARENT of the folder you just chose."
+        );
+      }
+    } catch (err) {
+      pickFile(file);
+      if (err instanceof FolderScanLimitError) {
+        setObjAutoRetryFile(file);
+        setObjAutoNotice(`⚠️ ${err.message}`);
+      } else if ((err as Error).name === "AbortError") {
+        setObjAutoNotice(
+          "⚠️ Folder access was declined, so textures can't be auto-loaded. Reselect the .obj to try again, or use \"browse a folder\"."
+        );
+      } else {
+        setObjAutoRetryFile(file);
+        setObjAutoNotice("⚠️ Couldn't open the folder picker automatically — click below to grant folder access and load textures.");
+      }
+    } finally {
+      setZipping(false);
+    }
+  }
+
+  async function pickObjWithAutoCompanions(file: File) {
+    if (typeof window.showDirectoryPicker !== "function") {
+      pickFile(file);
+      setObjAutoNotice(
+        "⚠️ This browser can't auto-load companion files for a single .obj (Chrome/Edge only). Use \"browse a folder\" below, or drag the whole folder in, to include the .mtl and textures."
+      );
+      return;
+    }
+    await runObjAutoLoad(file);
+  }
+
+  function handleMultipleFiles(files: File[]) {
+    if (files.length === 0) return;
+    if (files.length === 1) {
+      if (extensionOf(files[0].name) === ".obj") {
+        void pickObjWithAutoCompanions(files[0]);
+      } else {
+        pickFile(files[0]);
+      }
+      return;
+    }
+    const allImages = files.every((f) => IMAGE_EXTENSIONS.includes(extensionOf(f.name)));
+    const isObjBundle = files.some((f) => extensionOf(f.name) === ".obj");
+    if (allImages) {
+      void pickMultiplePhotos(files);
+    } else if (isObjBundle) {
+      const name = files.find((f) => extensionOf(f.name) === ".obj")!.name.replace(/\.[^/.]+$/, "");
+      setZipping(true);
+      zipCollectedFiles(name, files.map((file) => ({ path: file.name, file })))
+        .then((zipped) => {
+          setZipping(false);
+          pickFile(zipped);
+        })
+        .catch((err) => {
+          setZipping(false);
+          setUploadError(`Couldn't bundle 3D model files: ${(err as Error).message}`);
+        });
+    } else {
+      setUploadError(
+        "Multiple files selected — only a batch of photos or a 3D model bundle (.obj + .mtl + textures) can be combined. Other formats must be selected one at a time, or as a folder."
+      );
+    }
+  }
+
+  // A dropped/browsed folder is supported if it's a File Geodatabase (by
+  // name), a folder full of photos (checked by content, since a photo
+  // folder has no special naming convention), or a 3D model folder/tree
+  // (contains an .obj somewhere) — the latter is what makes a folder one
+  // level up from the .obj (i.e. containing a metadata.xml geo-reference
+  // sibling to the model's own folder) work, since these collectors
+  // already walk subfolders and grab everything, unfiltered. Anything else
+  // is rejected with a clear reason before we waste time zipping it.
   async function pickFolder(name: string, collectFiles: () => Promise<{ path: string; file: File }[]>) {
     setUploadError(null);
     setZipping(true);
@@ -257,14 +457,30 @@ export function DatasetsView() {
       const files = await collectFiles();
       const isGdb = name.toLowerCase().endsWith(".gdb");
       const isAllImages = files.length > 0 && files.every(({ file }) => IMAGE_EXTENSIONS.includes(extensionOf(file.name)));
-      if (!isGdb && !isAllImages) {
+      const isObjModel = files.some(({ file }) => extensionOf(file.name) === ".obj");
+      if (!isGdb && !isAllImages && !isObjModel) {
         setUploadError(
-          `"${name}" doesn't look like a File Geodatabase (.gdb) or a folder of photos — other folder types aren't supported, only individual files.`
+          `"${name}" doesn't look like a File Geodatabase (.gdb), a folder of photos, or a 3D model folder — other folder types aren't supported, only individual files.`
         );
         return;
       }
       const zipped = await zipCollectedFiles(name, files);
       pickFile(zipped);
+      if (isObjModel) {
+        const xmlFiles = files.filter(({ file }) => extensionOf(file.name) === ".xml");
+        let hasGeoMeta = false;
+        for (const { file } of xmlFiles) {
+          if (await isGeoMetadataFile(file)) {
+            hasGeoMeta = true;
+            break;
+          }
+        }
+        setObjAutoNotice(
+          hasGeoMeta
+            ? "✓ Textures and geo-referencing (metadata.xml) loaded automatically."
+            : "⚠️ No metadata.xml found in that folder — if this model uses local/tiled coordinates, its map position may be approximate."
+        );
+      }
     } catch (err) {
       setUploadError(`Couldn't read that folder: ${(err as Error).message}`);
     } finally {
@@ -434,23 +650,7 @@ export function DatasetsView() {
               }
 
               const files = Array.from(e.dataTransfer.files ?? []);
-              if (files.length > 1) {
-                // Several photos dropped at once — bundle them into one
-                // dataset. Any other multi-file drop isn't a supported
-                // combination (only one non-photo file at a time).
-                const allImages = files.every((f) => IMAGE_EXTENSIONS.includes(extensionOf(f.name)));
-                if (allImages) {
-                  void pickMultiplePhotos(files);
-                } else {
-                  setUploadError(
-                    "Multiple files were dropped — only a batch of photos can be combined into one upload. Other formats must be dropped one at a time, or as a zip/.gdb folder."
-                  );
-                }
-                return;
-              }
-
-              const f = files[0] ?? null;
-              if (f) pickFile(f);
+              handleMultipleFiles(files);
             }}
             onSubmit={submit}
             data-testid="dropzone"
@@ -459,8 +659,13 @@ export function DatasetsView() {
               id="dz-file"
               ref={fileInputRef}
               type="file"
+              multiple
               data-testid="dropzone-file"
-              onChange={(e) => pickFile(e.target.files?.[0] ?? null)}
+              onChange={(e) => {
+                const files = Array.from(e.target.files ?? []);
+                handleMultipleFiles(files);
+                e.target.value = "";
+              }}
               disabled={uploadBusy}
               style={{ display: "none" }}
             />
@@ -555,6 +760,24 @@ export function DatasetsView() {
                 <div className="ds-dropzone__file-info">
                   <span className="ds-dropzone__file-name">{uploadFile.name}</span>
                   <span className="ds-dropzone__file-size">{formatBytes(uploadFile.size)}</span>
+                  {(extensionOf(uploadFile.name) === ".obj" || objAutoNotice) && (
+                    <span className="ds-dropzone__warning" style={{ color: objAutoNotice?.startsWith("✓") ? "#4ade80" : "#eab308", fontSize: "0.8rem", marginTop: "4px", display: "block" }}>
+                      {objAutoNotice ?? "⚠️ Bare .obj file — it will upload without materials."}
+                      {objAutoRetryFile && (
+                        <button
+                          type="button"
+                          style={{ display: "block", marginTop: "6px", color: "#38bdf8", background: "none", border: "none", padding: 0, cursor: "pointer", textDecoration: "underline", font: "inherit" }}
+                          onClick={(e) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            void runObjAutoLoad(objAutoRetryFile);
+                          }}
+                        >
+                          {extensionOf(uploadFile.name) === ".zip" ? "Retry with parent folder (for geo-referencing)" : "Grant folder access & load textures"}
+                        </button>
+                      )}
+                    </span>
+                  )}
                 </div>
                 <button
                   type="button"

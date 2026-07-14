@@ -7,10 +7,21 @@ import { fetchFeatureById, fetchFeaturesInViewport } from "../lib/features";
 import type { AiHighlight, FeatureFilter, UrbanFeature, FeatureCollectionResponse } from "../lib/types";
 import { ApiError } from "../lib/api";
 import { colorForCategory, UNCATEGORIZED_COLOR } from "../lib/categoryColors";
-import { fetchDatasets, fetchDatasetBounds, type DatasetRow, type FeatureTableRow, type LayerFeatureTableFilter } from "../lib/workflow";
+import { fetchDatasets, fetchDatasetBounds, type DatasetBounds, type DatasetRow, type FeatureTableRow, type LayerFeatureTableFilter } from "../lib/workflow";
 import { AttributeTable } from "./AttributeTable";
 import { PanoramaViewer } from "./PanoramaViewer";
 import { GoogleStreetView } from "./GoogleStreetView";
+
+// .obj datasets are persisted with file_type "other" (the enum has no
+// dedicated OBJ value), so detect them from the stored filename instead.
+function isObjDataset(d: DatasetRow): boolean {
+  // A bundled upload (.obj + .mtl + textures, zipped client-side) has a
+  // storage_key ending in .zip, not .obj — model_assets is the reliable
+  // signal for those; the plain extension check covers a bare .obj upload.
+  if (d.dataset_metadata?.model_assets) return true;
+  const name = (d.storage_key ?? d.name).toLowerCase();
+  return name.endsWith(".obj");
+}
 
 interface Props {
   filter: FeatureFilter;
@@ -49,6 +60,7 @@ const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "";
 // raster overlay can be shown on the map at the same time.
 const rasterSourceId = (datasetId: string) => `raster-preview-${datasetId}`;
 const rasterLayerId = (datasetId: string) => `raster-preview-layer-${datasetId}`;
+const obj3dLayerId = (datasetId: string) => `obj-3d-layer-${datasetId}`;
 
 type RasterColorMode = "rgb" | "grayscale" | "enhanced";
 
@@ -559,6 +571,11 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     () => initialActiveDatasets?.map((d) => d.id) ?? []
   );
   const rasterLayersRef = useRef<Set<string>>(new Set());
+  const obj3dLayersRef = useRef<Set<string>>(new Set());
+  // Dataset ids whose data is an OBJ mesh — their vertex point features are
+  // drawn as the draped 3D mesh (Obj3DMapLayer), so they must NOT also be
+  // plotted as flat 2D circles in the feature source below.
+  const objDatasetIdsRef = useRef<Set<string>>(new Set());
   const [expandedDatasetId, setExpandedDatasetId] = useState<string | null>(null);
   const [rasterSettingsById, setRasterSettingsById] = useState<Record<string, RasterDisplaySettings>>({});
   const rasterSettingsRef = useRef<Record<string, RasterDisplaySettings>>({});
@@ -730,6 +747,13 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     fetchDatasets(ctrl.signal).then(setDatasets).catch(() => {});
     return () => ctrl.abort();
   }, []);
+
+  // Keep a fast lookup of which datasets are OBJ meshes so applyFeatureCollection
+  // can drop their vertex points from the 2D feature layers (they are rendered
+  // as the 3D mesh instead).
+  useEffect(() => {
+    objDatasetIdsRef.current = new Set(datasets.filter(isObjDataset).map((d) => d.id));
+  }, [datasets]);
 
   const colorByCategoryRef = useRef<Map<string, string>>(new Map());
 
@@ -1180,15 +1204,27 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     // safe to update, so gating on the whole style caused the new viewport
     // data to be discarded precisely while zooming.
     if (!src) return;
-    src.setData(data as unknown as GeoJSON.FeatureCollection);
+
+    // OBJ mesh datasets render as a draped 3D mesh (Obj3DMapLayer), so drop
+    // their vertex point features here — otherwise they also paint as flat
+    // 2D circles on top of the mesh, which the user does not want.
+    const objIds = objDatasetIdsRef.current;
+    const features = objIds.size === 0
+      ? (data.features as unknown as GeoJSON.Feature[])
+      : (data.features as unknown as GeoJSON.Feature[]).filter((f) => {
+          const did = String((f.properties as Record<string, unknown>)?.dataset_id ?? "");
+          return !objIds.has(did);
+        });
+
+    src.setData(features as unknown as GeoJSON.FeatureCollection);
     // Keep the exact dashboard snapshot available to Street View. The
     // panorama applies the same client-side layer visibility controls and
     // creates nearby, georeferenced markers without issuing another request.
-    setLoadedFeatures(data.features);
+    setLoadedFeatures(features as unknown as UrbanFeature[]);
 
     // Cache coordinates for every Point feature so the AI highlight layer
     // can place its circles correctly even when highlights arrive after load.
-    for (const f of data.features as unknown as GeoJSON.Feature[]) {
+    for (const f of features) {
       if (f.geometry.type === "Point") {
         const fid = String((f.properties as Record<string, unknown>)?.id ?? f.id ?? "");
         if (fid) featureCoordsRef.current.set(fid, f.geometry.coordinates as [number, number]);
@@ -1201,7 +1237,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
 
     const colorMap = colorByCategoryRef.current;
     const counts = new Map<string, number>();
-    for (const f of data.features as unknown as GeoJSON.Feature[]) {
+    for (const f of features) {
       const raw = (f.properties as { category?: string | null } | null)?.category;
       if (raw === "raster_pixel") continue;
       const category = raw && raw.trim() !== "" ? raw : "uncategorized";
@@ -1360,6 +1396,45 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
   const clearAllRasterOverlays = useCallback(() => {
     for (const id of Array.from(rasterLayersRef.current)) removeRasterOverlay(id);
   }, [removeRasterOverlay]);
+
+  // Drapes the dataset's actual OBJ mesh onto the map at its real
+  // georeferenced location (see Obj3DMapLayer) instead of only offering a
+  // disconnected full-screen viewer. three.js is dynamically imported here
+  // so it's never fetched unless a 3D dataset is actually toggled on.
+  const removeObj3DLayer = useCallback((datasetId: string) => {
+    obj3dLayersRef.current.delete(datasetId);
+    const map = mapRef.current;
+    if (!map) return;
+    const layerId = obj3dLayerId(datasetId);
+    if (map.getLayer(layerId)) map.removeLayer(layerId);
+  }, []);
+
+  const addObj3DLayer = useCallback(async (dataset: DatasetRow, bounds: DatasetBounds) => {
+    const map = mapRef.current;
+    if (!map || !isObjDataset(dataset)) return;
+    obj3dLayersRef.current.add(dataset.id);
+    try {
+      const res = await fetch(`${API_BASE}/api/v1/datasets/${dataset.id}/raw-file`, { credentials: "include" });
+      if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+      const text = await res.text();
+      // The dataset may have been deselected (or the map torn down) while
+      // the fetch/parse of a large mesh was still in flight.
+      if (!obj3dLayersRef.current.has(dataset.id)) return;
+      const currentMap = mapRef.current;
+      if (!currentMap) return;
+      const layerId = obj3dLayerId(dataset.id);
+      if (currentMap.getLayer(layerId)) currentMap.removeLayer(layerId);
+      const { Obj3DMapLayer } = await import("./Obj3DMapLayer");
+      const mtlFilename = dataset.dataset_metadata?.model_assets?.mtl_filename;
+      currentMap.addLayer(new Obj3DMapLayer(layerId, text, bounds, dataset.id, mtlFilename));
+    } catch (e) {
+      setFlyError(`Could not load 3D model on map: ${(e as Error).message}`);
+    }
+  }, []);
+
+  const clearAllObj3DLayers = useCallback(() => {
+    for (const id of Array.from(obj3dLayersRef.current)) removeObj3DLayer(id);
+  }, [removeObj3DLayer]);
 
   const applyRasterDisplaySettings = useCallback((datasetId: string, nextSettings: RasterDisplaySettings) => {
     const map = mapRef.current;
@@ -1524,6 +1599,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     if (isActive) {
       setExpandedDatasetId((current) => (current === dataset.id ? null : current));
       removeRasterOverlay(dataset.id);
+      removeObj3DLayer(dataset.id);
       scheduleFetch();
       return;
     }
@@ -1535,17 +1611,19 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     try {
       const b = await fetchDatasetBounds(dataset.id);
       map.fitBounds([[b.min_lon, b.min_lat], [b.max_lon, b.max_lat]], { padding: 80, duration: 1000, maxZoom: 18 });
+      if (isObjDataset(dataset)) void addObj3DLayer(dataset, b);
     } catch (e) { setFlyError((e as Error).message); }
-  }, [activeDatasetIds, datasets, filter, scheduleFetch, addRasterOverlay, removeRasterOverlay, onActiveDatasetsChange]);
+  }, [activeDatasetIds, datasets, filter, scheduleFetch, addRasterOverlay, removeRasterOverlay, addObj3DLayer, removeObj3DLayer, onActiveDatasetsChange]);
 
   const clearAllDatasets = useCallback(() => {
     setActiveDatasetIds([]);
     setExpandedDatasetId(null);
     filterRef.current = filter;
     clearAllRasterOverlays();
+    clearAllObj3DLayers();
     onActiveDatasetsChange?.([]);
     scheduleFetch();
-  }, [filter, scheduleFetch, clearAllRasterOverlays, onActiveDatasetsChange]);
+  }, [filter, scheduleFetch, clearAllRasterOverlays, clearAllObj3DLayers, onActiveDatasetsChange]);
 
   useImperativeHandle(ref, () => ({ clearDatasets: clearAllDatasets }), [clearAllDatasets]);
 
@@ -2194,8 +2272,8 @@ function CommandCenter({
                         )}
                       </div>
                     </div>
-                    <div className="dataset-card__actions">
-                      {hasRasterControls ? (
+                     <div className="dataset-card__actions">
+                       {hasRasterControls ? (
                         <button
                           type="button"
                           className={`dataset-card__gear${isExpanded ? " dataset-card__gear--active" : ""}`}

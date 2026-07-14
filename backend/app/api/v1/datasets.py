@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import io
 import logging
+import mimetypes
 import uuid
 from datetime import date as date_type, datetime, timezone
 from pathlib import Path
@@ -183,19 +184,23 @@ _SUFFIX_TO_TYPE: dict[str, DatasetFileType] = {
 
 _ZIP_IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp"}
 _ZIP_GIS_EXTS = {".shp", ".dbf", ".shx", ".prj", ".gpkg"}
+_ZIP_OBJ_EXTS = {".obj"}
 
 
 def _classify(filename: str, payload: bytes | None = None) -> DatasetFileType:
     ext = Path(filename).suffix.lower()
     if ext == ".zip" and payload:
-        # A zip could be a shapefile/GDB bundle or a batch of geo-tagged
-        # photos — peek at its real contents rather than assuming, so the
-        # dataset row's declared type matches what actually got ingested.
+        # A zip could be a shapefile/GDB bundle, a batch of geo-tagged
+        # photos, or a 3D model bundle (.obj + .mtl + textures) — peek at
+        # its real contents rather than assuming, so the dataset row's
+        # declared type matches what actually got ingested.
         import zipfile
 
         try:
             with zipfile.ZipFile(io.BytesIO(payload)) as zf:
                 names = [n for n in zf.namelist() if not n.endswith("/")]
+            if any(Path(n).suffix.lower() in _ZIP_OBJ_EXTS for n in names):
+                return DatasetFileType.OTHER
             if not any(Path(n).suffix.lower() in _ZIP_GIS_EXTS or ".gdb/" in n.lower() for n in names):
                 if any(Path(n).suffix.lower() in _ZIP_IMAGE_EXTS for n in names):
                     return DatasetFileType.IMAGE
@@ -352,6 +357,70 @@ async def get_raster_preview(
 
     png_bytes = _render_preview_variant(png_bytes, mode=mode)
     return Response(content=png_bytes, media_type="image/png")
+
+
+@router.get(
+    "/{dataset_id}/raw-file",
+    dependencies=[Depends(require_any)],
+)
+async def get_raw_file(dataset_id: uuid.UUID, db: AsyncSession = Depends(get_db)) -> Response:
+    """Streams the raw `.obj`/source file bytes. Used by format-specific
+    client-side viewers (e.g. the 3D OBJ viewer) that need the raw source
+    rather than the ingested/derived features.
+
+    If the dataset was uploaded as a zip bundle (.obj + .mtl + textures),
+    `storage_key` points at the *zip*, not the model itself — the reader
+    extracted and re-uploaded the `.obj` separately under
+    `dataset_metadata.model_assets.obj_key`, which is what's served here."""
+    row = (await db.execute(select(Dataset).where(Dataset.id == dataset_id))).scalar_one_or_none()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+
+    model_assets = (row.dataset_metadata or {}).get("model_assets")
+    key = (model_assets or {}).get("obj_key") or row.storage_key
+    if not key:
+        raise HTTPException(status_code=404, detail="No source file stored for this dataset")
+
+    from app.services.storage import get_object_bytes
+
+    try:
+        raw_bytes = await get_object_bytes(key)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=404, detail="Source file not found in storage") from exc
+
+    return Response(content=raw_bytes, media_type="application/octet-stream")
+
+
+@router.get(
+    "/{dataset_id}/model-asset/{filename}",
+    dependencies=[Depends(require_any)],
+)
+async def get_model_asset(dataset_id: uuid.UUID, filename: str, db: AsyncSession = Depends(get_db)) -> Response:
+    """Streams one companion file (the `.mtl` or a texture image) from an
+    OBJ zip bundle, so the 3D viewer can load the model's real materials
+    instead of a flat placeholder color."""
+    row = (await db.execute(select(Dataset).where(Dataset.id == dataset_id))).scalar_one_or_none()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+
+    model_assets = (row.dataset_metadata or {}).get("model_assets") or {}
+    key: str | None = None
+    if filename == model_assets.get("mtl_filename"):
+        key = model_assets.get("mtl_key")
+    else:
+        key = (model_assets.get("textures") or {}).get(filename)
+    if not key:
+        raise HTTPException(status_code=404, detail=f"No such model asset: {filename}")
+
+    from app.services.storage import get_object_bytes
+
+    try:
+        asset_bytes = await get_object_bytes(key)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=404, detail="Asset not found in storage") from exc
+
+    content_type, _ = mimetypes.guess_type(filename)
+    return Response(content=asset_bytes, media_type=content_type or "application/octet-stream")
 
 
 @router.patch(

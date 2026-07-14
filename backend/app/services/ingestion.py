@@ -23,20 +23,22 @@ from app.models import (
     Dataset,
     DatasetStatus,
 )
-from app.services.readers import DatasetReader, GISReader, ImageReader, get_reader_for
+from app.services.readers import DatasetReader, GISReader, ImageReader, ObjReader, get_reader_for
 from app.services.storage import download_to_file
 
 log = logging.getLogger("davangere.ingestion")
 
 _IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp"}
 _GIS_EXTS = {".shp", ".dbf", ".shx", ".prj", ".gpkg"}
+_OBJ_EXTS = {".obj"}
 
 
 def _pick_zip_reader(local_path: Path) -> DatasetReader:
-    """A `.zip` could be a shapefile/GDB bundle or a batch of geo-tagged
+    """A `.zip` could be a shapefile/GDB bundle, a batch of geo-tagged
     photos (a zipped folder of images, or several individually-selected
-    photos zipped client-side) — peek at its real contents instead of
-    assuming, since both share the same extension."""
+    photos zipped client-side), or a 3D model bundle (.obj + .mtl +
+    textures, zipped client-side from a browsed folder) — peek at its real
+    contents instead of assuming, since they all share the same extension."""
     import zipfile
 
     try:
@@ -45,6 +47,9 @@ def _pick_zip_reader(local_path: Path) -> DatasetReader:
     except zipfile.BadZipFile:
         return GISReader()  # let the existing reader produce its own clear error
 
+    has_obj = any(Path(n).suffix.lower() in _OBJ_EXTS for n in names)
+    if has_obj:
+        return ObjReader()
     has_gis = any(Path(n).suffix.lower() in _GIS_EXTS or ".gdb/" in n.lower() for n in names)
     if has_gis:
         return GISReader()
@@ -75,6 +80,9 @@ async def _set_status(
             raster_overlay = result_payload.pop("raster_overlay", None)
             if raster_overlay is not None:
                 merged["raster_overlay"] = raster_overlay
+            model_assets = result_payload.pop("model_assets", None)
+            if model_assets is not None:
+                merged["model_assets"] = model_assets
             ds.dataset_metadata = merged
 
         session.add(
@@ -155,6 +163,7 @@ async def ingest_dataset(*, dataset_id: uuid.UUID, storage_key: str, filename: s
                 "source_crs": result.source_crs,
                 "notes": result.notes,
                 "raster_overlay": result.raster_overlay,
+                "model_assets": result.model_assets,
             },
         )
     except Exception as exc:  # noqa: BLE001 — last-resort guard, see docstring
