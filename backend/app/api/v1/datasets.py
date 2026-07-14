@@ -480,6 +480,9 @@ async def dataset_feature_table(
     # Rank fields by actual data coverage across the complete dataset. This
     # keeps populated survey readings at the front and moves fields that are
     # entirely null/blank to the far right, consistently on every page.
+    # Leading-underscore keys (e.g. _canonical_class) are internal spatial
+    # audit engine bookkeeping, not survey attributes — never surface them
+    # in the user-facing attribute table.
     column_rows = (
         await db.execute(
             text(
@@ -502,6 +505,7 @@ async def dataset_feature_table(
             {"dataset_id": dataset_id},
         )
     ).all()
+    column_rows = [row for row in column_rows if not row[0].startswith("_")]
 
     return {
         "total": int(total),

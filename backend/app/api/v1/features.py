@@ -137,15 +137,23 @@ async def search_feature_fids(
 )
 async def list_categories(
     ward: str | None = Query(default=None, max_length=128),
+    dataset_id: list[uuid.UUID] | None = Query(
+        default=None,
+        description="Restrict categories to one or more datasets. Repeat for multiple values.",
+    ),
     db: AsyncSession = Depends(get_db),
 ) -> dict[str, Any]:
     from app.models import Dataset
 
-    category_expr = func.coalesce(Feature.category, "uncategorized")
-    stmt = select(category_expr.label("category"), func.count(Feature.id).label("count"))
+    category_expr = func.coalesce(func.nullif(func.trim(Feature.category), ""), "uncategorized")
+    stmt = select(category_expr.label("category"), func.count(Feature.id).label("count")).where(
+        Feature.category.is_distinct_from("raster_pixel")
+    )
     if ward is not None:
         stmt = stmt.join(Dataset, Dataset.id == Feature.dataset_id).where(Dataset.ward == ward)
-    stmt = stmt.group_by(category_expr).order_by(func.count(Feature.id).desc())
+    if dataset_id:
+        stmt = stmt.where(Feature.dataset_id.in_(list(dict.fromkeys(dataset_id))))
+    stmt = stmt.group_by(category_expr).order_by(func.count(Feature.id).desc(), category_expr.asc())
 
     rows = (await db.execute(stmt)).all()
     return {"categories": [{"category": r.category, "count": int(r.count)} for r in rows]}
@@ -347,6 +355,10 @@ async def list_features_in_viewport(
         alias="id",
         description="Fetch specific features by ID (bypasses bbox requirement). Repeat for multiple.",
     ),
+    exclude_internal: bool = Query(
+        default=False,
+        description="Exclude internal raster sample rows. Used by the read-only Analytics map.",
+    ),
     limit: int = Query(default=_DEFAULT_ROW_LIMIT, ge=1, le=_HARD_ROW_LIMIT),
     db: AsyncSession = Depends(get_db),
 ) -> dict[str, Any]:
@@ -407,6 +419,8 @@ async def list_features_in_viewport(
     conditions = [
         "ST_Intersects(f.geom, ST_MakeEnvelope(:min_x, :min_y, :max_x, :max_y, 4326))"
     ]
+    if exclude_internal:
+        conditions.append("f.category IS DISTINCT FROM 'raster_pixel'")
     params: dict[str, Any] = {
         "min_x": min_x, "min_y": min_y, "max_x": max_x, "max_y": max_y,
         "limit": limit,
@@ -421,7 +435,7 @@ async def list_features_in_viewport(
             raise HTTPException(status_code=400, detail="category values must be at most 128 characters")
         # The category dropdown exposes NULL rows as "uncategorized", so use
         # the same coalescing here to make that option filter correctly.
-        conditions.append("COALESCE(f.category, 'uncategorized') = ANY(:categories)")
+        conditions.append("COALESCE(NULLIF(BTRIM(f.category), ''), 'uncategorized') = ANY(:categories)")
         params["categories"] = list(dict.fromkeys(category))
     if severity is not None:
         conditions.append("f.severity >= :severity")

@@ -354,31 +354,41 @@ async def build_report_facts(
     *,
     dataset_id: uuid.UUID | None,
     ward: str | None,
+    dataset_ids: list[uuid.UUID] | None = None,
+    categories: list[str] | None = None,
+    allow_all: bool = False,
     top_feature_limit: int = 8,
 ) -> ReportFacts | None:
-    if dataset_id is None and ward is None:
+    combined_dataset_ids = list(dict.fromkeys(dataset_ids or []))
+    if dataset_id is not None and dataset_id not in combined_dataset_ids:
+        combined_dataset_ids.append(dataset_id)
+
+    cleaned_categories = sorted({value.strip() for value in categories or [] if value.strip()})
+    if not allow_all and not combined_dataset_ids and ward is None:
         return None
 
     params: dict[str, Any] = {}
-    # raster_pixel is the RasterReader's internal sample grid, not a real
-    # surveyed asset — excluded everywhere else (map layers/legend,
-    # Analytics KPIs), so the report's facts must exclude it too.
     conditions: list[str] = ["f.category IS DISTINCT FROM 'raster_pixel'"]
-    if dataset_id is not None:
-        conditions.append("f.dataset_id = :dataset_id")
-        params["dataset_id"] = dataset_id
+    if combined_dataset_ids:
+        conditions.append("f.dataset_id = ANY(:dataset_ids)")
+        params["dataset_ids"] = combined_dataset_ids
     if ward is not None:
         conditions.append("d.ward = :ward")
         params["ward"] = ward
+    if cleaned_categories:
+        conditions.append(
+            "COALESCE(NULLIF(BTRIM(f.category), ''), 'uncategorized') = ANY(:categories)"
+        )
+        params["categories"] = cleaned_categories
     where_clause = " AND ".join(conditions)
 
     stats_sql = text(
         f"""
         SELECT
-            COUNT(*)                       AS total,
-            AVG(f.severity)                AS avg_severity,
-            COUNT(DISTINCT f.category)     AS categories,
-            COUNT(DISTINCT d.id)           AS datasets
+            COUNT(*) AS total,
+            AVG(f.severity) AS avg_severity,
+            COUNT(DISTINCT COALESCE(NULLIF(BTRIM(f.category), ''), 'uncategorized')) AS categories,
+            COUNT(DISTINCT d.id) AS datasets
         FROM features f
         JOIN datasets d ON d.id = f.dataset_id
         WHERE {where_clause}
@@ -391,13 +401,13 @@ async def build_report_facts(
 
     category_sql = text(
         f"""
-        SELECT COALESCE(NULLIF(f.category, ''), 'uncategorized') AS category,
+        SELECT COALESCE(NULLIF(BTRIM(f.category), ''), 'uncategorized') AS category,
                COUNT(*) AS c, AVG(f.severity) AS avg_severity
         FROM features f
         JOIN datasets d ON d.id = f.dataset_id
         WHERE {where_clause}
         GROUP BY category
-        ORDER BY c DESC
+        ORDER BY c DESC, category ASC
         """
     )
     category_rows = (await db.execute(category_sql, params)).mappings().all()
@@ -405,12 +415,12 @@ async def build_report_facts(
     top_sql = text(
         f"""
         SELECT f.id::text AS id, f.label AS label,
-               COALESCE(NULLIF(f.category, ''), 'uncategorized') AS category,
+               COALESCE(NULLIF(BTRIM(f.category), ''), 'uncategorized') AS category,
                f.severity AS severity, d.name AS dataset_name
         FROM features f
         JOIN datasets d ON d.id = f.dataset_id
         WHERE {where_clause}
-        ORDER BY f.severity DESC
+        ORDER BY f.severity DESC, f.created_at, f.id
         LIMIT :top_limit
         """
     )
@@ -432,9 +442,9 @@ async def build_report_facts(
         """
     )
     severity_rows = (await db.execute(severity_sql, params)).mappings().all()
-    severity_buckets = {b: 0 for b in ("low", "medium", "high")}
-    for r in severity_rows:
-        severity_buckets[r["bucket"]] = int(r["c"])
+    severity_buckets = {bucket: 0 for bucket in ("low", "medium", "high")}
+    for row in severity_rows:
+        severity_buckets[row["bucket"]] = int(row["c"])
 
     review_sql = text(
         f"""
@@ -447,9 +457,23 @@ async def build_report_facts(
         """
     )
     review_rows = (await db.execute(review_sql, params)).mappings().all()
-    review_summary = ", ".join(f"{r['status']}={r['c']}" for r in review_rows) or "no review items"
+    review_summary = ", ".join(f"{row['status']}={row['c']}" for row in review_rows) or "no review items"
 
-    scope_label = f"ward {ward}" if ward else f"dataset {dataset_id}"
+    if ward:
+        scope_label = f"ward {ward}"
+    elif combined_dataset_ids:
+        scope_label = (
+            f"dataset {combined_dataset_ids[0]}"
+            if len(combined_dataset_ids) == 1
+            else f"{len(combined_dataset_ids)} selected datasets"
+        )
+    else:
+        scope_label = "all datasets"
+    if cleaned_categories:
+        category_label = ", ".join(cleaned_categories[:8])
+        if len(cleaned_categories) > 8:
+            category_label += f", and {len(cleaned_categories) - 8} more"
+        scope_label += f" | categories: {category_label}"
 
     return ReportFacts(
         scope_label=scope_label,
@@ -459,18 +483,22 @@ async def build_report_facts(
         avg_severity=float(stats["avg_severity"] or 0.0),
         review_summary=review_summary,
         categories=[
-            CategoryFact(category=r["category"], count=int(r["c"]), avg_severity=float(r["avg_severity"] or 0.0))
-            for r in category_rows
+            CategoryFact(
+                category=row["category"],
+                count=int(row["c"]),
+                avg_severity=float(row["avg_severity"] or 0.0),
+            )
+            for row in category_rows
         ],
         top_features=[
             TopFeatureFact(
-                id=r["id"],
-                label=r["label"] or "-",
-                category=r["category"],
-                severity=float(r["severity"]),
-                dataset_name=r["dataset_name"],
+                id=row["id"],
+                label=row["label"] or "-",
+                category=row["category"],
+                severity=float(row["severity"]),
+                dataset_name=row["dataset_name"],
             )
-            for r in top_rows
+            for row in top_rows
         ],
         severity_buckets=severity_buckets,
     )

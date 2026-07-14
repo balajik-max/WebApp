@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useRef, useState } from "react";
 import JSZip from "jszip";
 import { deleteDataset, fetchDatasets, updateDataset, type DatasetRow } from "../lib/workflow";
 import { AttributeTable } from "../components/AttributeTable";
+import { UnclassifiedCategoriesPanel } from "../components/UnclassifiedCategoriesPanel";
 
 const REFRESH_MS = 4000;
 
@@ -879,6 +880,9 @@ export function DatasetsView() {
           )}
         </div>
       </section>
+
+      {/* ── UNCLASSIFIED CATEGORIES (spatial audit classifier review) ── */}
+      <UnclassifiedCategoriesPanel />
 
       {/* ── ATTRIBUTE TABLE OVERLAY ─────────────────────────────────── */}
       {openTableFor && (

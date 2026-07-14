@@ -70,6 +70,7 @@ class Settings(BaseSettings):
     # --- AI --------------------------------------------------------------
     ollama_base_url: str = Field(validation_alias="OLLAMA_BASE_URL")
     ollama_model: str = Field(default="qwen2.5:3b-instruct", validation_alias="OLLAMA_MODEL")
+    ollama_embed_model: str = Field(default="nomic-embed-text", validation_alias="OLLAMA_EMBED_MODEL")
     ai_max_context_tokens: int = Field(default=4096, validation_alias="AI_MAX_CONTEXT_TOKENS")
     ai_max_features: int = Field(default=30, validation_alias="AI_MAX_FEATURES")
 
