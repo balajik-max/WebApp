@@ -2715,7 +2715,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
           zoom={mapZoom}
           minZoom={4}
           maxZoom={24}
-          onChange={(next) => mapRef.current?.setZoom(next)}
+          onChange={(next: number) => mapRef.current?.setZoom(next)}
         />
         <LookAroundCompass
           bearing={mapBearing}
@@ -3405,6 +3405,116 @@ function formatDms(value: number, positiveSuffix: string, negativeSuffix: string
   const minutes = Math.floor(minutesFull);
   const seconds = (minutesFull - minutes) * 60;
   return `${degrees}°${String(minutes).padStart(2, "0")}'${seconds.toFixed(2).padStart(5, "0")}" ${suffix}`;
+}
+
+/** Bottom-right status strip: live cursor coordinates plus a fixed-size
+ * scale/distance chip. Both boxes share one positioned wrapper so they can
+ * never drift apart or overlap independently — the distance box's width
+ * never changes with its text ("200 m" vs "2 km"), only the coordinate
+ * box's content changes size (as the cursor moves over water/edge cases
+ * that shorten the DMS string), which is why the distance box sits fixed
+ * on the wrapper's right edge rather than being laid out purely by flex
+ * order against a variable-width neighbour. */
+function MapStatusBar({ lngLat, scaleLabel }: { lngLat: [number, number] | null; scaleLabel: string }) {
+  if (!lngLat && !scaleLabel) return null;
+  return (
+    <div className="map__status-bar" data-testid="map-status-bar">
+      {lngLat && (
+        <div className="map__status-box map__coord-readout" data-testid="map-coord-readout">
+          {formatDms(lngLat[1], "N", "S")}&nbsp;&nbsp;{formatDms(lngLat[0], "E", "W")}
+        </div>
+      )}
+      {scaleLabel && (
+        <div className="map__status-box map__scale-readout" data-testid="map-scale-readout">
+          {scaleLabel}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** Google Earth Pro-style zoom control, laid out as a horizontal bar: a "−"
+ * button, a draggable slider track, and a "+" button. Purely presentational —
+ * the map's zoom is the single source of truth (passed in via `zoom`), and
+ * every interaction (click ends, drag, track click) just calls `onChange`;
+ * MapCanvas is the one that actually calls `map.setZoom()`. */
+function ZoomSlider({
+  zoom,
+  minZoom,
+  maxZoom,
+  onChange,
+}: {
+  zoom: number;
+  minZoom: number;
+  maxZoom: number;
+  onChange: (zoom: number) => void;
+}) {
+  const trackRef = useRef<HTMLDivElement | null>(null);
+  const range = maxZoom - minZoom;
+  const fraction = range > 0 ? Math.min(1, Math.max(0, (zoom - minZoom) / range)) : 0;
+
+  const zoomFromClientX = (clientX: number) => {
+    const rect = trackRef.current?.getBoundingClientRect();
+    if (!rect || rect.width === 0) return null;
+    const t = Math.min(1, Math.max(0, (clientX - rect.left) / rect.width));
+    return minZoom + t * range;
+  };
+
+  const handleTrackPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    const next = zoomFromClientX(e.clientX);
+    if (next !== null) onChange(next);
+    e.currentTarget.setPointerCapture(e.pointerId);
+    e.preventDefault();
+  };
+  const handleTrackPointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (!e.currentTarget.hasPointerCapture(e.pointerId)) return;
+    const next = zoomFromClientX(e.clientX);
+    if (next !== null) onChange(next);
+  };
+  const handleTrackPointerUp = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (e.currentTarget.hasPointerCapture(e.pointerId)) {
+      e.currentTarget.releasePointerCapture(e.pointerId);
+    }
+  };
+
+  return (
+    <div className="map-zoom-slider" data-testid="map-zoom-slider">
+      <button
+        type="button"
+        className="map-zoom-slider__btn"
+        onClick={() => onChange(Math.max(minZoom, zoom - 1))}
+        aria-label="Zoom out"
+        data-testid="map-zoom-out"
+      >
+        −
+      </button>
+      <div
+        ref={trackRef}
+        className="map-zoom-slider__track"
+        onPointerDown={handleTrackPointerDown}
+        onPointerMove={handleTrackPointerMove}
+        onPointerUp={handleTrackPointerUp}
+        onPointerCancel={handleTrackPointerUp}
+        role="slider"
+        aria-label="Map zoom"
+        aria-valuemin={minZoom}
+        aria-valuemax={maxZoom}
+        aria-valuenow={Math.round(zoom * 10) / 10}
+      >
+        <div className="map-zoom-slider__fill" style={{ width: `${fraction * 100}%` }} />
+        <div className="map-zoom-slider__thumb" style={{ left: `${fraction * 100}%` }} />
+      </div>
+      <button
+        type="button"
+        className="map-zoom-slider__btn"
+        onClick={() => onChange(Math.min(maxZoom, zoom + 1))}
+        aria-label="Zoom in"
+        data-testid="map-zoom-in"
+      >
+        +
+      </button>
+    </div>
+  );
 }
 
 function MapLegend({ entries }: { entries: LegendEntry[] }) {

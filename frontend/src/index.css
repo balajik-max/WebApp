@@ -6896,8 +6896,6 @@ body {
   font-size: 10px;
   font-weight: 700;
 }
-/* ── MAP CURSOR COORDINATE READOUT ───────────────────────────────────── */
-.map__coord-readout {
 /* ── MAP BOTTOM-RIGHT STATUS BAR (coordinates + fixed-size scale chip) ─── */
 /* Single positioned wrapper for both boxes so they can never drift apart
    or independently overlap something else — matches the existing
@@ -7470,6 +7468,7 @@ body {
   gap: 18px;
   padding: 16px;
   margin-bottom: 18px;
+}
 /* ── PROFILE PAGE ─────────────────────────────────────────────────────── */
 .profile-page {
   height: 100%;
@@ -7510,6 +7509,7 @@ body {
   border: 1px solid var(--edge);
   border-radius: var(--radius-lg);
   box-shadow: var(--shadow-sm);
+  overflow: hidden;
 }
 
 .analytics-scope__intro h3 {
@@ -8605,7 +8605,6 @@ button.analytics-readiness-count--missing:disabled {
   .analytics-readiness-card__summary {
     align-items: flex-start;
   }
-  overflow: hidden;
 }
 
 .profile-card__header {
