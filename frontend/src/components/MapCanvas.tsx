@@ -703,6 +703,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
   const [attributeTable, setAttributeTable] = useState<LayerAttributeTableState | null>(null);
   const [streetPickMode, setStreetPickMode] = useState(false);
   const [streetViewTarget, setStreetViewTarget] = useState<{ latitude: number; longitude: number } | null>(null);
+  const [loadedFeatures, setLoadedFeatures] = useState<UrbanFeature[]>([]);
   const streetPickModeRef = useRef(false);
   const streetPickConsumedRef = useRef(false);
   const [pendingFocusFeatureId, setPendingFocusFeatureId] = useState<string | null>(focusFeatureId ?? null);
@@ -1328,6 +1329,10 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     // data to be discarded precisely while zooming.
     if (!src) return;
     src.setData(data as unknown as GeoJSON.FeatureCollection);
+    // Keep the exact dashboard snapshot available to Street View. The
+    // panorama applies the same client-side layer visibility controls and
+    // creates nearby, georeferenced markers without issuing another request.
+    setLoadedFeatures(data.features);
 
     // Cache coordinates for every Point feature so the AI highlight layer
     // can place its circles correctly even when highlights arrive after load.
@@ -2115,8 +2120,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
         // photo — otherwise the two click handlers would both fire for the
         // same click. Once Escape deactivates the tool (panel still open),
         // this must stop applying so ordinary feature clicks work again.
-        if (isMeasureInputActive()) return;
-        if (streetPickModeRef.current || streetPickConsumedRef.current) return;
+        if (streetPickModeRef.current || streetPickConsumedRef.current || isMeasureInputActive()) return;
         const hit = map.queryRenderedFeatures(e.point, { layers: ALL_CLICKABLE });
         if (!hit.length) return;
         const isAi = AI_CLICKABLE.includes(hit[0].layer?.id as string);
@@ -2145,8 +2149,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
         // Leave below). Uses isMeasureInputActive() (not the raw panel-open
         // flag) so hover works normally again as soon as Escape deactivates
         // the tool, even while the Measure panel itself stays open.
-        if (isMeasureInputActive()) return;
-        if (streetPickModeRef.current) { setHover(null); return; }
+        if (streetPickModeRef.current || isMeasureInputActive()) { setHover(null); return; }
         const hit = map.queryRenderedFeatures(e.point, { layers: ALL_CLICKABLE });
         if (!hit.length) { setHover(null); return; }
         const aiHit = hit.find((f) => AI_CLICKABLE.includes(f.layer?.id as string));
@@ -2177,10 +2180,12 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
       // and these handlers must not overwrite it with "pointer"/"" just
       // because the mouse crossed a feature underneath the measurement layer.
       const handleFeatureMouseEnter = () => {
+        if (streetPickModeRef.current) { map.getCanvas().style.cursor = "crosshair"; return; }
         if (isMeasureInputActive()) return;
         map.getCanvas().style.cursor = "pointer";
       };
       const handleFeatureMouseLeave = () => {
+        if (streetPickModeRef.current) { map.getCanvas().style.cursor = "crosshair"; setHover(null); return; }
         if (isMeasureInputActive()) return;
         map.getCanvas().style.cursor = "";
         setHover(null);
@@ -2190,6 +2195,17 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
         map.on("mouseenter", id, handleFeatureMouseEnter);
         map.on("mousemove", id, handleFeatureHover);
         map.on("mouseleave", id, handleFeatureMouseLeave);
+      });
+
+      map.on("click", (event) => {
+        if (!streetPickModeRef.current) return;
+        streetPickConsumedRef.current = true;
+        window.requestAnimationFrame(() => { streetPickConsumedRef.current = false; });
+        streetPickModeRef.current = false;
+        setStreetPickMode(false);
+        map.getCanvas().style.cursor = "";
+        setHover(null);
+        setStreetViewTarget({ latitude: event.lngLat.lat, longitude: event.lngLat.lng });
       });
 
       // Ruler / measurement overlay — own GeoJSON sources so it never
@@ -2239,7 +2255,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
       //   drawing → Line/Circle: this is the final (2nd) vertex; Path/Polygon:
       //             append another vertex.
       map.on("click", (e: MapMouseEvent) => {
-        if (!measureActiveRef.current) return;
+        if (streetPickModeRef.current || streetPickConsumedRef.current || !measureActiveRef.current) return;
         const phase = measurePhaseRef.current;
         const tab = measureTabRef.current;
         const isMultiPoint = MEASURE_MULTI_POINT_TABS.has(tab);
@@ -2332,19 +2348,19 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
       // useEffect can safely call map.getSource(AI_HIGHLIGHT_SOURCE).
       setMapReady(true);
     });
-    map.on("moveend", scheduleFetch);
-    map.on("zoomend", scheduleFetch);
+    // Do not fetch on move/zoom. Once a dashboard selection is loaded, the
+    // GeoJSON source remains unchanged until the user changes that selection.
     return () => {
+      fetchSequenceRef.current += 1;
       abortRef.current?.abort();
+      focusAbortRef.current?.abort();
+      if (focusClearTimerRef.current !== null) window.clearTimeout(focusClearTimerRef.current);
       if (debounceRef.current !== null) window.clearTimeout(debounceRef.current);
       if (measureRafRef.current !== null) { cancelAnimationFrame(measureRafRef.current); measureRafRef.current = null; }
       map.remove();
       mapRef.current = null;
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-    // Do not fetch on move/zoom. Once a dashboard selection is loaded, the
-    // GeoJSON source remains unchanged until the user changes that selection.
-    return () => { fetchSequenceRef.current += 1; abortRef.current?.abort(); focusAbortRef.current?.abort(); if (focusClearTimerRef.current !== null) window.clearTimeout(focusClearTimerRef.current); if (debounceRef.current !== null) window.clearTimeout(debounceRef.current); map.remove(); mapRef.current = null; };
   }, []);
 
   return (
@@ -2440,6 +2456,8 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
         <GoogleStreetView
           latitude={streetViewTarget.latitude}
           longitude={streetViewTarget.longitude}
+          features={loadedFeatures}
+          hiddenCategories={hiddenCategories}
           onClose={() => setStreetViewTarget(null)}
         />
       )}
