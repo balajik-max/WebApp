@@ -21,6 +21,7 @@ import geopandas as gpd
 import pandas as pd
 import pyogrio
 from geoalchemy2.shape import from_shape
+from shapely import force_2d
 from shapely.geometry.base import BaseGeometry
 
 from app.db.session import SessionLocal
@@ -313,6 +314,12 @@ class GISReader:
                 if geom is None or geom.is_empty:
                     skipped += 1
                     continue
+
+                # The shared PostGIS column is 2D. Survey contours and other
+                # GIS layers may carry Z coordinates; their source elevation
+                # remains available in the imported attributes.
+                if geom.has_z:
+                    geom = force_2d(geom)
 
                 attrs = _row_attributes(row.to_dict())
                 if category_col is not None:
