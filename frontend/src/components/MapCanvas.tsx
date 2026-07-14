@@ -2716,7 +2716,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
           zoom={mapZoom}
           minZoom={4}
           maxZoom={24}
-          onChange={(next) => mapRef.current?.setZoom(next)}
+          onChange={(next: number) => mapRef.current?.setZoom(next)}
         />
         <LookAroundCompass
           bearing={mapBearing}

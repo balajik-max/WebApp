@@ -44,6 +44,7 @@ export const aiReport = (body: {
   dataset_ids?: string[];
   ward?: string;
   categories?: string[];
+  severity_buckets?: Array<"low" | "medium" | "high">;
   all_datasets?: boolean;
   max_features?: number;
 }) => apiPost<AiAnswer>("/api/v1/ai/report", body);

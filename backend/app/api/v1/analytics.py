@@ -3,6 +3,7 @@ Analytics endpoints.
 
   GET /api/v1/analytics/overview
   GET /api/v1/analytics/features
+  GET /api/v1/analytics/quality
 
 Every result is calculated from the same optional dataset/category scope.
 The category parameters are repeatable, so callers can select zero, one,
@@ -11,9 +12,10 @@ or any number of categories without changing the endpoint shape.
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import json
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, Query, Response
 from sqlalchemy import case, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -24,6 +26,9 @@ from app.schemas.workflow import (
     AnalyticsFeaturePage,
     AnalyticsFeatureRow,
     AnalyticsOverview,
+    AnalyticsQualityReport,
+    ManholeReadinessFieldResult,
+    ManholeReadinessReport,
     CategoryBreakdown,
     IngestionTrendPoint,
     SeverityBucket,
@@ -31,30 +36,24 @@ from app.schemas.workflow import (
     WardBreakdown,
 )
 
+from app.services.analytics.exports import AnalyticsExportFormat, build_analytics_export
+from app.services.analytics.quality import build_quality_report
+from app.services.analytics.readiness import (
+    clean_missing_field,
+    field_available_condition,
+    get_readiness_field,
+    manhole_category_condition,
+    readiness_fields,
+)
+from app.services.analytics.scope import (
+    CATEGORY_EXPR,
+    clean_categories,
+    clean_severity_buckets,
+    clean_wards,
+    feature_conditions,
+)
+
 router = APIRouter()
-
-# RasterReader sample pixels are implementation detail, not surveyed assets.
-_NOT_RASTER_SAMPLE = Feature.category.is_distinct_from("raster_pixel")
-_CATEGORY_EXPR = func.coalesce(func.nullif(func.trim(Feature.category), ""), "uncategorized")
-
-
-def _clean_categories(values: list[str] | None) -> list[str]:
-    cleaned = sorted({value.strip() for value in values or [] if value.strip()})
-    if any(len(value) > 128 for value in cleaned):
-        raise HTTPException(status_code=400, detail="category values must be at most 128 characters")
-    return cleaned
-
-
-def _feature_conditions(
-    dataset_ids: list[uuid.UUID] | None,
-    categories: list[str],
-) -> list[object]:
-    conditions: list[object] = [_NOT_RASTER_SAMPLE]
-    if dataset_ids:
-        conditions.append(Feature.dataset_id.in_(dataset_ids))
-    if categories:
-        conditions.append(_CATEGORY_EXPR.in_(categories))
-    return conditions
 
 
 @router.get(
@@ -71,25 +70,44 @@ async def analytics_overview(
         default=None,
         description="Restrict every figure to one or more categories. Repeat for multiple values.",
     ),
+    ward: list[str] | None = Query(
+        default=None,
+        description="Optional cross-filter by one or more dataset wards.",
+    ),
+    severity_bucket: list[str] | None = Query(
+        default=None,
+        description="Optional cross-filter. Repeat low, medium, or high values.",
+    ),
+    missing_field: str | None = Query(
+        default=None,
+        description="Optional Manhole readiness filter, such as depth or bottom_level.",
+    ),
     db: AsyncSession = Depends(get_db),
 ) -> AnalyticsOverview:
     dataset_ids = list(dict.fromkeys(dataset_id or []))
-    categories = _clean_categories(category)
-    feature_conditions = _feature_conditions(dataset_ids, categories)
+    categories = clean_categories(category)
+    wards = clean_wards(ward)
+    severity_buckets = clean_severity_buckets(severity_bucket)
+    cleaned_missing_field = clean_missing_field(missing_field)
+    scoped_feature_conditions = feature_conditions(
+        dataset_ids, categories, wards, severity_buckets, cleaned_missing_field
+    )
 
     # Dataset status counts. With a category filter, only datasets that really
     # contain a matching feature contribute to the scoped survey count.
-    if categories:
+    if categories or severity_buckets or cleaned_missing_field:
         ds_stmt = (
             select(Dataset.status, func.count(func.distinct(Dataset.id)))
             .join(Feature, Feature.dataset_id == Dataset.id)
-            .where(*feature_conditions)
+            .where(*scoped_feature_conditions)
             .group_by(Dataset.status)
         )
     else:
         ds_stmt = select(Dataset.status, func.count(Dataset.id))
         if dataset_ids:
             ds_stmt = ds_stmt.where(Dataset.id.in_(dataset_ids))
+        if wards:
+            ds_stmt = ds_stmt.where(Dataset.ward.in_(wards))
         ds_stmt = ds_stmt.group_by(Dataset.status)
 
     ds_rows = (await db.execute(ds_stmt)).all()
@@ -103,7 +121,7 @@ async def analytics_overview(
             select(
                 func.count(Feature.id).label("total"),
                 func.avg(Feature.severity).label("average_severity"),
-            ).where(*feature_conditions)
+            ).where(*scoped_feature_conditions)
         )
     ).one()
     total_features = int(feature_stats.total or 0)
@@ -114,7 +132,7 @@ async def analytics_overview(
         await db.execute(
             select(ReviewItem.status, func.count(ReviewItem.id))
             .join(Feature, Feature.id == ReviewItem.feature_id)
-            .where(*feature_conditions)
+            .where(*scoped_feature_conditions)
             .group_by(ReviewItem.status)
         )
     ).all()
@@ -139,7 +157,7 @@ async def analytics_overview(
                 func.count(Feature.id).label("feature_count"),
             )
             .join(Feature, Feature.dataset_id == Dataset.id)
-            .where(Dataset.ward.isnot(None), *feature_conditions)
+            .where(Dataset.ward.isnot(None), *scoped_feature_conditions)
             .group_by(Dataset.ward)
         )
     ).all()
@@ -161,7 +179,7 @@ async def analytics_overview(
             )
             .join(Feature, Feature.dataset_id == Dataset.id)
             .join(ReviewItem, ReviewItem.feature_id == Feature.id)
-            .where(Dataset.ward.isnot(None), *feature_conditions)
+            .where(Dataset.ward.isnot(None), *scoped_feature_conditions)
             .group_by(Dataset.ward)
         )
     ).all()
@@ -185,13 +203,13 @@ async def analytics_overview(
     category_rows = (
         await db.execute(
             select(
-                _CATEGORY_EXPR.label("category"),
+                CATEGORY_EXPR.label("category"),
                 func.count(Feature.id).label("count"),
                 func.avg(Feature.severity).label("avg_severity"),
             )
-            .where(*feature_conditions)
-            .group_by(_CATEGORY_EXPR)
-            .order_by(func.count(Feature.id).desc(), _CATEGORY_EXPR.asc())
+            .where(*scoped_feature_conditions)
+            .group_by(CATEGORY_EXPR)
+            .order_by(func.count(Feature.id).desc(), CATEGORY_EXPR.asc())
         )
     ).all()
     category_breakdown = [
@@ -211,7 +229,7 @@ async def analytics_overview(
     severity_rows = (
         await db.execute(
             select(severity_case.label("bucket"), func.count(Feature.id).label("count"))
-            .where(*feature_conditions)
+            .where(*scoped_feature_conditions)
             .group_by(severity_case)
         )
     ).all()
@@ -225,7 +243,7 @@ async def analytics_overview(
     trend_rows = (
         await db.execute(
             select(day_expr.label("day"), func.count(Feature.id).label("count"))
-            .where(*feature_conditions)
+            .where(*scoped_feature_conditions)
             .group_by(day_expr)
             .order_by(day_expr)
         )
@@ -266,6 +284,140 @@ async def analytics_overview(
 
 
 @router.get(
+    "/manhole-readiness",
+    response_model=ManholeReadinessReport,
+    dependencies=[Depends(require_any)],
+    summary="Available-versus-missing counts for verified Manhole fields",
+)
+async def manhole_readiness(
+    dataset_id: list[uuid.UUID] | None = Query(default=None),
+    ward: list[str] | None = Query(default=None),
+    severity_bucket: list[str] | None = Query(default=None),
+    db: AsyncSession = Depends(get_db),
+) -> ManholeReadinessReport:
+    dataset_ids = list(dict.fromkeys(dataset_id or []))
+    wards = clean_wards(ward)
+    severity_buckets = clean_severity_buckets(severity_bucket)
+    conditions = feature_conditions(dataset_ids, [], wards, severity_buckets)
+    conditions.append(manhole_category_condition())
+
+    field_specs = list(readiness_fields())
+    columns = [func.count(Feature.id).label("total")]
+    columns.extend(
+        func.count(Feature.id)
+        .filter(field_available_condition(field.key))
+        .label(f"available_{field.key}")
+        for field in field_specs
+    )
+    row = (await db.execute(select(*columns).where(*conditions))).one()
+    total = int(row.total or 0)
+
+    fields = []
+    for field in field_specs:
+        available = int(getattr(row, f"available_{field.key}") or 0)
+        missing = max(0, total - available)
+        completeness = round((available / total) * 100.0, 1) if total else 0.0
+        fields.append(
+            ManholeReadinessFieldResult(
+                key=field.key,
+                label=field.label,
+                aliases=list(field.aliases),
+                available_count=available,
+                missing_count=missing,
+                completeness_percentage=completeness,
+                recommended_action=field.recommended_action,
+            )
+        )
+
+    return ManholeReadinessReport(
+        total_manhole_features=total,
+        fields=fields,
+        methodology=(
+            "Counts are read directly from existing Manhole attributes. A value is missing "
+            "when every configured alias is blank, null, unknown, or another standard empty marker. "
+            "No source feature or GDB attribute is modified."
+        ),
+        generated_at=datetime.now(timezone.utc),
+    )
+
+
+@router.get(
+    "/manhole-readiness/features",
+    dependencies=[Depends(require_any)],
+    summary="GeoJSON evidence for Manholes missing one readiness field",
+)
+async def manhole_readiness_features(
+    field: str = Query(..., description="Readiness field key, such as depth or condition."),
+    dataset_id: list[uuid.UUID] | None = Query(default=None),
+    ward: list[str] | None = Query(default=None),
+    severity_bucket: list[str] | None = Query(default=None),
+    limit: int = Query(default=5000, ge=1, le=5000),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    field_key = clean_missing_field(field)
+    assert field_key is not None
+    field_spec = get_readiness_field(field_key)
+    dataset_ids = list(dict.fromkeys(dataset_id or []))
+    wards = clean_wards(ward)
+    severity_buckets = clean_severity_buckets(severity_bucket)
+    conditions = feature_conditions(
+        dataset_ids, [], wards, severity_buckets, field_key
+    )
+
+    total = int(
+        (await db.execute(select(func.count(Feature.id)).where(*conditions))).scalar_one()
+        or 0
+    )
+    rows = (
+        await db.execute(
+            select(
+                Feature.id,
+                Feature.dataset_id,
+                Feature.label,
+                CATEGORY_EXPR.label("category"),
+                Feature.severity,
+                Feature.attributes,
+                func.ST_AsGeoJSON(Feature.geom, 6).label("geometry_json"),
+            )
+            .where(*conditions)
+            .order_by(Feature.severity.desc(), Feature.id)
+            .limit(limit)
+        )
+    ).all()
+
+    features = []
+    for row in rows:
+        geometry = json.loads(row.geometry_json) if row.geometry_json else None
+        features.append(
+            {
+                "type": "Feature",
+                "id": str(row.id),
+                "geometry": geometry,
+                "properties": {
+                    "id": str(row.id),
+                    "dataset_id": str(row.dataset_id),
+                    "label": row.label,
+                    "category": row.category,
+                    "severity": float(row.severity or 0.0),
+                    "attributes": row.attributes if isinstance(row.attributes, dict) else {},
+                    "missing_field": field_key,
+                    "missing_field_label": field_spec.label,
+                    "recommended_action": field_spec.recommended_action,
+                },
+            }
+        )
+
+    return {
+        "type": "FeatureCollection",
+        "features": features,
+        "bbox": [-180, -90, 180, 90],
+        "count": len(features),
+        "limit": limit,
+        "truncated": total > limit,
+    }
+
+
+@router.get(
     "/features",
     response_model=AnalyticsFeaturePage,
     dependencies=[Depends(require_any)],
@@ -274,13 +426,21 @@ async def analytics_overview(
 async def analytics_features(
     dataset_id: list[uuid.UUID] | None = Query(default=None),
     category: list[str] | None = Query(default=None),
+    ward: list[str] | None = Query(default=None),
+    severity_bucket: list[str] | None = Query(default=None),
+    missing_field: str | None = Query(default=None),
     limit: int = Query(default=50, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
     db: AsyncSession = Depends(get_db),
 ) -> AnalyticsFeaturePage:
     dataset_ids = list(dict.fromkeys(dataset_id or []))
-    categories = _clean_categories(category)
-    conditions = _feature_conditions(dataset_ids, categories)
+    categories = clean_categories(category)
+    wards = clean_wards(ward)
+    severity_buckets = clean_severity_buckets(severity_bucket)
+    cleaned_missing_field = clean_missing_field(missing_field)
+    conditions = feature_conditions(
+        dataset_ids, categories, wards, severity_buckets, cleaned_missing_field
+    )
 
     total = int(
         (
@@ -297,7 +457,7 @@ async def analytics_features(
                 Dataset.name.label("dataset_name"),
                 Dataset.ward,
                 Feature.label,
-                _CATEGORY_EXPR.label("category"),
+                CATEGORY_EXPR.label("category"),
                 Feature.severity,
                 func.GeometryType(Feature.geom).label("geometry_type"),
                 Feature.created_at,
@@ -328,4 +488,75 @@ async def analytics_features(
             )
             for row in rows
         ],
+    )
+
+
+@router.get(
+    "/quality",
+    response_model=AnalyticsQualityReport,
+    dependencies=[Depends(require_any)],
+    summary="Deterministic data-quality score, verified findings, and priority ranking",
+)
+async def analytics_quality(
+    dataset_id: list[uuid.UUID] | None = Query(default=None),
+    category: list[str] | None = Query(default=None),
+    ward: list[str] | None = Query(default=None),
+    severity_bucket: list[str] | None = Query(default=None),
+    missing_field: str | None = Query(default=None),
+    db: AsyncSession = Depends(get_db),
+) -> AnalyticsQualityReport:
+    dataset_ids = list(dict.fromkeys(dataset_id or []))
+    categories = clean_categories(category)
+    wards = clean_wards(ward)
+    severity_buckets = clean_severity_buckets(severity_bucket)
+    cleaned_missing_field = clean_missing_field(missing_field)
+    return await build_quality_report(
+        db,
+        dataset_ids=dataset_ids,
+        categories=categories,
+        wards=wards,
+        severity_buckets=severity_buckets,
+        missing_field=cleaned_missing_field,
+    )
+
+
+@router.get(
+    "/export",
+    dependencies=[Depends(require_any)],
+    summary="Download the currently applied Analytics scope",
+)
+async def analytics_export(
+    format: AnalyticsExportFormat = Query(
+        default="xlsx",
+        description="Export format: csv, xlsx, pdf, or geojson.",
+    ),
+    dataset_id: list[uuid.UUID] | None = Query(default=None),
+    category: list[str] | None = Query(default=None),
+    ward: list[str] | None = Query(default=None),
+    severity_bucket: list[str] | None = Query(default=None),
+    missing_field: str | None = Query(default=None),
+    db: AsyncSession = Depends(get_db),
+) -> Response:
+    dataset_ids = list(dict.fromkeys(dataset_id or []))
+    categories = clean_categories(category)
+    wards = clean_wards(ward)
+    severity_buckets = clean_severity_buckets(severity_bucket)
+    cleaned_missing_field = clean_missing_field(missing_field)
+    content, media_type, filename = await build_analytics_export(
+        db,
+        export_format=format,
+        dataset_ids=dataset_ids,
+        categories=categories,
+        wards=wards,
+        severity_buckets=severity_buckets,
+        missing_field=cleaned_missing_field,
+    )
+    return Response(
+        content=content,
+        media_type=media_type,
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "Cache-Control": "no-store",
+            "X-Content-Type-Options": "nosniff",
+        },
     )
