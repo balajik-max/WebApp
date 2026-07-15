@@ -70,3 +70,4 @@ class Dataset(Base):
     features = relationship(
         "Feature", back_populates="dataset", cascade="all, delete-orphan", lazy="raise"
     )
+    placemarks = relationship("Placemark", back_populates="dataset", lazy="raise")

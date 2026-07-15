@@ -34,6 +34,10 @@ class ActivityAction(str, enum.Enum):
     SURVEY_REQUESTED = "survey_requested"
     SURVEY_STATUS_CHANGED = "survey_status_changed"
 
+    PLACEMARK_CREATED = "placemark_created"
+    PLACEMARK_UPDATED = "placemark_updated"
+    PLACEMARK_DELETED = "placemark_deleted"
+
 
 class ActivityLog(Base):
     __tablename__ = "activity_log"

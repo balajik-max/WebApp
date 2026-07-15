@@ -153,6 +153,56 @@ export function fetchDatasetBounds(datasetId: string, signal?: AbortSignal) {
   return apiGet<DatasetBounds>(`/api/v1/datasets/${datasetId}/bounds`, signal);
 }
 
+export type VisualizationRenderer = "point" | "line" | "polygon" | "generic";
+export type VisualizationFieldType =
+  | "string"
+  | "number"
+  | "boolean"
+  | "object"
+  | "array"
+  | "mixed"
+  | "unknown";
+
+export interface VisualizationFieldProfile {
+  name: string;
+  detected_type: VisualizationFieldType;
+  populated_count: number;
+  missing_count: number;
+  unique_count: number | null;
+}
+
+export interface VisualizationLayerManifest {
+  layer_key: string;
+  source_layer_name: string;
+  display_name: string;
+  geometry_types: string[];
+  feature_count: number;
+  bounds: [number, number, number, number] | null;
+  fields: VisualizationFieldProfile[];
+  recommended_renderer: VisualizationRenderer;
+  recommended_modes: string[];
+  warnings: string[];
+}
+
+export interface VisualizationManifest {
+  dataset_id: string;
+  dataset_name: string;
+  source_format: string;
+  source_crs: string | null;
+  display_crs: string;
+  bounds: [number, number, number, number] | null;
+  total_features: number;
+  layers: VisualizationLayerManifest[];
+  warnings: string[];
+}
+
+export function fetchVisualizationManifest(datasetId: string, signal?: AbortSignal) {
+  return apiGet<VisualizationManifest>(
+    `/api/v1/visualization/datasets/${datasetId}/manifest`,
+    signal
+  );
+}
+
 export interface CategoryOption {
   category: string;
   count: number;
