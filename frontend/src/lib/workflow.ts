@@ -85,27 +85,20 @@ export interface DatasetRow {
   processing_error: string | null;
   dataset_metadata: {
     raster_overlay?: { image_key: string; bounds: [number, number, number, number] };
+    model_assets?: {
+      obj_key: string;
+      obj_filename: string;
+      mtl_key?: string;
+      mtl_filename?: string;
+      textures: Record<string, string>;
+    };
     model_3d?: {
-      format: "obj";
       source_crs: string;
-      origin: [number, number, number] | null;
-      georeference_method: string;
-      model_files: string[];
-      vertex_count: number;
-      face_count: number;
-      sampled_vertex_count: number;
-      texture_count: number;
-      local_bounds: Record<string, number>;
-      wgs84_bounds: [number, number, number, number];
-      models: Array<{ obj_path: string; mtl_paths: string[] }>;
-      assets: string[];
-      render_anchor: {
-        longitude: number;
-        latitude: number;
-        altitude: number;
-        source_altitude: number;
-        local: [number, number, number];
-      } | null;
+      vertex_count?: number;
+      face_count?: number;
+      position_source?: string;
+      is_geo_referenced?: boolean;
+      asset_keys?: Record<string, string>;
     };
     [key: string]: unknown;
   };

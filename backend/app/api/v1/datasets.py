@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import io
 import logging
+import mimetypes
 import uuid
 from datetime import date as date_type, datetime, timezone
 from pathlib import Path
@@ -53,7 +54,7 @@ from app.services.attribute_table import (
 )
 from app.services.ingestion import ingest_dataset
 from app.services.readers import get_reader_for
-from app.services.storage import delete_object, ensure_bucket, upload_stream
+from app.services.storage import delete_object, delete_objects_with_prefix, ensure_bucket, upload_stream
 
 log = logging.getLogger("davangere.api.datasets")
 router = APIRouter()
@@ -218,75 +219,13 @@ def _validate_zipped_shapefile(payload: bytes) -> None:
         )
 
 
-def _validate_zipped_obj_bundle(payload: bytes) -> None:
-    """Require survey OBJ bundles to carry explicit CRS metadata.
-
-    Standalone OBJ remains supported for backward compatibility. A bundle is
-    the accurate path for local-coordinate survey exports because it preserves
-    metadata.xml (EPSG + origin), MTL files, textures, and multiple blocks.
-    """
-    import zipfile
-    from pathlib import PurePosixPath
-    from xml.etree import ElementTree
-
-    from pyproj import CRS
-    from pyproj.exceptions import CRSError
-
-    try:
-        with zipfile.ZipFile(io.BytesIO(payload)) as zf:
-            infos = [info for info in zf.infolist() if not info.is_dir()]
-            obj_infos = [
-                info for info in infos
-                if PurePosixPath(info.filename.replace("\\", "/")).suffix.lower() == ".obj"
-            ]
-            if not obj_infos:
-                return
-            metadata_infos = [
-                info for info in infos
-                if PurePosixPath(info.filename.replace("\\", "/")).name.casefold() == "metadata.xml"
-            ]
-            prj_infos = [
-                info for info in infos
-                if PurePosixPath(info.filename.replace("\\", "/")).suffix.lower() == ".prj"
-            ]
-            if not metadata_infos and not prj_infos:
-                raise HTTPException(
-                    status_code=400,
-                    detail="OBJ bundles must include metadata.xml (with SRS/EPSG and SRSOrigin) or a .prj file",
-                )
-            for info in metadata_infos:
-                if info.file_size > 1024 * 1024:
-                    raise HTTPException(status_code=400, detail=f"OBJ metadata file '{info.filename}' is too large")
-                try:
-                    root = ElementTree.fromstring(zf.read(info))
-                except ElementTree.ParseError as exc:
-                    raise HTTPException(
-                        status_code=400,
-                        detail=f"OBJ metadata file '{info.filename}' is invalid XML",
-                    ) from exc
-                srs = root.find(".//SRS")
-                if srs is None or not (srs.text or "").strip():
-                    raise HTTPException(
-                        status_code=400,
-                        detail=f"OBJ metadata file '{info.filename}' does not declare an SRS/EPSG code",
-                    )
-                try:
-                    CRS.from_user_input((srs.text or "").strip())
-                except CRSError as exc:
-                    raise HTTPException(
-                        status_code=400,
-                        detail=f"OBJ metadata file '{info.filename}' declares an invalid SRS/EPSG code",
-                    ) from exc
-    except zipfile.BadZipFile as exc:
-        raise HTTPException(status_code=400, detail="Uploaded ZIP file is invalid") from exc
-
-
 def _classify(filename: str, payload: bytes | None = None) -> DatasetFileType:
     ext = Path(filename).suffix.lower()
     if ext == ".zip" and payload:
-        # A zip could be a shapefile/GDB bundle or a batch of geo-tagged
-        # photos — peek at its real contents rather than assuming, so the
-        # dataset row's declared type matches what actually got ingested.
+        # A zip could be a shapefile/GDB bundle, a batch of geo-tagged
+        # photos, or a 3D model bundle (.obj + .mtl + textures) — peek at
+        # its real contents rather than assuming, so the dataset row's
+        # declared type matches what actually got ingested.
         import zipfile
 
         try:
@@ -353,7 +292,6 @@ async def upload_dataset(
         )
     if ext == ".zip":
         _validate_zipped_shapefile(payload)
-        _validate_zipped_obj_bundle(payload)
 
     # 2. Ensure the bucket exists (idempotent) then push the object.
     await ensure_bucket()
@@ -461,15 +399,81 @@ async def get_raster_preview(
 
 
 @router.get(
+    "/{dataset_id}/raw-file",
+    dependencies=[Depends(require_any)],
+)
+async def get_raw_file(dataset_id: uuid.UUID, db: AsyncSession = Depends(get_db)) -> Response:
+    """Streams the raw `.obj`/source file bytes. Used by format-specific
+    client-side viewers (e.g. the 3D OBJ viewer) that need the raw source
+    rather than the ingested/derived features.
+
+    If the dataset was uploaded as a zip bundle (.obj + .mtl + textures),
+    `storage_key` points at the *zip*, not the model itself — the reader
+    extracted and re-uploaded the `.obj` separately under
+    `dataset_metadata.model_assets.obj_key`, which is what's served here."""
+    row = (await db.execute(select(Dataset).where(Dataset.id == dataset_id))).scalar_one_or_none()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+
+    model_assets = (row.dataset_metadata or {}).get("model_assets")
+    key = (model_assets or {}).get("obj_key") or row.storage_key
+    if not key:
+        raise HTTPException(status_code=404, detail="No source file stored for this dataset")
+
+    from app.services.storage import get_object_bytes
+
+    try:
+        raw_bytes = await get_object_bytes(key)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=404, detail="Source file not found in storage") from exc
+
+    return Response(content=raw_bytes, media_type="application/octet-stream")
+
+
+@router.get(
+    "/{dataset_id}/model-asset/{filename}",
+    dependencies=[Depends(require_any)],
+)
+async def get_model_asset(dataset_id: uuid.UUID, filename: str, db: AsyncSession = Depends(get_db)) -> Response:
+    """Streams one companion file (the `.mtl` or a texture image) from an
+    OBJ zip bundle, so the 3D viewer can load the model's real materials
+    instead of a flat placeholder color."""
+    row = (await db.execute(select(Dataset).where(Dataset.id == dataset_id))).scalar_one_or_none()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+
+    model_assets = (row.dataset_metadata or {}).get("model_assets") or {}
+    key: str | None = None
+    if filename == model_assets.get("mtl_filename"):
+        key = model_assets.get("mtl_key")
+    else:
+        key = (model_assets.get("textures") or {}).get(filename)
+    if not key:
+        raise HTTPException(status_code=404, detail=f"No such model asset: {filename}")
+
+    from app.services.storage import get_object_bytes
+
+    try:
+        asset_bytes = await get_object_bytes(key)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=404, detail="Asset not found in storage") from exc
+
+    content_type, _ = mimetypes.guess_type(filename)
+    return Response(content=asset_bytes, media_type=content_type or "application/octet-stream")
+
+
+@router.get(
     "/{dataset_id}/model-assets/{asset_path:path}",
     dependencies=[Depends(require_any)],
 )
-async def get_model_asset(
+async def get_model_asset_by_path(
     dataset_id: uuid.UUID,
     asset_path: str,
     db: AsyncSession = Depends(get_db),
 ) -> StreamingResponse:
-    """Stream an extracted OBJ/MTL/texture asset to the authenticated map."""
+    """Streams an OBJ/MTL/texture asset by its path key, for consumers that
+    address assets via `dataset_metadata.model_3d.asset_keys` (path-based)
+    rather than the flat `model-asset/{filename}` lookup above."""
     row = (await db.execute(select(Dataset).where(Dataset.id == dataset_id))).scalar_one_or_none()
     if row is None:
         raise HTTPException(status_code=404, detail="Dataset not found")
@@ -581,9 +585,10 @@ async def delete_dataset(
 
     if row.storage_key:
         await delete_object(row.storage_key)
-    from app.services.storage import delete_objects_with_prefix
-
-    await delete_objects_with_prefix(f"datasets/{dataset_id}/model-assets/")
+    # OBJ bundles re-upload their .obj/.mtl/textures individually under this
+    # prefix (see ObjReader._upload_model_assets) — clean those up too, or
+    # they'd otherwise outlive the dataset row that referenced them.
+    await delete_objects_with_prefix(f"datasets/{dataset_id}/model/")
 
     db.add(
         ActivityLog(

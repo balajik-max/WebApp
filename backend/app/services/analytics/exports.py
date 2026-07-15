@@ -826,7 +826,7 @@ def _map_drawing(summary: ExportSummary, *, width: float = 480, height: float = 
                     x, y = project(point)
                     path.lineTo(x, y)
                 if "Polygon" in geom_type:
-                    path.close()
+                    path.closePath()
                 path.strokeColor = color
                 path.strokeWidth = 0.65
                 path.fillColor = None

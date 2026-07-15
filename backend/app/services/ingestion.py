@@ -35,10 +35,11 @@ _PROCESSING_ERROR_MAX_LENGTH = 2048
 
 
 def _pick_zip_reader(local_path: Path) -> DatasetReader:
-    """A `.zip` could be a shapefile/GDB bundle or a batch of geo-tagged
+    """A `.zip` could be a shapefile/GDB bundle, a batch of geo-tagged
     photos (a zipped folder of images, or several individually-selected
-    photos zipped client-side) — peek at its real contents instead of
-    assuming, since both share the same extension."""
+    photos zipped client-side), or a 3D model bundle (.obj + .mtl +
+    textures, zipped client-side from a browsed folder) — peek at its real
+    contents instead of assuming, since they all share the same extension."""
     import zipfile
 
     try:
@@ -76,12 +77,14 @@ async def _set_status(
         ds.processing_error = error[:_PROCESSING_ERROR_MAX_LENGTH] if error else None
         if result_payload is not None:
             merged = dict(ds.dataset_metadata or {})
-            ingestion_summary = dict(result_payload)
-            raster_overlay = ingestion_summary.pop("raster_overlay", None)
-            reader_metadata = ingestion_summary.pop("dataset_metadata", None)
-            merged["ingestion"] = ingestion_summary
+            merged["ingestion"] = result_payload
+            raster_overlay = result_payload.pop("raster_overlay", None)
             if raster_overlay is not None:
                 merged["raster_overlay"] = raster_overlay
+            model_assets = result_payload.pop("model_assets", None)
+            if model_assets is not None:
+                merged["model_assets"] = model_assets
+            reader_metadata = result_payload.pop("dataset_metadata", None)
             if reader_metadata:
                 merged.update(reader_metadata)
             ds.dataset_metadata = merged
@@ -164,6 +167,7 @@ async def ingest_dataset(*, dataset_id: uuid.UUID, storage_key: str, filename: s
                 "source_crs": result.source_crs,
                 "notes": result.notes,
                 "raster_overlay": result.raster_overlay,
+                "model_assets": result.model_assets,
                 "dataset_metadata": result.dataset_metadata,
             },
         )

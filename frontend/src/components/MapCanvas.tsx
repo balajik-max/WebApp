@@ -8,7 +8,7 @@ import type { AiHighlight, FeatureFilter, UrbanFeature, FeatureCollectionRespons
 import { ApiError } from "../lib/api";
 import { colorForCategory, UNCATEGORIZED_COLOR } from "../lib/categoryColors";
 import {
-  fetchDatasets, fetchDatasetBounds, type DatasetRow,
+  fetchDatasets, fetchDatasetBounds, type DatasetBounds, type DatasetRow,
   type FeatureTableRow, type LayerFeatureTableFilter,
   fetchAnomalies, runSpatialAudit, updateAnomalyStatus, fetchAllClassMappings,
   type SpatialAnomaly, type AnomalyStatus,
@@ -19,7 +19,17 @@ import { GoogleStreetView } from "./GoogleStreetView";
 import { LookAroundCompass, DEFAULT_MAP_PITCH, MAX_MAP_PITCH } from "./LookAroundCompass";
 import { DataSourceSelector } from "./DataSourceSelector";
 import { AnomalyAlertCard } from "./AnomalyAlertCard";
-import { createObjModelLayer, objModelLayerId } from "./ObjModelLayer";
+
+// .obj datasets are persisted with file_type "other" (the enum has no
+// dedicated OBJ value), so detect them from the stored filename instead.
+function isObjDataset(d: DatasetRow): boolean {
+  // A bundled upload (.obj + .mtl + textures, zipped client-side) has a
+  // storage_key ending in .zip, not .obj — model_assets is the reliable
+  // signal for those; the plain extension check covers a bare .obj upload.
+  if (d.dataset_metadata?.model_assets) return true;
+  const name = (d.storage_key ?? d.name).toLowerCase();
+  return name.endsWith(".obj");
+}
 
 interface Props {
   filter: FeatureFilter;
@@ -62,6 +72,7 @@ const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "";
 // raster overlay can be shown on the map at the same time.
 const rasterSourceId = (datasetId: string) => `raster-preview-${datasetId}`;
 const rasterLayerId = (datasetId: string) => `raster-preview-layer-${datasetId}`;
+const obj3dLayerId = (datasetId: string) => `obj-3d-layer-${datasetId}`;
 
 export type RasterColorMode = "rgb" | "grayscale" | "enhanced";
 
@@ -184,18 +195,13 @@ const TABLE_FOCUS_DURATION_MS = 8000;
 // Base (category-agnostic) filters for the layers above — kept as named
 // constants so the category-visibility checklist can AND a hidden-category
 // clause onto them without duplicating the geometry/role logic.
-const POLY_BASE_FILTER: maplibregl.FilterSpecification = [
-  "all",
-  ["in", ["geometry-type"], ["literal", ["Polygon", "MultiPolygon"]]],
-  ["!=", ["get", "category"], "3d_model"],
-];
+const POLY_BASE_FILTER: maplibregl.FilterSpecification = ["in", ["geometry-type"], ["literal", ["Polygon", "MultiPolygon"]]];
 const LINE_BASE_FILTER: maplibregl.FilterSpecification = ["in", ["geometry-type"], ["literal", ["LineString", "MultiLineString"]]];
 const POINT_BASE_FILTER: maplibregl.FilterSpecification = [
   "all",
   ["in", ["geometry-type"], ["literal", ["Point", "MultiPoint"]]],
   ["!=", ["get", "category"], "raster_pixel"],
   ["!=", ["get", "category"], "site_photo"],
-  ["!=", ["get", "category"], "3d_model"],
 ];
 const PHOTO_BASE_FILTER: maplibregl.FilterSpecification = ["==", ["get", "category"], "site_photo"];
 
@@ -710,7 +716,11 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     () => initialActiveDatasets?.map((d) => d.id) ?? []
   );
   const rasterLayersRef = useRef<Set<string>>(new Set());
-  const objModelLayersRef = useRef<Set<string>>(new Set());
+  const obj3dLayersRef = useRef<Set<string>>(new Set());
+  // Dataset ids whose data is an OBJ mesh — their vertex point features are
+  // drawn as the draped 3D mesh (Obj3DMapLayer), so they must NOT also be
+  // plotted as flat 2D circles in the feature source below.
+  const objDatasetIdsRef = useRef<Set<string>>(new Set());
   const [expandedDatasetId, setExpandedDatasetId] = useState<string | null>(null);
   const [rasterSettingsById, setRasterSettingsById] = useState<Record<string, RasterDisplaySettings>>({});
 
@@ -959,6 +969,13 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     fetchDatasets(ctrl.signal).then(setDatasets).catch(() => {});
     return () => ctrl.abort();
   }, []);
+
+  // Keep a fast lookup of which datasets are OBJ meshes so applyFeatureCollection
+  // can drop their vertex points from the 2D feature layers (they are rendered
+  // as the 3D mesh instead).
+  useEffect(() => {
+    objDatasetIdsRef.current = new Set(datasets.filter(isObjDataset).map((d) => d.id));
+  }, [datasets]);
 
   // If a previously-active dataset was deleted (e.g. removed and the same
   // GDB re-uploaded, which mints a brand-new dataset_id), its old id can
@@ -1540,15 +1557,27 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     // safe to update, so gating on the whole style caused the new viewport
     // data to be discarded precisely while zooming.
     if (!src) return;
-    src.setData(data as unknown as GeoJSON.FeatureCollection);
+
+    // OBJ mesh datasets render as a draped 3D mesh (Obj3DMapLayer), so drop
+    // their vertex point features here — otherwise they also paint as flat
+    // 2D circles on top of the mesh, which the user does not want.
+    const objIds = objDatasetIdsRef.current;
+    const features = objIds.size === 0
+      ? (data.features as unknown as GeoJSON.Feature[])
+      : (data.features as unknown as GeoJSON.Feature[]).filter((f) => {
+          const did = String((f.properties as Record<string, unknown>)?.dataset_id ?? "");
+          return !objIds.has(did);
+        });
+
+    src.setData({ type: "FeatureCollection", features } as unknown as GeoJSON.FeatureCollection);
     // Keep the exact dashboard snapshot available to Street View. The
     // panorama applies the same client-side layer visibility controls and
     // creates nearby, georeferenced markers without issuing another request.
-    setLoadedFeatures(data.features);
+    setLoadedFeatures(features as unknown as UrbanFeature[]);
 
     // Cache coordinates for every Point feature so the AI highlight layer
     // can place its circles correctly even when highlights arrive after load.
-    for (const f of data.features as unknown as GeoJSON.Feature[]) {
+    for (const f of features) {
       if (f.geometry.type === "Point") {
         const fid = String((f.properties as Record<string, unknown>)?.id ?? f.id ?? "");
         if (fid) featureCoordsRef.current.set(fid, f.geometry.coordinates as [number, number]);
@@ -1561,7 +1590,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
 
     const colorMap = colorByCategoryRef.current;
     const counts = new Map<string, number>();
-    for (const f of data.features as unknown as GeoJSON.Feature[]) {
+    for (const f of features) {
       const raw = (f.properties as { category?: string | null } | null)?.category;
       if (raw === "raster_pixel") continue;
       const category = raw && raw.trim() !== "" ? raw : "uncategorized";
@@ -1738,33 +1767,60 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     for (const id of Array.from(rasterLayersRef.current)) removeRasterOverlay(id);
   }, [removeRasterOverlay]);
 
-  const addObjModel = useCallback((dataset: DatasetRow) => {
+  // Drapes the dataset's actual OBJ mesh onto the map at its real
+  // georeferenced location (see Obj3DMapLayer) instead of only offering a
+  // disconnected full-screen viewer. three.js is dynamically imported here
+  // so it's never fetched unless a 3D dataset is actually toggled on.
+  const removeObj3DLayer = useCallback((datasetId: string) => {
+    obj3dLayersRef.current.delete(datasetId);
     const map = mapRef.current;
-    const metadata = dataset.dataset_metadata?.model_3d;
-    if (!map || !map.isStyleLoaded() || !metadata?.render_anchor || !metadata.models?.length) return;
-    const layerId = objModelLayerId(dataset.id);
-    if (map.getLayer(layerId)) return;
-    try {
-      map.addLayer(createObjModelLayer(dataset, {
-        onError: (message) => setFlyError(message),
-      }));
-      objModelLayersRef.current.add(dataset.id);
-    } catch (error) {
-      setFlyError((error as Error).message);
+    if (!map) return;
+    const layerId = obj3dLayerId(datasetId);
+    if (map.getLayer(layerId)) map.removeLayer(layerId);
+  }, []);
+
+  const hideObj3DLayer = useCallback((datasetId: string) => {
+    const map = mapRef.current;
+    if (!map) return;
+    const layerId = obj3dLayerId(datasetId);
+    if (map.getLayer(layerId)) {
+      map.setLayoutProperty(layerId, "visibility", "none");
     }
   }, []);
 
-  const removeObjModel = useCallback((datasetId: string) => {
+  const addObj3DLayer = useCallback(async (dataset: DatasetRow, bounds: DatasetBounds) => {
     const map = mapRef.current;
-    if (!map) return;
-    const layerId = objModelLayerId(datasetId);
-    if (map.getLayer(layerId)) map.removeLayer(layerId);
-    objModelLayersRef.current.delete(datasetId);
+    if (!map || !isObjDataset(dataset)) return;
+    obj3dLayersRef.current.add(dataset.id);
+    const layerId = obj3dLayerId(dataset.id);
+    if (map.getLayer(layerId)) {
+      map.setLayoutProperty(layerId, "visibility", "visible");
+      return;
+    }
+    try {
+      const res = await fetch(`${API_BASE}/api/v1/datasets/${dataset.id}/raw-file`, { credentials: "include" });
+      if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+      const text = await res.text();
+      // The dataset may have been deselected (or the map torn down) while
+      // the fetch/parse of a large mesh was still in flight.
+      if (!obj3dLayersRef.current.has(dataset.id)) return;
+      const currentMap = mapRef.current;
+      if (!currentMap) return;
+      if (currentMap.getLayer(layerId)) {
+        currentMap.setLayoutProperty(layerId, "visibility", "visible");
+        return;
+      }
+      const { Obj3DMapLayer } = await import("./Obj3DMapLayer");
+      const mtlFilename = dataset.dataset_metadata?.model_assets?.mtl_filename;
+      currentMap.addLayer(new Obj3DMapLayer(layerId, text, bounds, dataset.id, mtlFilename));
+    } catch (e) {
+      setFlyError(`Could not load 3D model on map: ${(e as Error).message}`);
+    }
   }, []);
 
-  const clearAllObjModels = useCallback(() => {
-    for (const id of Array.from(objModelLayersRef.current)) removeObjModel(id);
-  }, [removeObjModel]);
+  const clearAllObj3DLayers = useCallback(() => {
+    for (const id of Array.from(obj3dLayersRef.current)) removeObj3DLayer(id);
+  }, [removeObj3DLayer]);
 
   const applyRasterDisplaySettings = useCallback((datasetId: string, nextSettings: RasterDisplaySettings) => {
     const map = mapRef.current;
@@ -1816,16 +1872,10 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     for (const id of Array.from(rasterLayersRef.current)) {
       if (!activeIds.has(id)) removeRasterOverlay(id);
     }
-    for (const id of Array.from(objModelLayersRef.current)) {
-      if (!activeIds.has(id)) removeObjModel(id);
-    }
     if (activeDatasetIds.length === 0) return;
     const matched = datasets.filter((d) => activeIds.has(d.id));
     if (matched.length === 0) return;
-    for (const d of matched) {
-      addRasterOverlay(d);
-      addObjModel(d);
-    }
+    for (const d of matched) addRasterOverlay(d);
     filterRef.current = { datasetIds: activeDatasetIds };
     scheduleFetch();
     // Only re-run when the map/datasets actually become ready or the
@@ -2122,35 +2172,41 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     if (isActive) {
       setExpandedDatasetId((current) => (current === dataset.id ? null : current));
       removeRasterOverlay(dataset.id);
-      removeObjModel(dataset.id);
+      if (isObjDataset(dataset)) {
+        hideObj3DLayer(dataset.id);
+      } else {
+        removeObj3DLayer(dataset.id);
+      }
       scheduleFetch();
       return;
     }
     addRasterOverlay(dataset);
-    addObjModel(dataset);
     // Load the complete updated dataset selection immediately. fitBounds
     // below changes only the camera and deliberately does not trigger a
     // second data request.
     scheduleFetch();
     try {
       const b = await fetchDatasetBounds(dataset.id);
-      if (dataset.dataset_metadata?.model_3d?.render_anchor) {
+      if (isObjDataset(dataset)) {
+        // Tilt into a 3/4 view so the newly-draped mesh actually reads as
+        // a 3D model instead of a flat top-down footprint.
         map.setPitch(58);
         map.setBearing(-18);
       }
       map.fitBounds([[b.min_lon, b.min_lat], [b.max_lon, b.max_lat]], { padding: 80, duration: 1000, maxZoom: 18 });
+      if (isObjDataset(dataset)) void addObj3DLayer(dataset, b);
     } catch (e) { setFlyError((e as Error).message); }
-  }, [activeDatasetIds, datasets, filter, scheduleFetch, addRasterOverlay, removeRasterOverlay, addObjModel, removeObjModel, onActiveDatasetsChange]);
+  }, [activeDatasetIds, datasets, filter, scheduleFetch, addRasterOverlay, removeRasterOverlay, addObj3DLayer, removeObj3DLayer, hideObj3DLayer, onActiveDatasetsChange]);
 
   const clearAllDatasets = useCallback(() => {
     setActiveDatasetIds([]);
     setExpandedDatasetId(null);
     filterRef.current = filter;
     clearAllRasterOverlays();
-    clearAllObjModels();
+    clearAllObj3DLayers();
     onActiveDatasetsChange?.([]);
     scheduleFetch();
-  }, [filter, scheduleFetch, clearAllRasterOverlays, clearAllObjModels, onActiveDatasetsChange]);
+  }, [filter, scheduleFetch, clearAllRasterOverlays, clearAllObj3DLayers, onActiveDatasetsChange]);
 
   // Bulk toggle used by the Data Sources "Select All" control. Selecting every
   // dataset activates the full set at once without per-dataset camera moves;
@@ -2165,12 +2221,9 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     setActiveDatasetIds(next);
     filterRef.current = { datasetIds: next };
     onActiveDatasetsChange?.(datasets);
-    datasets.forEach((d) => {
-      addRasterOverlay(d);
-      addObjModel(d);
-    });
+    datasets.forEach((d) => addRasterOverlay(d));
     scheduleFetch();
-  }, [datasets, clearAllDatasets, addRasterOverlay, addObjModel, scheduleFetch, onActiveDatasetsChange]);
+  }, [datasets, clearAllDatasets, addRasterOverlay, scheduleFetch, onActiveDatasetsChange]);
 
   useImperativeHandle(
     ref,
@@ -2767,7 +2820,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
           zoom={mapZoom}
           minZoom={4}
           maxZoom={24}
-          onChange={(next: number) => mapRef.current?.setZoom(next)}
+          onChange={(next) => mapRef.current?.setZoom(next)}
         />
         <LookAroundCompass
           bearing={mapBearing}
@@ -3028,6 +3081,21 @@ function CommandCenter({
   );
 }
 
+/** Google Earth Pro-style "Ruler" dialog for the Line measurement tool. */
+const MEASURE_TAB_OPTIONS: Array<{ value: MeasureTab; label: string }> = [
+  { value: "line", label: "Line" },
+  { value: "path", label: "Path" },
+  { value: "polygon", label: "Polygon" },
+  { value: "circle", label: "Circle" },
+];
+
+const MEASURE_TAB_HINTS: Record<MeasureTab, string> = {
+  line: "Measure the distance between two points on the ground",
+  path: "Click to add points, right-click to finish",
+  polygon: "Click to add points, right-click to finish",
+  circle: "Measure the radius, perimeter, and area of a circle on the ground",
+};
+
 const DETECTION_MODE_LABEL: Record<Exclude<DetectionMode, null>, string> = {
   poles: "Poles",
   drains: "Drains",
@@ -3275,27 +3343,24 @@ function HoverTooltip({ hover }: { hover: HoverInfo | null }) {
 }
 
 function PhotoViewer({ photo, onClose }: { photo: { url: string; label: string } | null; onClose: () => void }) {
-  // Keep the latest close handler without forcing the keydown effect to
-  // re-subscribe on every parent render (the parent passes a fresh inline
-  // `onClose` each time). This lets the effect depend only on `photo`.
   const onCloseRef = useRef(onClose);
   onCloseRef.current = onClose;
 
-  // Close via Escape using the exact same handler as the Close button below
-  // the image. The listener is registered only while the preview is open and
-  // is fully removed on close/unmount, so it can never accumulate or fire when
-  // the preview is hidden. stopPropagation prevents the global MapCanvas Escape
-  // handler (measurement tool / Look Around) from also reacting.
   useEffect(() => {
     if (!photo) return;
+
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key !== "Escape" || event.repeat) return;
       event.preventDefault();
       event.stopPropagation();
       onCloseRef.current();
     };
+
     document.addEventListener("keydown", handleKeyDown);
-    return () => document.removeEventListener("keydown", handleKeyDown);
+
+    return () => {
+      document.removeEventListener("keydown", handleKeyDown);
+    };
   }, [photo]);
 
   if (!photo) return null;
@@ -3342,6 +3407,116 @@ function formatDms(value: number, positiveSuffix: string, negativeSuffix: string
   return `${degrees}°${String(minutes).padStart(2, "0")}'${seconds.toFixed(2).padStart(5, "0")}" ${suffix}`;
 }
 
+/** Bottom-right status strip: live cursor coordinates plus a fixed-size
+ * scale/distance chip. Both boxes share one positioned wrapper so they can
+ * never drift apart or overlap independently — the distance box's width
+ * never changes with its text ("200 m" vs "2 km"), only the coordinate
+ * box's content changes size (as the cursor moves over water/edge cases
+ * that shorten the DMS string), which is why the distance box sits fixed
+ * on the wrapper's right edge rather than being laid out purely by flex
+ * order against a variable-width neighbour. */
+function MapStatusBar({ lngLat, scaleLabel }: { lngLat: [number, number] | null; scaleLabel: string }) {
+  if (!lngLat && !scaleLabel) return null;
+  return (
+    <div className="map__status-bar" data-testid="map-status-bar">
+      {lngLat && (
+        <div className="map__status-box map__coord-readout" data-testid="map-coord-readout">
+          {formatDms(lngLat[1], "N", "S")}&nbsp;&nbsp;{formatDms(lngLat[0], "E", "W")}
+        </div>
+      )}
+      {scaleLabel && (
+        <div className="map__status-box map__scale-readout" data-testid="map-scale-readout">
+          {scaleLabel}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** Google Earth Pro-style zoom control, laid out as a horizontal bar: a "−"
+ * button, a draggable slider track, and a "+" button. Purely presentational —
+ * the map's zoom is the single source of truth (passed in via `zoom`), and
+ * every interaction (click ends, drag, track click) just calls `onChange`;
+ * MapCanvas is the one that actually calls `map.setZoom()`. */
+function ZoomSlider({
+  zoom,
+  minZoom,
+  maxZoom,
+  onChange,
+}: {
+  zoom: number;
+  minZoom: number;
+  maxZoom: number;
+  onChange: (zoom: number) => void;
+}) {
+  const trackRef = useRef<HTMLDivElement | null>(null);
+  const range = maxZoom - minZoom;
+  const fraction = range > 0 ? Math.min(1, Math.max(0, (zoom - minZoom) / range)) : 0;
+
+  const zoomFromClientX = (clientX: number) => {
+    const rect = trackRef.current?.getBoundingClientRect();
+    if (!rect || rect.width === 0) return null;
+    const t = Math.min(1, Math.max(0, (clientX - rect.left) / rect.width));
+    return minZoom + t * range;
+  };
+
+  const handleTrackPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    const next = zoomFromClientX(e.clientX);
+    if (next !== null) onChange(next);
+    e.currentTarget.setPointerCapture(e.pointerId);
+    e.preventDefault();
+  };
+  const handleTrackPointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (!e.currentTarget.hasPointerCapture(e.pointerId)) return;
+    const next = zoomFromClientX(e.clientX);
+    if (next !== null) onChange(next);
+  };
+  const handleTrackPointerUp = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (e.currentTarget.hasPointerCapture(e.pointerId)) {
+      e.currentTarget.releasePointerCapture(e.pointerId);
+    }
+  };
+
+  return (
+    <div className="map-zoom-slider" data-testid="map-zoom-slider">
+      <button
+        type="button"
+        className="map-zoom-slider__btn"
+        onClick={() => onChange(Math.max(minZoom, zoom - 1))}
+        aria-label="Zoom out"
+        data-testid="map-zoom-out"
+      >
+        −
+      </button>
+      <div
+        ref={trackRef}
+        className="map-zoom-slider__track"
+        onPointerDown={handleTrackPointerDown}
+        onPointerMove={handleTrackPointerMove}
+        onPointerUp={handleTrackPointerUp}
+        onPointerCancel={handleTrackPointerUp}
+        role="slider"
+        aria-label="Map zoom"
+        aria-valuemin={minZoom}
+        aria-valuemax={maxZoom}
+        aria-valuenow={Math.round(zoom * 10) / 10}
+      >
+        <div className="map-zoom-slider__fill" style={{ width: `${fraction * 100}%` }} />
+        <div className="map-zoom-slider__thumb" style={{ left: `${fraction * 100}%` }} />
+      </div>
+      <button
+        type="button"
+        className="map-zoom-slider__btn"
+        onClick={() => onChange(Math.min(maxZoom, zoom + 1))}
+        aria-label="Zoom in"
+        data-testid="map-zoom-in"
+      >
+        +
+      </button>
+    </div>
+  );
+}
+
 function MapLegend({ entries }: { entries: LegendEntry[] }) {
   if (entries.length === 0) return null;
   return (
@@ -3358,20 +3533,7 @@ function MapLegend({ entries }: { entries: LegendEntry[] }) {
   );
 }
 
-/** Google Earth Pro-style "Ruler" dialog for the Line measurement tool. */
-const MEASURE_TAB_OPTIONS: Array<{ value: MeasureTab; label: string }> = [
-  { value: "line", label: "Line" },
-  { value: "path", label: "Path" },
-  { value: "polygon", label: "Polygon" },
-  { value: "circle", label: "Circle" },
-];
 
-const MEASURE_TAB_HINTS: Record<MeasureTab, string> = {
-  line: "Measure the distance between two points on the ground",
-  path: "Click to add points, right-click to finish",
-  polygon: "Click to add points, right-click to finish",
-  circle: "Measure the radius, perimeter, and area of a circle on the ground",
-};
 
 function RulerPanel({
   tab, onChangeTab,
@@ -3645,116 +3807,6 @@ function RulerPanel({
           </button>
         </div>
       </div>
-    </div>
-  );
-}
-
-/** Bottom-right status strip: live cursor coordinates plus a fixed-size
- * scale/distance chip. Both boxes share one positioned wrapper so they can
- * never drift apart or overlap independently — the distance box's width
- * never changes with its text ("200 m" vs "2 km"), only the coordinate
- * box's content changes size (as the cursor moves over water/edge cases
- * that shorten the DMS string), which is why the distance box sits fixed
- * on the wrapper's right edge rather than being laid out purely by flex
- * order against a variable-width neighbour. */
-function MapStatusBar({ lngLat, scaleLabel }: { lngLat: [number, number] | null; scaleLabel: string }) {
-  if (!lngLat && !scaleLabel) return null;
-  return (
-    <div className="map__status-bar" data-testid="map-status-bar">
-      {lngLat && (
-        <div className="map__status-box map__coord-readout" data-testid="map-coord-readout">
-          {formatDms(lngLat[1], "N", "S")}&nbsp;&nbsp;{formatDms(lngLat[0], "E", "W")}
-        </div>
-      )}
-      {scaleLabel && (
-        <div className="map__status-box map__scale-readout" data-testid="map-scale-readout">
-          {scaleLabel}
-        </div>
-      )}
-    </div>
-  );
-}
-
-/** Google Earth Pro-style zoom control, laid out as a horizontal bar: a "−"
- * button, a draggable slider track, and a "+" button. Purely presentational —
- * the map's zoom is the single source of truth (passed in via `zoom`), and
- * every interaction (click ends, drag, track click) just calls `onChange`;
- * MapCanvas is the one that actually calls `map.setZoom()`. */
-function ZoomSlider({
-  zoom,
-  minZoom,
-  maxZoom,
-  onChange,
-}: {
-  zoom: number;
-  minZoom: number;
-  maxZoom: number;
-  onChange: (zoom: number) => void;
-}) {
-  const trackRef = useRef<HTMLDivElement | null>(null);
-  const range = maxZoom - minZoom;
-  const fraction = range > 0 ? Math.min(1, Math.max(0, (zoom - minZoom) / range)) : 0;
-
-  const zoomFromClientX = (clientX: number) => {
-    const rect = trackRef.current?.getBoundingClientRect();
-    if (!rect || rect.width === 0) return null;
-    const t = Math.min(1, Math.max(0, (clientX - rect.left) / rect.width));
-    return minZoom + t * range;
-  };
-
-  const handleTrackPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
-    const next = zoomFromClientX(e.clientX);
-    if (next !== null) onChange(next);
-    e.currentTarget.setPointerCapture(e.pointerId);
-    e.preventDefault();
-  };
-  const handleTrackPointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
-    if (!e.currentTarget.hasPointerCapture(e.pointerId)) return;
-    const next = zoomFromClientX(e.clientX);
-    if (next !== null) onChange(next);
-  };
-  const handleTrackPointerUp = (e: React.PointerEvent<HTMLDivElement>) => {
-    if (e.currentTarget.hasPointerCapture(e.pointerId)) {
-      e.currentTarget.releasePointerCapture(e.pointerId);
-    }
-  };
-
-  return (
-    <div className="map-zoom-slider" data-testid="map-zoom-slider">
-      <button
-        type="button"
-        className="map-zoom-slider__btn"
-        onClick={() => onChange(Math.max(minZoom, zoom - 1))}
-        aria-label="Zoom out"
-        data-testid="map-zoom-out"
-      >
-        −
-      </button>
-      <div
-        ref={trackRef}
-        className="map-zoom-slider__track"
-        onPointerDown={handleTrackPointerDown}
-        onPointerMove={handleTrackPointerMove}
-        onPointerUp={handleTrackPointerUp}
-        onPointerCancel={handleTrackPointerUp}
-        role="slider"
-        aria-label="Map zoom"
-        aria-valuemin={minZoom}
-        aria-valuemax={maxZoom}
-        aria-valuenow={Math.round(zoom * 10) / 10}
-      >
-        <div className="map-zoom-slider__fill" style={{ width: `${fraction * 100}%` }} />
-        <div className="map-zoom-slider__thumb" style={{ left: `${fraction * 100}%` }} />
-      </div>
-      <button
-        type="button"
-        className="map-zoom-slider__btn"
-        onClick={() => onChange(Math.min(maxZoom, zoom + 1))}
-        aria-label="Zoom in"
-        data-testid="map-zoom-in"
-      >
-        +
-      </button>
     </div>
   );
 }
