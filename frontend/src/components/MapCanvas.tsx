@@ -8,29 +8,45 @@ import type { AiHighlight, FeatureFilter, UrbanFeature, FeatureCollectionRespons
 import { ApiError } from "../lib/api";
 import { colorForCategory, UNCATEGORIZED_COLOR } from "../lib/categoryColors";
 import {
-  fetchDatasets, fetchDatasetBounds, type DatasetBounds, type DatasetRow,
+  fetchDatasets, fetchDatasetBounds, type DatasetRow,
   type FeatureTableRow, type LayerFeatureTableFilter,
   fetchAnomalies, runSpatialAudit, updateAnomalyStatus, fetchAllClassMappings,
   type SpatialAnomaly, type AnomalyStatus,
 } from "../lib/workflow";
 import { AttributeTable } from "./AttributeTable";
 import { PanoramaViewer } from "./PanoramaViewer";
-import { CylinderPanoramaViewer } from "./CylinderPanoramaViewer";
 import { GoogleStreetView } from "./GoogleStreetView";
-import { LookAroundCompass, DEFAULT_MAP_PITCH, MAX_MAP_PITCH } from "./LookAroundCompass";
+import { LookAroundCompass } from "./LookAroundCompass";
+import {
+  EarthCameraController,
+} from "../lib/earthCameraController";
+import {
+  TERRAIN_SOURCE_ID,
+  TERRAIN_HILLSHADE_ID,
+  TERRAIN_CONFIG,
+  TERRAIN_EXAGGERATION,
+  SKY_SPECIFICATION,
+  MAX_TILT_DEG,
+  STANDARD_MAX_PITCH,
+  DEFAULT_EARTH_TILT_DEG,
+  type MapViewMode,
+} from "../lib/earthConfig";
+
+/** Dev-only visualisation of the orbit pivot/bearing/pitch. Never enabled in
+ * production — flip to true only for local debugging of the anchored orbit. */
+const ORBIT_DEBUG = false;
 import { DataSourceSelector } from "./DataSourceSelector";
 import { AnomalyAlertCard } from "./AnomalyAlertCard";
-
-// .obj datasets are persisted with file_type "other" (the enum has no
-// dedicated OBJ value), so detect them from the stored filename instead.
-function isObjDataset(d: DatasetRow): boolean {
-  // A bundled upload (.obj + .mtl + textures, zipped client-side) has a
-  // storage_key ending in .zip, not .obj — model_assets is the reliable
-  // signal for those; the plain extension check covers a bare .obj upload.
-  if (d.dataset_metadata?.model_assets) return true;
-  const name = (d.storage_key ?? d.name).toLowerCase();
-  return name.endsWith(".obj");
-}
+import {
+  fetchManholeFlowDirections,
+  FLOW_DISCLAIMER,
+  CLOSED_ARROW_MEANING,
+  DIRECTION_STATUS_LABEL,
+  formatFlowValue,
+  type FlowSegmentFeature,
+  type FlowAnalyticsSummary,
+} from "../lib/wastewaterFlow";
+import { createObjModelLayer, objModelLayerId } from "./ObjModelLayer";
 
 interface Props {
   filter: FeatureFilter;
@@ -73,7 +89,6 @@ const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "";
 // raster overlay can be shown on the map at the same time.
 const rasterSourceId = (datasetId: string) => `raster-preview-${datasetId}`;
 const rasterLayerId = (datasetId: string) => `raster-preview-layer-${datasetId}`;
-const obj3dLayerId = (datasetId: string) => `obj-3d-layer-${datasetId}`;
 
 export type RasterColorMode = "rgb" | "grayscale" | "enhanced";
 
@@ -83,7 +98,7 @@ export interface RasterDisplaySettings {
 }
 
 export const DEFAULT_RASTER_SETTINGS: RasterDisplaySettings = {
-  colorMode: "grayscale",
+  colorMode: "rgb",
   clarity: 0,
 };
 
@@ -196,13 +211,18 @@ const TABLE_FOCUS_DURATION_MS = 8000;
 // Base (category-agnostic) filters for the layers above — kept as named
 // constants so the category-visibility checklist can AND a hidden-category
 // clause onto them without duplicating the geometry/role logic.
-const POLY_BASE_FILTER: maplibregl.FilterSpecification = ["in", ["geometry-type"], ["literal", ["Polygon", "MultiPolygon"]]];
+const POLY_BASE_FILTER: maplibregl.FilterSpecification = [
+  "all",
+  ["in", ["geometry-type"], ["literal", ["Polygon", "MultiPolygon"]]],
+  ["!=", ["get", "category"], "3d_model"],
+];
 const LINE_BASE_FILTER: maplibregl.FilterSpecification = ["in", ["geometry-type"], ["literal", ["LineString", "MultiLineString"]]];
 const POINT_BASE_FILTER: maplibregl.FilterSpecification = [
   "all",
   ["in", ["geometry-type"], ["literal", ["Point", "MultiPoint"]]],
   ["!=", ["get", "category"], "raster_pixel"],
   ["!=", ["get", "category"], "site_photo"],
+  ["!=", ["get", "category"], "3d_model"],
 ];
 const PHOTO_BASE_FILTER: maplibregl.FilterSpecification = ["==", ["get", "category"], "site_photo"];
 
@@ -240,6 +260,105 @@ const ANOMALY_COLOR_EXPR: maplibregl.ExpressionSpecification = [
   "green", "#22c55e",
   "#94a3b8",
 ];
+
+// Estimated Wastewater Flow Direction overlay — a separate GeoJSON source
+// so candidate flow segments never touch the normal feature source. Split
+// into confirmed/estimated/unknown/conflict line+arrow layer pairs so each
+// classification gets its own paint/arrow icon without filter juggling on
+// a single shared layer (mirrors the anomaly/AI-highlight overlay pattern).
+const FLOW_SOURCE = "manhole-flow-direction-source";
+const LAYER_FLOW_CONFIRMED_LINES = "manhole-flow-confirmed-lines";
+const LAYER_FLOW_CONFIRMED_ARROWS = "manhole-flow-confirmed-arrows";
+const LAYER_FLOW_ESTIMATED_LINES = "manhole-flow-estimated-lines";
+const LAYER_FLOW_ESTIMATED_ARROWS = "manhole-flow-estimated-arrows";
+const LAYER_FLOW_TREND_LINES = "manhole-flow-trend-lines";
+const LAYER_FLOW_TREND_ARROWS = "manhole-flow-trend-arrows";
+const LAYER_FLOW_UNKNOWN_LINES = "manhole-flow-unknown-lines";
+const LAYER_FLOW_CONFLICT_LINES = "manhole-flow-conflict-lines";
+const LAYER_FLOW_CONFLICT_SYMBOLS = "manhole-flow-conflict-symbols";
+const FLOW_CLICKABLE_LAYERS = [
+  LAYER_FLOW_CONFIRMED_LINES, LAYER_FLOW_CONFIRMED_ARROWS,
+  LAYER_FLOW_ESTIMATED_LINES, LAYER_FLOW_ESTIMATED_ARROWS,
+  LAYER_FLOW_TREND_LINES, LAYER_FLOW_TREND_ARROWS,
+  LAYER_FLOW_UNKNOWN_LINES, LAYER_FLOW_CONFLICT_LINES, LAYER_FLOW_CONFLICT_SYMBOLS,
+];
+
+const FLOW_CLOSED_ARROW_ICON = "flow-arrow-closed";
+const FLOW_OPEN_ARROW_ICON = "flow-arrow-open";
+const FLOW_TREND_ARROW_ICON = "flow-arrow-open-amber";
+const FLOW_WARNING_ICON = "flow-warning-triangle";
+
+const FLOW_CONFIRMED_COLOR = "#0d9488"; // teal
+const FLOW_DERIVED_COLOR = "#4ade80";   // light green
+const FLOW_TREND_COLOR = "#f59e0b";     // amber
+const FLOW_UNKNOWN_COLOR = "#9ca3af";   // grey
+const FLOW_CONFLICT_COLOR = "#dc2626";  // red
+
+/** Filled/closed triangular arrowhead — confirmed direction. Pointing
+ * "east" (+X) at 0 rotation; icon-rotate aligns it to the line bearing. */
+function buildClosedArrowIcon(): ImageData {
+  const w = 28, h = 28;
+  const canvas = document.createElement("canvas");
+  canvas.width = w; canvas.height = h;
+  const ctx = canvas.getContext("2d")!;
+  ctx.beginPath();
+  ctx.moveTo(4, 6);
+  ctx.lineTo(24, 14);
+  ctx.lineTo(4, 22);
+  ctx.closePath();
+  ctx.fillStyle = FLOW_CONFIRMED_COLOR;
+  ctx.fill();
+  ctx.lineWidth = 2;
+  ctx.strokeStyle = "#053b35";
+  ctx.stroke();
+  return ctx.getImageData(0, 0, w, h);
+}
+
+/** Open (unfilled-centre) chevron arrowhead — derived/estimated direction.
+ * `color` distinguishes plain-derived (light green) from low-confidence
+ * neighbouring-trend (amber) without needing two near-identical builders. */
+function buildOpenArrowIcon(color: string): ImageData {
+  const w = 28, h = 28;
+  const canvas = document.createElement("canvas");
+  canvas.width = w; canvas.height = h;
+  const ctx = canvas.getContext("2d")!;
+  ctx.beginPath();
+  ctx.moveTo(4, 5);
+  ctx.lineTo(24, 14);
+  ctx.lineTo(4, 23);
+  ctx.lineWidth = 4;
+  ctx.lineJoin = "round";
+  ctx.lineCap = "round";
+  ctx.strokeStyle = color;
+  ctx.stroke();
+  return ctx.getImageData(0, 0, w, h);
+}
+
+/** Canvas-drawn warning triangle for conflict segments — a symbol layer's
+ * "text-field" glyph (e.g. "⚠") requires the style to declare a
+ * `glyphs` URL, which BASE_STYLE intentionally doesn't (raster-only
+ * basemap, no other text layer in the app) — MapLibre rejects addLayer
+ * outright without one. A canvas icon needs no glyph server. */
+function buildWarningIcon(): ImageData {
+  const w = 24, h = 24;
+  const canvas = document.createElement("canvas");
+  canvas.width = w; canvas.height = h;
+  const ctx = canvas.getContext("2d")!;
+  ctx.beginPath();
+  ctx.moveTo(12, 2);
+  ctx.lineTo(22, 21);
+  ctx.lineTo(2, 21);
+  ctx.closePath();
+  ctx.fillStyle = FLOW_CONFLICT_COLOR;
+  ctx.fill();
+  ctx.lineWidth = 1.5;
+  ctx.strokeStyle = "#1a0505";
+  ctx.stroke();
+  ctx.fillStyle = "#ffffff";
+  ctx.fillRect(11, 8, 2, 7);
+  ctx.fillRect(11, 17, 2, 2);
+  return ctx.getImageData(0, 0, w, h);
+}
 
 // Measurement (ruler) tool — separate GeoJSON sources for the vertex
 // points, the outline (line/path/polygon-ring/circle-ring), and the filled
@@ -696,10 +815,8 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
   const filterRef = useRef<FeatureFilter>(filter);
 
   const [status, setStatus] = useState<ViewportStatus>({ loading: false, count: 0, truncated: false, error: null, bbox: null });
-  const [legend, setLegend] = useState<LegendEntry[]>([]);
-  // Full (unsliced) per-category breakdown of the currently loaded features,
-  // for the QGIS-style layer-visibility checklist in the Command Center —
-  // `legend` above stays capped at 10 entries for the compact map overlay.
+  // Full per-category breakdown of the currently loaded features, for the
+  // QGIS-style layer-visibility checklist in the Command Center.
   const [categoryStats, setCategoryStats] = useState<LegendEntry[]>([]);
   // Categories unchecked in that checklist — purely a client-side paint/
   // filter toggle on already-fetched features, so it applies instantly and
@@ -717,11 +834,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     () => initialActiveDatasets?.map((d) => d.id) ?? []
   );
   const rasterLayersRef = useRef<Set<string>>(new Set());
-  const obj3dLayersRef = useRef<Set<string>>(new Set());
-  // Dataset ids whose data is an OBJ mesh — their vertex point features are
-  // drawn as the draped 3D mesh (Obj3DMapLayer), so they must NOT also be
-  // plotted as flat 2D circles in the feature source below.
-  const objDatasetIdsRef = useRef<Set<string>>(new Set());
+  const objModelLayersRef = useRef<Set<string>>(new Set());
   const [expandedDatasetId, setExpandedDatasetId] = useState<string | null>(null);
   const [rasterSettingsById, setRasterSettingsById] = useState<Record<string, RasterDisplaySettings>>({});
 
@@ -731,6 +844,17 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
   const [selectedAnomalyId, setSelectedAnomalyId] = useState<string | null>(null);
   const [auditRunning, setAuditRunning] = useState(false);
   const [auditError, setAuditError] = useState<string | null>(null);
+
+  // Estimated Wastewater Flow Direction — off by default (Phase 14). Only
+  // fetched/calculated once the toggle is on and re-fetched when the
+  // active dataset selection changes, mirroring the anomalies pattern
+  // above rather than recomputing on every render/pan/zoom.
+  const [flowEnabled, setFlowEnabled] = useState(false);
+  const [flowSegments, setFlowSegments] = useState<FlowSegmentFeature[]>([]);
+  const [flowSummary, setFlowSummary] = useState<FlowAnalyticsSummary | null>(null);
+  const [flowLoading, setFlowLoading] = useState(false);
+  const [flowError, setFlowError] = useState<string | null>(null);
+  const [selectedFlowSegment, setSelectedFlowSegment] = useState<FlowSegmentFeature | null>(null);
 
   // Which AI Detection focus mode is active (null = normal full view).
   // Refs mirror the state so the per-fetch applyFeatureCollection callback
@@ -787,9 +911,12 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     setLookAroundActive(false);
     const canvas = mapRef.current?.getCanvas();
     if (canvas) canvas.style.cursor = "";
+    // Ensure no orbit gesture is left dangling when Look Around turns off.
+    earthControllerRef.current?.recover("tool-change");
   }, []);
 
   const toggleStreetPickMode = useCallback(() => {
+    earthControllerRef.current?.recover("tool-change");
     deactivateLookAround();
     setStreetPickMode((current) => {
       const next = !current;
@@ -872,6 +999,20 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
   // without becoming stale closures.
   const [lookAroundActive, setLookAroundActive] = useState(false);
   const lookAroundActiveRef = useRef(false);
+  /** Single shared Google Earth-style orbit/look-around camera controller,
+   * reused by both mouse-drag orbit and the Look Around compass. */
+  const earthControllerRef = useRef<EarthCameraController | null>(null);
+
+  // 3D Earth / Look Around viewing mode (Phase 3). "standard" keeps the
+  // legacy Mercator map; "earth3d" enables globe + terrain + sky + orbit.
+  const [viewMode, setViewMode] = useState<MapViewMode>("standard");
+  const viewModeRef = useRef<MapViewMode>("standard");
+  const [terrainAvailable, setTerrainAvailable] = useState<boolean>(false);
+  const [earthNotice, setEarthNotice] = useState<string | null>(null);
+  const earthNoticeTimerRef = useRef<number | null>(null);
+  /** Lets earlier-declared callbacks (e.g. changeBasemap) call the
+   *  earth-environment helper without a use-before-declaration cycle. */
+  const ensureEarthEnvironmentRef = useRef<(map: MLMap) => boolean>(() => false);
 
   // Keep a fast lookup: featureId → "redundant" | "needed" for tooltip + hover
   const aiStatusRef = useRef<Map<string, "redundant" | "needed">>(new Map());
@@ -971,13 +1112,6 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     return () => ctrl.abort();
   }, []);
 
-  // Keep a fast lookup of which datasets are OBJ meshes so applyFeatureCollection
-  // can drop their vertex points from the 2D feature layers (they are rendered
-  // as the 3D mesh instead).
-  useEffect(() => {
-    objDatasetIdsRef.current = new Set(datasets.filter(isObjDataset).map((d) => d.id));
-  }, [datasets]);
-
   // If a previously-active dataset was deleted (e.g. removed and the same
   // GDB re-uploaded, which mints a brand-new dataset_id), its old id can
   // otherwise linger forever in activeDatasetIds — it's only ever added/
@@ -1011,9 +1145,14 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
   const changeBasemap = useCallback((next: Basemap) => {
     const map = mapRef.current;
     if (!map) return;
+    // A basemap switch must never leave an orbit half-applied (Phase 19).
+    earthControllerRef.current?.recover("basemap-change");
     setBasemap(next);
     map.setLayoutProperty("osm", "visibility", next === "street" ? "visible" : "none");
     map.setLayoutProperty("satellite", "visibility", next === "satellite" ? "visible" : "none");
+    // In 3D Earth mode re-assert globe + terrain + sky (idempotent) so the
+    // basemap swap never drops the 3D environment (Phase 21).
+    if (viewModeRef.current === "earth3d") ensureEarthEnvironmentRef.current(map);
   }, []);
 
   // Renders the locked vertices plus, while still placing the shape, a live
@@ -1269,6 +1408,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
   // window through the real `measureActive` state. Escape and X are now
   // guaranteed to behave identically.
   const closeMeasureSafely = useCallback(() => {
+    earthControllerRef.current?.recover("tool-change");
     cancelActiveMeasurement("panel-close");
     closeMeasurePanel();
   }, [cancelActiveMeasurement, closeMeasurePanel]);
@@ -1341,10 +1481,126 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
   // Double-click the compass centre resets bearing AND pitch (unlike the
   // "N" button, which only resets bearing) without touching centre/zoom.
   const resetLookAroundCamera = useCallback(() => {
-    const map = mapRef.current;
-    if (!map) return;
-    map.easeTo({ bearing: 0, pitch: DEFAULT_MAP_PITCH, duration: 300 });
+    earthControllerRef.current?.resetView();
   }, []);
+
+  // Shows a non-blocking notice (Phase 27 / 5) that auto-dismisses.
+  const showEarthNotice = useCallback((message: string, timeoutMs = 5200) => {
+    setEarthNotice(message);
+    if (earthNoticeTimerRef.current !== null) window.clearTimeout(earthNoticeTimerRef.current);
+    earthNoticeTimerRef.current = window.setTimeout(() => setEarthNotice(null), timeoutMs);
+  }, []);
+
+  // Idempotently applies the 3D Earth environment (globe + terrain + sky) to
+  // the current map, guarding every step so it is safe to call on mode entry,
+  // after a basemap switch, or after any style-affecting operation without
+  // producing duplicate-source/layer errors (Phase 21).
+  const ensureEarthEnvironment = useCallback((map: MLMap) => {
+    // Globe projection (where supported).
+    try {
+      map.setProjection({ type: "globe" });
+    } catch {
+      showEarthNotice("3D Earth mode is not supported by this browser or map renderer.");
+      return false;
+    }
+
+    // Terrain (optional). Only configure when a DEM source resolved.
+    let terrainOk = false;
+    if (TERRAIN_CONFIG.source) {
+      try {
+        if (!map.getSource(TERRAIN_SOURCE_ID)) {
+          map.addSource(TERRAIN_SOURCE_ID, TERRAIN_CONFIG.source);
+        }
+        // Hillshade must sit above the raster basemap but below the feature
+        // layers so it never hides uploaded GIS data.
+        const firstFeatureLayer = map.getLayer(LAYER_POLY_FILL) ? LAYER_POLY_FILL : undefined;
+        if (!map.getLayer(TERRAIN_HILLSHADE_ID)) {
+          map.addLayer(
+            {
+              id: TERRAIN_HILLSHADE_ID,
+              type: "hillshade",
+              source: TERRAIN_SOURCE_ID,
+              paint: { "hillshade-shadow-color": "#473B24" },
+            },
+            firstFeatureLayer
+          );
+        }
+        map.setTerrain({ source: TERRAIN_SOURCE_ID, exaggeration: TERRAIN_EXAGGERATION });
+        terrainOk = true;
+      } catch {
+        terrainOk = false;
+      }
+    }
+    setTerrainAvailable(terrainOk);
+    if (!terrainOk && TERRAIN_CONFIG.enabled) {
+      showEarthNotice("Terrain source unavailable — using globe view without elevation.");
+    }
+
+    // Sky / atmosphere.
+    try {
+      map.setSky(SKY_SPECIFICATION as unknown as maplibregl.SkySpecification);
+    } catch {
+      /* sky is best-effort */
+    }
+    return true;
+  }, [showEarthNotice]);
+
+  // Keep the ref used by earlier-declared callbacks in sync with the latest
+  // ensureEarthEnvironment implementation.
+  ensureEarthEnvironmentRef.current = ensureEarthEnvironment;
+
+  // Enters 3D Earth mode: globe + terrain + sky, high pitch, orbit nav.
+  const enterEarthMode = useCallback(() => {
+    const map = mapRef.current;
+    if (!map || viewModeRef.current === "earth3d") return;
+    // Cancel any conflicting tool/gesture first.
+    if (measureActiveRef.current) closeMeasureSafely();
+    if (streetPickModeRef.current) toggleStreetPickMode();
+    earthControllerRef.current?.setViewMode("earth3d");
+    map.setMaxPitch(MAX_TILT_DEG);
+    const ok = ensureEarthEnvironment(map);
+    if (!ok) {
+      // Globe unsupported — stay in standard mode.
+      earthControllerRef.current?.setViewMode("standard");
+      map.setMaxPitch(STANDARD_MAX_PITCH);
+      viewModeRef.current = "standard";
+      setViewMode("standard");
+      return;
+    }
+    // Seed the look-at model from the current camera and tilt toward horizon.
+    const ctrl = earthControllerRef.current!;
+    ctrl.syncFromMap();
+    ctrl.setPitch(DEFAULT_EARTH_TILT_DEG);
+    viewModeRef.current = "earth3d";
+    setViewMode("earth3d");
+    showEarthNotice(
+      "3D Earth navigation  •  Drag to move  •  Middle-drag or Shift-drag to orbit  •  Scroll to move closer or farther"
+    );
+  }, [ensureEarthEnvironment, showEarthNotice, closeMeasureSafely, toggleStreetPickMode]);
+
+  // Exits 3D Earth mode: back to Mercator, terrain/sky off, smooth pitch reset.
+  const exitEarthMode = useCallback(() => {
+    const map = mapRef.current;
+    if (!map || viewModeRef.current !== "earth3d") return;
+    if (lookAroundActiveRef.current) deactivateLookAround();
+    earthControllerRef.current?.recover("tool-change");
+    earthControllerRef.current?.setViewMode("standard");
+    try { map.setProjection({ type: "mercator" }); } catch { /* ignore */ }
+    try { map.setTerrain(null); } catch { /* ignore */ }
+    try { map.setSky(undefined as unknown as maplibregl.SkySpecification); } catch { /* ignore */ }
+    if (map.getLayer(TERRAIN_HILLSHADE_ID)) map.removeLayer(TERRAIN_HILLSHADE_ID);
+    map.setMaxPitch(STANDARD_MAX_PITCH);
+    // Return to a usable top-down pitch, preserving centre and zoom.
+    map.easeTo({ pitch: 0, bearing: map.getBearing(), duration: 500 });
+    viewModeRef.current = "standard";
+    setViewMode("standard");
+  }, [deactivateLookAround]);
+
+  // Toggles between the two viewing modes (wired to the 3D EARTH button).
+  const toggleEarthMode = useCallback(() => {
+    if (viewModeRef.current === "earth3d") exitEarthMode();
+    else enterEarthMode();
+  }, [enterEarthMode, exitEarthMode]);
 
   // Switching modes reuses the same cancellation path: the previous tool's
   // unfinished geometry is wiped (via resetMeasureTempState) before the new
@@ -1441,79 +1697,55 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     return () => { map.dragRotate.enable(); };
   }, [mapReady, measureDrawingActive]);
 
-  // Look Around mode: left-click-drag anywhere on the map changes bearing
-  // (horizontal movement) and pitch (vertical movement) instead of panning.
-  // dragPan is disabled for the duration so the two gestures don't fight,
-  // and the cursor swaps to signal the camera-look interaction per the
-  // same pattern streetPickMode uses for its crosshair cursor.
+  // Native-handler management for Standard vs 3D Earth mode and the Look
+  // Around flag. In 3D Earth mode the custom orbit/pan/dolly controllers own
+  // all pointer + wheel input (so native dragPan/scrollZoom/dragRotate are
+  // disabled) — UNLESS a drawing/placement tool is active, in which case we
+  // re-enable native pan/zoom so those tools keep working and only suppress
+  // the custom orbit. In Standard mode the legacy behaviour is preserved:
+  // native pan stays on, and only Look Around disables dragPan.
   useEffect(() => {
     const map = mapRef.current;
-    if (!map || !mapReady || !lookAroundActive) return;
-    map.dragPan.disable();
+    if (!map || !mapReady) return;
+    const toolActive = measureActive || streetPickMode;
     const canvas = map.getCanvas();
-    canvas.style.cursor = "grab";
 
-    let dragging = false;
-    let activePointerId: number | null = null;
-    let lastX = 0;
-    let lastY = 0;
-    // Pointer Events (not mouse-only) so the same handlers cover touch and
-    // pen input, matching the pointer-capture pattern already used by the
-    // ruler panel drag and the zoom slider/compass ring above.
-    //
-    // Look-around drag deliberately bypasses MapLibre's easeTo/inertia path
-    // (setBearing/setPitch are synchronous, no animation) so the camera
-    // tracks the pointer 1:1 with zero added latency, matching the "click
-    // and drag to look around" gesture's expected immediacy.
-    const handleDown = (e: PointerEvent) => {
-      if (e.button !== 0) return;
-      dragging = true;
-      activePointerId = e.pointerId;
-      lastX = e.clientX;
-      lastY = e.clientY;
-      canvas.style.cursor = "grabbing";
-      canvas.setPointerCapture(e.pointerId);
-    };
-    const handleMove = (e: PointerEvent) => {
-      if (!dragging || e.pointerId !== activePointerId) return;
-      const dx = e.clientX - lastX;
-      const dy = e.clientY - lastY;
-      lastX = e.clientX;
-      lastY = e.clientY;
-      // 0.3 deg/px keeps a full-width drag well under a full turn — tuned
-      // to feel similar to MapLibre's own dragRotate sensitivity.
-      map.setBearing(map.getBearing() + dx * 0.3);
-      map.setPitch(Math.min(MAX_MAP_PITCH, Math.max(0, map.getPitch() - dy * 0.3)));
-    };
-    const stopDragging = (e?: PointerEvent) => {
-      if (e && canvas.hasPointerCapture(e.pointerId)) canvas.releasePointerCapture(e.pointerId);
-      dragging = false;
-      activePointerId = null;
-      canvas.style.cursor = "grab";
-    };
-    const handleBlur = () => stopDragging();
-    canvas.addEventListener("pointerdown", handleDown);
-    canvas.addEventListener("pointermove", handleMove);
-    canvas.addEventListener("pointerup", stopDragging);
-    canvas.addEventListener("pointercancel", stopDragging);
-    // A pointer that leaves the window entirely (e.g. dragged off-screen)
-    // must not leave `dragging` stuck true — matches the blur-safety the
-    // task calls out for the press-and-hold rotate buttons. Pointer capture
-    // already keeps pointerup/pointermove firing on this canvas even off-
-    // element, but window blur (e.g. alt-tab mid-drag) isn't a pointer
-    // event at all, so it needs its own listener.
-    window.addEventListener("blur", handleBlur);
+    if (viewMode === "earth3d") {
+      if (toolActive) {
+        map.dragPan.enable();
+        map.scrollZoom.enable();
+        map.dragRotate.disable();
+      } else {
+        map.dragPan.disable();
+        map.dragRotate.disable();
+        map.scrollZoom.disable();
+      }
+      if (canvas && !toolActive) canvas.style.cursor = lookAroundActive ? "grab" : "";
+      return () => {
+        if (!mapRef.current) return;
+        map.dragPan.enable();
+        map.scrollZoom.enable();
+        map.dragRotate.enable();
+        if (canvas) canvas.style.cursor = "";
+      };
+    }
 
-    return () => {
-      canvas.removeEventListener("pointerdown", handleDown);
-      canvas.removeEventListener("pointermove", handleMove);
-      canvas.removeEventListener("pointerup", stopDragging);
-      canvas.removeEventListener("pointercancel", stopDragging);
-      window.removeEventListener("blur", handleBlur);
+    // Standard mode.
+    if (lookAroundActive) {
+      map.dragPan.disable();
+      if (canvas) canvas.style.cursor = "grab";
+    } else {
       map.dragPan.enable();
-      canvas.style.cursor = "";
+      if (canvas) canvas.style.cursor = "";
+    }
+    map.dragRotate.enable();
+    map.scrollZoom.enable();
+    return () => {
+      if (!mapRef.current) return;
+      map.dragPan.enable();
+      if (canvas) canvas.style.cursor = "";
     };
-  }, [mapReady, lookAroundActive]);
+  }, [mapReady, viewMode, lookAroundActive, measureActive, streetPickMode]);
 
   // Escape deactivates the active measurement TOOL only — it cancels any
   // unfinished shape (preserving completed ones), returns the phase to
@@ -1549,6 +1781,49 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Keyboard orbit/look-around: Shift + Arrows rotate/tilt the camera; N
+  // resets bearing to north. Mirrors an on-map orbit gesture through the
+  // shared controller, and only fires when the map is focused (not while
+  // typing in a field, and not while the Look Around compass itself has
+  // focus — that control handles its own Arrow keys so they don't double).
+  useEffect(() => {
+    if (!mapReady) return;
+    const onKey = (e: KeyboardEvent) => {
+      const ctrl = earthControllerRef.current;
+      if (!ctrl) return;
+      const target = e.target as HTMLElement | null;
+      if (
+        target &&
+        (target.tagName === "INPUT" ||
+          target.tagName === "TEXTAREA" ||
+          target.isContentEditable ||
+          target.closest?.('[data-testid="look-around-compass"]'))
+      ) {
+        return;
+      }
+      // Escape always recovers the map from a stuck orbit (Phase 16), then
+      // lets the measurement/Look-Around Escape handler below also run.
+      if (e.key === "Escape") {
+        ctrl.recover("escape");
+        return;
+      }
+      if (e.shiftKey && (e.key === "ArrowLeft" || e.key === "ArrowRight" || e.key === "ArrowUp" || e.key === "ArrowDown")) {
+        e.preventDefault();
+        const STEP = 4;
+        if (e.key === "ArrowLeft") ctrl.nudgeBearing(-STEP);
+        else if (e.key === "ArrowRight") ctrl.nudgeBearing(STEP);
+        else if (e.key === "ArrowUp") ctrl.nudgePitch(STEP);
+        else if (e.key === "ArrowDown") ctrl.nudgePitch(-STEP);
+      } else if (e.key === "n" || e.key === "N") {
+        e.preventDefault();
+        ctrl.resetNorth();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mapReady]);
+
   const applyFeatureCollection = useCallback((data: FeatureCollectionResponse) => {
     const map = mapRef.current;
     if (!map) return;
@@ -1558,27 +1833,15 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     // safe to update, so gating on the whole style caused the new viewport
     // data to be discarded precisely while zooming.
     if (!src) return;
-
-    // OBJ mesh datasets render as a draped 3D mesh (Obj3DMapLayer), so drop
-    // their vertex point features here — otherwise they also paint as flat
-    // 2D circles on top of the mesh, which the user does not want.
-    const objIds = objDatasetIdsRef.current;
-    const features = objIds.size === 0
-      ? (data.features as unknown as GeoJSON.Feature[])
-      : (data.features as unknown as GeoJSON.Feature[]).filter((f) => {
-          const did = String((f.properties as Record<string, unknown>)?.dataset_id ?? "");
-          return !objIds.has(did);
-        });
-
-    src.setData({ type: "FeatureCollection", features } as unknown as GeoJSON.FeatureCollection);
+    src.setData(data as unknown as GeoJSON.FeatureCollection);
     // Keep the exact dashboard snapshot available to Street View. The
     // panorama applies the same client-side layer visibility controls and
     // creates nearby, georeferenced markers without issuing another request.
-    setLoadedFeatures(features as unknown as UrbanFeature[]);
+    setLoadedFeatures(data.features);
 
     // Cache coordinates for every Point feature so the AI highlight layer
     // can place its circles correctly even when highlights arrive after load.
-    for (const f of features) {
+    for (const f of data.features as unknown as GeoJSON.Feature[]) {
       if (f.geometry.type === "Point") {
         const fid = String((f.properties as Record<string, unknown>)?.id ?? f.id ?? "");
         if (fid) featureCoordsRef.current.set(fid, f.geometry.coordinates as [number, number]);
@@ -1591,7 +1854,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
 
     const colorMap = colorByCategoryRef.current;
     const counts = new Map<string, number>();
-    for (const f of features) {
+    for (const f of data.features as unknown as GeoJSON.Feature[]) {
       const raw = (f.properties as { category?: string | null } | null)?.category;
       if (raw === "raster_pixel") continue;
       const category = raw && raw.trim() !== "" ? raw : "uncategorized";
@@ -1619,7 +1882,6 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     const entries: LegendEntry[] = Array.from(counts.entries())
       .map(([category, count]) => ({ category, color: colorMap.get(category)!, count }))
       .sort((a, b) => b.count - a.count);
-    setLegend(entries.slice(0, 10));
     setCategoryStats(entries);
   }, [flushAiHighlightSource]);
 
@@ -1768,63 +2030,33 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     for (const id of Array.from(rasterLayersRef.current)) removeRasterOverlay(id);
   }, [removeRasterOverlay]);
 
-  // Drapes the dataset's actual OBJ mesh onto the map at its real
-  // georeferenced location (see Obj3DMapLayer) instead of only offering a
-  // disconnected full-screen viewer. three.js is dynamically imported here
-  // so it's never fetched unless a 3D dataset is actually toggled on.
-  const removeObj3DLayer = useCallback((datasetId: string) => {
-    obj3dLayersRef.current.delete(datasetId);
+  const addObjModel = useCallback((dataset: DatasetRow) => {
     const map = mapRef.current;
-    if (!map) return;
-    const layerId = obj3dLayerId(datasetId);
-    if (map.getLayer(layerId)) map.removeLayer(layerId);
-  }, []);
-
-  const hideObj3DLayer = useCallback((datasetId: string) => {
-    const map = mapRef.current;
-    if (!map) return;
-    const layerId = obj3dLayerId(datasetId);
-    if (map.getLayer(layerId)) {
-      map.setLayoutProperty(layerId, "visibility", "none");
-    }
-  }, []);
-
-  const addObj3DLayer = useCallback(async (dataset: DatasetRow, bounds: DatasetBounds) => {
-    const map = mapRef.current;
-    if (!map || !isObjDataset(dataset)) return;
-    obj3dLayersRef.current.add(dataset.id);
-    const layerId = obj3dLayerId(dataset.id);
-    if (map.getLayer(layerId)) {
-      map.setLayoutProperty(layerId, "visibility", "visible");
-      return;
-    }
+    const metadata = dataset.dataset_metadata?.model_3d;
+    if (!map || !map.isStyleLoaded() || !metadata?.render_anchor || !metadata.models?.length) return;
+    const layerId = objModelLayerId(dataset.id);
+    if (map.getLayer(layerId)) return;
     try {
-      const res = await fetch(`${API_BASE}/api/v1/datasets/${dataset.id}/raw-file`, { credentials: "include" });
-      if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
-      const text = await res.text();
-      // The dataset may have been deselected (or the map torn down) while
-      // the fetch/parse of a large mesh was still in flight.
-      if (!obj3dLayersRef.current.has(dataset.id)) return;
-      const currentMap = mapRef.current;
-      if (!currentMap) return;
-      if (currentMap.getLayer(layerId)) {
-        currentMap.setLayoutProperty(layerId, "visibility", "visible");
-        return;
-      }
-      const { Obj3DMapLayer } = await import("./Obj3DMapLayer");
-      const mtlFilename = dataset.dataset_metadata?.model_assets?.mtl_filename;
-      // Same beforeId as addRasterOverlay: keeps draped mesh/shading layers
-      // (OBJ, DSM, DTM) under the vector feature layers (markers, buildings,
-      // AI highlights) instead of painting over them.
-      currentMap.addLayer(new Obj3DMapLayer(layerId, text, bounds, dataset.id, mtlFilename), LAYER_POLY_FILL);
-    } catch (e) {
-      setFlyError(`Could not load 3D model on map: ${(e as Error).message}`);
+      map.addLayer(createObjModelLayer(dataset, {
+        onError: (message) => setFlyError(message),
+      }));
+      objModelLayersRef.current.add(dataset.id);
+    } catch (error) {
+      setFlyError((error as Error).message);
     }
   }, []);
 
-  const clearAllObj3DLayers = useCallback(() => {
-    for (const id of Array.from(obj3dLayersRef.current)) removeObj3DLayer(id);
-  }, [removeObj3DLayer]);
+  const removeObjModel = useCallback((datasetId: string) => {
+    const map = mapRef.current;
+    if (!map) return;
+    const layerId = objModelLayerId(datasetId);
+    if (map.getLayer(layerId)) map.removeLayer(layerId);
+    objModelLayersRef.current.delete(datasetId);
+  }, []);
+
+  const clearAllObjModels = useCallback(() => {
+    for (const id of Array.from(objModelLayersRef.current)) removeObjModel(id);
+  }, [removeObjModel]);
 
   const applyRasterDisplaySettings = useCallback((datasetId: string, nextSettings: RasterDisplaySettings) => {
     const map = mapRef.current;
@@ -1876,10 +2108,16 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     for (const id of Array.from(rasterLayersRef.current)) {
       if (!activeIds.has(id)) removeRasterOverlay(id);
     }
+    for (const id of Array.from(objModelLayersRef.current)) {
+      if (!activeIds.has(id)) removeObjModel(id);
+    }
     if (activeDatasetIds.length === 0) return;
     const matched = datasets.filter((d) => activeIds.has(d.id));
     if (matched.length === 0) return;
-    for (const d of matched) addRasterOverlay(d);
+    for (const d of matched) {
+      addRasterOverlay(d);
+      addObjModel(d);
+    }
     filterRef.current = { datasetIds: activeDatasetIds };
     scheduleFetch();
     // Only re-run when the map/datasets actually become ready or the
@@ -1916,6 +2154,45 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
       })),
     });
   }, [mapReady, anomalies]);
+
+  // Fetch estimated flow directions only while the toggle is on, and only
+  // for the currently active dataset(s) — respects Phase 23/24 (filters +
+  // dataset boundaries) and avoids any work while the layer is hidden.
+  useEffect(() => {
+    if (!flowEnabled || activeDatasetIds.length === 0) {
+      setFlowSegments([]); setFlowSummary(null); setFlowError(null);
+      return;
+    }
+    const ctrl = new AbortController();
+    setFlowLoading(true);
+    setFlowError(null);
+    fetchManholeFlowDirections({ datasetIds: activeDatasetIds }, ctrl.signal)
+      .then((res) => {
+        setFlowSegments(res.features);
+        setFlowSummary(res.summary);
+        if (res.features.length === 0 && res.message) setFlowError(res.message);
+      })
+      .catch((err) => {
+        if (ctrl.signal.aborted) return;
+        setFlowSegments([]);
+        setFlowSummary(null);
+        setFlowError("No flow directions could be generated from the available manhole data.");
+        // eslint-disable-next-line no-console
+        console.error("Flow direction fetch failed", err);
+      })
+      .finally(() => { if (!ctrl.signal.aborted) setFlowLoading(false); });
+    return () => ctrl.abort();
+  }, [flowEnabled, activeDatasetIds]);
+
+  // Push the fetched flow segments into the map source whenever they
+  // change. Never touches the current camera (no fitBounds/flyTo here).
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!mapReady || !map) return;
+    const src = map.getSource(FLOW_SOURCE) as GeoJSONSource | undefined;
+    if (!src) return;
+    src.setData({ type: "FeatureCollection", features: flowEnabled ? flowSegments : [] } as unknown as GeoJSON.FeatureCollection);
+  }, [mapReady, flowSegments, flowEnabled]);
 
   // Keep the ref mirror in sync so applyFeatureCollection (a stable
   // useCallback) always reads the current mode on the next fetch.
@@ -2176,35 +2453,40 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     if (isActive) {
       setExpandedDatasetId((current) => (current === dataset.id ? null : current));
       removeRasterOverlay(dataset.id);
-      if (isObjDataset(dataset)) {
-        hideObj3DLayer(dataset.id);
-      } else {
-        removeObj3DLayer(dataset.id);
-      }
+      removeObjModel(dataset.id);
       scheduleFetch();
       return;
     }
     addRasterOverlay(dataset);
+    addObjModel(dataset);
+    // Auto-open the replicated Display Settings card (below Run Spatial
+    // Audit) the moment a raster-capable dataset is selected, so the user
+    // doesn't have to separately hunt for the row's gear icon.
+    const hasRasterControls = dataset.status === "ready" && dataset.file_type === "geotiff" && Boolean(dataset.dataset_metadata?.raster_overlay);
+    if (hasRasterControls) setExpandedDatasetId(dataset.id);
     // Load the complete updated dataset selection immediately. fitBounds
     // below changes only the camera and deliberately does not trigger a
     // second data request.
     scheduleFetch();
     try {
       const b = await fetchDatasetBounds(dataset.id);
+      if (dataset.dataset_metadata?.model_3d?.render_anchor) {
+        map.setPitch(58);
+        map.setBearing(-18);
+      }
       map.fitBounds([[b.min_lon, b.min_lat], [b.max_lon, b.max_lat]], { padding: 80, duration: 1000, maxZoom: 18 });
-      if (isObjDataset(dataset)) void addObj3DLayer(dataset, b);
     } catch (e) { setFlyError((e as Error).message); }
-  }, [activeDatasetIds, datasets, filter, scheduleFetch, addRasterOverlay, removeRasterOverlay, addObj3DLayer, removeObj3DLayer, hideObj3DLayer, onActiveDatasetsChange]);
+  }, [activeDatasetIds, datasets, filter, scheduleFetch, addRasterOverlay, removeRasterOverlay, addObjModel, removeObjModel, onActiveDatasetsChange]);
 
   const clearAllDatasets = useCallback(() => {
     setActiveDatasetIds([]);
     setExpandedDatasetId(null);
     filterRef.current = filter;
     clearAllRasterOverlays();
-    clearAllObj3DLayers();
+    clearAllObjModels();
     onActiveDatasetsChange?.([]);
     scheduleFetch();
-  }, [filter, scheduleFetch, clearAllRasterOverlays, clearAllObj3DLayers, onActiveDatasetsChange]);
+  }, [filter, scheduleFetch, clearAllRasterOverlays, clearAllObjModels, onActiveDatasetsChange]);
 
   // Bulk toggle used by the Data Sources "Select All" control. Selecting every
   // dataset activates the full set at once without per-dataset camera moves;
@@ -2219,9 +2501,12 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     setActiveDatasetIds(next);
     filterRef.current = { datasetIds: next };
     onActiveDatasetsChange?.(datasets);
-    datasets.forEach((d) => addRasterOverlay(d));
+    datasets.forEach((d) => {
+      addRasterOverlay(d);
+      addObjModel(d);
+    });
     scheduleFetch();
-  }, [datasets, clearAllDatasets, addRasterOverlay, scheduleFetch, onActiveDatasetsChange]);
+  }, [datasets, clearAllDatasets, addRasterOverlay, addObjModel, scheduleFetch, onActiveDatasetsChange]);
 
   useImperativeHandle(
     ref,
@@ -2281,14 +2566,39 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
       minZoom: 4,
       // Raster/image overlays (aerial TIFs etc.) have no tile pyramid of
       // their own, so they can be zoomed in far past where basemap tiles
-      // stop looking sharp Ã¢â‚¬â€ 20 was capping that closer inspection even
+      // stop looking sharp — 20 was capping that closer inspection even
       // with the basemap turned off. MapLibre's practical ceiling is ~24.
       maxZoom: 24,
+      // Standard-mode pitch ceiling (raster orthophotos were not authored
+      // for an oblique view). Raised to the globe ceiling (MAX_TILT_DEG) when
+      // 3D Earth mode is entered.
+      maxPitch: STANDARD_MAX_PITCH,
+      // Free up Shift + left-drag for the orbit/look-around gesture instead
+      // of MapLibre's default box-zoom.
+      boxZoom: false,
       attributionControl: false,
       transformRequest: (url) =>
         API_BASE && url.startsWith(API_BASE) ? { url, credentials: "include" } : { url },
     });
     mapRef.current = map;
+
+    // Shared 3D Earth / Look Around camera controller (Google Earth-style
+    // orbit around a stable target). Driven by both the canvas drag handlers
+    // below and the Look Around compass so there is only ever one camera
+    // model.
+    const reducedMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false;
+    const earthController = new EarthCameraController(map, {
+      reducedMotion,
+      debug: ORBIT_DEBUG,
+    });
+    earthControllerRef.current = earthController;
+    // Restores the correct cursor after orbit ends, based on the currently
+    // active tool (Phase 13/15). Reads refs so it always sees live state.
+    earthController.cursorResolver = () => {
+      if (lookAroundActiveRef.current) return "grab";
+      if (streetPickModeRef.current || measureActiveRef.current) return "crosshair";
+      return "";
+    };
 
     // Keeps the custom horizontal zoom slider's thumb synced to the map's
     // actual zoom regardless of how it changed (wheel, pinch, double-click,
@@ -2375,6 +2685,95 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     map.on("mousemove", handleCursorMove);
     map.on("mouseout", handleCursorLeave);
     map.on("render", handleMapRender);
+
+    // --- Orbit / Look Around (Google Earth-style orbit around a stable
+    //     target) ----------------------------------------------------------
+    // 3D Earth mode:
+    //   middle-drag OR Shift+left-drag  -> orbit (heading + tilt)
+    //   left-drag (no shift)            -> pan the look-at target across the
+    //                                      ground, unless Look Around is on
+    //                                      (then left-drag also orbits)
+    //   wheel                           -> dolly toward/away from target
+    // Standard mode:
+    //   middle-drag / Shift+left-drag / Look Around left-drag -> orbit
+    //   plain left-drag                -> native pan (unchanged)
+    // Tools that own pointer input (measurement, street-view placement) take
+    // precedence and suppress custom navigation entirely.
+    const orbitCanvas = map.getCanvas();
+
+    const orbitShouldSuppress = () =>
+      measureActiveRef.current || streetPickModeRef.current;
+    const isEarth = () => viewModeRef.current === "earth3d";
+
+    const handleOrbitPointerDown = (e: PointerEvent) => {
+      if (orbitShouldSuppress()) return;
+      const ctrl = earthControllerRef.current;
+      if (!ctrl) return;
+      // Preserve native touch pan/pinch entirely (Phase 21). The custom orbit
+      // is a desktop (mouse/pen) gesture only.
+      if (e.pointerType === "touch") return;
+      const middle = e.button === 1;
+      const shiftLeft = e.button === 0 && e.shiftKey;
+      const lookLeft = e.button === 0 && !e.shiftKey && lookAroundActiveRef.current;
+      if (isEarth()) {
+        if (middle || shiftLeft || lookLeft) {
+          e.preventDefault();
+          ctrl.beginOrbit(e.clientX, e.clientY, e.pointerId, orbitCanvas);
+        } else if (e.button === 0) {
+          e.preventDefault();
+          ctrl.beginPan(e.clientX, e.clientY, e.pointerId, orbitCanvas);
+        }
+      } else if (middle || shiftLeft || lookLeft) {
+        e.preventDefault();
+        // Native handler suspension + pointer capture + window fallback are
+        // owned entirely by the controller's single exit path, so dragPan is
+        // always restored — even if the pointer is released off-canvas.
+        ctrl.beginOrbit(e.clientX, e.clientY, e.pointerId, orbitCanvas);
+      }
+    };
+    const handleOrbitPointerMove = (e: PointerEvent) => {
+      const ctrl = earthControllerRef.current;
+      if (ctrl && ctrl.isActive()) ctrl.updateOrbit(e.clientX, e.clientY);
+    };
+    const finishOrbit = (e?: PointerEvent) => {
+      earthControllerRef.current?.finishOrbit("pointerup", e?.pointerId);
+    };
+    const cancelOrbit = (e?: PointerEvent) => {
+      earthControllerRef.current?.cancelOrbit("pointercancel", e?.pointerId);
+    };
+    // Wheel dolly only in 3D Earth mode; native scrollZoom is disabled there
+    // so we own the gesture and keep the look-at target fixed.
+    const handleOrbitWheel = (e: WheelEvent) => {
+      if (orbitShouldSuppress() || !isEarth()) return;
+      const ctrl = earthControllerRef.current;
+      if (!ctrl) return;
+      e.preventDefault();
+      ctrl.dolly(e.deltaY);
+    };
+    // Middle-mouse autoscroll and shift-selection must be prevented at the
+    // native mousedown level (pointerdown preventDefault alone is unreliable
+    // for the browser autoscroll gesture).
+    const handleOrbitMouseDown = (e: MouseEvent) => {
+      if (e.button === 1 || (e.button === 0 && e.shiftKey)) e.preventDefault();
+    };
+    const handleOrbitAuxClick = (e: MouseEvent) => {
+      if (e.button === 1) e.preventDefault();
+    };
+    // Escape / blur / tab-hidden always recover the map (Phases 5, 16, 17).
+    const onWindowBlur = () => earthControllerRef.current?.recover("window-blur");
+    const onVisibilityChange = () => {
+      if (document.visibilityState !== "visible") earthControllerRef.current?.recover("document-hidden");
+    };
+    orbitCanvas.addEventListener("pointerdown", handleOrbitPointerDown);
+    orbitCanvas.addEventListener("pointermove", handleOrbitPointerMove);
+    orbitCanvas.addEventListener("pointerup", finishOrbit);
+    orbitCanvas.addEventListener("pointercancel", cancelOrbit);
+    orbitCanvas.addEventListener("lostpointercapture", cancelOrbit);
+    orbitCanvas.addEventListener("mousedown", handleOrbitMouseDown);
+    orbitCanvas.addEventListener("auxclick", handleOrbitAuxClick);
+    orbitCanvas.addEventListener("wheel", handleOrbitWheel, { passive: false });
+    window.addEventListener("blur", onWindowBlur);
+    document.addEventListener("visibilitychange", onVisibilityChange);
 
     map.on("load", () => {
       map.addSource(FEATURE_SOURCE, { type: "geojson", data: EMPTY_FC as unknown as GeoJSON.FeatureCollection, promoteId: "id" });
@@ -2477,6 +2876,143 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
       });
       map.on("mouseenter", LAYER_ANOMALIES, () => (map.getCanvas().style.cursor = "pointer"));
       map.on("mouseleave", LAYER_ANOMALIES, () => (map.getCanvas().style.cursor = ""));
+
+      // Estimated Wastewater Flow Direction overlay (Phase 14/15/16). Own
+      // source, own line + arrow layers per classification. Registered at
+      // map load (not lazily) so toggling the layer on later never risks a
+      // duplicate-source/duplicate-image error after a style reload.
+      if (!map.hasImage(FLOW_CLOSED_ARROW_ICON)) {
+        map.addImage(FLOW_CLOSED_ARROW_ICON, buildClosedArrowIcon(), { pixelRatio: 2 });
+      }
+      if (!map.hasImage(FLOW_OPEN_ARROW_ICON)) {
+        map.addImage(FLOW_OPEN_ARROW_ICON, buildOpenArrowIcon(FLOW_DERIVED_COLOR), { pixelRatio: 2 });
+      }
+      if (!map.hasImage(FLOW_TREND_ARROW_ICON)) {
+        map.addImage(FLOW_TREND_ARROW_ICON, buildOpenArrowIcon(FLOW_TREND_COLOR), { pixelRatio: 2 });
+      }
+      if (!map.hasImage(FLOW_WARNING_ICON)) {
+        map.addImage(FLOW_WARNING_ICON, buildWarningIcon(), { pixelRatio: 2 });
+      }
+      map.addSource(FLOW_SOURCE, {
+        type: "geojson",
+        data: { type: "FeatureCollection", features: [] },
+        promoteId: "segment_id",
+      });
+      const FLOW_CONFIRMED_FILTER: maplibregl.FilterSpecification = ["==", ["get", "direction_status"], "confirmed"];
+      const FLOW_ESTIMATED_FILTER: maplibregl.FilterSpecification = [
+        "all",
+        ["==", ["get", "direction_status"], "estimated"],
+        ["!=", ["get", "direction_source"], "neighbouring_road_trend"],
+      ];
+      const FLOW_TREND_FILTER: maplibregl.FilterSpecification = [
+        "all",
+        ["==", ["get", "direction_status"], "estimated"],
+        ["==", ["get", "direction_source"], "neighbouring_road_trend"],
+      ];
+      const FLOW_UNKNOWN_FILTER: maplibregl.FilterSpecification = [
+        "in", ["get", "direction_status"], ["literal", ["unknown", "flat_or_uncertain"]],
+      ];
+      const FLOW_CONFLICT_FILTER: maplibregl.FilterSpecification = ["==", ["get", "direction_status"], "conflict"];
+
+      // Confirmed — solid teal line, closed arrow.
+      map.addLayer({
+        id: LAYER_FLOW_CONFIRMED_LINES, type: "line", source: FLOW_SOURCE,
+        filter: FLOW_CONFIRMED_FILTER,
+        paint: { "line-color": FLOW_CONFIRMED_COLOR, "line-width": 3, "line-opacity": 0.95 },
+      });
+      map.addLayer({
+        id: LAYER_FLOW_CONFIRMED_ARROWS, type: "symbol", source: FLOW_SOURCE,
+        filter: FLOW_CONFIRMED_FILTER,
+        layout: {
+          "icon-image": FLOW_CLOSED_ARROW_ICON,
+          "symbol-placement": "line",
+          "icon-rotation-alignment": "map",
+          "icon-keep-upright": false,
+          "icon-allow-overlap": true,
+          "icon-size": ["interpolate", ["linear"], ["zoom"], 14, 0, 14.01, 0.55, 16, 0.75, 19, 1.1],
+          "symbol-spacing": ["interpolate", ["linear"], ["zoom"], 14, 40, 19, 90],
+        },
+      });
+      // Derived — light green line (slightly lower opacity), open arrow.
+      map.addLayer({
+        id: LAYER_FLOW_ESTIMATED_LINES, type: "line", source: FLOW_SOURCE,
+        filter: FLOW_ESTIMATED_FILTER,
+        paint: { "line-color": FLOW_DERIVED_COLOR, "line-width": 2.5, "line-opacity": 0.8 },
+      });
+      map.addLayer({
+        id: LAYER_FLOW_ESTIMATED_ARROWS, type: "symbol", source: FLOW_SOURCE,
+        filter: FLOW_ESTIMATED_FILTER,
+        layout: {
+          "icon-image": FLOW_OPEN_ARROW_ICON,
+          "symbol-placement": "line",
+          "icon-rotation-alignment": "map",
+          "icon-keep-upright": false,
+          "icon-allow-overlap": true,
+          "icon-size": ["interpolate", ["linear"], ["zoom"], 14, 0, 14.01, 0.5, 16, 0.7, 19, 1.0],
+          "symbol-spacing": ["interpolate", ["linear"], ["zoom"], 14, 40, 19, 90],
+        },
+      });
+      // Neighbouring-trend estimate — dashed amber line, open amber arrow.
+      map.addLayer({
+        id: LAYER_FLOW_TREND_LINES, type: "line", source: FLOW_SOURCE,
+        filter: FLOW_TREND_FILTER,
+        paint: { "line-color": FLOW_TREND_COLOR, "line-width": 2.5, "line-opacity": 0.75, "line-dasharray": [2, 1.5] },
+      });
+      map.addLayer({
+        id: LAYER_FLOW_TREND_ARROWS, type: "symbol", source: FLOW_SOURCE,
+        filter: FLOW_TREND_FILTER,
+        layout: {
+          "icon-image": FLOW_TREND_ARROW_ICON,
+          "symbol-placement": "line",
+          "icon-rotation-alignment": "map",
+          "icon-keep-upright": false,
+          "icon-allow-overlap": true,
+          "icon-size": ["interpolate", ["linear"], ["zoom"], 14, 0, 14.01, 0.5, 16, 0.7, 19, 1.0],
+          "symbol-spacing": ["interpolate", ["linear"], ["zoom"], 14, 40, 19, 90],
+        },
+      });
+      // Unknown — thin grey line, no arrow.
+      map.addLayer({
+        id: LAYER_FLOW_UNKNOWN_LINES, type: "line", source: FLOW_SOURCE,
+        filter: FLOW_UNKNOWN_FILTER,
+        paint: { "line-color": FLOW_UNKNOWN_COLOR, "line-width": 1.5, "line-opacity": 0.6, "line-dasharray": [1, 1] },
+      });
+      // Conflict — red warning line + warning glyph, never a directional arrow.
+      map.addLayer({
+        id: LAYER_FLOW_CONFLICT_LINES, type: "line", source: FLOW_SOURCE,
+        filter: FLOW_CONFLICT_FILTER,
+        paint: { "line-color": FLOW_CONFLICT_COLOR, "line-width": 2.5, "line-opacity": 0.9, "line-dasharray": [1, 1] },
+      });
+      map.addLayer({
+        id: LAYER_FLOW_CONFLICT_SYMBOLS, type: "symbol", source: FLOW_SOURCE,
+        filter: FLOW_CONFLICT_FILTER,
+        layout: {
+          "icon-image": FLOW_WARNING_ICON,
+          "symbol-placement": "line-center",
+          "icon-size": ["interpolate", ["linear"], ["zoom"], 14, 0, 14.01, 0.55, 16, 0.75, 19, 1.0],
+          "icon-allow-overlap": true,
+        },
+      });
+
+      map.on("click", (e: MapMouseEvent) => {
+        if (streetPickModeRef.current || streetPickConsumedRef.current || isMeasureInputActive()) return;
+        const hit = map.queryRenderedFeatures(e.point, { layers: FLOW_CLICKABLE_LAYERS });
+        if (!hit.length) return;
+        const props = hit[0].properties as FlowSegmentFeature["properties"] | undefined;
+        if (!props) return;
+        setSelectedFlowSegment({
+          type: "Feature",
+          id: String(props.segment_id),
+          geometry: (hit[0].geometry as FlowSegmentFeature["geometry"]) ?? { type: "LineString", coordinates: [] },
+          properties: props,
+        });
+      });
+      map.on("mouseenter", LAYER_FLOW_CONFIRMED_LINES, () => (map.getCanvas().style.cursor = "pointer"));
+      map.on("mouseenter", LAYER_FLOW_ESTIMATED_LINES, () => (map.getCanvas().style.cursor = "pointer"));
+      map.on("mouseenter", LAYER_FLOW_CONFLICT_LINES, () => (map.getCanvas().style.cursor = "pointer"));
+      map.on("mouseleave", LAYER_FLOW_CONFIRMED_LINES, () => (map.getCanvas().style.cursor = ""));
+      map.on("mouseleave", LAYER_FLOW_ESTIMATED_LINES, () => (map.getCanvas().style.cursor = ""));
+      map.on("mouseleave", LAYER_FLOW_CONFLICT_LINES, () => (map.getCanvas().style.cursor = ""));
 
       // A separate, top-most source keeps an attribute-table selection
       // visible even while the regular dataset source is being refreshed.
@@ -2760,6 +3296,22 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
       if (focusClearTimerRef.current !== null) window.clearTimeout(focusClearTimerRef.current);
       if (debounceRef.current !== null) window.clearTimeout(debounceRef.current);
       if (measureRafRef.current !== null) { cancelAnimationFrame(measureRafRef.current); measureRafRef.current = null; }
+      earthControllerRef.current?.dispose();
+      earthControllerRef.current = null;
+      try {
+        orbitCanvas.removeEventListener("pointerdown", handleOrbitPointerDown);
+        orbitCanvas.removeEventListener("pointermove", handleOrbitPointerMove);
+        orbitCanvas.removeEventListener("pointerup", finishOrbit);
+        orbitCanvas.removeEventListener("pointercancel", cancelOrbit);
+        orbitCanvas.removeEventListener("lostpointercapture", cancelOrbit);
+        orbitCanvas.removeEventListener("mousedown", handleOrbitMouseDown);
+        orbitCanvas.removeEventListener("auxclick", handleOrbitAuxClick);
+        orbitCanvas.removeEventListener("wheel", handleOrbitWheel);
+        window.removeEventListener("blur", onWindowBlur);
+        document.removeEventListener("visibilitychange", onVisibilityChange);
+      } catch {
+        /* canvas may already be detached */
+      }
       map.remove();
       mapRef.current = null;
     };
@@ -2802,8 +3354,24 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
           onToggleAiOverlay={toggleAiOverlay}
           streetPickMode={streetPickMode}
           onToggleStreetView={toggleStreetPickMode}
+          flowEnabled={flowEnabled}
+          onToggleFlow={() => setFlowEnabled((v) => !v)}
+          viewMode={viewMode}
+          onToggleEarthMode={toggleEarthMode}
         />
-        <MapLegend entries={legend} />
+        {flowEnabled && (
+          <FlowLegend
+            summary={flowSummary}
+            loading={flowLoading}
+            error={flowError}
+          />
+        )}
+        {selectedFlowSegment && (
+          <FlowSegmentPopup
+            segment={selectedFlowSegment}
+            onClose={() => setSelectedFlowSegment(null)}
+          />
+        )}
         <HoverTooltip hover={hover} />
         {selectedAnomaly && (
           <AnomalyAlertCard
@@ -2818,24 +3386,33 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
           zoom={mapZoom}
           minZoom={4}
           maxZoom={24}
-          onChange={(next) => mapRef.current?.setZoom(next)}
+          onChange={(next: number) => mapRef.current?.setZoom(next)}
         />
         <LookAroundCompass
           bearing={mapBearing}
           pitch={mapPitch}
           lookAroundActive={lookAroundActive}
           mapReady={mapReady}
-          onRotate={(next) => mapRef.current?.setBearing(next)}
-          onResetNorth={() => mapRef.current?.easeTo({ bearing: 0, duration: 300 })}
-          onStep={(deltaBearing) => mapRef.current?.setBearing(mapRef.current.getBearing() + deltaBearing)}
+          onRotate={(next) => earthControllerRef.current?.setBearing(next)}
+          onResetNorth={() => earthControllerRef.current?.resetNorth()}
+          onStep={(deltaBearing) => earthControllerRef.current?.nudgeBearing(deltaBearing)}
           onPitchStep={(deltaPitch) => {
-            const map = mapRef.current;
-            if (!map) return;
-            map.setPitch(Math.min(MAX_MAP_PITCH, Math.max(0, map.getPitch() + deltaPitch)));
+            earthControllerRef.current?.nudgePitch(deltaPitch);
           }}
           onToggleLookAround={toggleLookAround}
           onResetCamera={resetLookAroundCamera}
         />
+        {viewMode === "earth3d" && (
+          <div className="earth-mode-badge" data-testid="earth-mode-badge">
+            <span className="earth-mode-badge__dot" />
+            3D Earth{terrainAvailable ? "" : " · no terrain"}
+          </div>
+        )}
+        {earthNotice && (
+          <div className="earth-notice" data-testid="earth-notice" role="status">
+            {earthNotice}
+          </div>
+        )}
         {measureActive && (
           <RulerPanel
             tab={measureTab}
@@ -2871,12 +3448,10 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
           </div>
         )}
       </div>
-      {photoViewer && (
-        photoViewer.isPanorama ? (
-          <PanoramaViewer url={photoViewer.url} label={photoViewer.label} onClose={() => setPhotoViewer(null)} />
-        ) : (
-          <CylinderPanoramaViewer url={photoViewer.url} label={photoViewer.label} mode="180" onClose={() => setPhotoViewer(null)} />
-        )
+      {photoViewer?.isPanorama ? (
+        <PanoramaViewer url={photoViewer.url} label={photoViewer.label} onClose={() => setPhotoViewer(null)} />
+      ) : (
+        <PhotoViewer photo={photoViewer} onClose={() => setPhotoViewer(null)} />
       )}
       {streetViewTarget && (
         <GoogleStreetView
@@ -2957,42 +3532,21 @@ function CommandCenter({
     <aside className="command-center" data-testid="command-center">
       <div className="command-center__body">
         {datasets.length > 0 && (
-          <>
-            <DataSourceSelector
-              datasets={datasets}
-              activeDatasetIds={activeDatasetIds}
-              onSelectDataset={onSelectDataset}
-              onSelectAllDatasets={onSelectAllDatasets}
-              expandedDatasetId={expandedDatasetId}
-              onToggleDatasetSettings={onToggleDatasetSettings}
-              rasterSettingsById={rasterSettingsById}
-              onChangeRasterSettings={onChangeRasterSettings}
-              flyError={flyError}
-            />
-            {activeDatasetIds.length > 0 && (
-              <div className="command-center__section">
-                <div className="command-center__section-head">
-                  <span className="command-center__section-title">Spatial Audit</span>
-                </div>
-                <button
-                  type="button"
-                  className="command-center__audit-btn"
-                  disabled={auditRunning}
-                  onClick={() => onRunAudit(activeDatasetIds)}
-                  data-testid="run-spatial-audit"
-                  style={{ marginTop: 8 }}
-                >
-                  {auditRunning ? "Running Spatial Audit…" : "Run Spatial Audit"}
-                </button>
-                {auditError && (
-                  <div style={{ marginTop: 8, padding: "8px 10px", background: "var(--danger-muted)", borderRadius: "var(--radius-sm)", color: "var(--danger)", fontSize: 11 }}>
-                    {auditError}
-                  </div>
-                )}
-              </div>
-            )}
-        </>
-      )}
+          <DataSourceSelector
+            datasets={datasets}
+            activeDatasetIds={activeDatasetIds}
+            onSelectDataset={onSelectDataset}
+            onSelectAllDatasets={onSelectAllDatasets}
+            expandedDatasetId={expandedDatasetId}
+            onToggleDatasetSettings={onToggleDatasetSettings}
+            rasterSettingsById={rasterSettingsById}
+            onChangeRasterSettings={onChangeRasterSettings}
+            flyError={flyError}
+            onRunAudit={onRunAudit}
+            auditRunning={auditRunning}
+            auditError={auditError}
+          />
+        )}
 
         {categoryStats.length > 0 && (
           <div className="command-center__section">
@@ -3102,21 +3656,6 @@ function CommandCenter({
   );
 }
 
-/** Google Earth Pro-style "Ruler" dialog for the Line measurement tool. */
-const MEASURE_TAB_OPTIONS: Array<{ value: MeasureTab; label: string }> = [
-  { value: "line", label: "Line" },
-  { value: "path", label: "Path" },
-  { value: "polygon", label: "Polygon" },
-  { value: "circle", label: "Circle" },
-];
-
-const MEASURE_TAB_HINTS: Record<MeasureTab, string> = {
-  line: "Measure the distance between two points on the ground",
-  path: "Click to add points, right-click to finish",
-  polygon: "Click to add points, right-click to finish",
-  circle: "Measure the radius, perimeter, and area of a circle on the ground",
-};
-
 const DETECTION_MODE_LABEL: Record<Exclude<DetectionMode, null>, string> = {
   poles: "Poles",
   drains: "Drains",
@@ -3124,7 +3663,7 @@ const DETECTION_MODE_LABEL: Record<Exclude<DetectionMode, null>, string> = {
 };
 
 function MapControls({
-  basemap, onChangeBasemap, status, detectionMode, onToggleDetectionMode, aiOverlayEnabled, onToggleAiOverlay, streetPickMode, onToggleStreetView,
+  basemap, onChangeBasemap, status, detectionMode, onToggleDetectionMode, aiOverlayEnabled, onToggleAiOverlay, streetPickMode, onToggleStreetView, flowEnabled, onToggleFlow, viewMode, onToggleEarthMode,
 }: {
   basemap: Basemap;
   onChangeBasemap: (b: Basemap) => void;
@@ -3135,6 +3674,10 @@ function MapControls({
   onToggleAiOverlay: () => void;
   streetPickMode: boolean;
   onToggleStreetView: () => void;
+  flowEnabled: boolean;
+  onToggleFlow: () => void;
+  viewMode: MapViewMode;
+  onToggleEarthMode: () => void;
 }) {
   const [menuOpen, setMenuOpen] = useState(false);
   const [menuPos, setMenuPos] = useState<{ top: number; left: number } | null>(null);
@@ -3188,6 +3731,20 @@ function MapControls({
               <path d="M2 12h20M12 2a15.3 15.3 0 014 10 15.3 15.3 0 01-4 10 15.3 15.3 0 01-4-10 15.3 15.3 0 014-10z" />
             </svg>
             Satellite
+          </button>
+          <button
+            type="button"
+            className={`map-controls__btn map-controls__btn--earth${viewMode === "earth3d" ? " map-controls__btn--active" : ""}`}
+            onClick={onToggleEarthMode}
+            data-testid="earth-mode-toggle"
+            title="3D Earth: globe projection with terrain and atmosphere. Orbit with middle/Shift drag, scroll to dolly."
+            aria-pressed={viewMode === "earth3d"}
+          >
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" width="14" height="14" style={{ marginRight: 4, verticalAlign: -2 }}>
+              <circle cx="12" cy="12" r="9" />
+              <path d="M3 12h18M12 3a15.3 15.3 0 014 9 15.3 15.3 0 01-4 9 15.3 15.3 0 01-4-9 15.3 15.3 0 014-9z" />
+            </svg>
+            3D
           </button>
           <button
             className={`map-controls__btn${basemap === "off" ? " map-controls__btn--active" : ""}`}
@@ -3263,6 +3820,21 @@ function MapControls({
               <path d="M8 10c1.2-1.2 2.5-1.8 4-1.8s2.8.6 4 1.8M9.2 10.2 8 16m6.8-5.8L16 16M9.3 13h5.4M10.5 16v5m3-5v5" />
             </svg>
             Street View
+          </button>
+        </div>
+        <div className="map-controls__group" data-testid="flow-direction-control">
+          <button
+            type="button"
+            className={`map-controls__btn${flowEnabled ? " map-controls__btn--active" : ""}`}
+            onClick={onToggleFlow}
+            data-testid="flow-direction-toggle"
+            title="Estimated Wastewater Flow Direction — inferred from manhole attributes and spatial relationships, not a verified pipe network"
+            aria-pressed={flowEnabled}
+          >
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="14" height="14" style={{ marginRight: 4, verticalAlign: -2 }}>
+              <path d="M5 12h11m0 0-4-4m4 4-4 4" strokeLinecap="round" strokeLinejoin="round" />
+            </svg>
+            Estimated Flow Direction
           </button>
         </div>
       </div>
@@ -3363,6 +3935,64 @@ function HoverTooltip({ hover }: { hover: HoverInfo | null }) {
   );
 }
 
+function PhotoViewer({ photo, onClose }: { photo: { url: string; label: string } | null; onClose: () => void }) {
+  // Keep the latest close handler without forcing the keydown effect to
+  // re-subscribe on every parent render (the parent passes a fresh inline
+  // `onClose` each time). This lets the effect depend only on `photo`.
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
+
+  // Close via Escape using the exact same handler as the Close button below
+  // the image. The listener is registered only while the preview is open and
+  // is fully removed on close/unmount, so it can never accumulate or fire when
+  // the preview is hidden. stopPropagation prevents the global MapCanvas Escape
+  // handler (measurement tool / Look Around) from also reacting.
+  useEffect(() => {
+    if (!photo) return;
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Escape" || event.repeat) return;
+      event.preventDefault();
+      event.stopPropagation();
+      onCloseRef.current();
+    };
+    document.addEventListener("keydown", handleKeyDown);
+    return () => document.removeEventListener("keydown", handleKeyDown);
+  }, [photo]);
+
+  if (!photo) return null;
+  return (
+    <div
+      style={{
+        position: "fixed", inset: 0, zIndex: 1000, background: "rgba(0,0,0,0.82)",
+        display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 16,
+      }}
+      onClick={onClose}
+      data-testid="photo-viewer"
+    >
+      <img
+        src={photo.url}
+        alt={photo.label}
+        style={{ maxWidth: "90vw", maxHeight: "82vh", borderRadius: "var(--radius-md)", boxShadow: "0 20px 60px rgba(0,0,0,0.5)" }}
+        onClick={(e) => e.stopPropagation()}
+      />
+      <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+        <span style={{ color: "#fff", fontSize: 13, fontWeight: 600 }}>{photo.label}</span>
+        <button
+          type="button"
+          onClick={onClose}
+          data-testid="photo-viewer-close"
+          style={{
+            background: "rgba(255,255,255,0.15)", border: "1px solid rgba(255,255,255,0.3)", color: "#fff",
+            borderRadius: "var(--radius-sm)", padding: "4px 12px", fontSize: 12, fontWeight: 600, cursor: "pointer",
+          }}
+        >
+          Close ✕
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function formatDms(value: number, positiveSuffix: string, negativeSuffix: string): string {
   const suffix = value >= 0 ? positiveSuffix : negativeSuffix;
   const abs = Math.abs(value);
@@ -3373,133 +4003,144 @@ function formatDms(value: number, positiveSuffix: string, negativeSuffix: string
   return `${degrees}°${String(minutes).padStart(2, "0")}'${seconds.toFixed(2).padStart(5, "0")}" ${suffix}`;
 }
 
-/** Bottom-right status strip: live cursor coordinates plus a fixed-size
- * scale/distance chip. Both boxes share one positioned wrapper so they can
- * never drift apart or overlap independently — the distance box's width
- * never changes with its text ("200 m" vs "2 km"), only the coordinate
- * box's content changes size (as the cursor moves over water/edge cases
- * that shorten the DMS string), which is why the distance box sits fixed
- * on the wrapper's right edge rather than being laid out purely by flex
- * order against a variable-width neighbour. */
-function MapStatusBar({ lngLat, scaleLabel }: { lngLat: [number, number] | null; scaleLabel: string }) {
-  if (!lngLat && !scaleLabel) return null;
-  return (
-    <div className="map__status-bar" data-testid="map-status-bar">
-      {lngLat && (
-        <div className="map__status-box map__coord-readout" data-testid="map-coord-readout">
-          {formatDms(lngLat[1], "N", "S")}&nbsp;&nbsp;{formatDms(lngLat[0], "E", "W")}
-        </div>
-      )}
-      {scaleLabel && (
-        <div className="map__status-box map__scale-readout" data-testid="map-scale-readout">
-          {scaleLabel}
-        </div>
-      )}
-    </div>
-  );
-}
-
-/** Google Earth Pro-style zoom control, laid out as a horizontal bar: a "−"
- * button, a draggable slider track, and a "+" button. Purely presentational —
- * the map's zoom is the single source of truth (passed in via `zoom`), and
- * every interaction (click ends, drag, track click) just calls `onChange`;
- * MapCanvas is the one that actually calls `map.setZoom()`. */
-function ZoomSlider({
-  zoom,
-  minZoom,
-  maxZoom,
-  onChange,
+/** Compact legend for the Estimated Flow Direction overlay — shown only
+ * while the layer is on (Phase 19). Always carries the full disclaimer so
+ * a closed arrow is never read as "verified sewer network". Collapsible
+ * so it doesn't permanently block map area on smaller viewports. */
+function FlowLegend({
+  summary, loading, error,
 }: {
-  zoom: number;
-  minZoom: number;
-  maxZoom: number;
-  onChange: (zoom: number) => void;
+  summary: FlowAnalyticsSummary | null;
+  loading: boolean;
+  error: string | null;
 }) {
-  const trackRef = useRef<HTMLDivElement | null>(null);
-  const range = maxZoom - minZoom;
-  const fraction = range > 0 ? Math.min(1, Math.max(0, (zoom - minZoom) / range)) : 0;
+  const [collapsed, setCollapsed] = useState(false);
 
-  const zoomFromClientX = (clientX: number) => {
-    const rect = trackRef.current?.getBoundingClientRect();
-    if (!rect || rect.width === 0) return null;
-    const t = Math.min(1, Math.max(0, (clientX - rect.left) / rect.width));
-    return minZoom + t * range;
-  };
-
-  const handleTrackPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
-    const next = zoomFromClientX(e.clientX);
-    if (next !== null) onChange(next);
-    e.currentTarget.setPointerCapture(e.pointerId);
-    e.preventDefault();
-  };
-  const handleTrackPointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
-    if (!e.currentTarget.hasPointerCapture(e.pointerId)) return;
-    const next = zoomFromClientX(e.clientX);
-    if (next !== null) onChange(next);
-  };
-  const handleTrackPointerUp = (e: React.PointerEvent<HTMLDivElement>) => {
-    if (e.currentTarget.hasPointerCapture(e.pointerId)) {
-      e.currentTarget.releasePointerCapture(e.pointerId);
-    }
-  };
-
-  return (
-    <div className="map-zoom-slider" data-testid="map-zoom-slider">
-      <button
-        type="button"
-        className="map-zoom-slider__btn"
-        onClick={() => onChange(Math.max(minZoom, zoom - 1))}
-        aria-label="Zoom out"
-        data-testid="map-zoom-out"
-      >
-        −
-      </button>
-      <div
-        ref={trackRef}
-        className="map-zoom-slider__track"
-        onPointerDown={handleTrackPointerDown}
-        onPointerMove={handleTrackPointerMove}
-        onPointerUp={handleTrackPointerUp}
-        onPointerCancel={handleTrackPointerUp}
-        role="slider"
-        aria-label="Map zoom"
-        aria-valuemin={minZoom}
-        aria-valuemax={maxZoom}
-        aria-valuenow={Math.round(zoom * 10) / 10}
-      >
-        <div className="map-zoom-slider__fill" style={{ width: `${fraction * 100}%` }} />
-        <div className="map-zoom-slider__thumb" style={{ left: `${fraction * 100}%` }} />
+  if (collapsed) {
+    return (
+      <div className="map__legend" style={{ bottom: 190, padding: "6px 10px" }} data-testid="flow-legend">
+        <button
+          type="button"
+          onClick={() => setCollapsed(false)}
+          style={{ background: "none", border: "none", color: "inherit", cursor: "pointer", fontSize: 11, fontWeight: 600, padding: 0, display: "flex", alignItems: "center", gap: 6 }}
+          aria-label="Expand flow legend"
+        >
+          <span aria-hidden>▸</span> Flow Direction — Estimated Network
+        </button>
       </div>
-      <button
-        type="button"
-        className="map-zoom-slider__btn"
-        onClick={() => onChange(Math.min(maxZoom, zoom + 1))}
-        aria-label="Zoom in"
-        data-testid="map-zoom-in"
-      >
-        +
-      </button>
-    </div>
-  );
-}
+    );
+  }
 
-function MapLegend({ entries }: { entries: LegendEntry[] }) {
-  if (entries.length === 0) return null;
   return (
-    <div className="map__legend" data-testid="map-legend">
-      <div className="map__legend-title">Loaded Categories</div>
-      {entries.map((e) => (
-        <div className="map__legend-row" key={e.category}>
-          <span className="map__legend-swatch" style={{ background: e.color }} />
-          <span className="map__legend-label">{e.category}</span>
-          <span className="map__legend-count">{e.count}</span>
+    <div className="map__legend" style={{ bottom: 190 }} data-testid="flow-legend">
+      <div className="map__legend-title" style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+        <span>Flow Direction — Estimated Network</span>
+        <button
+          type="button"
+          onClick={() => setCollapsed(true)}
+          style={{ background: "none", border: "none", color: "inherit", cursor: "pointer", fontSize: 12, padding: 0, lineHeight: 1 }}
+          aria-label="Collapse flow legend"
+          title="Collapse"
+        >
+          ▾
+        </button>
+      </div>
+      <div style={{ fontSize: 11, lineHeight: 1.5, display: "flex", flexDirection: "column", gap: 4, margin: "4px 0 8px" }}>
+        <span><span style={{ color: FLOW_CONFIRMED_COLOR }}>▶</span> Direction supported by direct levels</span>
+        <span><span style={{ color: FLOW_DERIVED_COLOR }}>▷</span> Derived from top level and depth</span>
+        <span><span style={{ color: FLOW_TREND_COLOR }}>▷</span> Estimated from neighbouring trend</span>
+        <span><span style={{ color: FLOW_UNKNOWN_COLOR }}>—</span> Direction unknown</span>
+        <span><span style={{ color: FLOW_CONFLICT_COLOR }}>⚠</span> Data conflict</span>
+      </div>
+      {loading && <div style={{ fontSize: 11, opacity: 0.75 }}>Loading estimated flow directions…</div>}
+      {error && !loading && <div style={{ fontSize: 11, color: "var(--danger, #dc2626)" }}>{error}</div>}
+      {summary && !loading && (
+        <div style={{ fontSize: 11, lineHeight: 1.5, display: "grid", gridTemplateColumns: "1fr auto", gap: "2px 8px", marginBottom: 8 }}>
+          <span>Manholes</span><span>{summary.total_manholes}</span>
+          <span>Candidate connections</span><span>{summary.candidate_connections}</span>
+          <span>Direct-level direction</span><span>{summary.confirmed_segments}</span>
+          <span>Derived</span><span>{summary.derived_segments}</span>
+          <span>Trend-estimated</span><span>{summary.estimated_trend_segments}</span>
+          <span>Unknown</span><span>{summary.unknown_segments}</span>
+          <span>Conflict</span><span>{summary.conflict_segments}</span>
         </div>
-      ))}
+      )}
+      <div style={{ fontSize: 10.5, opacity: 0.75, lineHeight: 1.4, marginBottom: 4 }}>
+        Connections are inferred from manhole location and road name.
+      </div>
+      <div style={{ fontSize: 10.5, opacity: 0.65, lineHeight: 1.4 }} title={CLOSED_ARROW_MEANING}>
+        {FLOW_DISCLAIMER}
+      </div>
     </div>
   );
 }
 
+/** Segment detail popup opened by clicking a flow line/arrow (Phase 20). */
+function FlowSegmentPopup({ segment, onClose }: { segment: FlowSegmentFeature; onClose: () => void }) {
+  const p = segment.properties;
+  const directionLabel = p.direction_status_label ?? DIRECTION_STATUS_LABEL[p.direction_status] ?? p.direction_status;
+  const isNoDirection = p.direction_status === "unknown" || p.direction_status === "flat_or_uncertain";
+  const isConflict = p.direction_status === "conflict";
+  const headerLabel = p.direction_status === "confirmed"
+    ? "Direct-Level"
+    : isConflict
+    ? "Conflict"
+    : isNoDirection
+    ? "Unknown"
+    : "Estimated";
+  return (
+    <div className="map__tooltip" style={{ right: 16, top: 16, left: "auto", position: "absolute", maxWidth: 320 }} data-testid="flow-segment-popup">
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+        <strong>{headerLabel} Flow Segment</strong>
+        <button onClick={onClose} aria-label="Close" style={{ background: "none", border: "none", color: "inherit", cursor: "pointer", fontSize: 16, lineHeight: 1 }}>×</button>
+      </div>
+      <div style={{ fontSize: 12, lineHeight: 1.6 }}>
+        <div>Upstream Manhole: FID {formatFlowValue(p.upstream_manhole)}</div>
+        <div>Downstream Manhole: FID {formatFlowValue(p.downstream_manhole)}</div>
+        <div>Road: {formatFlowValue(p.road_name)}</div>
+        <div>Length: {formatFlowValue(p.length_m, " m")}</div>
+        {!isConflict && !isNoDirection && (
+          <>
+            <div>Upstream Invert: {formatFlowValue(p.upstream_invert_m, " m")}</div>
+            <div>Downstream Invert: {formatFlowValue(p.downstream_invert_m, " m")}</div>
+            <div>Elevation Difference: {formatFlowValue(p.elevation_difference_m, " m")}</div>
+            <div>Slope: {formatFlowValue(p.slope_percent, "%")}</div>
+          </>
+        )}
+        <div style={{ marginTop: 6 }}>Direction: {directionLabel}</div>
+        <div>Direction Evidence: {p.direction_evidence ?? "Insufficient elevation information"}</div>
+        <div>Connection: Spatially inferred from road name and location</div>
+        <div>Arrow Type: {p.arrow_style === "closed" ? "Closed" : p.arrow_style === "open" ? "Open" : "None"}</div>
+        {!isConflict && !isNoDirection ? (
+          <div>Confidence: High for elevation-based direction; unverified for physical connectivity</div>
+        ) : isConflict ? (
+          <div>Confidence: Not applicable — conflicting elevation data</div>
+        ) : (
+          <div>Confidence: Not applicable — insufficient data</div>
+        )}
+        {p.data_warning && (
+          <div style={{ marginTop: 6, color: "var(--warn, #f59e0b)" }}>⚠ {p.data_warning}</div>
+        )}
+        <div style={{ marginTop: 8, fontSize: 10.5, opacity: 0.7 }}>{p.disclaimer || FLOW_DISCLAIMER}</div>
+      </div>
+    </div>
+  );
+}
 
+/** Google Earth Pro-style "Ruler" dialog for the Line measurement tool. */
+const MEASURE_TAB_OPTIONS: Array<{ value: MeasureTab; label: string }> = [
+  { value: "line", label: "Line" },
+  { value: "path", label: "Path" },
+  { value: "polygon", label: "Polygon" },
+  { value: "circle", label: "Circle" },
+];
+
+const MEASURE_TAB_HINTS: Record<MeasureTab, string> = {
+  line: "Measure the distance between two points on the ground",
+  path: "Click to add points, right-click to finish",
+  polygon: "Click to add points, right-click to finish",
+  circle: "Measure the radius, perimeter, and area of a circle on the ground",
+};
 
 function RulerPanel({
   tab, onChangeTab,
@@ -3773,6 +4414,116 @@ function RulerPanel({
           </button>
         </div>
       </div>
+    </div>
+  );
+}
+
+/** Bottom-right status strip: live cursor coordinates plus a fixed-size
+ * scale/distance chip. Both boxes share one positioned wrapper so they can
+ * never drift apart or overlap independently — the distance box's width
+ * never changes with its text ("200 m" vs "2 km"), only the coordinate
+ * box's content changes size (as the cursor moves over water/edge cases
+ * that shorten the DMS string), which is why the distance box sits fixed
+ * on the wrapper's right edge rather than being laid out purely by flex
+ * order against a variable-width neighbour. */
+function MapStatusBar({ lngLat, scaleLabel }: { lngLat: [number, number] | null; scaleLabel: string }) {
+  if (!lngLat && !scaleLabel) return null;
+  return (
+    <div className="map__status-bar" data-testid="map-status-bar">
+      {lngLat && (
+        <div className="map__status-box map__coord-readout" data-testid="map-coord-readout">
+          {formatDms(lngLat[1], "N", "S")}&nbsp;&nbsp;{formatDms(lngLat[0], "E", "W")}
+        </div>
+      )}
+      {scaleLabel && (
+        <div className="map__status-box map__scale-readout" data-testid="map-scale-readout">
+          {scaleLabel}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** Google Earth Pro-style zoom control, laid out as a horizontal bar: a "−"
+ * button, a draggable slider track, and a "+" button. Purely presentational —
+ * the map's zoom is the single source of truth (passed in via `zoom`), and
+ * every interaction (click ends, drag, track click) just calls `onChange`;
+ * MapCanvas is the one that actually calls `map.setZoom()`. */
+function ZoomSlider({
+  zoom,
+  minZoom,
+  maxZoom,
+  onChange,
+}: {
+  zoom: number;
+  minZoom: number;
+  maxZoom: number;
+  onChange: (zoom: number) => void;
+}) {
+  const trackRef = useRef<HTMLDivElement | null>(null);
+  const range = maxZoom - minZoom;
+  const fraction = range > 0 ? Math.min(1, Math.max(0, (zoom - minZoom) / range)) : 0;
+
+  const zoomFromClientX = (clientX: number) => {
+    const rect = trackRef.current?.getBoundingClientRect();
+    if (!rect || rect.width === 0) return null;
+    const t = Math.min(1, Math.max(0, (clientX - rect.left) / rect.width));
+    return minZoom + t * range;
+  };
+
+  const handleTrackPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    const next = zoomFromClientX(e.clientX);
+    if (next !== null) onChange(next);
+    e.currentTarget.setPointerCapture(e.pointerId);
+    e.preventDefault();
+  };
+  const handleTrackPointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (!e.currentTarget.hasPointerCapture(e.pointerId)) return;
+    const next = zoomFromClientX(e.clientX);
+    if (next !== null) onChange(next);
+  };
+  const handleTrackPointerUp = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (e.currentTarget.hasPointerCapture(e.pointerId)) {
+      e.currentTarget.releasePointerCapture(e.pointerId);
+    }
+  };
+
+  return (
+    <div className="map-zoom-slider" data-testid="map-zoom-slider">
+      <button
+        type="button"
+        className="map-zoom-slider__btn"
+        onClick={() => onChange(Math.max(minZoom, zoom - 1))}
+        aria-label="Zoom out"
+        data-testid="map-zoom-out"
+      >
+        −
+      </button>
+      <div
+        ref={trackRef}
+        className="map-zoom-slider__track"
+        onPointerDown={handleTrackPointerDown}
+        onPointerMove={handleTrackPointerMove}
+        onPointerUp={handleTrackPointerUp}
+        onPointerCancel={handleTrackPointerUp}
+        role="slider"
+        aria-label="Map zoom"
+        aria-valuemin={minZoom}
+        aria-valuemax={maxZoom}
+        aria-valuenow={Math.round(zoom * 10) / 10}
+      >
+        <div className="map-zoom-slider__fill" style={{ width: `${fraction * 100}%` }} />
+        <div className="map-zoom-slider__thumb" style={{ left: `${fraction * 100}%` }} />
+      </div>
+      <button
+        type="button"
+        className="map-zoom-slider__btn"
+        onClick={() => onChange(Math.min(maxZoom, zoom + 1))}
+        aria-label="Zoom in"
+        data-testid="map-zoom-in"
+      >
+        +
+      </button>
     </div>
   );
 }

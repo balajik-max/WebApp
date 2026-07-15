@@ -4,6 +4,8 @@ import { apiDelete, apiDownload, apiGet, apiPatch, apiPost } from "./api";
 import type { FeatureCollectionResponse } from "./types";
 
 export type AnalyticsSeverityBucket = "low" | "medium" | "high";
+export type SeverityVisualizationType = "bar" | "pie" | "treemap";
+export type ManholeReadinessStatus = "all" | "available" | "missing";
 export type ManholeReadinessFieldKey =
   | "depth"
   | "bottom_level"
@@ -16,6 +18,9 @@ export type ManholeReadinessFieldKey =
 export interface AnalyticsCrossFilters {
   wards?: string[];
   severityBuckets?: AnalyticsSeverityBucket[];
+  readinessField?: ManholeReadinessFieldKey | null;
+  readinessStatus?: ManholeReadinessStatus | null;
+  /** Backward-compatible missing-only filter. */
   missingField?: ManholeReadinessFieldKey | null;
 }
 
@@ -80,12 +85,27 @@ export interface DatasetRow {
   processing_error: string | null;
   dataset_metadata: {
     raster_overlay?: { image_key: string; bounds: [number, number, number, number] };
-    model_assets?: {
-      obj_key: string;
-      obj_filename: string;
-      mtl_key?: string;
-      mtl_filename?: string;
-      textures: Record<string, string>;
+    model_3d?: {
+      format: "obj";
+      source_crs: string;
+      origin: [number, number, number] | null;
+      georeference_method: string;
+      model_files: string[];
+      vertex_count: number;
+      face_count: number;
+      sampled_vertex_count: number;
+      texture_count: number;
+      local_bounds: Record<string, number>;
+      wgs84_bounds: [number, number, number, number];
+      models: Array<{ obj_path: string; mtl_paths: string[] }>;
+      assets: string[];
+      render_anchor: {
+        longitude: number;
+        latitude: number;
+        altitude: number;
+        source_altitude: number;
+        local: [number, number, number];
+      } | null;
     };
     [key: string]: unknown;
   };
@@ -170,6 +190,9 @@ export interface AnalyticsFeatureRow {
   severity: number;
   geometry_type: string;
   created_at: string;
+  readiness_field_label?: string | null;
+  readiness_status?: "available" | "missing" | null;
+  readiness_value?: string | null;
 }
 
 export interface AnalyticsFeaturePage {
@@ -189,7 +212,12 @@ function analyticsScopeParams(
   for (const category of categories) params.append("category", category);
   for (const ward of filters.wards ?? []) params.append("ward", ward);
   for (const bucket of filters.severityBuckets ?? []) params.append("severity_bucket", bucket);
-  if (filters.missingField) params.set("missing_field", filters.missingField);
+  if (filters.readinessField) {
+    params.set("readiness_field", filters.readinessField);
+    params.set("readiness_status", filters.readinessStatus ?? "all");
+  } else if (filters.missingField) {
+    params.set("missing_field", filters.missingField);
+  }
   return params;
 }
 
@@ -201,10 +229,17 @@ export function fetchAnalyticsFeatures(
 ) {
   const params = analyticsScopeParams(datasetIds, categories, filters);
   params.set("limit", "5000");
-  if (filters.missingField) {
+  const readinessField = filters.readinessField ?? filters.missingField ?? null;
+  if (readinessField) {
+    const readinessStatus = filters.readinessField
+      ? filters.readinessStatus ?? "all"
+      : "missing";
     params.delete("category");
+    params.delete("readiness_field");
+    params.delete("readiness_status");
     params.delete("missing_field");
-    params.set("field", filters.missingField);
+    params.set("field", readinessField);
+    params.set("status", readinessStatus);
     return apiGet<FeatureCollectionResponse>(
       `/api/v1/analytics/manhole-readiness/features?${params.toString()}`,
       signal

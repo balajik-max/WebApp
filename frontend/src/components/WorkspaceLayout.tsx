@@ -385,6 +385,96 @@ export function WorkspaceLayout() {
     setMeasureToggle(() => api.toggle);
   }, []);
 
+  // Global "drag a file onto Map/Analytics → redirect to Datasets" —
+  // listens at the window level (not per-page) so it survives the
+  // Map/Analytics/Datasets <Outlet> swap: WorkspaceLayout itself never
+  // unmounts between tabs, only its child route does. Only ever reacts to
+  // an actual file drag (dataTransfer.types includes "Files"), never to
+  // ordinary mouse drags (map pan, chart drag, text selection, etc.),
+  // which don't carry that type at all.
+  const locationRef = useRef(location);
+  useEffect(() => { locationRef.current = location; }, [location]);
+
+  useEffect(() => {
+    // A drag can fire dragenter/dragleave repeatedly as the pointer moves
+    // across nested child elements (map canvas, SVG icons, chart nodes...).
+    // Tracking enter/leave depth (rather than a plain boolean) is the
+    // standard fix so those nested transitions don't flicker the state or,
+    // worse, fire more than one navigation for a single continuous drag.
+    let dragDepth = 0;
+    let hasRedirectedForCurrentDrag = false;
+
+    const isFileDrag = (event: DragEvent) =>
+      Array.from(event.dataTransfer?.types ?? []).includes("Files");
+
+    const resetDragState = () => {
+      dragDepth = 0;
+      hasRedirectedForCurrentDrag = false;
+    };
+
+    const handleDragEnter = (event: DragEvent) => {
+      if (!isFileDrag(event)) return;
+      dragDepth += 1;
+      if (hasRedirectedForCurrentDrag) return;
+
+      const pathname = locationRef.current.pathname;
+      const shouldRedirectForUpload = pathname === "/map" || pathname === "/analytics";
+      if (!shouldRedirectForUpload) return;
+
+      hasRedirectedForCurrentDrag = true;
+      navigate("/datasets", { state: { incomingFileDrag: true, sourceRoute: pathname } });
+    };
+
+    const handleDragOver = (event: DragEvent) => {
+      // Prevent the browser's default "navigate to/open the local file"
+      // behavior for any file drag anywhere in the app — required for
+      // drop to work at all, and for Test J (dropping never opens the file).
+      if (isFileDrag(event)) event.preventDefault();
+    };
+
+    const handleDragLeave = (event: DragEvent) => {
+      if (!isFileDrag(event)) return;
+      dragDepth = Math.max(0, dragDepth - 1);
+      if (dragDepth === 0) hasRedirectedForCurrentDrag = false;
+    };
+
+    const handleDrop = (event: DragEvent) => {
+      if (!isFileDrag(event)) return;
+      // Only preventDefault for the fallback case where the drop lands
+      // somewhere the Datasets dropzone doesn't already own (e.g. it
+      // still landed on Map/Analytics because the OS drag ended before
+      // the SPA route swap completed) — stops the browser from opening
+      // the file. The Datasets dropzone's own onDrop calls
+      // stopPropagation implicitly by preventDefault + handling it, so
+      // this only ever fires for drops the dropzone didn't already claim.
+      event.preventDefault();
+      resetDragState();
+    };
+
+    const handleWindowDragEnd = () => resetDragState();
+
+    window.addEventListener("dragenter", handleDragEnter);
+    window.addEventListener("dragover", handleDragOver);
+    window.addEventListener("dragleave", handleDragLeave);
+    window.addEventListener("drop", handleDrop);
+    // Fires when a drag that started inside the browser ends without a
+    // drop (e.g. Escape, or releasing outside the window) — resets state
+    // the same as a leave/drop would.
+    window.addEventListener("dragend", handleWindowDragEnd);
+
+    return () => {
+      window.removeEventListener("dragenter", handleDragEnter);
+      window.removeEventListener("dragover", handleDragOver);
+      window.removeEventListener("dragleave", handleDragLeave);
+      window.removeEventListener("drop", handleDrop);
+      window.removeEventListener("dragend", handleWindowDragEnd);
+    };
+    // Intentionally mounted once — reads the current route via
+    // locationRef.current rather than depending on `location`/`navigate`,
+    // so tab switches never tear down and re-add these listeners.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const showFilters = location.pathname.startsWith("/map");
 
   // Reset only appears once Apply has actually been clicked — before that

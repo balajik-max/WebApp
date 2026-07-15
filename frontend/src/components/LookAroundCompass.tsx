@@ -5,11 +5,10 @@ import { useCallback, useEffect, useRef, useState, type KeyboardEvent as ReactKe
  * necessarily 0, so a future change to the app's default pitch only needs
  * updating here. */
 export const DEFAULT_MAP_PITCH = 0;
-/** MapLibre allows up to ~85deg before the camera approaches the horizon
- * and tiles/raster overlays start showing visible artifacts (the app's
- * raster orthophotos were never authored with an oblique view in mind) —
- * capped well short of that for a look that stays legible. */
-export const MAX_MAP_PITCH = 65;
+/** Hard ceiling for the tilt/look-up control. Matches the globe projection
+ *  ceiling (MAX_TILT_DEG) so the 3D Earth view can tilt fully toward the
+ *  horizon. In Standard mode the map's own maxPitch (65) clamps further. */
+export const MAX_MAP_PITCH = 85;
 
 const ROTATE_STEP_DEG = 12;
 const PITCH_STEP_DEG = 8;

@@ -1,5 +1,11 @@
 import { MercatorCoordinate, type CustomLayerInterface, type Map as MLMap } from "maplibre-gl";
 import type { mat4 } from "gl-matrix";
+
+// MapLibre GL v5 custom layer render method input
+interface CustomRenderMethodInput {
+  projectionMatrix?: mat4;
+  farZ?: number;
+}
 import * as THREE from "three";
 import { OBJLoader } from "three/examples/jsm/loaders/OBJLoader.js";
 import { loadObjMaterials } from "../lib/loadObjMaterials";
@@ -150,8 +156,13 @@ export class Obj3DMapLayer implements CustomLayerInterface {
     this.renderer.autoClear = false;
   }
 
-  render(_gl: WebGLRenderingContext | WebGL2RenderingContext, matrix: mat4): void {
+  render(_gl: WebGLRenderingContext | WebGL2RenderingContext, options: CustomRenderMethodInput): void {
     if (!this.renderer || !this.scene || !this.camera || !this.transform) return;
+    
+    // Extract projection matrix from options (MapLibre GL v5 API)
+    const matrix = options.projectionMatrix;
+    if (!matrix) return;
+    
     const t = this.transform;
     const m = new THREE.Matrix4().fromArray(Array.from(matrix));
     const l = new THREE.Matrix4()

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { DatasetRow } from "../lib/workflow";
 import {
   COLOR_MODE_OPTIONS,
@@ -6,6 +6,20 @@ import {
   resolveRasterSettings,
   type RasterDisplaySettings,
 } from "./MapCanvas";
+
+// A dataset exposes raster display controls (Color Type / Edge Clarity) only
+// when it is a ready GeoTIFF that carries a pre-baked raster_overlay.
+function supportsDisplaySettings(dataset: DatasetRow): boolean {
+  return (
+    dataset.status === "ready" &&
+    dataset.file_type === "geotiff" &&
+    Boolean(dataset.dataset_metadata?.raster_overlay)
+  );
+}
+
+// Keep the Data Source popover mounted briefly after it closes so its
+// collapse animation can finish instead of vanishing instantly.
+const DSS_PANEL_TRANSITION_MS = 220;
 
 interface DataSourceSelectorProps {
   datasets: DatasetRow[];
@@ -17,9 +31,20 @@ interface DataSourceSelectorProps {
   rasterSettingsById: Record<string, RasterDisplaySettings>;
   onChangeRasterSettings: (datasetId: string, patch: Partial<RasterDisplaySettings>) => void;
   flyError: string | null;
+  onRunAudit: (datasetIds: string[]) => void;
+  auditRunning: boolean;
+  auditError: string | null;
 }
 
-function DatasetTypeIcon({ fileType }: { fileType: string }) {
+function DatasetTypeIcon({ fileType, isModel3d = false }: { fileType: string; isModel3d?: boolean }) {
+  if (isModel3d) {
+    return (
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+        <path d="M12 2 3.5 6.5v11L12 22l8.5-4.5v-11L12 2Z" />
+        <path d="m3.5 6.5 8.5 5 8.5-5M12 11.5V22" />
+      </svg>
+    );
+  }
   const isRaster = fileType === "geotiff" || fileType.toLowerCase().includes("image");
   if (isRaster) {
     return (
@@ -49,11 +74,24 @@ export function DataSourceSelector({
   rasterSettingsById,
   onChangeRasterSettings,
   flyError,
+  onRunAudit,
+  auditRunning,
+  auditError,
 }: DataSourceSelectorProps) {
   const [open, setOpen] = useState(false);
+  // Stays true for DSS_PANEL_TRANSITION_MS after `open` goes false, so the
+  // panel remains in the DOM long enough to animate closed instead of
+  // vanishing instantly.
+  const [panelMounted, setPanelMounted] = useState(false);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
-  const [coords, setCoords] = useState<{ top: number; left: number; width: number } | null>(null);
+  const closeTimeoutRef = useRef<number | null>(null);
+
+  // Display-settings cards are rendered for EVERY selected dataset that
+  // supports raster display controls (GeoTIFF with a raster_overlay), not
+  // just a single focused one. `expandedSettingsIds` tracks which of those
+  // collapsible cards are currently open.
+  const [expandedSettingsIds, setExpandedSettingsIds] = useState<Set<string>>(new Set());
 
   const selectedCount = activeDatasetIds.length;
   const allSelected = datasets.length > 0 && selectedCount === datasets.length;
@@ -66,21 +104,29 @@ export function DataSourceSelector({
     else if (selectedCount > 1) subheading = `${selectedCount} data sources selected`;
   }
 
-  const updatePosition = useCallback(() => {
-    const el = triggerRef.current;
-    if (!el) return;
-    const rect = el.getBoundingClientRect();
-    const panelHeight = panelRef.current?.offsetHeight ?? 360;
-    let top = rect.bottom + 6;
-    if (top + panelHeight > window.innerHeight - 8) {
-      top = Math.max(8, rect.top - panelHeight - 6);
+  useEffect(() => {
+    if (open) {
+      if (closeTimeoutRef.current !== null) {
+        window.clearTimeout(closeTimeoutRef.current);
+        closeTimeoutRef.current = null;
+      }
+      setPanelMounted(true);
+      return;
     }
-    setCoords({ top, left: rect.left, width: rect.width });
-  }, []);
+    closeTimeoutRef.current = window.setTimeout(() => {
+      setPanelMounted(false);
+      closeTimeoutRef.current = null;
+    }, DSS_PANEL_TRANSITION_MS);
+    return () => {
+      if (closeTimeoutRef.current !== null) {
+        window.clearTimeout(closeTimeoutRef.current);
+        closeTimeoutRef.current = null;
+      }
+    };
+  }, [open]);
 
   useEffect(() => {
     if (!open) return;
-    updatePosition();
 
     const handlePointerDown = (event: MouseEvent) => {
       const target = event.target as Node;
@@ -93,29 +139,61 @@ export function DataSourceSelector({
       setOpen(false);
       triggerRef.current?.focus();
     };
-    const handleScroll = (event: Event) => {
-      if (panelRef.current?.contains(event.target as Node)) return;
-      setOpen(false);
-    };
-    const handleResize = () => setOpen(false);
 
     document.addEventListener("mousedown", handlePointerDown);
     document.addEventListener("keydown", handleKeyDown);
-    window.addEventListener("scroll", handleScroll, true);
-    window.addEventListener("resize", handleResize);
     return () => {
       document.removeEventListener("mousedown", handlePointerDown);
       document.removeEventListener("keydown", handleKeyDown);
-      window.removeEventListener("scroll", handleScroll, true);
-      window.removeEventListener("resize", handleResize);
     };
-  }, [open, updatePosition]);
+  }, [open]);
 
-  // Recompute placement once the panel is measured so it can flip upward when
-  // there is not enough room below the trigger.
-  useLayoutEffect(() => {
-    if (open) updatePosition();
-  }, [open, updatePosition]);
+  const eligibleSettingsDatasets = useMemo(
+    () => datasets.filter((d) => activeDatasetIds.includes(d.id) && supportsDisplaySettings(d)),
+    [datasets, activeDatasetIds]
+  );
+
+  const toggleSettingsExpanded = useCallback((datasetId: string) => {
+    setExpandedSettingsIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(datasetId)) next.delete(datasetId);
+      else next.add(datasetId);
+      return next;
+    });
+  }, []);
+
+  // When a single raster dataset is selected (or its gear is toggled), the
+  // parent sets `expandedDatasetId` — automatically open that card so the
+  // user sees its settings without hunting for the gear icon.
+  useEffect(() => {
+    if (!expandedDatasetId) return;
+    setExpandedSettingsIds((prev) => {
+      if (prev.has(expandedDatasetId)) return prev;
+      const next = new Set(prev);
+      next.add(expandedDatasetId);
+      return next;
+    });
+  }, [expandedDatasetId]);
+
+  // Reconcile the open-card set with the eligible selection:
+  //  - prune ids that are no longer selected / no longer eligible (handles
+  //    Clear and partial deselection with no stale cards left behind),
+  //  - on "Select All", expand only the first eligible card by default,
+  //    leaving the rest collapsed so the panel stays compact.
+  const eligibleSignature = eligibleSettingsDatasets.map((d) => d.id).join("|");
+  const prevEligibleSignature = useRef<string>("");
+  useEffect(() => {
+    const previous = prevEligibleSignature.current;
+    prevEligibleSignature.current = eligibleSignature;
+    setExpandedSettingsIds((prev) => {
+      const pruned = new Set([...prev].filter((id) => eligibleSettingsDatasets.some((d) => d.id === id)));
+      const isSelectAll = datasets.length > 0 && activeDatasetIds.length === datasets.length;
+      if (isSelectAll && previous !== eligibleSignature && pruned.size === 0 && eligibleSettingsDatasets.length > 0) {
+        return new Set([eligibleSettingsDatasets[0].id]);
+      }
+      return pruned;
+    });
+  }, [eligibleSettingsDatasets, datasets, activeDatasetIds, eligibleSignature]);
 
   const handleSelectAll = () => onSelectAllDatasets(true);
   const handleClear = () => onSelectAllDatasets(false);
@@ -157,14 +235,14 @@ export function DataSourceSelector({
         </span>
       </button>
 
-      {open && coords && (
+      <div className={`dss-panel-wrap${open ? " dss-panel-wrap--open" : ""}`} aria-hidden={!open}>
+        {panelMounted && (
         <div
           ref={panelRef}
           id={panelId}
           className="dss-panel"
           role="listbox"
           aria-label="Data sources"
-          style={{ top: coords.top, left: coords.left, width: coords.width }}
         >
           <div className="dss-panel__header">
             <span className="dss-panel__title">Data Sources</span>
@@ -199,10 +277,10 @@ export function DataSourceSelector({
               datasets.map((d) => {
                 const isActive = activeDatasetIds.includes(d.id);
                 const selectable = d.status === "ready";
-                const hasRasterControls = d.status === "ready" && d.file_type === "geotiff" && Boolean(d.dataset_metadata?.raster_overlay);
+                const modelMetadata = d.dataset_metadata?.model_3d;
+                const hasRasterControls = supportsDisplaySettings(d);
                 const canOpenSettings = hasRasterControls && isActive;
-                const isExpanded = canOpenSettings && expandedDatasetId === d.id;
-                const rasterSettings = resolveRasterSettings(rasterSettingsById[d.id]);
+                const isExpanded = canOpenSettings && expandedSettingsIds.has(d.id);
 
                 return (
                   <div className={`dss-row-shell${isExpanded ? " dss-row-shell--expanded" : ""}`} key={d.id}>
@@ -216,15 +294,15 @@ export function DataSourceSelector({
                         aria-label={d.name}
                       />
                       <span className="dss-row__icon" aria-hidden="true">
-                        <DatasetTypeIcon fileType={d.file_type} />
+                        <DatasetTypeIcon fileType={d.file_type} isModel3d={Boolean(modelMetadata)} />
                       </span>
                       <span className="dss-row__info">
                         <span className="dss-row__name" title={d.name}>{d.name}</span>
                         <span className="dss-row__meta">
                           {d.ward ? (
-                            <><strong>Ward {d.ward}</strong> · {d.file_type}</>
+                            <><strong>Ward {d.ward}</strong> · {modelMetadata ? `OBJ 3D · ${modelMetadata.source_crs}` : d.file_type}</>
                           ) : (
-                            <>All wards · {d.file_type}</>
+                            <>All wards · {modelMetadata ? `OBJ 3D · ${modelMetadata.source_crs}` : d.file_type}</>
                           )}
                         </span>
                       </span>
@@ -235,10 +313,11 @@ export function DataSourceSelector({
                           aria-label={`Open display settings for ${d.name}`}
                           aria-expanded={isExpanded}
                           disabled={!canOpenSettings}
-                          onClick={(event) => {
+                           onClick={(event) => {
                             event.preventDefault();
                             event.stopPropagation();
                             if (!canOpenSettings) return;
+                            toggleSettingsExpanded(d.id);
                             onToggleDatasetSettings(d.id);
                           }}
                         >
@@ -251,57 +330,6 @@ export function DataSourceSelector({
                         <span className={`dataset-card__status dataset-card__status--${d.status}`}>{d.status}</span>
                       )}
                     </label>
-                    {canOpenSettings && isExpanded && (
-                      <div className="dataset-card__settings" onClick={(event) => event.stopPropagation()}>
-                        <div className="dataset-card__settings-head">
-                          <div>
-                            <div className="dataset-card__settings-title">Display Settings</div>
-                            <div className="dataset-card__settings-copy">
-                              Default preview already looks correct. Use these only when you need a manual adjustment.
-                            </div>
-                          </div>
-                          <button
-                            type="button"
-                            className="dataset-card__reset"
-                            onClick={() => onChangeRasterSettings(d.id, DEFAULT_RASTER_SETTINGS)}
-                          >
-                            Reset
-                          </button>
-                        </div>
-                        <div className="dataset-card__settings-group">
-                          <div className="dataset-card__settings-label">Color Type</div>
-                          <div className="dataset-card__mode-row">
-                            {COLOR_MODE_OPTIONS.map((option) => (
-                              <button
-                                key={option.value}
-                                type="button"
-                                className={`dataset-card__mode-btn${rasterSettings.colorMode === option.value ? " dataset-card__mode-btn--active" : ""}`}
-                                onClick={() => onChangeRasterSettings(d.id, { colorMode: option.value })}
-                              >
-                                {option.label}
-                              </button>
-                            ))}
-                          </div>
-                        </div>
-                        <div className="dataset-card__settings-group">
-                          <div className="dataset-card__slider-head">
-                            <span className="dataset-card__settings-label">Edge Clarity</span>
-                            <span className="dataset-card__slider-value">
-                              {rasterSettings.clarity.toFixed(2)}
-                            </span>
-                          </div>
-                          <input
-                            className="dataset-card__slider"
-                            type="range"
-                            min="0"
-                            max="2"
-                            step="0.05"
-                            value={rasterSettings.clarity}
-                            onChange={(event) => onChangeRasterSettings(d.id, { clarity: Number(event.target.value) })}
-                          />
-                        </div>
-                      </div>
-                    )}
                   </div>
                 );
               })
@@ -312,7 +340,106 @@ export function DataSourceSelector({
             <div className="dss-panel__error">{flyError}</div>
           )}
         </div>
+        )}
+      </div>
+
+      {activeDatasetIds.length > 0 && (
+        <div className="dss-audit">
+          <button
+            type="button"
+            className="command-center__audit-btn"
+            disabled={auditRunning}
+            onClick={() => onRunAudit(activeDatasetIds)}
+            data-testid="run-spatial-audit"
+          >
+            {auditRunning ? "Running Spatial Audit…" : "Run Spatial Audit"}
+          </button>
+          {auditError && (
+            <div className="dss-panel__audit-error">{auditError}</div>
+          )}
+        </div>
       )}
+
+      <div className={`dss-settings-wrap${activeDatasetIds.length > 0 ? " dss-settings-wrap--open" : ""}`} aria-hidden={activeDatasetIds.length === 0}>
+        {activeDatasetIds.length > 0 && eligibleSettingsDatasets.length === 0 && (
+          <div className="dss-settings-empty">
+            No display settings are available for the selected datasets.
+          </div>
+        )}
+        {eligibleSettingsDatasets.map((dataset) => {
+          const settings = resolveRasterSettings(rasterSettingsById[dataset.id]);
+          const isOpen = expandedSettingsIds.has(dataset.id);
+          const panelId = `ds-settings-${dataset.id}`;
+          return (
+            <div className="dataset-card__settings dataset-card__settings--standalone" key={dataset.id} data-testid="dataset-settings-panel">
+              <div className="dataset-card__settings-head">
+                <button
+                  type="button"
+                  className="dataset-card__settings-toggle"
+                  aria-expanded={isOpen}
+                  aria-controls={panelId}
+                  onClick={() => toggleSettingsExpanded(dataset.id)}
+                >
+                  <span className={`dataset-card__chevron${isOpen ? " dataset-card__chevron--up" : ""}`} aria-hidden="true">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <polyline points="6 9 12 15 18 9" />
+                    </svg>
+                  </span>
+                  <span className="dataset-card__settings-titles">
+                    <span className="dataset-card__settings-title">Display Settings</span>
+                    <span className="dataset-card__settings-copy">
+                      {dataset.name} — default preview already looks correct. Use these only when you need a manual adjustment.
+                    </span>
+                  </span>
+                </button>
+                <button
+                  type="button"
+                  className="dataset-card__reset"
+                  onClick={() => onChangeRasterSettings(dataset.id, DEFAULT_RASTER_SETTINGS)}
+                >
+                  Reset
+                </button>
+              </div>
+              {isOpen && (
+                <div id={panelId} className="dataset-card__settings-body">
+                  <div className="dataset-card__settings-group">
+                    <div className="dataset-card__settings-label">Color Type</div>
+                    <div className="dataset-card__mode-row">
+                      {COLOR_MODE_OPTIONS.map((option) => (
+                        <button
+                          key={option.value}
+                          type="button"
+                          className={`dataset-card__mode-btn${settings.colorMode === option.value ? " dataset-card__mode-btn--active" : ""}`}
+                          onClick={() => onChangeRasterSettings(dataset.id, { colorMode: option.value })}
+                        >
+                          {option.label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                  <div className="dataset-card__settings-group">
+                    <div className="dataset-card__slider-head">
+                      <span className="dataset-card__settings-label">Edge Clarity</span>
+                      <span className="dataset-card__slider-value">
+                        {settings.clarity.toFixed(2)}
+                      </span>
+                    </div>
+                    <input
+                      className="dataset-card__slider"
+                      type="range"
+                      min="0"
+                      max="2"
+                      step="0.05"
+                      value={settings.clarity}
+                      onChange={(event) => onChangeRasterSettings(dataset.id, { clarity: Number(event.target.value) })}
+                    />
+                  </div>
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 }

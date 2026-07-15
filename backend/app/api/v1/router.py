@@ -11,6 +11,7 @@ from app.api.v1 import (
     health,
     review_items,
     survey_requests,
+    wastewater_flow,
 )
 
 api_router = APIRouter()
@@ -23,3 +24,4 @@ api_router.include_router(survey_requests.router, prefix="/v1/survey-requests", 
 api_router.include_router(analytics.router, prefix="/v1/analytics", tags=["analytics"])
 api_router.include_router(ai.router, prefix="/v1/ai", tags=["ai"])
 api_router.include_router(classification.router, prefix="/v1/classification", tags=["classification"])
+api_router.include_router(wastewater_flow.router, prefix="/v1/wastewater-flow", tags=["wastewater-flow"])

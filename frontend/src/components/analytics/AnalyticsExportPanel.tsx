@@ -30,7 +30,7 @@ const OPTIONS: ExportOption[] = [
   {
     format: "pdf",
     title: "PDF report",
-    description: "Management-ready summary of scope, KPIs, quality score, and priority findings.",
+    description: "Complete visual report with KPIs, all charts, Manhole readiness, map, and priority findings.",
     useCase: "Best for sharing and approvals",
   },
   {
@@ -79,11 +79,17 @@ export function AnalyticsExportPanel({
     const severityText = filters.severityBuckets?.length
       ? `, ${filters.severityBuckets.join(", ")} severity`
       : "";
-    const readinessText = filters.missingField
-      ? `, missing ${filters.missingField.replaceAll("_", " ")}`
+    const readinessField = filters.readinessField ?? filters.missingField;
+    const readinessStatus = filters.readinessField
+      ? filters.readinessStatus ?? "all"
+      : filters.missingField
+        ? "missing"
+        : null;
+    const readinessText = readinessField
+      ? `, ${readinessField.replaceAll("_", " ")} ${readinessStatus}`
       : "";
     return `${datasetText}, ${categoryText}${wardText}${severityText}${readinessText}`;
-  }, [categories.length, datasetIds.length, filters.missingField, filters.severityBuckets, filters.wards]);
+  }, [categories.length, datasetIds.length, filters.missingField, filters.readinessField, filters.readinessStatus, filters.severityBuckets, filters.wards]);
 
   async function runExport(format: AnalyticsExportFormat) {
     setExporting(format);

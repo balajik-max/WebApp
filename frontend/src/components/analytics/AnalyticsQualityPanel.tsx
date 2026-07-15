@@ -80,9 +80,10 @@ export function AnalyticsQualityPanel({ datasetIds, categories, filters, onCateg
       categories: [...categories].sort(),
       wards: [...(filters.wards ?? [])].sort(),
       severityBuckets: [...(filters.severityBuckets ?? [])].sort(),
-      missingField: filters.missingField ?? null,
+      readinessField: filters.readinessField ?? filters.missingField ?? null,
+      readinessStatus: filters.readinessField ? filters.readinessStatus ?? "all" : filters.missingField ? "missing" : null,
     }),
-    [categories, datasetIds, filters.missingField, filters.severityBuckets, filters.wards]
+    [categories, datasetIds, filters.missingField, filters.readinessField, filters.readinessStatus, filters.severityBuckets, filters.wards]
   );
 
   useEffect(() => {

@@ -7,6 +7,7 @@ import {
   type AiAnswer,
   type AiKind,
 } from "../lib/ai";
+import { AnimatedAiAssistantButton } from "./ai/AnimatedAiAssistantButton";
 import type { AiHighlight, FeatureFilter, UrbanFeature } from "../lib/types";
 
 interface Props {
@@ -160,15 +161,12 @@ export function AiAssistant({ filter, selectedFeature, onAiHighlights }: Props) 
 
   return (
     <>
-      <button
-        type="button"
-        className={`ai-fab${open ? " ai-fab--open" : ""}`}
+      <AnimatedAiAssistantButton
+        open={open}
         onClick={() => setOpen((v) => !v)}
-        data-testid="ai-fab"
-        aria-label="Toggle AI assistant"
-      >
-        {open ? "×" : "AI"}
-      </button>
+        isThinking={pendingKind !== null}
+        className="ai-fab-override"
+      />
 
       {open && (
         <section className="ai-panel" data-testid="ai-panel">
@@ -219,24 +217,24 @@ export function AiAssistant({ filter, selectedFeature, onAiHighlights }: Props) 
             (h) => h.kind === "spacing" && h.answer &&
               ((h.answer.redundant_feature_ids?.length ?? 0) + (h.answer.needed_feature_ids?.length ?? 0) + (h.answer.needed_locations?.length ?? 0)) > 0
           ) && (
-            <div className="ai-highlight-legend">
-              <div className="ai-highlight-legend__title">AI Map Overlay</div>
-              <div className="ai-highlight-legend__items">
-                <span className="ai-highlight-legend__dot ai-highlight-legend__dot--red" />
-                <span>Recommended removal</span>
-                <span className="ai-highlight-legend__dot ai-highlight-legend__dot--green" />
-                <span>Proposed missing/service-gap pole</span>
+              <div className="ai-highlight-legend">
+                <div className="ai-highlight-legend__title">AI Map Overlay</div>
+                <div className="ai-highlight-legend__items">
+                  <span className="ai-highlight-legend__dot ai-highlight-legend__dot--red" />
+                  <span>Recommended removal</span>
+                  <span className="ai-highlight-legend__dot ai-highlight-legend__dot--green" />
+                  <span>Proposed missing/service-gap pole</span>
+                </div>
+                <button
+                  type="button"
+                  className="ai-highlight-legend__clear"
+                  onClick={clearHighlights}
+                  title="Remove AI colour overlay from the map"
+                >
+                  Clear overlay ✕
+                </button>
               </div>
-              <button
-                type="button"
-                className="ai-highlight-legend__clear"
-                onClick={clearHighlights}
-                title="Remove AI colour overlay from the map"
-              >
-                Clear overlay ✕
-              </button>
-            </div>
-          )}
+            )}
           <form className="ai-panel__form" onSubmit={askQuestion} data-testid="ai-form">
             <textarea
               data-testid="ai-input"

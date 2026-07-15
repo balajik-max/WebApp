@@ -371,7 +371,7 @@ async def get_dataset(dataset_id: uuid.UUID, db: AsyncSession = Depends(get_db))
 )
 async def get_raster_preview(
     dataset_id: uuid.UUID,
-    mode: Literal["rgb", "grayscale", "enhanced"] = Query("grayscale"),
+    mode: Literal["rgb", "grayscale", "enhanced"] = Query("rgb"),
     db: AsyncSession = Depends(get_db),
 ) -> Response:
     """Streams the reprojected raster preview PNG generated at ingestion

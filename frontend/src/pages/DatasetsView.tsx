@@ -1,31 +1,46 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
+import { useLocation, useNavigate } from "react-router-dom";
 import JSZip from "jszip";
 import { deleteDataset, fetchDatasets, updateDataset, type DatasetRow } from "../lib/workflow";
 import { AttributeTable } from "../components/AttributeTable";
 import { UnclassifiedCategoriesPanel } from "../components/UnclassifiedCategoriesPanel";
 
+// How long the "incoming file drag" highlight (triggered by a redirect from
+// Map/Analytics) stays active if the user never actually drops or moves the
+// drag away — a safety net so the dropzone doesn't stay highlighted forever
+// if the browser's drag session ends silently (e.g. dropped outside the window).
+const INCOMING_DRAG_TIMEOUT_MS = 8000;
+
 const REFRESH_MS = 4000;
 
 const ACCEPTED_EXTENSIONS = [
   ".geojson", ".json", ".zip", ".shp", ".dbf", ".shx", ".prj", ".cpg", ".gpkg", ".kml", ".csv", ".tsv", ".xlsx", ".xls",
-  ".tif", ".tiff", ".geotiff", ".obj",
+  ".tif", ".tiff", ".geotiff", ".obj", ".mtl", ".xml",
   ".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp",
 ];
 
 const IMAGE_EXTENSIONS = [".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp"];
 const SHAPEFILE_EXTENSIONS = [".shp", ".dbf", ".shx", ".prj", ".cpg"];
 const REQUIRED_SHAPEFILE_EXTENSIONS = [".shp", ".dbf", ".shx", ".prj"];
+const OBJ_BUNDLE_EXTENSIONS = new Set([
+  ".obj", ".mtl", ".xml", ".prj", ".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tif", ".tiff",
+]);
+const OBJ_SIDECAR_EXTENSIONS = new Set([".mtl", ".xml"]);
 
-// File System Access API — not yet in TS's DOM lib. Only Chromium ships it;
-// callers must feature-detect `window.showDirectoryPicker` before use.
-declare global {
-  interface FileSystemDirectoryHandle {
-    values(): AsyncIterableIterator<FileSystemHandle>;
-  }
-  interface Window {
-    showDirectoryPicker?: (options?: { mode?: "read" | "readwrite" }) => Promise<FileSystemDirectoryHandle>;
-  }
-}
+const BEST_RESULT_TIPS: string[] = [
+  "Select .shp, .dbf, .shx, and .prj together; .cpg is included when present",
+  "Projected shapefiles are automatically converted to WGS84 for the web map",
+  "CSV and TSV files should have latitude/longitude columns",
+  "Use a consistent coordinate reference system such as WGS84 / EPSG:4326",
+  "Name datasets descriptively for easy identification",
+  "Assign ward names to enable spatial filtering",
+  "Photos need real GPS EXIF data — photos without it are skipped",
+  "Drop a whole File Geodatabase (.gdb) folder directly — it is zipped in your browser before upload",
+  "Batches of photos can be selected together and are bundled into a single dataset automatically",
+  "GeoTIFF rasters support live colour and clarity adjustments from the dataset display settings",
+  "OBJ survey models should be uploaded as a folder with metadata.xml (EPSG + origin), MTL, and textures",
+  "Large uploads run in the background — you can keep working while a dataset finishes processing",
+];
 
 const FILE_TYPE_INFO: Record<string, { icon: React.ReactNode; label: string }> = {
   shapefile: {
@@ -152,85 +167,6 @@ function collectPickedFolder(fileList: FileList): { name: string; files: { path:
   return { name: topFolder, files };
 }
 
-// Thrown when a granted folder is too big to walk automatically (e.g. the
-// user picked a whole drive by mistake) — distinct from AbortError/
-// SecurityError so the caller can give an actionable message instead of
-// treating it like a declined prompt.
-class FolderScanLimitError extends Error {}
-
-const MAX_SCAN_ENTRIES = 2000;
-const MAX_SCAN_DEPTH = 4;
-
-async function walkDirectoryHandle(
-  dirHandle: FileSystemDirectoryHandle,
-  basePath: string,
-  depth: number,
-  out: { path: string; file: File }[]
-): Promise<void> {
-  if (depth > MAX_SCAN_DEPTH) {
-    throw new FolderScanLimitError("That folder is nested too deep to scan automatically — choose the folder that directly contains the .obj (or its parent, if it has a metadata.xml).");
-  }
-  for await (const entry of dirHandle.values()) {
-    if (out.length > MAX_SCAN_ENTRIES) {
-      throw new FolderScanLimitError("That folder has too many files to scan automatically — choose a smaller folder, ideally the one that directly contains the .obj.");
-    }
-    const path = `${basePath}${entry.name}`;
-    if (entry.kind === "directory") {
-      await walkDirectoryHandle(entry as FileSystemDirectoryHandle, `${path}/`, depth + 1, out);
-    } else {
-      out.push({ path, file: await (entry as FileSystemFileHandle).getFile() });
-    }
-  }
-}
-
-// A ContextCapture/Bentley-style tiled mesh export (what the drone survey
-// pipeline behind this platform produces) carries its real-world anchor —
-// SRS + the point the OBJ's local meter offsets are measured from — in a
-// `metadata.xml` file. That file conventionally sits *next to* the tile
-// folder, not inside it (e.g. "3D MODEL/metadata.xml" alongside
-// "3D MODEL/Block0/Block0.obj") — sniff by content, not name, since the
-// convention isn't universal, and it may not be present at all.
-async function isGeoMetadataFile(file: File): Promise<boolean> {
-  if (extensionOf(file.name) !== ".xml" || file.size > 65_536) return false;
-  try {
-    return (await file.text()).includes("<SRSOrigin");
-  } catch {
-    return false;
-  }
-}
-
-// A single bare .obj (picked via the plain file input, or dropped as one
-// file) carries no path info a browser will ever hand us — there is no API
-// that goes from a File back to its siblings on disk. The only way to pull
-// in its .mtl/textures/geo-referencing without the user hand-picking them
-// is to ask for a folder via the File System Access API and read it
-// ourselves — walking subfolders too, since the geo-reference file is
-// often one level above wherever the .obj itself lives.
-async function collectObjCompanionsFromDisk(objFile: File): Promise<{ path: string; file: File }[]> {
-  // Deliberately not caught here — the picker throws "AbortError" when the
-  // user dismisses the dialog, and "SecurityError"/"NotAllowedError" when
-  // Chromium decided this call isn't tied to a fresh-enough user gesture
-  // (can happen chaining straight off an <input> change event). Callers
-  // need to tell those apart, so let the error propagate.
-  const dirHandle = await window.showDirectoryPicker!({ mode: "read" });
-  const found: { path: string; file: File }[] = [];
-  await walkDirectoryHandle(dirHandle, "", 0, found);
-
-  const collected: { path: string; file: File }[] = [];
-  for (const entry of found) {
-    const ext = extensionOf(entry.file.name);
-    if (ext === ".mtl" || IMAGE_EXTENSIONS.includes(ext) || entry.file.name === objFile.name) {
-      collected.push(entry);
-    } else if (ext === ".xml" && (await isGeoMetadataFile(entry.file))) {
-      collected.push(entry);
-    }
-  }
-  if (!collected.some((c) => c.file.name === objFile.name)) {
-    collected.push({ path: objFile.name, file: objFile });
-  }
-  return collected;
-}
-
 async function zipCollectedFiles(name: string, files: { path: string; file: File }[]): Promise<File> {
   const zip = new JSZip();
   for (const { path, file } of files) zip.file(path, file);
@@ -266,6 +202,25 @@ function validateShapefileBundle(files: File[]): { stem: string; files: File[] }
   return { stem, files: matching };
 }
 
+function validateObjBundle(files: { path: string; file: File }[]): { name: string; files: { path: string; file: File }[] } {
+  const objFiles = files.filter(({ file }) => extensionOf(file.name) === ".obj");
+  if (objFiles.length === 0) throw new Error("An OBJ bundle must contain at least one .obj model file.");
+
+  const unsupported = files.filter(({ file }) => !OBJ_BUNDLE_EXTENSIONS.has(extensionOf(file.name)));
+  if (unsupported.length > 0) {
+    throw new Error(`Unsupported OBJ companion file: ${unsupported[0].file.name}.`);
+  }
+
+  const hasMetadata = files.some(({ file }) => file.name.toLocaleLowerCase() === "metadata.xml");
+  const hasPrj = files.some(({ file }) => extensionOf(file.name) === ".prj");
+  if (!hasMetadata && !hasPrj) {
+    throw new Error("Include metadata.xml (with SRS/EPSG and SRSOrigin) or a .prj file with the OBJ model.");
+  }
+
+  const firstStem = objFiles[0].file.name.replace(/\.obj$/i, "");
+  return { name: objFiles.length === 1 ? firstStem : "obj-models", files };
+}
+
 function getFileIcon(type: string): React.ReactNode {
   // Map common variations to their base types
   const typeMap: Record<string, string> = {
@@ -277,12 +232,23 @@ function getFileIcon(type: string): React.ReactNode {
   return FILE_TYPE_INFO[normalizedType]?.icon ?? <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" width="16" height="16"><path d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" strokeLinecap="round" strokeLinejoin="round" /></svg>;
 }
 
+function datasetDisplayType(dataset: DatasetRow): string {
+  return dataset.dataset_metadata?.model_3d?.format === "obj" ? "OBJ 3D" : dataset.file_type;
+}
+
 export function DatasetsView() {
+  const location = useLocation() as { state?: { incomingFileDrag?: boolean; sourceRoute?: string } };
+  const navigate = useNavigate();
   const [rows, setRows] = useState<DatasetRow[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [mounted, setMounted] = useState(false);
 
   const [dragOver, setDragOver] = useState(false);
+  // Set when we arrived here via the global Map/Analytics file-drag
+  // redirect (WorkspaceLayout). Drives the same active highlight as a real
+  // `dragOver` so the user immediately sees where to drop, even before (or
+  // if) the OS-level drag actually continues onto this element.
+  const [incomingFileDrag, setIncomingFileDrag] = useState(false);
   const [uploadName, setUploadName] = useState("");
   const [uploadWard, setUploadWard] = useState("");
   const [uploadFile, setUploadFile] = useState<File | null>(null);
@@ -290,8 +256,6 @@ export function DatasetsView() {
   const [uploadProgress, setUploadProgress] = useState(0);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [uploadNotice, setUploadNotice] = useState<string | null>(null);
-  const [objAutoNotice, setObjAutoNotice] = useState<string | null>(null);
-  const [objAutoRetryFile, setObjAutoRetryFile] = useState<File | null>(null);
   const [removingId, setRemovingId] = useState<string | null>(null);
   const [openTableFor, setOpenTableFor] = useState<DatasetRow | null>(null);
   const [editingWardId, setEditingWardId] = useState<string | null>(null);
@@ -306,6 +270,45 @@ export function DatasetsView() {
   useEffect(() => {
     setMounted(true);
   }, []);
+
+  // Consume the "redirected here because of a file drag" signal exactly
+  // once. Clearing router state immediately (via `navigate(..., {replace})`)
+  // means pressing Back then forward again, or any re-render, never
+  // re-triggers the highlight — only the redirect itself does.
+  useEffect(() => {
+    if (!location.state?.incomingFileDrag) return;
+    setIncomingFileDrag(true);
+    navigate(".", { replace: true, state: null });
+  }, [location.state, navigate]);
+
+  useEffect(() => {
+    if (!incomingFileDrag) return;
+
+    const clear = () => setIncomingFileDrag(false);
+    const timeout = window.setTimeout(clear, INCOMING_DRAG_TIMEOUT_MS);
+
+    // Drag left the browser window entirely (relatedTarget is null only
+    // when the pointer leaves the document, not when moving between
+    // child elements) — same "drag cancel" case as Test H.
+    const handleDragLeave = (event: DragEvent) => {
+      if (!event.relatedTarget) clear();
+    };
+    const handleEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") clear();
+    };
+
+    window.addEventListener("dragleave", handleDragLeave);
+    window.addEventListener("drop", clear);
+    window.addEventListener("dragend", clear);
+    window.addEventListener("keydown", handleEscape);
+    return () => {
+      window.clearTimeout(timeout);
+      window.removeEventListener("dragleave", handleDragLeave);
+      window.removeEventListener("drop", clear);
+      window.removeEventListener("dragend", clear);
+      window.removeEventListener("keydown", handleEscape);
+    };
+  }, [incomingFileDrag]);
 
   const refresh = useCallback(async (signal?: AbortSignal) => {
     try {
@@ -329,13 +332,16 @@ export function DatasetsView() {
   }, [refresh]);
 
   function pickFile(f: File | null) {
-    setObjAutoNotice(null);
-    setObjAutoRetryFile(null);
     if (f && !ACCEPTED_EXTENSIONS.includes(extensionOf(f.name))) {
       setUploadFile(null);
       setUploadError(
         `Unsupported file type "${extensionOf(f.name) || f.name}". Supported: GeoJSON, Shapefile, GeoPackage, KML, GeoTIFF, OBJ, CSV, TSV, XLSX, and photos (JPG/PNG/GIF/BMP/WEBP).`
       );
+      return;
+    }
+    if (f && OBJ_SIDECAR_EXTENSIONS.has(extensionOf(f.name))) {
+      setUploadFile(null);
+      setUploadError(`Select "${f.name}" together with its .obj file, or choose the complete model folder.`);
       return;
     }
     setUploadError(null);
@@ -371,37 +377,30 @@ export function DatasetsView() {
 
   async function pickFiles(files: File[]) {
     if (files.length === 0) return;
+    const hasObj = files.some((file) => extensionOf(file.name) === ".obj");
     const allImages = files.every((file) => IMAGE_EXTENSIONS.includes(extensionOf(file.name)));
     const allShapefileComponents = files.every((file) => SHAPEFILE_EXTENSIONS.includes(extensionOf(file.name)));
-    const isObjBundle = files.length > 1 && files.some((file) => extensionOf(file.name) === ".obj");
 
+    if (hasObj && files.length > 1) {
+      setUploadError(null);
+      setZipping(true);
+      try {
+        const bundle = validateObjBundle(files.map((file) => ({ path: file.name, file })));
+        pickFile(await zipCollectedFiles(bundle.name, bundle.files));
+      } catch (err) {
+        setUploadFile(null);
+        setUploadError((err as Error).message);
+      } finally {
+        setZipping(false);
+      }
+      return;
+    }
     if (allImages && files.length > 1) {
       await pickMultiplePhotos(files);
       return;
     }
     if (allShapefileComponents) {
       await pickShapefileBundle(files);
-      return;
-    }
-    if (files.length === 1 && extensionOf(files[0].name) === ".obj") {
-      // A bare .obj needs its .mtl/textures/metadata.xml pulled in from
-      // disk automatically — see pickObjWithAutoCompanions for why this
-      // can't just be pickFile(files[0]).
-      await pickObjWithAutoCompanions(files[0]);
-      return;
-    }
-    if (isObjBundle) {
-      // Manual multi-select of a .obj plus its .mtl/textures together.
-      const name = files.find((f) => extensionOf(f.name) === ".obj")!.name.replace(/\.[^/.]+$/, "");
-      setZipping(true);
-      try {
-        const zipped = await zipCollectedFiles(name, files.map((file) => ({ path: file.name, file })));
-        pickFile(zipped);
-      } catch (err) {
-        setUploadError(`Couldn't bundle 3D model files: ${(err as Error).message}`);
-      } finally {
-        setZipping(false);
-      }
       return;
     }
     if (files.length === 1) {
@@ -411,7 +410,7 @@ export function DatasetsView() {
 
     setUploadFile(null);
     setUploadError(
-      "Multiple files must be a batch of photos, one shapefile bundle (.shp + .dbf + .shx + .prj), or a 3D model bundle (.obj + .mtl + textures)."
+      "Multiple files must be a shapefile bundle, an OBJ bundle, or a batch of photos."
     );
   }
 
@@ -435,123 +434,35 @@ export function DatasetsView() {
     }
   }
 
-  // A bare .obj arriving alone (single browse-select or single drag/drop)
-  // never carries its .mtl/textures/metadata.xml — the browser hands us
-  // exactly the one File and nothing else. Rather than making the user
-  // hunt down and multi-select the companion files themselves, immediately
-  // ask for a folder (one native prompt) and pull the matching files in
-  // ourselves. Falls back to the bare file — with an explanation — when the
-  // API isn't supported, the user declines the prompt, or nothing is found.
-  //
-  // Shared by the automatic first attempt and the manual retry button below
-  // — the retry button exists because Chromium sometimes refuses to open a
-  // second native picker chained off an <input> change event (no fresh
-  // enough user gesture), in which case a real click is the only way to
-  // get a valid one.
-  async function runObjAutoLoad(file: File) {
-    setZipping(true);
-    setObjAutoRetryFile(null);
-    try {
-      const companions = await collectObjCompanionsFromDisk(file);
-      if (companions.length <= 1) {
-        pickFile(file);
-        setObjAutoNotice("⚠️ No .mtl or texture files were found next to this .obj — it will upload without materials.");
-        return;
-      }
-      const hasGeoMeta = companions.some((c) => extensionOf(c.file.name) === ".xml");
-      const name = file.name.replace(/\.[^/.]+$/, "");
-      const zipped = await zipCollectedFiles(name, companions);
-      pickFile(zipped);
-      if (hasGeoMeta) {
-        setObjAutoNotice("✓ Textures and geo-referencing (metadata.xml) loaded automatically.");
-      } else {
-        // Don't just warn and hope they know what to do — the metadata.xml
-        // (when it exists) is conventionally one level *above* wherever the
-        // .obj itself lives, so the folder they just granted was very
-        // plausibly the wrong one. Offer the retry button right here
-        // instead of making them notice a warning and manually reselect.
-        setObjAutoRetryFile(file);
-        setObjAutoNotice(
-          "⚠️ Textures loaded, but no metadata.xml was found, so this model's map position may be approximate. If the export has one, click below and pick the PARENT of the folder you just chose."
-        );
-      }
-    } catch (err) {
-      pickFile(file);
-      if (err instanceof FolderScanLimitError) {
-        setObjAutoRetryFile(file);
-        setObjAutoNotice(`⚠️ ${err.message}`);
-      } else if ((err as Error).name === "AbortError") {
-        setObjAutoNotice(
-          "⚠️ Folder access was declined, so textures can't be auto-loaded. Reselect the .obj to try again, or use \"browse a folder\"."
-        );
-      } else {
-        setObjAutoRetryFile(file);
-        setObjAutoNotice("⚠️ Couldn't open the folder picker automatically — click below to grant folder access and load textures.");
-      }
-    } finally {
-      setZipping(false);
-    }
-  }
-
-  async function pickObjWithAutoCompanions(file: File) {
-    if (typeof window.showDirectoryPicker !== "function") {
-      pickFile(file);
-      setObjAutoNotice(
-        "⚠️ This browser can't auto-load companion files for a single .obj (Chrome/Edge only). Use \"browse a folder\" below, or drag the whole folder in, to include the .mtl and textures."
-      );
-      return;
-    }
-    await runObjAutoLoad(file);
-  }
-
-  // A dropped/browsed folder is supported if it's a File Geodatabase (by
-  // name), a shapefile bundle, a folder full of photos (checked by content,
-  // since a photo folder has no special naming convention), or a 3D model
-  // folder/tree (contains an .obj somewhere) — the latter is what makes a
-  // folder one level up from the .obj (i.e. containing a metadata.xml
-  // geo-reference sibling to the model's own folder) work, since these
-  // collectors already walk subfolders and grab everything, unfiltered.
-  // Anything else is rejected with a clear reason before we waste time
-  // zipping it.
+  // Folders can contain a File Geodatabase, shapefile/OBJ bundle, or photos.
   async function pickFolder(name: string, collectFiles: () => Promise<{ path: string; file: File }[]>) {
     setUploadError(null);
     setZipping(true);
     try {
       const files = await collectFiles();
       const isGdb = name.toLowerCase().endsWith(".gdb");
+      const isObjBundle = files.some(({ file }) => extensionOf(file.name) === ".obj");
       const isAllImages = files.length > 0 && files.every(({ file }) => IMAGE_EXTENSIONS.includes(extensionOf(file.name)));
-      const isObjModel = files.some(({ file }) => extensionOf(file.name) === ".obj");
       const isShapefile = files.length > 0 && files.every(({ file }) => SHAPEFILE_EXTENSIONS.includes(extensionOf(file.name)));
-      if (!isGdb && !isAllImages && !isShapefile && !isObjModel) {
+      if (!isGdb && !isObjBundle && !isAllImages && !isShapefile) {
         setUploadError(
-          `"${name}" doesn't look like a File Geodatabase (.gdb), a shapefile folder, a folder of photos, or a 3D model folder — other folder types aren't supported, only individual files.`
+          `"${name}" must be a File Geodatabase (.gdb), shapefile folder, georeferenced OBJ folder, or folder of photos.`
         );
         return;
       }
       let archiveName = name;
       let filesToZip = files;
-      if (isShapefile) {
+      if (isObjBundle) {
+        const bundle = validateObjBundle(files);
+        archiveName = name || bundle.name;
+        filesToZip = bundle.files;
+      } else if (isShapefile) {
         const bundle = validateShapefileBundle(files.map(({ file }) => file));
         archiveName = bundle.stem;
         filesToZip = bundle.files.map((file) => ({ path: file.name, file }));
       }
       const zipped = await zipCollectedFiles(archiveName, filesToZip);
       pickFile(zipped);
-      if (isObjModel) {
-        const xmlFiles = files.filter(({ file }) => extensionOf(file.name) === ".xml");
-        let hasGeoMeta = false;
-        for (const { file } of xmlFiles) {
-          if (await isGeoMetadataFile(file)) {
-            hasGeoMeta = true;
-            break;
-          }
-        }
-        setObjAutoNotice(
-          hasGeoMeta
-            ? "✓ Textures and geo-referencing (metadata.xml) loaded automatically."
-            : "⚠️ No metadata.xml found in that folder — if this model uses local/tiled coordinates, its map position may be approximate."
-        );
-      }
     } catch (err) {
       setUploadError(`Couldn't read that folder: ${(err as Error).message}`);
     } finally {
@@ -701,12 +612,13 @@ export function DatasetsView() {
           </div>
 
           <form
-            className={`ds-dropzone ${dragOver ? "ds-dropzone--active" : ""} ${uploadFile ? "ds-dropzone--has-file" : ""}`}
+            className={`ds-dropzone ${dragOver || incomingFileDrag ? "ds-dropzone--active" : ""} ${uploadFile ? "ds-dropzone--has-file" : ""}`}
             onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
             onDragLeave={() => setDragOver(false)}
             onDrop={(e) => {
               e.preventDefault();
               setDragOver(false);
+              setIncomingFileDrag(false);
 
               // A dropped folder (e.g. an unzipped .gdb) arrives as a
               // FileSystemEntry via dataTransfer.items, not as a normal
@@ -783,7 +695,7 @@ export function DatasetsView() {
             {zipping ? (
               <div className="ds-dropzone__content">
                 <span className="ds-dropzone__label">Validating and bundling files in your browser...</span>
-                <span className="ds-dropzone__hint">Shapefiles, large .gdb folders, and photo batches may take a few seconds.</span>
+                <span className="ds-dropzone__hint">Shapefiles, OBJ models, large .gdb folders, and photo batches may take a few seconds.</span>
               </div>
             ) : !uploadFile ? (
               <label htmlFor="dz-file" className="ds-dropzone__content">
@@ -793,8 +705,12 @@ export function DatasetsView() {
                     <path d="M24 16v16M16 24h16" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
                   </svg>
                 </div>
-                <span className="ds-dropzone__label">
-                  {dragOver ? "Drop file(s) or a folder here" : "Drag & drop data, all shapefile components, or a supported folder here"}
+                <span className="ds-dropzone__label" aria-live="polite">
+                  {dragOver
+                    ? "Drop file(s) or a folder here"
+                    : incomingFileDrag
+                      ? "Drop files here to upload"
+                      : "Drag & drop data, shapefile/OBJ components, or a supported folder here"}
                 </span>
                 <span className="ds-dropzone__hint">
                   or <span className="ds-dropzone__browse">browse files</span>
@@ -807,7 +723,7 @@ export function DatasetsView() {
                       folderInputRef.current?.click();
                     }}
                   >
-                    browse a folder (.shp, .gdb, or photos)
+                    browse a folder (.shp, .gdb, .obj, or photos)
                   </span>
                   {" · "}
                   <span
@@ -831,24 +747,6 @@ export function DatasetsView() {
                 <div className="ds-dropzone__file-info">
                   <span className="ds-dropzone__file-name">{uploadFile.name}</span>
                   <span className="ds-dropzone__file-size">{formatBytes(uploadFile.size)}</span>
-                  {(extensionOf(uploadFile.name) === ".obj" || objAutoNotice) && (
-                    <span className="ds-dropzone__warning" style={{ color: objAutoNotice?.startsWith("✓") ? "#4ade80" : "#eab308", fontSize: "0.8rem", marginTop: "4px", display: "block" }}>
-                      {objAutoNotice ?? "⚠️ Bare .obj file — it will upload without materials."}
-                      {objAutoRetryFile && (
-                        <button
-                          type="button"
-                          style={{ display: "block", marginTop: "6px", color: "#38bdf8", background: "none", border: "none", padding: 0, cursor: "pointer", textDecoration: "underline", font: "inherit" }}
-                          onClick={(e) => {
-                            e.preventDefault();
-                            e.stopPropagation();
-                            void runObjAutoLoad(objAutoRetryFile);
-                          }}
-                        >
-                          {extensionOf(uploadFile.name) === ".zip" ? "Retry with parent folder (for geo-referencing)" : "Grant folder access & load textures"}
-                        </button>
-                      )}
-                    </span>
-                  )}
                 </div>
                 <button
                   type="button"
@@ -988,7 +886,7 @@ export function DatasetsView() {
               <li>
                 <span className="ds-format-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" width="14" height="14"><path d="M14 10l-2 1m0 0l-2-1m2 1v2.5M20 7l-2 1m2-1l-2-1m2 1v2.5M14 4l-2-1-2 1M4 7l2-1M4 7l2 1M4 7v2.5M12 21l-2-1m2 1l2-1m-2 1v-2.5M6 18l-2-1v-2.5M18 18l2-1v-2.5" strokeLinecap="round" strokeLinejoin="round" /></svg></span>
                 <span className="ds-format-name">OBJ (3D)</span>
-                <span className="ds-format-desc">.obj 3D model files</span>
+                <span className="ds-format-desc">Folder with .obj + metadata.xml / .prj</span>
               </li>
               <li>
                 <span className="ds-format-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" width="14" height="14"><path d="M9 17v-2m3 2v-4m3 4v-6m2 10H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" strokeLinecap="round" strokeLinejoin="round" /></svg></span>
@@ -1021,18 +919,13 @@ export function DatasetsView() {
               </svg>
               <h3>Tips for Best Results</h3>
             </div>
-            <ul className="ds-tips-list">
-              <li>Select .shp, .dbf, .shx, and .prj together; .cpg is included when present</li>
-              <li>Projected shapefiles are automatically converted to WGS84 for the web map</li>
-              <li>CSV files should have latitude/longitude columns</li>
-              <li>Use consistent coordinate systems (WGS84 / EPSG:4326)</li>
-              <li>Name datasets descriptively for easy identification</li>
-              <li>Assign ward names for spatial filtering</li>
-              <li>Photos need real GPS EXIF data (most phone/survey cameras add this automatically) — photos without it are skipped</li>
-              <li>Drop a whole File Geodatabase (.gdb) folder directly — it's zipped in your browser before upload</li>
-              <li>Batches of photos can be selected together and are bundled into a single dataset automatically</li>
-              <li>GeoTIFF rasters support live color and clarity adjustments from the dataset's display settings</li>
-              <li>Large uploads run in the background — you can keep working while a dataset finishes processing</li>
+            <ul className="ds-tips-list" aria-label="Tips for best results">
+              {BEST_RESULT_TIPS.map((tip) => (
+                <li className="ds-tips-list__item" key={tip}>
+                  <span className="ds-tips-list__bullet" aria-hidden="true">•</span>
+                  <span className="ds-tips-list__text">{tip}</span>
+                </li>
+              ))}
             </ul>
           </div>
         </section>
@@ -1090,7 +983,7 @@ export function DatasetsView() {
                 style={{ animationDelay: `${i * 50}ms` }}
               >
                 <div className="ds-table__td ds-table__td--name" title={d.description ?? d.name}>
-                  <span className="ds-table__file-icon">{getFileIcon(d.file_type)}</span>
+                  <span className="ds-table__file-icon">{getFileIcon(d.dataset_metadata?.model_3d ? "obj" : d.file_type)}</span>
                   <div className="ds-table__name-wrap">
                     <span className="ds-table__name">{d.name}</span>
                     {d.processing_error && (
@@ -1129,7 +1022,12 @@ export function DatasetsView() {
                   )}
                 </div>
                 <div className="ds-table__td">
-                  <span className="ds-table__badge ds-table__badge--type">{d.file_type}</span>
+                  <span
+                    className="ds-table__badge ds-table__badge--type"
+                    title={d.dataset_metadata?.model_3d?.source_crs}
+                  >
+                    {datasetDisplayType(d)}
+                  </span>
                 </div>
                 <div className="ds-table__td ds-table__td--mono">{formatBytes(d.size_bytes ?? 0)}</div>
                 <div className="ds-table__td">
@@ -1189,6 +1087,7 @@ export function DatasetsView() {
 
       </div>
       </div>
+
       {/* ── UNCLASSIFIED CATEGORIES (spatial audit classifier review) ── */}
       <UnclassifiedCategoriesPanel />
 
