@@ -15,6 +15,7 @@ import {
 } from "../lib/workflow";
 import { AttributeTable } from "./AttributeTable";
 import { PanoramaViewer } from "./PanoramaViewer";
+import { CylinderPanoramaViewer } from "./CylinderPanoramaViewer";
 import { GoogleStreetView } from "./GoogleStreetView";
 import { LookAroundCompass, DEFAULT_MAP_PITCH, MAX_MAP_PITCH } from "./LookAroundCompass";
 import { DataSourceSelector } from "./DataSourceSelector";
@@ -1812,7 +1813,10 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
       }
       const { Obj3DMapLayer } = await import("./Obj3DMapLayer");
       const mtlFilename = dataset.dataset_metadata?.model_assets?.mtl_filename;
-      currentMap.addLayer(new Obj3DMapLayer(layerId, text, bounds, dataset.id, mtlFilename));
+      // Same beforeId as addRasterOverlay: keeps draped mesh/shading layers
+      // (OBJ, DSM, DTM) under the vector feature layers (markers, buildings,
+      // AI highlights) instead of painting over them.
+      currentMap.addLayer(new Obj3DMapLayer(layerId, text, bounds, dataset.id, mtlFilename), LAYER_POLY_FILL);
     } catch (e) {
       setFlyError(`Could not load 3D model on map: ${(e as Error).message}`);
     }
@@ -2867,10 +2871,12 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
           </div>
         )}
       </div>
-      {photoViewer?.isPanorama ? (
-        <PanoramaViewer url={photoViewer.url} label={photoViewer.label} onClose={() => setPhotoViewer(null)} />
-      ) : (
-        <PhotoViewer photo={photoViewer} onClose={() => setPhotoViewer(null)} />
+      {photoViewer && (
+        photoViewer.isPanorama ? (
+          <PanoramaViewer url={photoViewer.url} label={photoViewer.label} onClose={() => setPhotoViewer(null)} />
+        ) : (
+          <CylinderPanoramaViewer url={photoViewer.url} label={photoViewer.label} mode="180" onClose={() => setPhotoViewer(null)} />
+        )
       )}
       {streetViewTarget && (
         <GoogleStreetView
@@ -3353,61 +3359,6 @@ function HoverTooltip({ hover }: { hover: HoverInfo | null }) {
           ))}
         </div>
       )}
-    </div>
-  );
-}
-
-function PhotoViewer({ photo, onClose }: { photo: { url: string; label: string } | null; onClose: () => void }) {
-  const onCloseRef = useRef(onClose);
-  onCloseRef.current = onClose;
-
-  useEffect(() => {
-    if (!photo) return;
-
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key !== "Escape" || event.repeat) return;
-      event.preventDefault();
-      event.stopPropagation();
-      onCloseRef.current();
-    };
-
-    document.addEventListener("keydown", handleKeyDown);
-
-    return () => {
-      document.removeEventListener("keydown", handleKeyDown);
-    };
-  }, [photo]);
-
-  if (!photo) return null;
-  return (
-    <div
-      style={{
-        position: "fixed", inset: 0, zIndex: 1000, background: "rgba(0,0,0,0.82)",
-        display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 16,
-      }}
-      onClick={onClose}
-      data-testid="photo-viewer"
-    >
-      <img
-        src={photo.url}
-        alt={photo.label}
-        style={{ maxWidth: "90vw", maxHeight: "82vh", borderRadius: "var(--radius-md)", boxShadow: "0 20px 60px rgba(0,0,0,0.5)" }}
-        onClick={(e) => e.stopPropagation()}
-      />
-      <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-        <span style={{ color: "#fff", fontSize: 13, fontWeight: 600 }}>{photo.label}</span>
-        <button
-          type="button"
-          onClick={onClose}
-          data-testid="photo-viewer-close"
-          style={{
-            background: "rgba(255,255,255,0.15)", border: "1px solid rgba(255,255,255,0.3)", color: "#fff",
-            borderRadius: "var(--radius-sm)", padding: "4px 12px", fontSize: 12, fontWeight: 600, cursor: "pointer",
-          }}
-        >
-          Close ✕
-        </button>
-      </div>
     </div>
   );
 }
