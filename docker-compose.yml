@@ -21,7 +21,6 @@ services:
   # =========================================================================
   db:
     image: postgis/postgis:16-3.4
-    container_name: davangere_db
     restart: unless-stopped
     environment:
       POSTGRES_DB:       ${POSTGRES_DB}
@@ -45,7 +44,6 @@ services:
   # =========================================================================
   storage:
     image: minio/minio:latest
-    container_name: davangere_storage
     restart: unless-stopped
     command: server /data --console-address ":9001"
     environment:
@@ -69,7 +67,6 @@ services:
   # =========================================================================
   ai_engine:
     image: ollama/ollama:latest
-    container_name: davangere_ai
     restart: unless-stopped
     environment:
       OLLAMA_KEEP_ALIVE: 24h
@@ -97,7 +94,6 @@ services:
     build:
       context: ./backend
       dockerfile: Dockerfile
-    container_name: davangere_backend
     restart: unless-stopped
     depends_on:
       db:
@@ -149,7 +145,6 @@ services:
       args:
         VITE_API_BASE_URL: ${VITE_API_BASE_URL}
         VITE_GOOGLE_MAPS_API_KEY: ${VITE_GOOGLE_MAPS_API_KEY:-}
-    container_name: davangere_frontend
     restart: unless-stopped
     depends_on:
       backend:

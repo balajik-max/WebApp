@@ -141,6 +141,17 @@ export function GoogleStreetView({ latitude, longitude, features, hiddenCategori
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      onClose();
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [onClose]);
+
+  useEffect(() => {
     if (!GOOGLE_MAPS_API_KEY) {
       setError("Street View is not configured. Add VITE_GOOGLE_MAPS_API_KEY and rebuild the frontend.");
       return;
