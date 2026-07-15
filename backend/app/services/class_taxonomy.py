@@ -24,10 +24,20 @@ CANONICAL_CLASSES: dict[str, str] = {
     ),
     "Power_Line": "Overhead or underground electrical conductor lines",
     "Utility_Pole": "Poles carrying wires, transformers, or cameras but with no light fixture",
-    "Road_Segment": "Carriageway centerlines, road edges, footpaths",
+    "Road_Segment": (
+        "Carriageway centerlines, road edges, footpaths, and sewage lines "
+        "— the real right-of-way a new pipe can actually be dug along "
+        "(manholes sit on these, not in the middle of a building)"
+    ),
     "Building": "Building footprints and structures",
     "Signage": "Road signage, markers, and street signs",
     "Vegetation": "Trees and other planted features",
+    "Elevation_Contour": "Ground elevation contour lines from a topographic survey",
+    "Drainage_Level_Point": (
+        "Surveyed invert/top level, pipe type, diameter, and condition "
+        "readings at a specific drain or manhole point — level survey "
+        "data, not the drain channel geometry itself"
+    ),
 }
 
 # Lowercased, whitespace/punctuation-normalized synonym seeds. Matched via
@@ -53,11 +63,21 @@ CLASS_SYNONYMS: dict[str, set[str]] = {
     "Utility_Pole": {"utility pole", "transformer pole", "cc camera pole"},
     "Road_Segment": {
         "concrete road", "road", "road centerline", "concrete edge",
-        "sidewalk", "footpath", "foot path",
+        "sidewalk", "footpath", "foot path", "sewage line", "sewage_line",
+        "sewerage line", "sewer line",
     },
     "Building": {"building", "building extenstions", "building extensions"},
     "Signage": {"signage", "road signage", "sign"},
     "Vegetation": {"coconut tree", "tree", "vegetation"},
+    "Elevation_Contour": {
+        "contour", "contour line", "contour line minor", "contour line major",
+        "contour line intermediate", "contour_line_minor", "contour_line_major",
+        "contour_line_intermediate",
+    },
+    "Drainage_Level_Point": {
+        "drain levels", "drain level", "manhole levels", "manhole level",
+        "invert levels", "invert level", "level point", "level points",
+    },
 }
 
 

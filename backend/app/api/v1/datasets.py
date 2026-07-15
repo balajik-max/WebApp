@@ -349,6 +349,82 @@ async def upload_dataset(
 
 
 @router.get(
+    "/building-heights",
+    dependencies=[Depends(require_any)],
+    summary="Real building extrusion heights (DSM minus DTM at each footprint) — for the 3D manhole plan view",
+)
+async def get_building_heights(
+    ward_dataset_id: uuid.UUID = Query(..., description="Vector dataset carrying Building footprints"),
+    dsm_dataset_id: uuid.UUID = Query(..., description="Digital Surface Model GeoTIFF dataset"),
+    dtm_dataset_id: uuid.UUID = Query(..., description="Digital Terrain Model GeoTIFF dataset"),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """Real building height = DSM elevation (includes rooftops) minus DTM
+    elevation (bare ground) at each building's centroid — never a guessed
+    flat storey count. Buildings whose centroid falls outside the DSM/DTM
+    raster extent, or where either sample is nodata, are returned with
+    `height_m: null` and `estimated: true` so the 3D view can fall back to
+    a stated-assumption default instead of silently treating null as 0.
+    """
+    dsm_row = (await db.execute(select(Dataset).where(Dataset.id == dsm_dataset_id))).scalar_one_or_none()
+    dtm_row = (await db.execute(select(Dataset).where(Dataset.id == dtm_dataset_id))).scalar_one_or_none()
+    if dsm_row is None or dtm_row is None or not dsm_row.storage_key or not dtm_row.storage_key:
+        raise HTTPException(status_code=404, detail="DSM or DTM dataset not found")
+
+    centroid_rows = (
+        await db.execute(
+            text(
+                "SELECT id::text AS id, ST_X(ST_Centroid(geom)) AS lon, ST_Y(ST_Centroid(geom)) AS lat "
+                "FROM features "
+                "WHERE dataset_id = :dataset_id AND attributes->>'_canonical_class' = 'Building'"
+            ),
+            {"dataset_id": str(ward_dataset_id)},
+        )
+    ).mappings().all()
+    if not centroid_rows:
+        return {"heights": {}}
+
+    from app.services.storage import get_object_bytes
+
+    dsm_bytes = await get_object_bytes(dsm_row.storage_key)
+    dtm_bytes = await get_object_bytes(dtm_row.storage_key)
+
+    import asyncio
+
+    def _sample_heights() -> dict[str, dict[str, Any]]:
+        import rasterio
+        from rasterio.io import MemoryFile
+        from rasterio.warp import transform as warp_transform
+
+        heights: dict[str, dict[str, Any]] = {}
+        with MemoryFile(dsm_bytes) as dsm_mem, dsm_mem.open() as dsm_src, \
+             MemoryFile(dtm_bytes) as dtm_mem, dtm_mem.open() as dtm_src:
+            lons = [r["lon"] for r in centroid_rows]
+            lats = [r["lat"] for r in centroid_rows]
+            dsm_xs, dsm_ys = warp_transform("EPSG:4326", dsm_src.crs, lons, lats) if dsm_src.crs else (lons, lats)
+            dtm_xs, dtm_ys = warp_transform("EPSG:4326", dtm_src.crs, lons, lats) if dtm_src.crs else (lons, lats)
+            dsm_vals = list(dsm_src.sample(zip(dsm_xs, dsm_ys)))
+            dtm_vals = list(dtm_src.sample(zip(dtm_xs, dtm_ys)))
+
+            for r, dsm_v, dtm_v in zip(centroid_rows, dsm_vals, dtm_vals):
+                dsm_val = float(dsm_v[0]) if dsm_v.size > 0 else None
+                dtm_val = float(dtm_v[0]) if dtm_v.size > 0 else None
+                if dsm_src.nodata is not None and dsm_val == dsm_src.nodata:
+                    dsm_val = None
+                if dtm_src.nodata is not None and dtm_val == dtm_src.nodata:
+                    dtm_val = None
+                if dsm_val is None or dtm_val is None:
+                    heights[r["id"]] = {"height_m": None, "estimated": True}
+                    continue
+                height_m = round(max(0.0, dsm_val - dtm_val), 2)
+                heights[r["id"]] = {"height_m": height_m, "estimated": False}
+        return heights
+
+    heights = await asyncio.to_thread(_sample_heights)
+    return {"heights": heights}
+
+
+@router.get(
     "/{dataset_id}",
     response_model=DatasetOut,
     dependencies=[Depends(require_any)],
@@ -390,6 +466,68 @@ async def get_raster_preview(
 
     png_bytes = _render_preview_variant(png_bytes, mode=mode)
     return Response(content=png_bytes, media_type="image/png")
+
+
+@router.get(
+    "/{dataset_id}/dem-grid",
+    dependencies=[Depends(require_any)],
+    summary="Real elevation grid sampled from a single-band GeoTIFF (DTM/DSM) — for the 3D manhole plan view",
+)
+async def get_dem_grid(
+    dataset_id: uuid.UUID,
+    resolution: int = Query(150, ge=20, le=300),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """Reads the ORIGINAL uploaded GeoTIFF (not the stretched preview PNG),
+    decimates it to a `resolution x resolution` grid via rasterio, and
+    returns real elevation values + real EPSG:4326 bounds. This is a plain
+    grid, not an XYZ tile pyramid, because the 3D view renders one bounded
+    ward at a time — a single fetch is simpler and more accurate than
+    standing up a raster-dem tile server for that.
+    """
+    row = (await db.execute(select(Dataset).where(Dataset.id == dataset_id))).scalar_one_or_none()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+    if row.file_type != "geotiff" or not row.storage_key:
+        raise HTTPException(status_code=400, detail="This dataset is not a single-raster GeoTIFF (DTM/DSM)")
+
+    from app.services.storage import get_object_bytes
+
+    try:
+        raw_bytes = await get_object_bytes(row.storage_key)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=404, detail="Raster file not found in storage") from exc
+
+    import asyncio
+
+    def _read_grid() -> dict[str, Any]:
+        import numpy as np
+        import rasterio
+        from rasterio.enums import Resampling
+        from rasterio.io import MemoryFile
+        from rasterio.warp import transform_bounds
+
+        with MemoryFile(raw_bytes) as memfile, memfile.open() as src:
+            data = src.read(
+                1,
+                out_shape=(resolution, resolution),
+                resampling=Resampling.bilinear,
+            ).astype("float64")
+            if src.nodata is not None:
+                data[data == src.nodata] = float("nan")
+            bounds = transform_bounds(src.crs, "EPSG:4326", *src.bounds) if src.crs else src.bounds
+
+        elevations = [
+            [None if np.isnan(v) else round(float(v), 3) for v in row_vals]
+            for row_vals in data
+        ]
+        return {
+            "bounds": {"min_lon": bounds[0], "min_lat": bounds[1], "max_lon": bounds[2], "max_lat": bounds[3]},
+            "resolution": resolution,
+            "elevations": elevations,
+        }
+
+    return await asyncio.to_thread(_read_grid)
 
 
 @router.patch(

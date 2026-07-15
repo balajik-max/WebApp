@@ -290,17 +290,33 @@ class GISReader:
                     best_ratio = ratio
                     category_col = col_name
 
+        # A zipped File Geodatabase concatenates many original GDB feature
+        # classes into one GeoDataFrame, but category_col above is a single
+        # column name chosen heuristically for the WHOLE frame — some GDB
+        # layers only carry their type in the per-row gdb_layer field, not
+        # in whatever column category_col landed on. This helper is THE
+        # single definition of "what category is this row" and must be used
+        # everywhere a raw category is needed, so classification (below)
+        # and the stored Feature.category (further down) never disagree.
+        gdb_layer_col = columns_lower.get("gdb_layer")
+
+        def _effective_category(row: pd.Series) -> str | None:
+            val = _clean_str(row.get(category_col)) if category_col is not None else None
+            if val is None and gdb_layer_col is not None:
+                val = _clean_str(row.get(gdb_layer_col))
+            return val
+
         # Resolve every distinct raw category string in this batch to a
         # canonical asset class ONCE (see app.services.classification) —
         # this is what keeps semantic classification cheap regardless of
         # how many feature rows share that category.
         canonical_by_category: dict[str, str] = {}
         async with SessionLocal() as classify_session:
-            if category_col is not None:
+            if category_col is not None or gdb_layer_col is not None:
                 distinct_categories = {
-                    c for c in gdf[category_col].dropna().unique().tolist()
-                    if _clean_str(c) is not None
+                    _effective_category(row) for _, row in gdf.iterrows()
                 }
+                distinct_categories.discard(None)
                 resolutions = await resolve_canonical_classes_bulk(
                     {str(c) for c in distinct_categories}, classify_session
                 )
@@ -322,10 +338,9 @@ class GISReader:
                     geom = force_2d(geom)
 
                 attrs = _row_attributes(row.to_dict())
-                if category_col is not None:
-                    raw_category = _clean_str(row.get(category_col))
-                    if raw_category is not None:
-                        attrs["_canonical_class"] = canonical_by_category.get(raw_category)
+                effective_category = _effective_category(row)
+                if effective_category is not None:
+                    attrs["_canonical_class"] = canonical_by_category.get(effective_category)
                 # Round-trip through json so any exotic types raise here, not in DB.
                 json.dumps(attrs)
 
@@ -343,19 +358,10 @@ class GISReader:
                     # problem keywords instead of leaving every row at 0.0.
                     severity_val = infer_severity_from_attributes(attrs)
 
-                # Prefer the dataset's explicit category/LAYER field. For a
-                # zipped File Geodatabase, fall back per row to the real GDB
-                # feature-class name captured in ``gdb_layer``. The per-row
-                # fallback matters when an explicit LAYER column exists but is
-                # blank for only some feature classes.
-                category_value = (
-                    _clean_category(row.get(category_col))
-                    if category_col is not None
-                    else None
-                )
-                gdb_layer_col = columns_lower.get("gdb_layer")
-                if category_value is None and gdb_layer_col is not None:
-                    category_value = _clean_category(row.get(gdb_layer_col))
+                # Same value used for classification above (_effective_category),
+                # re-cleaned through _clean_category for whitespace normalization
+                # in the stored/displayed field — the two must never diverge.
+                category_value = _clean_category(effective_category) if effective_category is not None else None
 
                 batch.append(
                     Feature(

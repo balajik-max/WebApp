@@ -29,6 +29,9 @@ import { AnalyticsScopeBar } from "../components/analytics/AnalyticsScopeBar";
 import { AnalyticsCategoryMap } from "../components/analytics/AnalyticsCategoryMap";
 import { AnalyticsFeatureTable } from "../components/analytics/AnalyticsFeatureTable";
 import { AnalyticsAiSummary } from "../components/analytics/AnalyticsAiSummary";
+import { ManholeRecommendCard } from "../components/ManholeRecommendCard";
+import type { AiAnswer } from "../lib/ai";
+import { aiManholeRecommend } from "../lib/ai"; // for the manhole plan API
 
 const STATUS_COLORS: Record<string, string> = {
   open: "#3b82f6",
@@ -594,7 +597,83 @@ export function AnalyticsView() {
         </section>
       )}
 
+      {appliedDatasetIds.length > 0 && (
+        <section className="chart-card analytics-ai-card" data-testid="manhole-plan-section">
+          <div className="chart-card__header">
+            <div>
+              <div className="analytics-card-eyebrow">Planning</div>
+              <h3 className="chart-card__title">AI Manhole Plan</h3>
+            </div>
+          </div>
+          <div className="chart-card__body">
+            <p className="analytics-ai-card__note">
+              AI-driven rehabilitation for the applied scope: all disconnected and blocked/bad-condition manholes are surfaced with exact road-routed pipe routes and GeoJSON export.
+            </p>
+            {appliedDatasetIds.map((datasetId) => {
+              const datasetName = datasets.find((d) => d.id === datasetId)?.name ?? datasetId;
+              return (
+                <div key={datasetId} style={{ marginTop: 24, borderTop: "1px solid var(--edge)", paddingTop: 24 }}>
+                  <div style={{ fontWeight: 600, marginBottom: 12 }}>{datasetName} – Manhole Plan</div>
+                  <ManholePlanPanel datasetId={datasetId} />
+                </div>
+              );
+            })}
+          </div>
+        </section>
+      )}
+
       <AnalyticsAiSummary datasetIds={appliedDatasetIds} categories={appliedCategories} />
+    </div>
+  );
+}
+
+interface ManholePlanPanelProps {
+  datasetId: string;
+}
+
+function ManholePlanPanel({ datasetId }: ManholePlanPanelProps) {
+  const [answer, setAnswer] = useState<AiAnswer | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [open, setOpen] = useState(false);
+
+  async function load() {
+    if (loading) return;
+    setLoading(true);
+    setError(null);
+    setAnswer(null);
+    try {
+      const answer = await aiManholeRecommend({ mode: "area", dataset_id: datasetId });
+      setAnswer(answer);
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  return (
+    <div>
+      <button
+        type="button"
+        className="analytics-ai-card__button"
+        style={{ marginBottom: open ? 16 : 0, width: "fit-content" }}
+        onClick={() => {
+          if (!open && !answer) void load();
+          setOpen((v) => !v);
+        }}
+        disabled={loading}
+      >
+        {loading ? "Planning…" : open ? "Hide Plan" : "Generate AI Manhole Plan"}
+      </button>
+
+      {open && (
+        <>
+          {loading && <div className="analytics-ai-card__loading">Analyzing manhole and drain network…</div>}
+          {error && <div className="analytics-inline-error">Failed to load manhole plan: {error}</div>}
+          {answer && <ManholeRecommendCard answer={answer} loading={false} error={null} onClose={() => setOpen(false)} />}
+        </>
+      )}
     </div>
   );
 }

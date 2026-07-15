@@ -44,13 +44,25 @@ channel width for the descriptive `overlap_pct`/`overlap_area_m2`
 figures shown in the tooltip/AI explanation, and plays no part in
 deciding whether a row exists or what color it gets.
 
-Goal 3 — Manhole status: for every Access_Point (manhole), find the nearest
-Drainage_Asset and read its labeled open/closed status. Every manhole gets
-a row — unlike goals 1-2, there's no "quiet, unflagged" state for a manhole,
-since confirming "this one's fine" is itself useful. Red = directly at a
-closed drain (within MANHOLE_RED_DISTANCE_M), yellow = a closed drain is
-nearby but farther off (less certain this manhole is the one affected),
-green = nearest drain is open or none found within range.
+Goal 3 — Manhole status: every Access_Point (manhole) was actually
+surveyed with its own Condition ("Good"/"Bad"/"Fair"/"Damage") — that is
+the primary, most direct evidence and takes priority over any inferred
+proxy:
+  - Condition is a bad-token ("Bad", "Damage", ...) -> RED.
+  - Top_Level is present but unparseable (e.g. "Blocked") -> RED — a
+    literal recorded blockage, even stronger evidence than Condition.
+  - Condition is a good-token ("Good", ...) -> GREEN.
+  - Condition is recorded but neither clearly good nor bad (e.g. "Fair")
+    -> YELLOW.
+Only when the manhole's own row gives NO signal at all (no Condition, no
+Top_Level entry — true for roughly half of this dataset) does the
+detector fall back to secondary real evidence, in order: recorded
+Silt_Level (siltation present -> YELLOW), then nearest-drain proximity
+(the original goal-3 rule: red = directly at a closed drain within
+MANHOLE_RED_DISTANCE_M, yellow = a closed drain nearby but farther off,
+green = nearest drain is open or none found). Every manhole still gets a
+row — there is no "quiet, unflagged" state, since confirming "this one's
+fine" is itself useful.
 """
 from __future__ import annotations
 
@@ -62,6 +74,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.dataset import Dataset
 from app.models.spatial_anomaly import AnomalyColor, AnomalyStatus, AnomalyType, SpatialAnomaly
+from app.services.manhole_recommend import is_bad_condition, is_good_condition, parse_level_m
 
 # Per-class DBSCAN epsilon (meters). Only Illumination_Asset is clustered in
 # Phase 1; other classes can get their own entry here later without touching
@@ -329,6 +342,7 @@ async def _detect_manhole_status(
         await db.execute(
             text(
                 "SELECT m.id AS manhole_id, ST_X(m.geom) AS x, ST_Y(m.geom) AS y, "
+                "       m.attributes AS attributes, "
                 "       nearest.drain_id, nearest.drain_category, nearest.distance_m "
                 "FROM features m "
                 "LEFT JOIN LATERAL ( "
@@ -352,18 +366,51 @@ async def _detect_manhole_status(
     anomalies: list[SpatialAnomaly] = []
 
     for r in rows:
+        attrs = r["attributes"] or {}
+        raw_condition = (attrs.get("Condition") or "").strip() or None
+        raw_top_level = (attrs.get("Top_Level") or "").strip() or None
+        raw_silt = (attrs.get("Silt_Level") or "").strip() or None
         drain_category = (r["drain_category"] or "").lower()
         distance_m = r["distance_m"]
-        if "closed" in drain_category:
-            # Directly at/near the closed drain -> red. Still within the
-            # search radius but farther away -> yellow: a closed drain is
-            # nearby, but this manhole isn't necessarily the one blocked.
-            color = AnomalyColor.RED if (distance_m is not None and distance_m <= MANHOLE_RED_DISTANCE_M) else AnomalyColor.YELLOW
-        else:
-            # Open, or no nearby drain found at all / ambiguous label —
-            # default to green (no evidence of a problem) rather than
-            # flagging red on a guess.
+
+        if raw_top_level is not None and parse_level_m(raw_top_level) is None:
+            # A recorded-but-unparseable level (e.g. "Blocked") is a literal
+            # reported blockage — stronger evidence than Condition itself.
+            color = AnomalyColor.RED
+            basis = f"Top level recorded as \"{raw_top_level}\" — physically blocked"
+        elif is_bad_condition(raw_condition):
+            color = AnomalyColor.RED
+            basis = f"Surveyed condition: \"{raw_condition}\""
+        elif is_good_condition(raw_condition):
             color = AnomalyColor.GREEN
+            basis = f"Surveyed condition: \"{raw_condition}\""
+        elif raw_condition is not None:
+            # A condition WAS recorded but isn't clearly good or bad (e.g.
+            # "Fair") — genuinely ambiguous, not a guess either way.
+            color = AnomalyColor.YELLOW
+            basis = f"Surveyed condition: \"{raw_condition}\" (neither clearly good nor bad)"
+        elif raw_silt is not None and raw_silt.lower() != "no":
+            color = AnomalyColor.YELLOW
+            basis = f"No condition recorded; silt level recorded at {raw_silt} — siltation present"
+        elif "closed" in drain_category:
+            # No direct signal on the manhole itself — fall back to the
+            # original proxy: directly at/near a closed drain -> red,
+            # nearby but farther off -> yellow (less certain this manhole
+            # is the one affected).
+            if distance_m is not None and distance_m <= MANHOLE_RED_DISTANCE_M:
+                color = AnomalyColor.RED
+            else:
+                color = AnomalyColor.YELLOW
+            basis = (
+                f"No condition recorded; nearest drain is {r['drain_category']} and "
+                f"{distance_m:.1f} m away" if distance_m is not None
+                else f"No condition recorded; nearest drain is {r['drain_category']}"
+            )
+        else:
+            color = AnomalyColor.GREEN
+            basis = (
+                "No condition recorded; nearest drain is open or none found nearby"
+            )
 
         counts[color.value] += 1
         anomalies.append(
@@ -377,6 +424,8 @@ async def _detect_manhole_status(
                 feature_ids=[r["manhole_id"], *([r["drain_id"]] if r["drain_id"] else [])],
                 anomaly_metadata={
                     "manhole_id": str(r["manhole_id"]),
+                    "basis": basis,
+                    "surveyed_condition": raw_condition,
                     "nearest_drain_id": str(r["drain_id"]) if r["drain_id"] else None,
                     "nearest_drain_category": r["drain_category"],
                     "nearest_drain_distance_m": round(float(r["distance_m"]), 2) if r["distance_m"] is not None else None,
