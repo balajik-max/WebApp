@@ -1569,7 +1569,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
           return !objIds.has(did);
         });
 
-    src.setData(features as unknown as GeoJSON.FeatureCollection);
+    src.setData({ type: "FeatureCollection", features } as unknown as GeoJSON.FeatureCollection);
     // Keep the exact dashboard snapshot available to Street View. The
     // panorama applies the same client-side layer visibility controls and
     // creates nearby, georeferenced markers without issuing another request.
