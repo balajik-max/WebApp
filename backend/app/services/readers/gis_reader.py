@@ -20,6 +20,7 @@ from typing import Any
 import geopandas as gpd
 import pandas as pd
 import pyogrio
+from pyproj import CRS
 from geoalchemy2.shape import from_shape
 from shapely import force_2d
 from shapely.geometry.base import BaseGeometry
@@ -121,7 +122,7 @@ class GISReader:
         gdb_entry = _find_gdb_entry(file_path) if file_path.suffix.lower() == ".zip" else None
 
         if gdb_entry is not None:
-            gdf = self._load_zipped_gdb(file_path, gdb_entry)
+            gdf, source_crs = self._load_zipped_gdb(file_path, gdb_entry)
         elif file_path.suffix.lower() == ".zip":
             # Zipped Shapefiles → let pyogrio unpack via the /vsizip/ handler.
             # NOTE: SHAPE_RESTORE_SHX is deliberately NOT enabled here — GDAL
@@ -138,7 +139,8 @@ class GISReader:
             finally:
                 pyogrio.set_gdal_config_options({"SHAPE_RESTORE_SHX": "NO"})
 
-        source_crs = str(gdf.crs) if gdf.crs is not None else None
+        if gdb_entry is None:
+            source_crs = self._normalize_horizontal_crs(gdf.crs)
 
         if gdf.crs is None:
             log.warning(
@@ -151,7 +153,22 @@ class GISReader:
 
         return gdf, source_crs
 
-    def _load_zipped_gdb(self, file_path: Path, gdb_entry: str) -> gpd.GeoDataFrame:
+    @staticmethod
+    def _normalize_horizontal_crs(raw_crs: Any) -> str | None:
+        if raw_crs is None:
+            return None
+        try:
+            horizontal = CRS.from_user_input(raw_crs).to_2d()
+        except Exception:  # noqa: BLE001
+            return str(raw_crs)
+        authority = horizontal.to_authority()
+        return f"{authority[0]}:{authority[1]}" if authority else horizontal.to_string()
+
+    def _load_zipped_gdb(
+        self,
+        file_path: Path,
+        gdb_entry: str,
+    ) -> tuple[gpd.GeoDataFrame, str | None]:
         """Read every layer out of a zipped Esri File Geodatabase.
 
         GDAL's OpenFileGDB driver reads a `.gdb` directory directly; inside
@@ -165,6 +182,7 @@ class GISReader:
             raise ValueError(f"No readable layers found in geodatabase '{gdb_entry}'")
 
         frames: list[gpd.GeoDataFrame] = []
+        source_crs_values: set[str] = set()
         for layer_name, _geom_type in layers:
             try:
                 # OpenFileGDB exposes its true source FID through the frame
@@ -184,6 +202,10 @@ class GISReader:
                 continue
             if layer_gdf.empty:
                 continue
+
+            normalized_source_crs = self._normalize_horizontal_crs(layer_gdf.crs)
+            if normalized_source_crs:
+                source_crs_values.add(normalized_source_crs)
 
             # Real-world GDBs frequently mix CRS across layers — e.g. one
             # layer in a plain projected CRS and another with a vertical
@@ -215,7 +237,22 @@ class GISReader:
             raise ValueError(f"No usable features found in any layer of '{gdb_entry}'")
 
         combined = pd.concat(frames, ignore_index=True)
-        return gpd.GeoDataFrame(combined, geometry="geometry", crs=_TARGET_CRS)
+        source_crs: str | None = None
+        if len(source_crs_values) == 1:
+            source_crs = next(iter(source_crs_values))
+        elif len(source_crs_values) > 1:
+            log.warning(
+                "GDB %s contains multiple horizontal source CRSs: %s. "
+                "The combined display geometry remains EPSG:4326, but a single "
+                "dataset-level source CRS cannot be declared safely.",
+                gdb_entry,
+                sorted(source_crs_values),
+            )
+
+        return (
+            gpd.GeoDataFrame(combined, geometry="geometry", crs=_TARGET_CRS),
+            source_crs,
+        )
 
     async def _persist(
         self,
