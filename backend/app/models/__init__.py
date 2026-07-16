@@ -19,3 +19,4 @@ from app.models.spatial_anomaly import (  # noqa: F401
 )
 from app.models.survey_request import SurveyRequest, SurveyRequestStatus  # noqa: F401
 from app.models.user import User, UserRole  # noqa: F401
+from app.models.ward_census import CityCensusSummary, WardCensus  # noqa: F401

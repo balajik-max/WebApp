@@ -41,6 +41,7 @@ python-multipart==0.0.20
 
 # HTTP client for Ollama & internal calls
 httpx==0.27.2
+beautifulsoup4==4.12.3
 
 # Utility
 python-slugify==8.0.4

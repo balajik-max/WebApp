@@ -160,6 +160,16 @@ export class Obj3DMapLayer implements CustomLayerInterface {
     this.camera.projectionMatrix = m.multiply(l);
     this.renderer.resetState();
     this.renderer.render(this.scene, this.camera);
+    // Three's own draw needs normal depth test/write to sort the mesh's
+    // faces against each other correctly, but that leaves depth values in
+    // the shared buffer that other MapLibre layers drawn after this one
+    // could then test against and lose to (a building's roof, say, is
+    // nearer the camera than a flat marker at the same lon/lat). Wiping the
+    // depth buffer right after this draw discards those values so every
+    // later 2D layer always wins — this mesh only ever paints underneath,
+    // never occludes, regardless of its own elevation.
+    _gl.depthMask(true);
+    _gl.clear(_gl.DEPTH_BUFFER_BIT);
   }
 
   onRemove(): void {

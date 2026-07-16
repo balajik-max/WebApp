@@ -241,7 +241,59 @@ class ManholeReadinessReport(BaseModel):
     generated_at: datetime
 
 
-# ---------- Notifications -------------------------------------------------
+# ---------- Ward water demand ----------------------------------------------
+class WardCensusInfo(BaseModel):
+    ward_no: int | None
+    ward_name: str | None
+    males: int | None
+    females: int | None
+    persons: int | None
+    area_sq_km: float | None
+    population_per_sq_km: float | None
+    match_method: Literal["exact", "fuzzy", "none"]
+    match_confidence: float
+    data_source: Literal["live", "cached", "unavailable"]
+    source_fetched_at: datetime | None
+
+
+class WaterDemandLineItemOut(BaseModel):
+    key: str
+    label: str
+    liters_per_day: float
+    explanation: str
+
+
+class WardSupplyComparisonOut(BaseModel):
+    ward_demand_mld: float
+    expected_supply_mld: float
+    city_total_supply_mld: float
+    city_total_population: int
+    deficit_mld: float
+    surplus_mld: float
+    demand_vs_expected_supply_pct: float
+    is_deficit: bool
+    note: str
+
+
+class WardWaterDemandReport(BaseModel):
+    ward_label: str
+    census: WardCensusInfo
+    population_used: int | None
+    population_source: Literal["census", "manual_override", "unavailable"]
+    floating_population: int
+    building_count_surveyed: int
+    total_liters_per_day: float | None
+    total_mld: float | None
+    fire_demand_liters: float | None
+    lpcd: float | None
+    lpcd_source: str | None
+    line_items: list[WaterDemandLineItemOut]
+    supply_comparison: WardSupplyComparisonOut | None = None
+    methodology: str
+    generated_at: datetime
+
+
+# ---------- Notifications ---------------------------------------------------
 class NotificationOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 

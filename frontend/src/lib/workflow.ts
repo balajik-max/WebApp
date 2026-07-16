@@ -388,6 +388,80 @@ export function fetchAnalyticsQuality(
 
 
 
+export interface WardCensusInfo {
+  ward_no: number | null;
+  ward_name: string | null;
+  males: number | null;
+  females: number | null;
+  persons: number | null;
+  area_sq_km: number | null;
+  population_per_sq_km: number | null;
+  match_method: "exact" | "fuzzy" | "none";
+  match_confidence: number;
+  data_source: "live" | "cached" | "unavailable";
+  source_fetched_at: string | null;
+}
+
+export interface WaterDemandLineItem {
+  key: string;
+  label: string;
+  liters_per_day: number;
+  explanation: string;
+}
+
+export interface WardWaterDemandReport {
+  ward_label: string;
+  census: WardCensusInfo;
+  population_used: number | null;
+  population_source: "census" | "manual_override" | "unavailable";
+  floating_population: number;
+  building_count_surveyed: number;
+  total_liters_per_day: number | null;
+  total_mld: number | null;
+  fire_demand_liters: number | null;
+  lpcd: number | null;
+  lpcd_source: string | null;
+  line_items: WaterDemandLineItem[];
+  supply_comparison: WardSupplyComparison | null;
+  methodology: string;
+  generated_at: string;
+}
+
+export interface WardSupplyComparison {
+  ward_demand_mld: number;
+  expected_supply_mld: number;
+  city_total_supply_mld: number;
+  city_total_population: number;
+  deficit_mld: number;
+  surplus_mld: number;
+  demand_vs_expected_supply_pct: number;
+  is_deficit: boolean;
+  note: string;
+}
+
+export interface WardWaterDemandOverrides {
+  floatingPopulation?: number;
+  populationOverride?: number;
+  lpcdOverride?: number;
+}
+
+export function fetchWardWaterDemand(
+  ward: string,
+  datasetIds: string[],
+  signal?: AbortSignal,
+  overrides: WardWaterDemandOverrides = {}
+) {
+  const params = analyticsScopeParams(datasetIds, [], { wards: [ward] });
+  if (overrides.floatingPopulation) params.set("floating_population", String(overrides.floatingPopulation));
+  if (overrides.populationOverride != null) params.set("population_override", String(overrides.populationOverride));
+  if (overrides.lpcdOverride != null) params.set("lpcd_override", String(overrides.lpcdOverride));
+  const query = params.toString();
+  return apiGet<WardWaterDemandReport>(
+    `/api/v1/analytics/water-demand${query ? `?${query}` : ""}`,
+    signal
+  );
+}
+
 export type AnalyticsExportFormat = "csv" | "xlsx" | "pdf" | "geojson";
 
 export async function downloadAnalyticsExport(

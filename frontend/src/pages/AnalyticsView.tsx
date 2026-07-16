@@ -38,6 +38,7 @@ import { AnalyticsQualityPanel } from "../components/analytics/AnalyticsQualityP
 import { AnalyticsExportPanel } from "../components/analytics/AnalyticsExportPanel";
 import { AnalyticsManholeReadiness } from "../components/analytics/AnalyticsManholeReadiness";
 import { AnalyticsSeverityVisualization } from "../components/analytics/AnalyticsSeverityVisualization";
+import { AnalyticsWaterDemandPanel } from "../components/analytics/AnalyticsWaterDemandPanel";
 
 const STATUS_COLORS: Record<string, string> = {
   open: "#3b82f6",
@@ -403,6 +404,13 @@ export function AnalyticsView() {
         .slice(0, 8)
     : [];
 
+  // Auto-select the first ward if exactly one exists and none is selected
+  useEffect(() => {
+    if (overview?.ward_breakdown?.length === 1 && activeWard == null) {
+      setActiveWard(overview.ward_breakdown[0].ward);
+    }
+  }, [overview?.ward_breakdown, activeWard]);
+
   const heatmapData = useMemo(() => {
     if (!overview) return [];
     return overview.category_breakdown.slice(0, 8).map((category) => ({
@@ -748,6 +756,8 @@ export function AnalyticsView() {
           setActiveReadinessStatus(null);
         }}
       />
+
+      <AnalyticsWaterDemandPanel datasetIds={appliedDatasetIds} ward={activeWard} />
 
       <section ref={spatialSectionRef} className="chart-grid chart-grid--2 analytics-spatial-grid">
         <AnalyticsCategoryMap

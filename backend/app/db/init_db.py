@@ -21,6 +21,7 @@ from app.models import User, UserRole  # noqa: F401  (import to register all mod
 from app.models import (  # noqa: F401
     ActivityLog,
     CategoryClassMap,
+    CityCensusSummary,
     Comment,
     Dataset,
     Feature,
@@ -29,6 +30,7 @@ from app.models import (  # noqa: F401
     ReviewItem,
     SpatialAnomaly,
     SurveyRequest,
+    WardCensus,
 )
 
 log = logging.getLogger("davangere.db.init")

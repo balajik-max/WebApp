@@ -15,7 +15,7 @@ from datetime import datetime, timezone
 import json
 import uuid
 
-from fastapi import APIRouter, Depends, Query, Response
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from sqlalchemy import case, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -34,6 +34,9 @@ from app.schemas.workflow import (
     SeverityBucket,
     StatusBreakdown,
     WardBreakdown,
+    WardCensusInfo,
+    WardWaterDemandReport,
+    WaterDemandLineItemOut,
 )
 
 from app.services.analytics.exports import AnalyticsExportFormat, build_analytics_export
@@ -57,6 +60,7 @@ from app.services.analytics.scope import (
     clean_wards,
     feature_conditions,
 )
+from app.services.analytics.ward_water_demand import build_ward_water_demand
 
 router = APIRouter()
 
@@ -633,4 +637,98 @@ async def analytics_export(
             "Cache-Control": "no-store",
             "X-Content-Type-Options": "nosniff",
         },
+    )
+
+
+@router.get(
+    "/water-demand",
+    response_model=WardWaterDemandReport,
+    dependencies=[Depends(require_any)],
+    summary="Ward population (live from the Corporation's census pages) and estimated water demand",
+)
+async def analytics_water_demand(
+    ward: list[str] = Query(
+        ...,
+        description="Exactly one ward is required to scope a water-demand report.",
+    ),
+    dataset_id: list[uuid.UUID] | None = Query(default=None),
+    floating_population: int = Query(
+        default=0,
+        ge=0,
+        description="Optional transient population (markets, bus stand, festivals) added to the census figure.",
+    ),
+    population_override: int | None = Query(
+        default=None,
+        ge=0,
+        description="Manual correction: use this population instead of the resolved census figure.",
+    ),
+    lpcd_override: float | None = Query(
+        default=None,
+        gt=0,
+        description="Manual correction: use this per-capita allowance (litres/person/day) instead of the resolved default.",
+    ),
+    db: AsyncSession = Depends(get_db),
+) -> WardWaterDemandReport:
+    dataset_ids = list(dict.fromkeys(dataset_id or []))
+    wards = clean_wards(ward)
+    if len(wards) != 1:
+        raise HTTPException(
+            status_code=400,
+            detail="Exactly one ward value is required for a water-demand report.",
+        )
+    ward_label = wards[0]
+
+    result = await build_ward_water_demand(
+        db,
+        ward_label=ward_label,
+        dataset_ids=dataset_ids,
+        floating_population=floating_population,
+        population_override=population_override,
+        lpcd_override=lpcd_override,
+    )
+
+    matched = result.resolution.matched
+    census = WardCensusInfo(
+        ward_no=matched.ward_no if matched else None,
+        ward_name=matched.ward_name if matched else None,
+        males=matched.males if matched else None,
+        females=matched.females if matched else None,
+        persons=matched.persons if matched else None,
+        area_sq_km=matched.area_sq_km if matched else None,
+        population_per_sq_km=(
+            round(matched.persons / matched.area_sq_km, 1)
+            if matched and matched.area_sq_km
+            else None
+        ),
+        match_method=result.resolution.match_method,
+        match_confidence=result.resolution.match_confidence,
+        data_source=result.resolution.data_source,
+        source_fetched_at=result.resolution.source_fetched_at,
+    )
+
+    breakdown = result.breakdown
+    return WardWaterDemandReport(
+        ward_label=result.ward_label,
+        census=census,
+        population_used=result.population_used,
+        population_source=result.population_source,  # type: ignore[arg-type]
+        floating_population=result.floating_population,
+        building_count_surveyed=result.building_count_surveyed,
+        total_liters_per_day=breakdown.total_liters_per_day if breakdown else None,
+        total_mld=breakdown.total_mld if breakdown else None,
+        fire_demand_liters=breakdown.fire_demand_liters if breakdown else None,
+        lpcd=result.lpcd,
+        lpcd_source=result.lpcd_source,
+        line_items=[
+            WaterDemandLineItemOut(
+                key=item.key,
+                label=item.label,
+                liters_per_day=item.liters_per_day,
+                explanation=item.explanation,
+            )
+            for item in (breakdown.line_items if breakdown else [])
+        ],
+        supply_comparison=result.supply_comparison,
+        methodology=result.methodology,
+        generated_at=result.generated_at,
     )

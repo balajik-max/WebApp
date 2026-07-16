@@ -47,6 +47,7 @@ from app.services.analytics.readiness import (
     readiness_fields,
 )
 from app.services.analytics.scope import CATEGORY_EXPR, SeverityBucketName, feature_conditions
+from app.services.analytics.ward_water_demand import WardWaterDemandResult, build_ward_water_demand
 
 AnalyticsExportFormat = Literal["csv", "xlsx", "pdf", "geojson"]
 
@@ -404,7 +405,28 @@ async def _load_detail_rows(
     ]
 
 
-def _csv_bytes(rows: list[ExportRow]) -> bytes:
+def _write_water_demand_csv_block(writer, water_demand: WardWaterDemandResult) -> None:
+    writer.writerow([])
+    writer.writerow(["# Ward Water Demand", water_demand.ward_label])
+    census = water_demand.resolution.matched
+    writer.writerow(["Data source", water_demand.resolution.data_source])
+    writer.writerow(["Ward match method", water_demand.resolution.match_method])
+    writer.writerow(["Ward match confidence", water_demand.resolution.match_confidence])
+    writer.writerow(["Census ward name", census.ward_name if census else ""])
+    writer.writerow(["Population used", water_demand.population_used])
+    writer.writerow(["Population source", water_demand.population_source])
+    writer.writerow(["Floating population", water_demand.floating_population])
+    writer.writerow(["Buildings surveyed", water_demand.building_count_surveyed])
+    if water_demand.breakdown is not None:
+        for item in water_demand.breakdown.line_items:
+            writer.writerow([item.label, round(item.liters_per_day, 1)])
+        writer.writerow(["Fire-fighting provision (litres, not in daily total)", water_demand.breakdown.fire_demand_liters])
+        writer.writerow(["Total (litres/day)", water_demand.breakdown.total_liters_per_day])
+        writer.writerow(["Total (MLD)", water_demand.breakdown.total_mld])
+    writer.writerow(["Methodology", water_demand.methodology])
+
+
+def _csv_bytes(rows: list[ExportRow], water_demand: WardWaterDemandResult | None = None) -> bytes:
     output = StringIO(newline="")
     writer = csv.writer(output)
     writer.writerow(
@@ -440,6 +462,8 @@ def _csv_bytes(rows: list[ExportRow]) -> bytes:
                 row.wkt,
             ]
         )
+    if water_demand is not None:
+        _write_water_demand_csv_block(writer, water_demand)
     return output.getvalue().encode("utf-8-sig")
 
 
@@ -498,10 +522,40 @@ def _autosize_sheet(ws, *, max_width: int = 42) -> None:
         ws.column_dimensions[get_column_letter(column_cells[0].column)].width = max(10, width)
 
 
+def _append_water_demand_sheet(wb: Workbook, water_demand: WardWaterDemandResult) -> None:
+    ws = wb.create_sheet("Water Demand")
+    ws.append(["Ward Water Demand", water_demand.ward_label])
+    _style_excel_header(ws, 1, 2)
+    census = water_demand.resolution.matched
+    ws.append(["Data source", water_demand.resolution.data_source])
+    ws.append(["Ward match method", water_demand.resolution.match_method])
+    ws.append(["Ward match confidence", water_demand.resolution.match_confidence])
+    ws.append(["Census ward name", census.ward_name if census else "No confident match"])
+    ws.append(["Males", census.males if census else None])
+    ws.append(["Females", census.females if census else None])
+    ws.append(["Area (sq km)", census.area_sq_km if census else None])
+    ws.append(["Population used", water_demand.population_used])
+    ws.append(["Population source", water_demand.population_source])
+    ws.append(["Floating population", water_demand.floating_population])
+    ws.append(["Buildings surveyed", water_demand.building_count_surveyed])
+    ws.append([])
+    ws.append(["Line item", "Litres/day", "Explanation"])
+    _style_excel_header(ws, ws.max_row, 3)
+    if water_demand.breakdown is not None:
+        for item in water_demand.breakdown.line_items:
+            ws.append([item.label, item.liters_per_day, item.explanation])
+        ws.append(["Fire-fighting provision (not in daily total)", water_demand.breakdown.fire_demand_liters, ""])
+        ws.append(["TOTAL", water_demand.breakdown.total_liters_per_day, f"{water_demand.breakdown.total_mld} MLD"])
+    ws.append([])
+    ws.append(["Methodology", water_demand.methodology])
+    _autosize_sheet(ws, max_width=70)
+
+
 def _xlsx_bytes(
     rows: list[ExportRow],
     summary: ExportSummary,
     quality: AnalyticsQualityReport,
+    water_demand: WardWaterDemandResult | None = None,
 ) -> bytes:
     wb = Workbook()
     summary_ws = wb.active
@@ -604,11 +658,12 @@ def _xlsx_bytes(
         cell.number_format = "0.0%" if float(cell.value or 0) <= 1 else "0.0"
     _autosize_sheet(findings_ws, max_width=60)
 
+    if water_demand is not None:
+        _append_water_demand_sheet(wb, water_demand)
+
     output = BytesIO()
     wb.save(output)
     return output.getvalue()
-
-
 
 
 _SEVERITY_HEX = {"low": "#22C55E", "medium": "#F59E0B", "high": "#EF4444"}
@@ -842,7 +897,11 @@ def _map_drawing(summary: ExportSummary, *, width: float = 480, height: float = 
     return drawing
 
 
-def _pdf_bytes(summary: ExportSummary, quality: AnalyticsQualityReport) -> bytes:
+def _pdf_bytes(
+    summary: ExportSummary,
+    quality: AnalyticsQualityReport,
+    water_demand: WardWaterDemandResult | None = None,
+) -> bytes:
     output = BytesIO()
     doc = SimpleDocTemplate(
         output,
@@ -939,6 +998,62 @@ def _pdf_bytes(summary: ExportSummary, quality: AnalyticsQualityReport) -> bytes
     ]))
     story.append(preview_table)
 
+    if water_demand is not None:
+        story.extend([PageBreak(), Paragraph("Ward Water Demand", heading_style)])
+        census = water_demand.resolution.matched
+        demand_info = [
+            ["Ward", water_demand.ward_label],
+            ["Data source", water_demand.resolution.data_source],
+            [
+                "Census ward matched",
+                f"{census.ward_name} (Ward {census.ward_no})" if census else "No confident match",
+            ],
+            ["Population used", f"{water_demand.population_used:,}" if water_demand.population_used is not None else "Unavailable"],
+            ["Buildings surveyed", f"{water_demand.building_count_surveyed:,}"],
+        ]
+        demand_info_table = Table(
+            [[Paragraph(escape(label), small_style), Paragraph(escape(str(value)), small_style)] for label, value in demand_info],
+            colWidths=[45 * mm, 128 * mm],
+        )
+        demand_info_table.setStyle(
+            TableStyle(
+                [
+                    ("GRID", (0, 0), (-1, -1), 0.35, colors.HexColor("#C9D5D0")),
+                    ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#F6F9F8")),
+                    ("LEFTPADDING", (0, 0), (-1, -1), 5),
+                    ("RIGHTPADDING", (0, 0), (-1, -1), 5),
+                    ("TOPPADDING", (0, 0), (-1, -1), 4),
+                    ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+                ]
+            )
+        )
+        story.extend([demand_info_table, Spacer(1, 8)])
+
+        if water_demand.breakdown is not None:
+            demand_data = [["Line item", "Litres/day"]]
+            demand_data.extend(
+                [[item.label, f"{item.liters_per_day:,.0f}"] for item in water_demand.breakdown.line_items]
+            )
+            demand_data.append(["TOTAL", f"{water_demand.breakdown.total_liters_per_day:,.0f} ({water_demand.breakdown.total_mld} MLD)"])
+            demand_data.append(["Fire-fighting provision (not in daily total)", f"{water_demand.breakdown.fire_demand_liters:,.0f}"])
+            demand_table = Table(demand_data, colWidths=[110 * mm, 63 * mm], repeatRows=1)
+            demand_table.setStyle(
+                TableStyle(
+                    [
+                        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1F6F54")),
+                        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+                        ("FONTNAME", (0, -2), (-1, -2), "Helvetica-Bold"),
+                        ("ALIGN", (1, 1), (1, -1), "RIGHT"),
+                        ("GRID", (0, 0), (-1, -1), 0.35, colors.HexColor("#C9D5D0")),
+                        ("FONTSIZE", (0, 0), (-1, -1), 8),
+                        ("TOPPADDING", (0, 0), (-1, -1), 4),
+                        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+                    ]
+                )
+            )
+            story.append(demand_table)
+        story.extend([Spacer(1, 6), Paragraph(escape(water_demand.methodology), small_style)])
+
     story.extend([PageBreak(), Paragraph("Recommended Attention Order", heading_style)])
     findings = sorted(quality.findings, key=lambda item: item.priority_score, reverse=True)
     if not findings:
@@ -988,6 +1103,12 @@ async def build_analytics_export(
     )
     stamp = summary.generated_at.strftime("%Y%m%d_%H%M%S")
 
+    # A water-demand section only makes sense when the export is pinned to a
+    # single ward — the same constraint the /water-demand endpoint enforces.
+    water_demand: WardWaterDemandResult | None = None
+    if len(wards) == 1:
+        water_demand = await build_ward_water_demand(db, ward_label=wards[0], dataset_ids=dataset_ids)
+
     if export_format == "pdf":
         quality = await build_quality_report(
             db,
@@ -999,7 +1120,7 @@ async def build_analytics_export(
             readiness_status=readiness_status,
         )
         return (
-            _pdf_bytes(summary, quality),
+            _pdf_bytes(summary, quality, water_demand),
             "application/pdf",
             f"analytics_visual_report_{stamp}.pdf",
         )
@@ -1016,7 +1137,7 @@ async def build_analytics_export(
     )
 
     if export_format == "csv":
-        return _csv_bytes(rows), "text/csv; charset=utf-8", f"analytics_features_{stamp}.csv"
+        return _csv_bytes(rows, water_demand), "text/csv; charset=utf-8", f"analytics_features_{stamp}.csv"
     if export_format == "geojson":
         return (
             _geojson_bytes(rows, summary),
@@ -1034,7 +1155,7 @@ async def build_analytics_export(
         readiness_status=readiness_status,
     )
     return (
-        _xlsx_bytes(rows, summary, quality),
+        _xlsx_bytes(rows, summary, quality, water_demand),
         "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         f"analytics_workbook_{stamp}.xlsx",
     )
