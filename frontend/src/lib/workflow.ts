@@ -100,10 +100,11 @@ export function fetchOverview(
   filters: AnalyticsCrossFilters = {}
 ) {
   const params = analyticsScopeParams(datasetIds, categories, filters);
+  const actualSignal = signal;
   const query = params.toString();
   return apiGet<AnalyticsOverview>(
     `/api/v1/analytics/overview${query ? `?${query}` : ""}`,
-    signal
+    actualSignal
   );
 }
 

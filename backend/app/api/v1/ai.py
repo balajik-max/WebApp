@@ -27,7 +27,10 @@ from app.schemas.ai import (
     AnomalyStatusUpdate,
     AuditRunRequest,
     AuditRunResponse,
+    ManholeRecommendRequest,
     NLQueryRequest,
+    PipeRouteOut,
+    PipeSpecOut,
     RecommendRequest,
     ReportRequest,
     SpacingRequest,
@@ -46,6 +49,16 @@ from app.services.ai_context import (
     build_proximity_facts,
     build_recommend_context,
     build_report_facts,
+)
+from app.services.manhole_recommend import (
+    FeatureRecommendation,
+    NetworkEdge,
+    PipeRoute,
+    UnconnectedManhole,
+    build_feature_recommendation,
+    build_full_network,
+    find_coverage_gaps,
+    scan_all_manhole_recommendations,
 )
 from app.services.spatial_audit import run_spatial_audit
 
@@ -554,6 +567,279 @@ async def spacing(body: SpacingRequest, db: AsyncSession = Depends(get_db)) -> A
 
 
 # ---------------------------------------------------------------------------
+# AI Manhole Recommendation Engine — real connectivity/road-graph facts from
+# app.services.manhole_recommend; this endpoint only formats those facts for
+# Ollama to narrate (never to compute) and assembles the response, same
+# discipline as the spatial audit engine's /explain above.
+# ---------------------------------------------------------------------------
+def _route_out(
+    route: PipeRoute, elevation_source: str | None = None, flow_confirmed: bool | None = None,
+    rainy_season_closed: bool | None = None, route_basis: str | None = None,
+) -> PipeRouteOut:
+    return PipeRouteOut(
+        from_id=route.from_id,
+        to_id=route.to_id,
+        coordinates=[[lon, lat] for lon, lat in route.coordinates],
+        pipe_spec=PipeSpecOut(
+            material=route.pipe_spec.material,
+            diameter_mm=route.pipe_spec.diameter_mm,
+            from_rl=route.pipe_spec.from_rl,
+            to_rl=route.pipe_spec.to_rl,
+            slope=route.pipe_spec.slope,
+        ),
+        elevation_source=elevation_source,
+        flow_confirmed=flow_confirmed,
+        rainy_season_closed=rainy_season_closed,
+        route_basis=route_basis,
+    )
+
+
+def _feature_fact_sheet(rec: FeatureRecommendation) -> str:
+    p = rec.parsed
+    lines = [
+        f"MANHOLE_ID: {rec.manhole_id}",
+        f"LOCATION: lon={rec.lon:.6f}, lat={rec.lat:.6f}",
+        f"PROBLEM_TYPE: {rec.problem_type}",
+        f"REASON (verified, not an estimate): {rec.reason}",
+        f"Surveyed condition: {p.condition or 'not recorded'}",
+        f"Surveyed top level (RL): {p.top_level_m if p.top_level_m is not None else (p.raw_top_level or 'not recorded')}",
+        f"Surveyed bottom level (RL): {p.bottom_level_m if p.bottom_level_m is not None else 'not recorded'}",
+        f"Surveyed pipe type: {p.pipe_type or 'not recorded'}",
+        f"Surveyed diameter: {p.diameter_mm} mm" if p.diameter_mm is not None else "Surveyed diameter: not recorded",
+        f"Nearest drain distance: {rec.nearest_drain_distance_m:.1f} m" if rec.nearest_drain_distance_m is not None else "Nearest drain distance: none found",
+    ]
+    if p.raw_silt_level and p.raw_silt_level.lower() != "no":
+        lines.append(f"Silt level recorded at {p.raw_silt_level} — siltation present, not just a clear pipe")
+    if rec.route:
+        spec = rec.route.pipe_spec
+        lines.append(
+            f"RECOMMENDED PIPE: material={spec.material}, diameter={spec.diameter_mm:.0f} mm"
+            + (f", from_rl={spec.from_rl}, to_rl={spec.to_rl}" if spec.from_rl is not None else "")
+            + (f", slope={spec.slope}" if spec.slope is not None else ", slope=not computable (chord too short)")
+        )
+        lines.append(f"Route length: {len(rec.route.coordinates)} vertices, confirmed clear of every Building polygon")
+    return "\n".join(lines)
+
+
+def _area_fact_sheet(disconnected: list, gaps: list[dict], bad: list | None = None) -> str:
+    bad = bad or []
+    lines = [
+        f"MANHOLES_NEEDING_REHABILITATION: {len(bad)}",
+        f"DISCONNECTED_MANHOLES: {len(disconnected)}",
+        f"DRAIN_COVERAGE_GAPS: {len(gaps)}",
+    ]
+    for issue in bad[:20]:
+        lines.append(f"  - manhole {issue.manhole_id} ({issue.problem_type}): {issue.reason}")
+    for issue in disconnected[:15]:
+        lines.append(f"  - manhole {issue.manhole_id}: {issue.reason}")
+    for gap in gaps[:15]:
+        dist = gap.get("nearest_manhole_m")
+        lines.append(
+            f"  - gap at lon={gap['lon']:.6f}, lat={gap['lat']:.6f}: "
+            + (f"nearest manhole {dist:.0f} m away" if dist is not None else "no manhole found nearby")
+        )
+    return "\n".join(lines)
+
+
+_ELEVATION_SOURCE_LABEL = {
+    "surveyed_invert": "real surveyed invert level",
+    "surveyed_top_minus_depth": "surveyed top level minus surveyed depth",
+    "surveyed_top_level": "surveyed top level (no depth on file)",
+    "dtm_raster": "sampled from the real DTM terrain model",
+    "nearest_contour": "nearest surveyed contour line",
+    "unknown": "no elevation data available",
+}
+
+
+async def _manhole_network_response(dataset_id: uuid.UUID, model: str, db: AsyncSession) -> AiAnswer:
+    """`network` mode: the complete manhole-to-manhole drainage layout,
+    not just the problem manholes — every edge is road/sewage-line-routed
+    and verified clear of every Building, with flow direction grounded in
+    real elevation (see build_full_network's docstring for the exact
+    source priority). Skips the LLM call entirely: with up to ~80 edges
+    this is fundamentally a structured data dump, and Ollama would only be
+    asked to restate counts already computed here — the same reasoning
+    that already skips the LLM for the empty-scope area-mode response."""
+    edges, unconnected = await build_full_network(dataset_id, db)
+    confirmed = [e for e in edges if e.flow_confirmed]
+    routed = [e for e in edges if e.route]
+    sewage_routed = [e for e in routed if e.route_basis == "sewage_line"]
+    road_routed = [e for e in routed if e.route_basis == "concrete_road"]
+    bridge_routed = [e for e in routed if e.route_basis == "bridge"]
+    connected_manhole_ids = {e.from_id for e in edges} | {e.to_id for e in edges}
+    total_manholes = len(connected_manhole_ids) + len(unconnected)
+    by_source: dict[str, int] = {}
+    for e in edges:
+        by_source[e.elevation_source] = by_source.get(e.elevation_source, 0) + 1
+
+    if not edges and not unconnected:
+        return AiAnswer(
+            kind="manhole_recommend", model=model, prompt_tokens_hint=0, context_rows=0,
+            grounded=True,
+            answer_markdown="No manholes found in this dataset to build a network from.",
+            generated_at=datetime.now(timezone.utc), debug={"edges": 0},
+        )
+
+    source_lines = "\n".join(
+        f"- {_ELEVATION_SOURCE_LABEL.get(src, src)}: {count} manhole(s)" for src, count in sorted(by_source.items())
+    )
+    answer_markdown = (
+        f"## Full Drainage Network\n\n"
+        f"**{len(connected_manhole_ids)} of {total_manholes}** manholes are connected into one unified network, "
+        f"linked by **{len(edges)}** segments to their real downstream neighbour — never a straight line between "
+        f"two manholes that just happen to be nearby.\n\n"
+        f"- **{len(sewage_routed)}** segments follow a real, directly-surveyed sewage/drain pipe.\n"
+        f"- **{len(road_routed)}** segments had no sewage-pipe path (a digitization gap in that layer) and instead "
+        f"follow the concrete road network as a stated assumption — real sewage pipes run alongside/beneath roads "
+        f"almost everywhere, but this is an inferred path, not a directly-surveyed one.\n"
+        + (
+            f"- **{len(bridge_routed)}** segments bridge two otherwise-disconnected clusters with a direct line "
+            f"(verified clear of every building) — neither the sewage-pipe nor the road layer spans this specific "
+            f"gap, so this is the least-grounded connection type, used only to keep the network unified.\n"
+            if bridge_routed else ""
+        )
+        + f"- **{len(confirmed)} of {len(edges)}** connections have a flow direction confirmed by real elevation data "
+        f"(high → low is a genuine, evidenced fact here, not an assumption).\n"
+        f"- **{len(edges) - len(confirmed)}** connections are drawn but have **no confirmed flow direction** — "
+        f"neither end had usable elevation data, so no direction is asserted.\n"
+        f"- **{len(unconnected)} of {total_manholes}** manholes are **not connected** to either network — no real "
+        f"sewage pipe or concrete road was found within reach, so no route is drawn for them at all rather than a "
+        f"fabricated connection.\n\n"
+        f"### Elevation source used per manhole\n{source_lines}\n"
+    )
+
+    return AiAnswer(
+        kind="manhole_recommend", model=model, prompt_tokens_hint=0, context_rows=len(edges), grounded=True,
+        answer_markdown=answer_markdown,
+        generated_at=datetime.now(timezone.utc),
+        debug={
+            "edges": len(edges), "connected_manholes": len(connected_manhole_ids),
+            "flow_confirmed": len(confirmed), "routed": len(routed),
+            "sewage_routed": len(sewage_routed), "road_routed": len(road_routed), "bridge_routed": len(bridge_routed),
+            "unconnected": len(unconnected), "by_elevation_source": by_source,
+        },
+        routes=[
+            _route_out(e.route, e.elevation_source, e.flow_confirmed, e.rainy_season_closed, e.route_basis)
+            for e in edges if e.route
+        ],
+        unconnected_manholes=[
+            {"id": u.manhole_id, "lon": u.lon, "lat": u.lat, "reason": u.reason} for u in unconnected
+        ],
+    )
+
+
+@router.post(
+    "/manhole-recommend",
+    response_model=AiAnswer,
+    dependencies=[Depends(require_any)],
+    summary="Recommend a fix for one manhole, or scan a whole dataset for disconnected manholes/coverage gaps",
+)
+async def manhole_recommend(body: ManholeRecommendRequest, db: AsyncSession = Depends(get_db)) -> AiAnswer:
+    from app.core.config import get_settings
+    model = get_settings().ollama_model
+
+    if body.mode == "feature":
+        if body.feature_id is None:
+            raise HTTPException(status_code=400, detail="feature_id is required for mode=feature")
+        rec = await build_feature_recommendation(body.dataset_id, body.feature_id, db)
+        if rec is None:
+            return _insufficient("manhole_recommend", model, {"reason": "manhole not found in this dataset"})
+
+        crib = _feature_fact_sheet(rec)
+        routes_out = [_route_out(rec.route)] if rec.route else []
+
+        if rec.problem_type == "ok":
+            # Nothing to recommend — state the real facts, skip the LLM call
+            # entirely (there's no ambiguity for it to narrate around).
+            return AiAnswer(
+                kind="manhole_recommend", model=model, prompt_tokens_hint=0, context_rows=1,
+                grounded=True, answer_markdown=f"**No issue found.** {rec.reason}.",
+                generated_at=datetime.now(timezone.utc), debug={"problem_type": rec.problem_type},
+                routes=routes_out,
+            )
+
+        prompt = (
+            "You are a senior municipal drainage engineer writing a finding "
+            "note for a field team. Using ONLY the FACTS below, write 3-5 "
+            "sentences: (1) what is wrong with this manhole, citing the exact "
+            "reason and any levels/condition given, (2) why it matters "
+            "practically (blockage, overflow, structural risk), (3) the exact "
+            "recommended pipe material/diameter/slope from FACTS if present. "
+            "Never state a number not in FACTS, and never invent a location "
+            "beyond the one given.\n\nFACTS:\n" + crib
+        )
+        reply = await run_grounded_completion(context=crib, user_prompt=prompt, num_predict=260, num_ctx=1024)
+        return AiAnswer(
+            kind="manhole_recommend", model=reply.model, prompt_tokens_hint=reply.prompt_tokens_hint,
+            context_rows=1, grounded=True, answer_markdown=reply.text,
+            generated_at=datetime.now(timezone.utc),
+            debug={"problem_type": rec.problem_type, "nearest_drain_distance_m": rec.nearest_drain_distance_m},
+            routes=routes_out,
+            needed_locations=[] if rec.problem_type != "disconnected" else [
+                {"id": rec.manhole_id, "lon": rec.lon, "lat": rec.lat, "reason": rec.reason}
+            ],
+            redundant_feature_ids=[rec.manhole_id] if rec.problem_type in ("bad_condition", "blocked") else [],
+        )
+
+    if body.mode == "network":
+        return await _manhole_network_response(body.dataset_id, model, db)
+
+    # mode == "area": scan EVERY manhole for real, grounded problems
+    # (blocked / bad condition / disconnected) and build a route for each —
+    # a single click must surface all bad manholes, not just one line.
+    recs = await scan_all_manhole_recommendations(body.dataset_id, db)
+    disconnected = [r for r in recs if r.problem_type == "disconnected"]
+    bad = [r for r in recs if r.problem_type in ("blocked", "bad_condition")]
+    rehabilitation_routes = [r.route for r in recs if r.route]
+    gaps = await find_coverage_gaps(body.dataset_id, db)
+    scope_count = len(disconnected) + len(gaps) + len(bad)
+
+    crib = _area_fact_sheet(disconnected, gaps, bad)
+    facts_markdown = (
+        f"## Ward-wide Manhole Network Check\n\n"
+        f"- Manholes needing rehabilitation (blocked / bad condition): **{len(bad)}**\n"
+        f"- Disconnected manholes (no drain within range): **{len(disconnected)}**\n"
+        f"- Drain coverage gaps (roadside, no manhole nearby): **{len(gaps)}**\n"
+    )
+
+    if scope_count == 0:
+        return AiAnswer(
+            kind="manhole_recommend", model=model, prompt_tokens_hint=0, context_rows=0,
+            grounded=True,
+            answer_markdown=facts_markdown + "\nNo disconnected manholes, blocked/bad-condition manholes, or drain coverage gaps were found — the surveyed network in this dataset is fully connected and in good condition.",
+            generated_at=datetime.now(timezone.utc), debug={"disconnected": 0, "gaps": 0, "bad": 0},
+        )
+
+    prompt = (
+        "Using ONLY the FACTS below (a real, pre-computed scan of a "
+        "municipal drainage network), write a short `## Assessment` (2-3 "
+        "sentences on the overall network health, noting how many manholes "
+        "need rehabilitation vs are disconnected) and `## Priority Actions` "
+        "(a numbered list of the most urgent items, citing exact manhole "
+        "ids/coordinates from FACTS). Never invent a location or count not "
+        "in FACTS.\n\nFACTS:\n" + crib
+    )
+    reply = await run_grounded_completion(context=crib, user_prompt=prompt, num_predict=400, num_ctx=2048)
+
+    return AiAnswer(
+        kind="manhole_recommend", model=reply.model, prompt_tokens_hint=reply.prompt_tokens_hint,
+        context_rows=scope_count, grounded=True,
+        answer_markdown=f"{facts_markdown}\n\n{reply.text}",
+        generated_at=datetime.now(timezone.utc),
+        debug={"disconnected": len(disconnected), "gaps": len(gaps), "bad": len(bad), "routes": len(rehabilitation_routes)},
+        routes=[_route_out(r) for r in rehabilitation_routes],
+        needed_locations=[
+            {"id": f"gap-{i}", "lon": g["lon"], "lat": g["lat"], "reason": "Drain coverage gap"}
+            for i, g in enumerate(gaps)
+        ] + [
+            {"id": r.manhole_id, "lon": r.lon, "lat": r.lat, "reason": r.reason}
+            for r in disconnected
+        ],
+        redundant_feature_ids=[r.manhole_id for r in disconnected] + [r.manhole_id for r in bad],
+    )
+
+
+# ---------------------------------------------------------------------------
 # Spatial Audit Engine (Phase 1) — pole redundancy, drain encroachment,
 # manhole status. All geometry math lives in app.services.spatial_audit;
 # these endpoints only run it, persist/read results, and (lazily) narrate
@@ -600,6 +886,8 @@ def _anomaly_fact_sheet(row: SpatialAnomaly) -> str:
             ]
     elif row.anomaly_type.value == "manhole_status":
         lines += [
+            f"Basis for this finding (the actual real evidence used, verified not estimated): {m.get('basis')}",
+            f"Surveyed condition on file: {m.get('surveyed_condition') or 'not recorded'}",
             f"Nearest drain: {m.get('nearest_drain_category') or 'none found'}, {m.get('nearest_drain_distance_m')} m away (search radius {m.get('max_search_radius_m')} m).",
         ]
 
@@ -672,6 +960,54 @@ async def list_anomalies(
     return [_anomaly_out(row, lon, lat) for row, lon, lat in rows]
 
 
+def _manhole_status_explain_prompt(row: SpatialAnomaly, crib: str) -> str:
+    """manhole_status gets its own structured prompt (Issue / Required /
+    How to fix) rather than the generic drain/pole one below — the generic
+    prompt's "why it matters" + "one recommendation" framing assumes a
+    problem exists, which reads fine for a confirmed red finding but
+    produces vague or invented text for yellow (ambiguous) and green (no
+    problem at all) manholes. Each color gets guidance matched to what kind
+    of answer is actually correct for it."""
+    color = row.color.value
+    if color == "red":
+        guidance = (
+            "This manhole has a CONFIRMED problem. Answer in exactly three labeled "
+            "parts on their own lines: 'Issue:' (the exact problem from FACTS — quote "
+            "the real condition/level/distance figures given), 'Required:' (what must "
+            "be done — desilting, cover/frame replacement, structural repair, or "
+            "re-routing, whichever fits FACTS), and 'How to fix:' (the concrete field "
+            "steps an engineer or contractor would take, in order)."
+        )
+    elif color == "yellow":
+        guidance = (
+            "This manhole shows a BORDERLINE finding, not a confirmed failure. Answer "
+            "in exactly three labeled parts on their own lines: 'Issue:' (state exactly "
+            "what makes this borderline, quoting the real figures from FACTS), "
+            "'Required:' (what should be checked or monitored — typically a field "
+            "inspection to confirm actual condition), and 'How to fix:' (the "
+            "preventive/monitoring step to take now so this does not become a red "
+            "finding)."
+        )
+    else:
+        guidance = (
+            "This manhole shows NO problem — it is in good working order per the real "
+            "evidence. Answer in exactly three labeled parts on their own lines: "
+            "'Issue:' (state plainly that no issue was found, citing the specific real "
+            "evidence from FACTS that confirms this — do not invent a problem), "
+            "'Required:' (say 'No action required' unless FACTS itself shows a real "
+            "caveat), and 'How to fix:' (state the routine maintenance/inspection "
+            "interval appropriate for a healthy manhole — not a fix for a problem that "
+            "does not exist)."
+        )
+    return (
+        "You are a senior municipal infrastructure auditor writing a finding note for "
+        "a civil engineer who will act on it. Using ONLY the FACTS below, and never a "
+        "number or detail not present in FACTS, write the note. Never mention that you "
+        "were given 'facts' or metadata — just report the finding. " + guidance + "\n\n"
+        f"FACTS:\n{crib}"
+    )
+
+
 @router.post(
     "/audit/anomalies/{anomaly_id}/explain",
     response_model=AnomalyExplainResponse,
@@ -694,28 +1030,31 @@ async def explain_anomaly(anomaly_id: uuid.UUID, db: AsyncSession = Depends(get_
         )
 
     crib = _anomaly_fact_sheet(row)
-    prompt = (
-        "You are a senior municipal infrastructure auditor writing a finding "
-        "note for a civil engineer who will act on it. Using ONLY the FACTS "
-        "below, write 3-5 sentences covering, in order: (1) exactly what was "
-        "found, citing the specific percentage/distance/count figures given, "
-        "(2) why it matters in practical civic terms (drainage flow, fire "
-        "access, over-illumination cost, etc.), and (3) one concrete, "
-        "actionable recommendation. Be direct and precise, not vague — write "
-        "like an expert who has personally verified these numbers, not a "
-        "chatbot hedging. Never state a number that is not present in FACTS, "
-        "and never mention that you were given 'facts' or metadata — just "
-        "report the finding. If FACTS says the drain's centerline crosses "
-        "straight through the building, your very first sentence must say "
-        "so plainly (e.g. 'the drain runs directly through this building') "
-        "before any percentage — the crossing itself is the headline, the "
-        "percentage is supporting detail, never the other way around. If "
-        "FACTS gives an encroached/overlapping area in square meters, you "
-        "MUST state that exact area figure (not just the percentage) "
-        "somewhere in the finding — engineers need the physical area, not "
-        "only a ratio.\n\n"
-        f"FACTS:\n{crib}"
-    )
+    if row.anomaly_type.value == "manhole_status":
+        prompt = _manhole_status_explain_prompt(row, crib)
+    else:
+        prompt = (
+            "You are a senior municipal infrastructure auditor writing a finding "
+            "note for a civil engineer who will act on it. Using ONLY the FACTS "
+            "below, write 3-5 sentences covering, in order: (1) exactly what was "
+            "found, citing the specific percentage/distance/count figures given, "
+            "(2) why it matters in practical civic terms (drainage flow, fire "
+            "access, over-illumination cost, etc.), and (3) one concrete, "
+            "actionable recommendation. Be direct and precise, not vague — write "
+            "like an expert who has personally verified these numbers, not a "
+            "chatbot hedging. Never state a number that is not present in FACTS, "
+            "and never mention that you were given 'facts' or metadata — just "
+            "report the finding. If FACTS says the drain's centerline crosses "
+            "straight through the building, your very first sentence must say "
+            "so plainly (e.g. 'the drain runs directly through this building') "
+            "before any percentage — the crossing itself is the headline, the "
+            "percentage is supporting detail, never the other way around. If "
+            "FACTS gives an encroached/overlapping area in square meters, you "
+            "MUST state that exact area figure (not just the percentage) "
+            "somewhere in the finding — engineers need the physical area, not "
+            "only a ratio.\n\n"
+            f"FACTS:\n{crib}"
+        )
     reply = await run_grounded_completion(context=crib, user_prompt=prompt, num_predict=280, num_ctx=1024)
 
     row.explanation_text = reply.text
