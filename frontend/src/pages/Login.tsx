@@ -1,8 +1,9 @@
 import { useEffect, useState } from "react";
-import { useLocation, useNavigate } from "react-router-dom";
+import { useNavigate } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
 import { useTheme } from "../context/ThemeContext";
 import { ApiError } from "../lib/api";
+import { resolvePostLoginPath, debugAuthRedirect } from "../lib/authRedirect";
 
 interface FieldState {
   touched: boolean;
@@ -17,7 +18,6 @@ export function LoginPage() {
   const { user, login } = useAuth();
   const { theme, toggle } = useTheme();
   const navigate = useNavigate();
-  const location = useLocation() as { state?: { from?: string } };
 
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -30,11 +30,19 @@ export function LoginPage() {
 
   useEffect(() => {
     setMounted(true);
+  }, []);
+
+  // Single owner of post-login navigation: land on /map (or /profile only for
+  // a genuine mandatory profile-completion rule). We deliberately ignore any
+  // preserved `location.state.from` so logging out of a page — including
+  // Profile — never replays that route on the next login.
+  useEffect(() => {
     if (user) {
-      const target = location.state?.from ?? "/";
-      navigate(target, { replace: true });
+      const destination = resolvePostLoginPath();
+      debugAuthRedirect("post-login navigation", { destination, from: "login-effect" });
+      navigate(destination, { replace: true });
     }
-  }, [user, navigate, location.state?.from]);
+  }, [user, navigate]);
 
   function validate(): boolean {
     const e = validEmail(email) ? null : "Enter a valid email address.";
@@ -50,9 +58,9 @@ export function LoginPage() {
     if (!validate()) return;
     setBusy(true);
     try {
+      // Authentication state is committed by the context; the login-effect
+      // owns the single post-login navigation to /map.
       const u = await login(email.trim().toLowerCase(), password);
-      const target = location.state?.from ?? "/";
-      navigate(target, { replace: true });
       void u;
     } catch (err) {
       const msg =
