@@ -32,6 +32,7 @@ from fastapi import (
 )
 from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
+from starlette.responses import StreamingResponse
 
 from app.api.deps import get_current_user, require_any
 from app.core.config import MAX_UPLOAD_BYTES
@@ -53,7 +54,7 @@ from app.services.attribute_table import (
 )
 from app.services.ingestion import ingest_dataset
 from app.services.readers import get_reader_for
-from app.services.storage import delete_object, ensure_bucket, upload_stream
+from app.services.storage import delete_object, delete_objects_with_prefix, ensure_bucket, upload_stream
 
 log = logging.getLogger("davangere.api.datasets")
 router = APIRouter()
@@ -249,7 +250,7 @@ def _classify(filename: str, payload: bytes | None = None) -> DatasetFileType:
 async def upload_dataset(
     background_tasks: BackgroundTasks,
     response: Response,
-    file: UploadFile = File(..., description="Shapefile (.zip/.shp), .geojson, .csv, .xlsx"),
+    file: UploadFile = File(..., description="GIS, raster, tabular, photo, or OBJ/OBJ bundle"),
     name: str = Form(..., min_length=1, max_length=255),
     description: str | None = Form(default=None, max_length=1024),
     ward: str | None = Form(default=None, max_length=128),
@@ -538,6 +539,54 @@ async def get_model_asset(dataset_id: uuid.UUID, filename: str, db: AsyncSession
 
 
 @router.get(
+    "/{dataset_id}/model-assets/{asset_path:path}",
+    dependencies=[Depends(require_any)],
+)
+async def get_model_asset_by_path(
+    dataset_id: uuid.UUID,
+    asset_path: str,
+    db: AsyncSession = Depends(get_db),
+) -> StreamingResponse:
+    """Streams an OBJ/MTL/texture asset by its path key, for consumers that
+    address assets via `dataset_metadata.model_3d.asset_keys` (path-based)
+    rather than the flat `model-asset/{filename}` lookup above."""
+    row = (await db.execute(select(Dataset).where(Dataset.id == dataset_id))).scalar_one_or_none()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+
+    model_metadata = (row.dataset_metadata or {}).get("model_3d") or {}
+    asset_keys = model_metadata.get("asset_keys") or {}
+    storage_key = asset_keys.get(asset_path)
+    if not storage_key:
+        raise HTTPException(status_code=404, detail="Model asset not found")
+
+    from app.services.storage import open_object_stream
+
+    try:
+        object_response = await open_object_stream(storage_key)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=404, detail="Model asset not found in storage") from exc
+
+    body = object_response["Body"]
+
+    def chunks():
+        try:
+            yield from body.iter_chunks(chunk_size=1024 * 1024)
+        finally:
+            body.close()
+
+    headers = {"Cache-Control": "private, max-age=3600"}
+    content_length = object_response.get("ContentLength")
+    if content_length is not None:
+        headers["Content-Length"] = str(content_length)
+    return StreamingResponse(
+        chunks(),
+        media_type=object_response.get("ContentType") or "application/octet-stream",
+        headers=headers,
+    )
+
+
+@router.get(
     "/{dataset_id}/dem-grid",
     dependencies=[Depends(require_any)],
     summary="Real elevation grid sampled from a single-band GeoTIFF (DTM/DSM) — for the 3D manhole plan view",
@@ -674,6 +723,10 @@ async def delete_dataset(
 
     if row.storage_key:
         await delete_object(row.storage_key)
+    # OBJ bundles re-upload their .obj/.mtl/textures individually under this
+    # prefix (see ObjReader._upload_model_assets) — clean those up too, or
+    # they'd otherwise outlive the dataset row that referenced them.
+    await delete_objects_with_prefix(f"datasets/{dataset_id}/model/")
 
     db.add(
         ActivityLog(

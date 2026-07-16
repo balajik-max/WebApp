@@ -21,13 +21,16 @@ from app.models import User, UserRole  # noqa: F401  (import to register all mod
 from app.models import (  # noqa: F401
     ActivityLog,
     CategoryClassMap,
+    CityCensusSummary,
     Comment,
     Dataset,
     Feature,
     FeatureVersion,
+    Placemark,
     ReviewItem,
     SpatialAnomaly,
     SurveyRequest,
+    WardCensus,
 )
 
 log = logging.getLogger("davangere.db.init")
@@ -63,6 +66,18 @@ async def _ensure_spatial_index() -> None:
             text(
                 "CREATE INDEX IF NOT EXISTS idx_spatial_anomalies_dataset_type_color "
                 "ON spatial_anomalies (dataset_id, anomaly_type, color);"
+            )
+        )
+        await conn.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS idx_placemarks_geom "
+                "ON placemarks USING GIST (geom);"
+            )
+        )
+        await conn.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS idx_placemarks_owner_updated "
+                "ON placemarks (owner_id, updated_at DESC);"
             )
         )
 

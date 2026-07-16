@@ -354,6 +354,13 @@ async def list_features_in_viewport(
             "isolation / multi-dataset selection). Repeat the param for more than one."
         ),
     ),
+    source_layer: list[str] | None = Query(
+        default=None,
+        description=(
+            "Restrict to one or more persisted source layers. For zipped GDB data "
+            "this matches attributes.gdb_layer; otherwise it falls back to category."
+        ),
+    ),
     feature_ids: list[uuid.UUID] | None = Query(
         default=None,
         alias="id",
@@ -466,6 +473,29 @@ async def list_features_in_viewport(
     if dataset_id:
         conditions.append("f.dataset_id = ANY(:dataset_ids)")
         params["dataset_ids"] = dataset_id
+
+    if source_layer:
+        normalized_source_layers = [
+            value.strip()
+            for value in source_layer
+            if value.strip()
+        ]
+        if any(len(value) > 256 for value in normalized_source_layers):
+            raise HTTPException(
+                status_code=400,
+                detail="source_layer values must be at most 256 characters",
+            )
+        if normalized_source_layers:
+            conditions.append(
+                "COALESCE("
+                "NULLIF(BTRIM(f.attributes ->> 'gdb_layer'), ''), "
+                "NULLIF(BTRIM(f.category), ''), "
+                "'uncategorized'"
+                ") = ANY(:source_layers)"
+            )
+            params["source_layers"] = list(
+                dict.fromkeys(normalized_source_layers)
+            )
 
     where_clause = " AND ".join(conditions)
     join_clause = "JOIN datasets d ON d.id = f.dataset_id" if join_dataset else ""

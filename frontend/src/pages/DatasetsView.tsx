@@ -266,6 +266,10 @@ function validateShapefileBundle(files: File[]): { stem: string; files: File[] }
   return { stem, files: matching };
 }
 
+function datasetDisplayType(dataset: DatasetRow): string {
+  return dataset.dataset_metadata?.model_3d ? "OBJ 3D" : dataset.file_type;
+}
+
 function getFileIcon(type: string): React.ReactNode {
   // Map common variations to their base types
   const typeMap: Record<string, string> = {
@@ -1090,7 +1094,7 @@ export function DatasetsView() {
                 style={{ animationDelay: `${i * 50}ms` }}
               >
                 <div className="ds-table__td ds-table__td--name" title={d.description ?? d.name}>
-                  <span className="ds-table__file-icon">{getFileIcon(d.file_type)}</span>
+                  <span className="ds-table__file-icon">{getFileIcon(d.dataset_metadata?.model_3d ? "obj" : d.file_type)}</span>
                   <div className="ds-table__name-wrap">
                     <span className="ds-table__name">{d.name}</span>
                     {d.processing_error && (
@@ -1129,7 +1133,12 @@ export function DatasetsView() {
                   )}
                 </div>
                 <div className="ds-table__td">
-                  <span className="ds-table__badge ds-table__badge--type">{d.file_type}</span>
+                  <span
+                    className="ds-table__badge ds-table__badge--type"
+                    title={d.dataset_metadata?.model_3d?.source_crs}
+                  >
+                    {datasetDisplayType(d)}
+                  </span>
                 </div>
                 <div className="ds-table__td ds-table__td--mono">{formatBytes(d.size_bytes ?? 0)}</div>
                 <div className="ds-table__td">

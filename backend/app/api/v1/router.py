@@ -9,8 +9,11 @@ from app.api.v1 import (
     datasets,
     features,
     health,
+    map_context,
+    placemarks,
     review_items,
     survey_requests,
+    visualization,
 )
 
 api_router = APIRouter()
@@ -23,3 +26,6 @@ api_router.include_router(survey_requests.router, prefix="/v1/survey-requests", 
 api_router.include_router(analytics.router, prefix="/v1/analytics", tags=["analytics"])
 api_router.include_router(ai.router, prefix="/v1/ai", tags=["ai"])
 api_router.include_router(classification.router, prefix="/v1/classification", tags=["classification"])
+api_router.include_router(visualization.router, prefix="/v1/visualization", tags=["visualization"])
+api_router.include_router(placemarks.router, prefix="/v1/placemarks", tags=["placemarks"])
+api_router.include_router(map_context.router, prefix="/v1/map-context", tags=["map-context"])

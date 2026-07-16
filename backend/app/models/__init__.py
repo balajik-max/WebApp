@@ -9,6 +9,7 @@ from app.models.dataset import Dataset, DatasetFileType, DatasetStatus  # noqa: 
 from app.models.feature import Feature  # noqa: F401
 from app.models.feature_version import FeatureVersion  # noqa: F401
 from app.models.notification import Notification, NotificationSource  # noqa: F401
+from app.models.placemark import Placemark  # noqa: F401
 from app.models.review_item import ReviewItem, ReviewPriority, ReviewStatus  # noqa: F401
 from app.models.spatial_anomaly import (  # noqa: F401
     AnomalyColor,
@@ -18,3 +19,4 @@ from app.models.spatial_anomaly import (  # noqa: F401
 )
 from app.models.survey_request import SurveyRequest, SurveyRequestStatus  # noqa: F401
 from app.models.user import User, UserRole  # noqa: F401
+from app.models.ward_census import CityCensusSummary, WardCensus  # noqa: F401
