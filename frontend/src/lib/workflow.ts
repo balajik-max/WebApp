@@ -71,16 +71,26 @@ export interface DatasetRow {
 
 export function fetchOverview(
   datasetIds: string[] = [],
-  categories: string[] = [],
+  categoriesOrSignal?: string[] | AbortSignal,
   signal?: AbortSignal
 ) {
   const params = new URLSearchParams();
   for (const id of datasetIds) params.append("dataset_id", id);
+
+  let categories: string[] = [];
+  let actualSignal = signal;
+
+  if (Array.isArray(categoriesOrSignal)) {
+    categories = categoriesOrSignal;
+  } else if (categoriesOrSignal instanceof AbortSignal) {
+    actualSignal = categoriesOrSignal;
+  }
+
   for (const category of categories) params.append("category", category);
   const query = params.toString();
   return apiGet<AnalyticsOverview>(
     `/api/v1/analytics/overview${query ? `?${query}` : ""}`,
-    signal
+    actualSignal
   );
 }
 
