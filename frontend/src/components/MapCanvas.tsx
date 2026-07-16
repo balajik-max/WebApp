@@ -31,6 +31,9 @@ import {
   bulkDeletePlacemarks, createPlacemark, deletePlacemark, fetchElevationSample, fetchPlacemarks,
   updatePlacemark, type ElevationSample, type Placemark, type PlacemarkDraft,
 } from "../lib/placemarks";
+import { ManholeRecommendCard } from "./ManholeRecommendCard";
+import { ManholePlan3D } from "./ManholePlan3D";
+import { aiManholeRecommend, type AiAnswer } from "../lib/ai";
 
 // .obj datasets are persisted with file_type "other" (the enum has no
 // dedicated OBJ value), so detect them from the stored filename instead.
@@ -560,6 +563,33 @@ function defaultVisualizationField(
   return eligible.find((field) => !technical.test(field.name))?.name ?? eligible[0]?.name ?? null;
 }
 
+// When an AI Detection mode is active we want to show ONLY the asset family
+// that mode is about (e.g. manholes → Access_Point), and hide every other
+// surveyed category — regardless of which datasets happen to be loaded or
+// whether the category→canonical_class map is complete. We filter on the
+// authoritative `_canonical_class` attribute each feature now carries, which
+// is far more robust than the classMap/categoryStats bookkeeping used by the
+// manual Layers checklist.
+function withCanonicalVisibility(
+  base: maplibregl.FilterSpecification,
+  allowed: string[],
+  extraCategories: Set<string> = new Set()
+): maplibregl.FilterSpecification {
+  const canonicalMatch: maplibregl.ExpressionSpecification = [
+    "in", ["coalesce", ["get", "canonical_class"], "Unclassified"], ["literal", allowed],
+  ];
+  if (extraCategories.size === 0) {
+    return ["all", base, canonicalMatch] as unknown as maplibregl.FilterSpecification;
+  }
+  // Categories the user explicitly opted into via the Layers checklist while
+  // this detection mode is active — shown in addition to the mode's own
+  // asset family, not instead of it.
+  const extraMatch: maplibregl.ExpressionSpecification = [
+    "in", ["coalesce", ["get", "category"], "uncategorized"], ["literal", Array.from(extraCategories)],
+  ];
+  return ["all", base, ["any", canonicalMatch, extraMatch]] as unknown as maplibregl.FilterSpecification;
+}
+
 // Separate GeoJSON source + layers for AI highlight overlays so they sit
 // on top of the normal feature layers without touching the original data.
 const AI_HIGHLIGHT_SOURCE = "ai-highlight";
@@ -575,6 +605,19 @@ const AI_NEEDED_COLOR = "#22c55e";    // green
 // decided server-side, no client bucket math needed).
 const ANOMALY_SOURCE = "spatial-anomalies";
 const LAYER_ANOMALIES = "spatial-anomalies-points";
+
+// AI Manhole Recommendation Engine — proposed/rehab pipe routes, its own
+// source/layer so it never touches the anomaly/highlight layers above.
+const MANHOLE_ROUTES_SOURCE = "manhole-recommend-routes";
+const LAYER_MANHOLE_ROUTES = "manhole-recommend-routes-line";
+const LAYER_MANHOLE_FLOW_ARROWS = "manhole-recommend-routes-flow-arrows";
+const FLOW_ARROW_ICON_ID = "manhole-flow-arrow-icon";
+const MANHOLE_POINTS_SOURCE = "manhole-recommend-points";
+const LAYER_MANHOLE_POINTS = "manhole-recommend-points-circle";
+const MANHOLE_UNCONNECTED_SOURCE = "manhole-recommend-unconnected";
+const LAYER_MANHOLE_UNCONNECTED = "manhole-recommend-unconnected-circle";
+const MANHOLE_ROUTE_COLOR = "#3aa1ff";
+const MANHOLE_UNCONNECTED_COLOR = "#9b59b6";
 const ANOMALY_COLOR_EXPR: maplibregl.ExpressionSpecification = [
   "match", ["get", "color"],
   "red", "#ef4444",
@@ -843,6 +886,30 @@ function buildPhotoIconImageData(): ImageData {
   return ctx.getImageData(0, 0, w, h);
 }
 
+/** Small right-pointing triangle used as the flow-direction arrow along
+ * manhole-recommend route lines. Icon-based rather than text-field, since
+ * this map style has no "glyphs" endpoint configured (text-field symbol
+ * layers fail validation without one). */
+function buildFlowArrowImageData(): ImageData {
+  const w = 24, h = 24;
+  const canvas = document.createElement("canvas");
+  canvas.width = w;
+  canvas.height = h;
+  const ctx = canvas.getContext("2d")!;
+  ctx.beginPath();
+  ctx.moveTo(2, 3);
+  ctx.lineTo(22, 12);
+  ctx.lineTo(2, 21);
+  ctx.closePath();
+  ctx.fillStyle = MANHOLE_ROUTE_COLOR;
+  ctx.strokeStyle = "#0b1013";
+  ctx.lineWidth = 2;
+  ctx.lineJoin = "round";
+  ctx.fill();
+  ctx.stroke();
+  return ctx.getImageData(0, 0, w, h);
+}
+
 function decodeFeature(raw: {
   id?: string | number;
   geometry: unknown;
@@ -989,9 +1056,11 @@ function summarizeAnomalyForTooltip(a: SpatialAnomaly): { color: SpatialAnomaly[
       ? `Drain crosses straight through this building — spans ${ratioPct.toFixed(0)}% of its own width (${areaTxt})`
       : `Building touches the drain line, only a partial clip — spans ${ratioPct.toFixed(0)}% of its own width (${areaTxt})`;
   } else if (a.anomaly_type === "manhole_status") {
-    metric = m.nearest_drain_category
-      ? `Nearest drain: ${m.nearest_drain_category} (${m.nearest_drain_distance_m ?? "?"}m)`
-      : "No nearby drain found";
+    metric = typeof m.basis === "string" ? m.basis : (
+      m.nearest_drain_category
+        ? `Nearest drain: ${m.nearest_drain_category} (${m.nearest_drain_distance_m ?? "?"}m)`
+        : "No nearby drain found"
+    );
   }
   return { color: a.color, typeLabel: ANOMALY_TYPE_LABEL[a.anomaly_type], metric };
 }
@@ -1154,6 +1223,14 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
   // filter toggle on already-fetched features, so it applies instantly and
   // never touches the topbar ward/category filter or triggers a refetch.
   const [hiddenCategories, setHiddenCategories] = useState<Set<string>>(new Set());
+  // While an AI Detection mode is active, the map is restricted to that
+  // mode's own asset family (see the canonical-class effect below) and the
+  // ordinary hiddenCategories checklist stands down entirely. This is a
+  // separate, mode-scoped "show this extra category too" allowlist so the
+  // Layers checklist still does something useful during a detection mode —
+  // starts empty every time a mode is entered/left, so nothing extra shows
+  // until the user explicitly asks for it.
+  const [extraVisibleCategories, setExtraVisibleCategories] = useState<Set<string>>(new Set());
   const [basemap, setBasemap] = useState<Basemap>("street");
   const [hover, setHover] = useState<HoverInfo | null>(null);
   const [photoViewer, setPhotoViewer] = useState<{ url: string; label: string; isPanorama: boolean } | null>(null);
@@ -1199,6 +1276,27 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
   const [auditRunning, setAuditRunning] = useState(false);
   const [auditError, setAuditError] = useState<string | null>(null);
 
+  // AI Manhole Recommendation Engine — computed fresh per click/plan-run
+  // (not pre-persisted like the spatial audit engine above), so its own
+  // loading/error/answer state lives separately from the anomaly card's.
+  const [manholeRecommendAnswer, setManholeRecommendAnswer] = useState<AiAnswer | null>(null);
+  const [manholeRecommendLoading, setManholeRecommendLoading] = useState(false);
+  const [manholeRecommendError, setManholeRecommendError] = useState<string | null>(null);
+  const [manholeRecommendOpen, setManholeRecommendOpen] = useState(false);
+  // Single-manhole click ("feature" mode: real pipe suggestion — material,
+  // diameter, RLs, route) — deliberately its OWN state, separate from the
+  // network-mode state above. The map's drawn network (MANHOLE_ROUTES_SOURCE)
+  // reads only manholeRecommendAnswer, never this one, so clicking a manhole
+  // to see its pipe suggestion can never clear an already-drawn network.
+  const [manholeFeatureAnswer, setManholeFeatureAnswer] = useState<AiAnswer | null>(null);
+  const [manholeFeatureLoading, setManholeFeatureLoading] = useState(false);
+  const [manholeFeatureError, setManholeFeatureError] = useState<string | null>(null);
+  const [manholeFeatureOpen, setManholeFeatureOpen] = useState(false);
+  // Phase C — 3D subsurface view, opened from the same recommend result
+  // (or on its own, showing real terrain/buildings/manholes with no plan
+  // run yet) so it never shows a fact the 2D view didn't already show.
+  const [show3DPlan, setShow3DPlan] = useState(false);
+
   // Which AI Detection focus mode is active (null = normal full view).
   // Refs mirror the state so the per-fetch applyFeatureCollection callback
   // (a stable useCallback, not re-created on every mode change) always reads
@@ -1226,6 +1324,11 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
   // categories a detection mode should hide (e.g. Poles mode hides
   // everything except Illumination_Asset categories).
   const [classMap, setClassMap] = useState<Record<string, string>>({});
+  // Mirrors classMap for handleFeatureClick (registered once at map load,
+  // per the same stale-closure reasoning as detectionModeRef above) — it
+  // needs to know whether a clicked feature is an Access_Point (manhole)
+  // to trigger the manhole-recommend card.
+  const classMapRef = useRef<Record<string, string>>({});
   const rasterSettingsRef = useRef<Record<string, RasterDisplaySettings>>({});
   const [flyError, setFlyError] = useState<string | null>(null);
   const [mapReady, setMapReady] = useState(false);
@@ -2676,6 +2779,10 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
   useEffect(() => {
     const map = mapRef.current;
     if (!mapReady || !map) return;
+    // While an AI Detection mode owns the map, the detection effect below
+    // drives layer visibility by canonical class; this manual-checklist
+    // filter must not fight it, so stand down in that case.
+    if (detectionMode) return;
     const hiddenForBase = selectedVisualizationFeatures.length > 0
       ? new Set(selectedVisualizationCompositeIds)
       : new Set<string>();
@@ -2684,7 +2791,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     if (map.getLayer(LAYER_LINES)) map.setFilter(LAYER_LINES, withFeatureVisibility(LINE_BASE_FILTER, hiddenCategories, hiddenForBase));
     if (map.getLayer(LAYER_POINTS)) map.setFilter(LAYER_POINTS, withFeatureVisibility(POINT_BASE_FILTER, hiddenCategories, hiddenForBase));
     if (map.getLayer(LAYER_PHOTOS)) map.setFilter(LAYER_PHOTOS, withFeatureVisibility(PHOTO_BASE_FILTER, hiddenCategories, hiddenForBase));
-  }, [mapReady, hiddenCategories, selectedVisualizationCompositeIds, selectedVisualizationFeatures.length]);
+  }, [mapReady, hiddenCategories, detectionMode, selectedVisualizationCompositeIds, selectedVisualizationFeatures.length]);
 
   // Publish the selected source layer into its own viewport-scoped overlay.
   // Large datasets such as AMRUT exceed the normal 5,000-feature base snapshot;
@@ -2819,6 +2926,25 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
       return next;
     });
   }, []);
+
+  const toggleExtraVisibleCategory = useCallback((category: string) => {
+    setExtraVisibleCategories((prev) => {
+      const next = new Set(prev);
+      if (next.has(category)) next.delete(category);
+      else next.add(category);
+      return next;
+    });
+  }, []);
+
+  const setAllExtraVisibleCategories = useCallback((categories: string[]) => {
+    setExtraVisibleCategories(new Set(categories));
+  }, []);
+
+  // Fresh slate every time a detection mode is entered or left, so an extra
+  // category picked while in Poles mode doesn't linger into Manholes mode.
+  useEffect(() => {
+    setExtraVisibleCategories(new Set());
+  }, [detectionMode]);
 
   const setAllCategoriesVisible = useCallback((visible: boolean) => {
     setHiddenCategories(visible ? new Set() : new Set(categoryStats.map((c) => c.category)));
@@ -3087,10 +3213,134 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     });
   }, [mapReady, anomalies]);
 
+  // Push the current manhole-recommend answer's routes into their own map
+  // source whenever the answer changes (including clearing to [] on close).
+  //
+  // Dedup strategy — segment-level union:
+  //   Two manholes rarely share the *exact* same line, but many edges route
+  //   along the SAME road segments (several manholes converge on a common
+  //   downstream node, so their paths overlap on the shared approach). That
+  //   overlap is what renders as "parallel / double lines". Pair-key dedup
+  //   can't catch it, so instead we walk every route as a sequence of small
+  //   directed segments and only ever draw each UNDIRECTED segment once. The
+  //   first route to claim a segment keeps it; later routes that re-trace it
+  //   simply skip that segment (the earlier route already covers it on the
+  //   map). Confirmed-flow edges are processed first so they own the shared
+  //   "trunk" segments and the arrows stay correct. The result: every road
+  //   segment is painted exactly once — no duplicate lines.
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!mapReady || !map) return;
+    const src = map.getSource(MANHOLE_ROUTES_SOURCE) as GeoJSONSource | undefined;
+    if (!src) return;
+    const routes = manholeRecommendAnswer?.routes ?? [];
+
+    // Priority: confirmed-flow edges first (they own shared trunk segments
+    // and keep their arrows), then longer edges (trunks) before short spurs.
+    const ordered = [...routes].sort((a, b) => {
+      const ac = a.flow_confirmed ? 1 : 0;
+      const bc = b.flow_confirmed ? 1 : 0;
+      if (ac !== bc) return bc - ac;
+      return (b.coordinates?.length ?? 0) - (a.coordinates?.length ?? 0);
+    });
+
+    // Undirected segment key: the two endpoints rounded to 6 dp, order-independent.
+    const segKey = (a: number[], b: number[]): string => {
+      const ra = `${a[0].toFixed(6)},${a[1].toFixed(6)}`;
+      const rb = `${b[0].toFixed(6)},${b[1].toFixed(6)}`;
+      return ra < rb ? `${ra}|${rb}` : `${rb}|${ra}`;
+    };
+
+    const drawn = new Set<string>();
+    const features: GeoJSON.Feature[] = [];
+
+    for (const route of ordered) {
+      const coords = route.coordinates;
+      if (!coords || coords.length < 2) continue;
+
+      // Group consecutive UN-drawn segments into contiguous runs so the
+      // dashed line style stays continuous; a drawn (shared) segment becomes
+      // a gap that the owning route already covers.
+      let run: number[][] = [coords[0]];
+      const flush = () => {
+        if (run.length >= 2) {
+          features.push({
+            type: "Feature",
+            geometry: { type: "LineString", coordinates: run },
+            properties: {
+              from_id: route.from_id,
+              to_id: route.to_id,
+              flow_confirmed: route.flow_confirmed ?? false,
+            },
+          } as GeoJSON.Feature);
+        }
+        run = [];
+      };
+
+      let prev = coords[0];
+      run = [prev];
+      for (let i = 1; i < coords.length; i++) {
+        const cur = coords[i];
+        const key = segKey(prev, cur);
+        if (drawn.has(key)) {
+          flush();          // gap: start a fresh run after the shared segment
+          run = [cur];
+        } else {
+          drawn.add(key);
+          run.push(cur);
+        }
+        prev = cur;
+      }
+      flush();
+    }
+
+    src.setData({ type: "FeatureCollection", features });
+  }, [mapReady, manholeRecommendAnswer]);
+
+  // Push the current manhole-recommend answer's proposed manhole locations
+  // (coverage gaps / disconnected manholes) into their own point layer.
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!mapReady || !map) return;
+    const src = map.getSource(MANHOLE_POINTS_SOURCE) as GeoJSONSource | undefined;
+    if (!src) return;
+    const locs = manholeRecommendAnswer?.needed_locations ?? [];
+    src.setData({
+      type: "FeatureCollection",
+      features: locs.map((loc, idx) => ({
+        type: "Feature",
+        id: idx,
+        geometry: { type: "Point", coordinates: [loc.lon, loc.lat] },
+        properties: { id: loc.id, reason: loc.reason },
+      })),
+    });
+  }, [mapReady, manholeRecommendAnswer]);
+
+  // Push manholes with no real sewage/drain pipe within reach (network
+  // mode) into their own point layer, so "not connected to the sewage
+  // line" is a visible fact on the map, not just hidden absence of a line.
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!mapReady || !map) return;
+    const src = map.getSource(MANHOLE_UNCONNECTED_SOURCE) as GeoJSONSource | undefined;
+    if (!src) return;
+    const locs = manholeRecommendAnswer?.unconnected_manholes ?? [];
+    src.setData({
+      type: "FeatureCollection",
+      features: locs.map((loc, idx) => ({
+        type: "Feature",
+        id: idx,
+        geometry: { type: "Point", coordinates: [loc.lon, loc.lat] },
+        properties: { id: loc.id, reason: loc.reason },
+      })),
+    });
+  }, [mapReady, manholeRecommendAnswer]);
+
   // Keep the ref mirror in sync so applyFeatureCollection (a stable
   // useCallback) always reads the current mode on the next fetch.
   useEffect(() => { detectionModeRef.current = detectionMode; }, [detectionMode]);
   useEffect(() => { aiOverlayEnabledRef.current = aiOverlayEnabled; }, [aiOverlayEnabled]);
+  useEffect(() => { classMapRef.current = classMap; }, [classMap]);
 
   // Primary feature id each anomaly type is "about", for the hover
   // tooltip's AI-detected lookup — pole rows carry every cluster member in
@@ -3111,26 +3361,28 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     anomalyByFeatureIdRef.current = map;
   }, [anomalies]);
 
-  // Entering/leaving a detection mode drives which categories are hidden —
-  // this OVERRIDES the manual QGIS-style Layers checklist while a mode is
-  // active (a focused AI view is a bigger action than one checkbox), and
-  // reverts to "show everything" when the mode is turned off.
+  // Entering/leaving a detection mode drives which asset family is visible —
+  // this OVERRIDES the manual Layers checklist while a mode is active (a
+  // focused AI view is a bigger action than one checkbox). We filter the
+  // point/line/polygon layers directly on each feature's authoritative
+  // `canonical_class` attribute so ONLY the mode's asset family shows, no
+  // matter which datasets are loaded or how complete the class map is.
+  // Photos are left untouched (they're reference imagery, useful context).
   useEffect(() => {
-    if (!detectionMode) { setHiddenCategories(new Set()); return; }
-    const targetClasses = new Set(DETECTION_MODE_TARGET_CLASSES[detectionMode]);
-    const toHide = new Set<string>();
-    for (const { category } of categoryStats) {
-      // Geotagged site photos have no canonical class of their own (they're
-      // reference imagery, not a surveyed asset type) — without this
-      // exemption they'd get swept into "hide everything not in this
-      // mode's target classes" and vanish the instant any AI Detection
-      // mode is picked, even though they're still useful context.
-      if (category === "site_photo") continue;
-      const canonicalClass = classMap[category];
-      if (!canonicalClass || !targetClasses.has(canonicalClass)) toHide.add(category);
+    const map = mapRef.current;
+    if (!mapReady || !map) return;
+    if (!detectionMode) {
+      // Hand control back to the manual checklist filter.
+      setHiddenCategories(new Set());
+      return;
     }
-    setHiddenCategories(toHide);
-  }, [detectionMode, classMap, categoryStats]);
+    const allowed = DETECTION_MODE_TARGET_CLASSES[detectionMode];
+    if (map.getLayer(LAYER_POLY_FILL)) map.setFilter(LAYER_POLY_FILL, withCanonicalVisibility(POLY_BASE_FILTER, allowed, extraVisibleCategories));
+    if (map.getLayer(LAYER_POLY_OUTLINE)) map.setFilter(LAYER_POLY_OUTLINE, withCanonicalVisibility(POLY_BASE_FILTER, allowed, extraVisibleCategories));
+    if (map.getLayer(LAYER_LINES)) map.setFilter(LAYER_LINES, withCanonicalVisibility(LINE_BASE_FILTER, allowed, extraVisibleCategories));
+    if (map.getLayer(LAYER_POINTS)) map.setFilter(LAYER_POINTS, withCanonicalVisibility(POINT_BASE_FILTER, allowed, extraVisibleCategories));
+    // LAYER_PHOTOS is intentionally left as-is so geotagged evidence stays visible.
+  }, [mapReady, detectionMode, extraVisibleCategories]);
 
   // Drives the two mode-specific map treatments: (1) Drains mode recolors
   // building polygons by their own encroachment finding instead of showing
@@ -3231,6 +3483,49 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     }
     if (failures.length > 0) setAuditError(failures.join("; "));
     setAuditRunning(false);
+  }, []);
+
+  const runManholeFeatureRecommend = useCallback(async (datasetId: string, featureId: string) => {
+    setManholeFeatureOpen(true);
+    setManholeFeatureLoading(true);
+    setManholeFeatureError(null);
+    setManholeFeatureAnswer(null);
+    try {
+      const answer = await aiManholeRecommend({ mode: "feature", dataset_id: datasetId, feature_id: featureId });
+      setManholeFeatureAnswer(answer);
+    } catch (e) {
+      setManholeFeatureError((e as Error).message);
+    } finally {
+      setManholeFeatureLoading(false);
+    }
+  }, []);
+
+  const closeManholeFeature = useCallback(() => {
+    setManholeFeatureOpen(false);
+    setManholeFeatureAnswer(null);
+    setManholeFeatureError(null);
+  }, []);
+
+  const runManholeNetwork = useCallback(async (datasetIds: string[]) => {
+    if (datasetIds.length === 0) return;
+    setManholeRecommendOpen(true);
+    setManholeRecommendLoading(true);
+    setManholeRecommendError(null);
+    setManholeRecommendAnswer(null);
+    try {
+      const answer = await aiManholeRecommend({ mode: "network", dataset_id: datasetIds[0] });
+      setManholeRecommendAnswer(answer);
+    } catch (e) {
+      setManholeRecommendError((e as Error).message);
+    } finally {
+      setManholeRecommendLoading(false);
+    }
+  }, []);
+
+  const closeManholeRecommend = useCallback(() => {
+    setManholeRecommendOpen(false);
+    setManholeRecommendAnswer(null);
+    setManholeRecommendError(null);
   }, []);
 
   const selectedAnomaly = anomalies.find((a) => a.id === selectedAnomalyId) ?? null;
@@ -3722,7 +4017,113 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
           "circle-stroke-width": 2,
         },
       });
+
+      // AI Manhole Recommendation Engine — proposed/rehab pipe routes.
+      map.addSource(MANHOLE_ROUTES_SOURCE, {
+        type: "geojson",
+        data: { type: "FeatureCollection", features: [] },
+      });
+      map.addLayer({
+        id: LAYER_MANHOLE_ROUTES,
+        type: "line",
+        source: MANHOLE_ROUTES_SOURCE,
+        layout: { "line-cap": "round", "line-join": "round" },
+        paint: {
+          "line-color": MANHOLE_ROUTE_COLOR,
+          "line-width": ["interpolate", ["linear"], ["zoom"], 12, 3, 18, 6],
+          "line-dasharray": [0.2, 1.5],
+        },
+      });
+      // Flow-direction arrows drawn along each route line, only where the
+      // direction is actually grounded in real elevation evidence
+      // (flow_confirmed) — an unconfirmed route still shows as a plain line,
+      // never with an arrow asserting a direction we don't have evidence for.
+      if (!map.hasImage(FLOW_ARROW_ICON_ID)) {
+        map.addImage(FLOW_ARROW_ICON_ID, buildFlowArrowImageData(), { pixelRatio: 2 });
+      }
+      map.addLayer({
+        id: LAYER_MANHOLE_FLOW_ARROWS,
+        type: "symbol",
+        source: MANHOLE_ROUTES_SOURCE,
+        filter: ["==", ["get", "flow_confirmed"], true],
+        layout: {
+          "symbol-placement": "line",
+          "symbol-spacing": 60,
+          "icon-image": FLOW_ARROW_ICON_ID,
+          "icon-size": ["interpolate", ["linear"], ["zoom"], 12, 0.6, 18, 1.1],
+          "icon-rotation-alignment": "map",
+          "icon-keep-upright": false,
+          "icon-allow-overlap": true,
+          "icon-ignore-placement": true,
+        },
+      });
+
+      // AI Manhole Recommendation Engine — proposed new manhole locations
+      // (coverage gaps / disconnected manholes), drawn as points on top.
+      map.addSource(MANHOLE_POINTS_SOURCE, {
+        type: "geojson",
+        data: { type: "FeatureCollection", features: [] },
+      });
+      map.addLayer({
+        id: LAYER_MANHOLE_POINTS,
+        type: "circle",
+        source: MANHOLE_POINTS_SOURCE,
+        paint: {
+          "circle-radius": ["interpolate", ["linear"], ["zoom"], 12, 6, 18, 11],
+          "circle-color": MANHOLE_ROUTE_COLOR,
+          "circle-stroke-color": "#0b1013",
+          "circle-stroke-width": 1.5,
+          "circle-opacity": 0.9,
+        },
+      });
+
+      // AI Manhole Recommendation Engine — manholes with no real sewage/
+      // drain pipe within reach. Drawn as a distinct ring rather than left
+      // silently unconnected, so it reads as "flagged" rather than "missing".
+      map.addSource(MANHOLE_UNCONNECTED_SOURCE, {
+        type: "geojson",
+        data: { type: "FeatureCollection", features: [] },
+      });
+      map.addLayer({
+        id: LAYER_MANHOLE_UNCONNECTED,
+        type: "circle",
+        source: MANHOLE_UNCONNECTED_SOURCE,
+        paint: {
+          "circle-radius": ["interpolate", ["linear"], ["zoom"], 12, 8, 18, 14],
+          "circle-color": "rgba(0,0,0,0)",
+          "circle-stroke-color": MANHOLE_UNCONNECTED_COLOR,
+          "circle-stroke-width": 3,
+        },
+      });
+
+      map.on("mousemove", LAYER_MANHOLE_UNCONNECTED, (e: MapMouseEvent) => {
+        const hit = map.queryRenderedFeatures(e.point, { layers: [LAYER_MANHOLE_UNCONNECTED] });
+        if (!hit.length) return;
+        map.getCanvas().style.cursor = "pointer";
+        const reason = (hit[0].properties?.reason as string | undefined) ?? "Not connected to the sewage line";
+        setHover({
+          x: e.point.x,
+          y: e.point.y,
+          label: "Unconnected Manhole",
+          category: "Not connected to sewage line",
+          severity: 1,
+          color: MANHOLE_UNCONNECTED_COLOR,
+          attributes: { reason },
+        });
+      });
+      map.on("mouseleave", LAYER_MANHOLE_UNCONNECTED, () => {
+        map.getCanvas().style.cursor = "";
+        setHover(null);
+      });
+
       map.on("click", LAYER_ANOMALIES, (e: MapMouseEvent) => {
+        // In Manholes AI mode, the underlying base point layer sits at the
+        // exact same coordinate and its own click handler (in
+        // handleFeatureClick below) already opens the richer manhole-
+        // recommend card for this click — without this guard, MapLibre
+        // fires both layer-specific handlers for one click and both cards
+        // would open stacked on top of each other.
+        if (detectionModeRef.current === "manholes") return;
         const hit = map.queryRenderedFeatures(e.point, { layers: [LAYER_ANOMALIES] });
         if (!hit.length) return;
         const id = hit[0].properties?.id as string | undefined;
@@ -3785,6 +4186,22 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
         if (aiOverlayEnabledRef.current && detectionModeRef.current === "drains") {
           const anomalyId = buildingAnomalyIdMapRef.current[selected.properties.id];
           if (anomalyId) { setSelectedAnomalyId(anomalyId); return; }
+        }
+        if (
+          aiOverlayEnabledRef.current &&
+          detectionModeRef.current === "manholes" &&
+          classMapRef.current[selected.properties.category ?? ""] === "Access_Point" &&
+          selected.properties.dataset_id
+        ) {
+          // The real pipe-suggestion card (material/diameter/RL/slope/route)
+          // — kept in its OWN state (manholeFeatureAnswer), never touching
+          // manholeRecommendAnswer/routes, so a "Full Drainage Network"
+          // already drawn on the map stays exactly as-is. Same courtesy as
+          // Poles/Drains: only hide the network SUMMARY PANEL (not its
+          // data) so the two cards don't visually stack in the same corner.
+          setManholeRecommendOpen(false);
+          void runManholeFeatureRecommend(selected.properties.dataset_id, selected.properties.id);
+          return;
         }
         if (selected.properties.category === "site_photo") {
           setPhotoViewer({
@@ -4666,6 +5083,13 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
           onLineWidthChange: setVisualizationLineWidth,
           onResetStyle: resetVisualizationStyle,
         }}
+        detectionMode={detectionMode}
+        onRunManholeNetwork={runManholeNetwork}
+        manholeRecommendLoading={manholeRecommendLoading}
+        classMap={classMap}
+        extraVisibleCategories={extraVisibleCategories}
+        onToggleExtraVisibleCategory={toggleExtraVisibleCategory}
+        onSetAllExtraVisibleCategories={setAllExtraVisibleCategories}
       />
       <div className="map-canvas" data-testid="map-canvas">
         <div ref={containerRef} className="map-canvas__map" data-testid="map-gl" />
@@ -4779,6 +5203,24 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
           onToggleLookAround={toggleLookAround}
           onResetCamera={resetLookAroundCamera}
         />
+        {manholeRecommendOpen && (
+          <ManholeRecommendCard
+            answer={manholeRecommendAnswer}
+            loading={manholeRecommendLoading}
+            error={manholeRecommendError}
+            onClose={closeManholeRecommend}
+            onView3D={() => setShow3DPlan(true)}
+          />
+        )}
+        {manholeFeatureOpen && (
+          <ManholeRecommendCard
+            answer={manholeFeatureAnswer}
+            loading={manholeFeatureLoading}
+            error={manholeFeatureError}
+            onClose={closeManholeFeature}
+            onView3D={() => setShow3DPlan(true)}
+          />
+        )}
         {measureActive && (
           <RulerPanel
             tab={measureTab}
@@ -4830,6 +5272,17 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
           onClose={() => setStreetViewTarget(null)}
         />
       )}
+      {show3DPlan && (
+        <ManholePlan3D
+          features={loadedFeatures}
+          classMap={classMap}
+          anomalies={anomalies}
+          manholeAnswer={manholeFeatureOpen ? manholeFeatureAnswer : manholeRecommendAnswer}
+          datasets={datasets}
+          activeDatasetIds={activeDatasetIds}
+          onClose={() => setShow3DPlan(false)}
+        />
+      )}
       {attributeTable && (
         <AttributeTable
           key={`${attributeTable.category}:${attributeTable.datasetIds?.join(",") ?? attributeTable.ward ?? "all"}:${attributeTable.severity ?? ""}`}
@@ -4878,6 +5331,8 @@ function CommandCenter({
   datasets, activeDatasetIds, flyError, onSelectDataset, onSelectAllDatasets, expandedDatasetId, onToggleDatasetSettings,
   rasterSettingsById, onChangeRasterSettings, categoryStats, hiddenCategories, onToggleCategory,
   onSetAllCategoriesVisible, onRunAudit, auditRunning, auditError, onOpenAttributeTable, status: _status, visualization,
+  detectionMode, onRunManholeNetwork, manholeRecommendLoading,
+  classMap, extraVisibleCategories, onToggleExtraVisibleCategory, onSetAllExtraVisibleCategories,
 }: {
   datasets: DatasetRow[]; activeDatasetIds: string[]; flyError: string | null; onSelectDataset: (d: DatasetRow) => void;
   onSelectAllDatasets: (active: boolean) => void;
@@ -4895,6 +5350,13 @@ function CommandCenter({
   onOpenAttributeTable: (category: string) => void;
   status: ViewportStatus;
   visualization: VisualizationPanelProps;
+  detectionMode: DetectionMode;
+  onRunManholeNetwork: (datasetIds: string[]) => void;
+  manholeRecommendLoading: boolean;
+  classMap: Record<string, string>;
+  extraVisibleCategories: Set<string>;
+  onToggleExtraVisibleCategory: (category: string) => void;
+  onSetAllExtraVisibleCategories: (categories: string[]) => void;
 }) {
   const [layerQuery, setLayerQuery] = useState("");
   const [layerMenu, setLayerMenu] = useState<{ category: string; x: number; y: number } | null>(null);
@@ -5064,6 +5526,42 @@ function CommandCenter({
           document.body
         )}
 
+        {activeDatasetIds.length > 0 && (
+          <div className="command-center__section">
+            <div className="command-center__section-head">
+              <span className="command-center__section-title">Spatial Audit</span>
+            </div>
+            <button
+              type="button"
+              className="command-center__audit-btn"
+              disabled={auditRunning}
+              onClick={() => onRunAudit(activeDatasetIds)}
+              data-testid="run-spatial-audit"
+              style={{ marginTop: 8 }}
+            >
+              {auditRunning ? "Running Spatial Audit…" : "Run Spatial Audit"}
+            </button>
+            {activeDatasetIds.length > 0 && detectionMode === "manholes" && (
+              <button
+                type="button"
+                className="command-center__audit-btn"
+                disabled={manholeRecommendLoading}
+                onClick={() => onRunManholeNetwork(activeDatasetIds)}
+                data-testid="run-manhole-network"
+                title="Build the complete manhole-to-manhole drainage network, with flow direction grounded in real surveyed levels / DTM / contour elevation"
+                style={{ marginTop: 8 }}
+              >
+                {manholeRecommendLoading ? "Building…" : "Full Drainage Network"}
+              </button>
+            )}
+            {auditError && (
+              <div style={{ marginTop: 8, padding: "8px 10px", background: "var(--danger-muted)", borderRadius: "var(--radius-sm)", color: "var(--danger)", fontSize: 11 }}>
+                {auditError}
+              </div>
+            )}
+          </div>
+        )}
+
         {categoryStats.length > 0 && (
           <div className="command-center__section">
             <div className="command-center__section-head">
@@ -5072,9 +5570,21 @@ function CommandCenter({
                 type="button"
                 className="command-center__text-btn"
                 data-testid="layers-toggle-all"
-                onClick={() => onSetAllCategoriesVisible(hiddenCategories.size > 0)}
+                onClick={() => {
+                  if (detectionMode) {
+                    // Mirrors the per-row toggle: categories already in the
+                    // mode's own asset family are always shown regardless, so
+                    // "all" only ever needs to add/clear the OTHER categories.
+                    const nonFamily = categoryStats
+                      .map((c) => c.category)
+                      .filter((cat) => !DETECTION_MODE_TARGET_CLASSES[detectionMode].includes(classMap[cat]));
+                    onSetAllExtraVisibleCategories(extraVisibleCategories.size === 0 ? nonFamily : []);
+                  } else {
+                    onSetAllCategoriesVisible(hiddenCategories.size > 0);
+                  }
+                }}
               >
-                {hiddenCategories.size > 0 ? "Show all" : "Hide all"}
+                {(detectionMode ? extraVisibleCategories.size === 0 : hiddenCategories.size > 0) ? "Show all" : "Hide all"}
               </button>
             </div>
             <div className="layer-search">
@@ -5103,12 +5613,29 @@ function CommandCenter({
             </div>
             <div className="layer-list">
               {displayedLayers.map((c) => {
-                const visible = !hiddenCategories.has(c.category);
+                // While a detection mode owns the map, a category already in
+                // the mode's own asset family is always shown (its checkbox
+                // just reflects that, clicking it is a no-op); any OTHER
+                // category is off by default and toggles via the separate
+                // extraVisibleCategories allowlist instead of the ordinary
+                // hiddenCategories blacklist, since the mode ignores that one.
+                const inModeFamily = detectionMode
+                  ? DETECTION_MODE_TARGET_CLASSES[detectionMode].includes(classMap[c.category])
+                  : false;
+                const visible = detectionMode
+                  ? inModeFamily || extraVisibleCategories.has(c.category)
+                  : !hiddenCategories.has(c.category);
                 return (
                   <div
                     key={c.category}
                     className={`layer-row${visible ? "" : " layer-row--hidden"}`}
-                    onClick={() => onToggleCategory(c.category)}
+                    onClick={() => {
+                      if (detectionMode) {
+                        if (!inModeFamily) onToggleExtraVisibleCategory(c.category);
+                      } else {
+                        onToggleCategory(c.category);
+                      }
+                    }}
                     onContextMenu={(event) => {
                       event.preventDefault();
                       event.stopPropagation();
@@ -5118,7 +5645,13 @@ function CommandCenter({
                         y: Math.max(8, Math.min(event.clientY, window.innerHeight - 96)),
                       });
                     }}
-                    title="Click to show or hide. Right-click for the attribute table."
+                    title={
+                      detectionMode
+                        ? (inModeFamily
+                          ? "Always shown in this AI Detection mode"
+                          : "Click to also show this category alongside the AI Detection view")
+                        : "Click to show or hide. Right-click for the attribute table."
+                    }
                     data-testid={`layer-row-${c.category}`}
                   >
                     <div className={`layer-row__checkbox${visible ? " layer-row__checkbox--checked" : ""}`}>

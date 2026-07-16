@@ -379,16 +379,17 @@ async def list_features_in_viewport(
     if feature_ids:
         sql = text(
             """
-            SELECT
-                f.id::text                          AS id,
-                f.dataset_id::text                  AS dataset_id,
-                f.label                             AS label,
-                f.category                          AS category,
-                f.severity                          AS severity,
-                f.attributes                        AS attributes,
-                ST_AsGeoJSON(f.geom)::text          AS geom_json
-            FROM features f
-            WHERE f.id = ANY(:ids)
+        SELECT
+            f.id::text                          AS id,
+            f.dataset_id::text                  AS dataset_id,
+            f.label                             AS label,
+            f.category                          AS category,
+            f.severity                          AS severity,
+            f.attributes->>'_canonical_class'   AS canonical_class,
+            f.attributes                        AS attributes,
+            ST_AsGeoJSON(f.geom)::text          AS geom_json
+        FROM features f
+        WHERE f.id = ANY(:ids)
             LIMIT :limit
             """
         )
@@ -407,6 +408,7 @@ async def list_features_in_viewport(
                     "label": row["label"],
                     "category": row["category"],
                     "severity": row["severity"],
+                    "canonical_class": row["canonical_class"] or "Unclassified",
                     "attributes": row["attributes"] or {},
                 },
             })
@@ -506,6 +508,7 @@ async def list_features_in_viewport(
             f.label                             AS label,
             f.category                          AS category,
             f.severity                          AS severity,
+            f.attributes->>'_canonical_class'   AS canonical_class,
             f.attributes                        AS attributes,
             ST_AsGeoJSON(f.geom)::text          AS geom_json
         FROM features f
@@ -532,6 +535,7 @@ async def list_features_in_viewport(
                     "label": row["label"],
                     "category": row["category"],
                     "severity": row["severity"],
+                    "canonical_class": row["canonical_class"] or "Unclassified",
                     "attributes": row["attributes"] or {},
                 },
             }
