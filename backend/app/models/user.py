@@ -36,6 +36,9 @@ class User(Base):
     datasets = relationship("Dataset", back_populates="uploader", lazy="raise")
     comments = relationship("Comment", back_populates="author", lazy="raise")
     activity_logs = relationship("ActivityLog", back_populates="actor", lazy="raise")
+    placemarks = relationship(
+        "Placemark", back_populates="owner", cascade="all, delete-orphan", lazy="raise"
+    )
 
     def __repr__(self) -> str:  # pragma: no cover
         return f"<User {self.email} ({self.role.value})>"

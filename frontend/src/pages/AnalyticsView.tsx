@@ -26,6 +26,7 @@ import {
   type DatasetRow,
   type IngestionTrendPoint,
   type ManholeReadinessFieldKey,
+  type ManholeReadinessStatus,
 } from "../lib/workflow";
 import { colorForCategory } from "../lib/categoryColors";
 import { AnalyticsScopeBar } from "../components/analytics/AnalyticsScopeBar";
@@ -36,6 +37,7 @@ import { AnalyticsFilterChips } from "../components/analytics/AnalyticsFilterChi
 import { AnalyticsQualityPanel } from "../components/analytics/AnalyticsQualityPanel";
 import { AnalyticsExportPanel } from "../components/analytics/AnalyticsExportPanel";
 import { AnalyticsManholeReadiness } from "../components/analytics/AnalyticsManholeReadiness";
+import { AnalyticsSeverityVisualization } from "../components/analytics/AnalyticsSeverityVisualization";
 
 const STATUS_COLORS: Record<string, string> = {
   open: "#3b82f6",
@@ -84,7 +86,10 @@ interface StoredAnalyticsScope {
   activeCategory: string | null;
   activeWard: string | null;
   activeSeverityBucket: AnalyticsSeverityBucket | null;
-  activeMissingField: ManholeReadinessFieldKey | null;
+  activeReadinessField: ManholeReadinessFieldKey | null;
+  activeReadinessStatus: ManholeReadinessStatus | null;
+  /** Phase 4 persisted key retained for one-time migration. */
+  activeMissingField?: ManholeReadinessFieldKey | null;
 }
 
 function stringArray(value: unknown): string[] {
@@ -111,11 +116,22 @@ function readStoredAnalyticsScope(fallbackDatasetIds: string[]): StoredAnalytics
         parsed.activeSeverityBucket === "high"
           ? parsed.activeSeverityBucket
           : null,
-      activeMissingField:
-        typeof parsed.activeMissingField === "string" &&
-        MANHOLE_READINESS_KEYS.has(parsed.activeMissingField)
-          ? parsed.activeMissingField as ManholeReadinessFieldKey
-          : null,
+      activeReadinessField:
+        typeof parsed.activeReadinessField === "string" &&
+        MANHOLE_READINESS_KEYS.has(parsed.activeReadinessField)
+          ? parsed.activeReadinessField as ManholeReadinessFieldKey
+          : typeof parsed.activeMissingField === "string" &&
+              MANHOLE_READINESS_KEYS.has(parsed.activeMissingField)
+            ? parsed.activeMissingField as ManholeReadinessFieldKey
+            : null,
+      activeReadinessStatus:
+        parsed.activeReadinessStatus === "all" ||
+        parsed.activeReadinessStatus === "available" ||
+        parsed.activeReadinessStatus === "missing"
+          ? parsed.activeReadinessStatus
+          : parsed.activeMissingField
+            ? "missing"
+            : null,
     };
   } catch {
     const datasets = stableValues(fallbackDatasetIds);
@@ -127,7 +143,8 @@ function readStoredAnalyticsScope(fallbackDatasetIds: string[]): StoredAnalytics
       activeCategory: null,
       activeWard: null,
       activeSeverityBucket: null,
-      activeMissingField: null,
+      activeReadinessField: null,
+      activeReadinessStatus: null,
     };
   }
 }
@@ -161,8 +178,11 @@ export function AnalyticsView() {
   const [activeSeverityBucket, setActiveSeverityBucket] = useState<AnalyticsSeverityBucket | null>(
     initialScope.activeSeverityBucket
   );
-  const [activeMissingField, setActiveMissingField] = useState<ManholeReadinessFieldKey | null>(
-    initialScope.activeMissingField
+  const [activeReadinessField, setActiveReadinessField] = useState<ManholeReadinessFieldKey | null>(
+    initialScope.activeReadinessField
+  );
+  const [activeReadinessStatus, setActiveReadinessStatus] = useState<ManholeReadinessStatus | null>(
+    initialScope.activeReadinessStatus
   );
   const [overview, setOverview] = useState<AnalyticsOverview | null>(null);
   const [loadingDatasets, setLoadingDatasets] = useState(true);
@@ -188,9 +208,10 @@ export function AnalyticsView() {
     () => ({
       wards: activeWard ? [activeWard] : [],
       severityBuckets: effectiveSeverityBuckets,
-      missingField: activeMissingField,
+      readinessField: activeReadinessField,
+      readinessStatus: activeReadinessStatus,
     }),
-    [activeMissingField, activeWard, effectiveSeverityBuckets]
+    [activeReadinessField, activeReadinessStatus, activeWard, effectiveSeverityBuckets]
   );
   const appliedScopeKey = useMemo(
     () => JSON.stringify({
@@ -198,9 +219,10 @@ export function AnalyticsView() {
       categories: stableValues(effectiveCategories),
       ward: activeWard,
       severity: activeSeverityBucket,
-      missingField: activeMissingField,
+      readinessField: activeReadinessField,
+      readinessStatus: activeReadinessStatus,
     }),
-    [activeMissingField, activeSeverityBucket, activeWard, appliedDatasetIds, effectiveCategories]
+    [activeReadinessField, activeReadinessStatus, activeSeverityBucket, activeWard, appliedDatasetIds, effectiveCategories]
   );
   const scopeDirty =
     !sameValues(draftDatasetIds, appliedDatasetIds) ||
@@ -218,7 +240,8 @@ export function AnalyticsView() {
           activeCategory,
           activeWard,
           activeSeverityBucket,
-          activeMissingField,
+          activeReadinessField,
+          activeReadinessStatus,
         } satisfies StoredAnalyticsScope)
       );
     } catch {
@@ -226,7 +249,8 @@ export function AnalyticsView() {
       // continues to work normally for the current mounted session.
     }
   }, [
-    activeMissingField,
+    activeReadinessField,
+    activeReadinessStatus,
     activeCategory,
     activeSeverityBucket,
     activeWard,
@@ -291,7 +315,8 @@ export function AnalyticsView() {
     setActiveCategory(null);
     setActiveWard(null);
     setActiveSeverityBucket(null);
-    setActiveMissingField(null);
+    setActiveReadinessField(null);
+    setActiveReadinessStatus(null);
     setAnalysisVersion((value) => value + 1);
   }
 
@@ -303,12 +328,14 @@ export function AnalyticsView() {
     setActiveCategory(null);
     setActiveWard(null);
     setActiveSeverityBucket(null);
-    setActiveMissingField(null);
+    setActiveReadinessField(null);
+    setActiveReadinessStatus(null);
     setAnalysisVersion((value) => value + 1);
   }
 
   const toggleCategoryFilter = useCallback((category: string) => {
-    setActiveMissingField(null);
+    setActiveReadinessField(null);
+    setActiveReadinessStatus(null);
     setActiveCategory((current) => current === category ? null : category);
   }, []);
 
@@ -324,18 +351,21 @@ export function AnalyticsView() {
     setActiveCategory(null);
     setActiveWard(null);
     setActiveSeverityBucket(null);
-    setActiveMissingField(null);
+    setActiveReadinessField(null);
+    setActiveReadinessStatus(null);
   }, []);
 
-  const selectMissingManholeField = useCallback((
+  const selectManholeReadiness = useCallback((
     field: ManholeReadinessFieldKey,
-    _label: string
+    _label: string,
+    status: ManholeReadinessStatus
   ) => {
     const manholeCategory =
       categoryOptions.find((option) => option.category.trim().toLowerCase() === "manhole")
         ?.category ?? "Manhole";
     setActiveCategory(manholeCategory);
-    setActiveMissingField(field);
+    setActiveReadinessField(field);
+    setActiveReadinessStatus(status);
     window.requestAnimationFrame(() => {
       spatialSectionRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
     });
@@ -427,8 +457,8 @@ export function AnalyticsView() {
               : ` for ${effectiveCategories.length} active categor${effectiveCategories.length === 1 ? "y" : "ies"}.`}
             {activeWard ? ` Ward ${activeWard}.` : ""}
             {activeSeverityBucket ? ` ${activeSeverityBucket} severity only.` : ""}
-            {activeMissingField
-              ? ` Showing Manholes missing ${MANHOLE_READINESS_LABELS[activeMissingField]}.`
+            {activeReadinessField
+              ? ` Showing ${MANHOLE_READINESS_LABELS[activeReadinessField]} readiness: ${activeReadinessStatus ?? "all"}.`
               : ""}
           </p>
         </div>
@@ -459,16 +489,21 @@ export function AnalyticsView() {
         category={activeCategory}
         ward={activeWard}
         severityBucket={activeSeverityBucket}
-        missingFieldLabel={
-          activeMissingField ? MANHOLE_READINESS_LABELS[activeMissingField] : null
+        readinessFieldLabel={
+          activeReadinessField ? MANHOLE_READINESS_LABELS[activeReadinessField] : null
         }
+        readinessStatus={activeReadinessStatus}
         onClearCategory={() => {
           setActiveCategory(null);
-          setActiveMissingField(null);
+          setActiveReadinessField(null);
+          setActiveReadinessStatus(null);
         }}
         onClearWard={() => setActiveWard(null)}
         onClearSeverity={() => setActiveSeverityBucket(null)}
-        onClearMissingField={() => setActiveMissingField(null)}
+        onClearReadiness={() => {
+          setActiveReadinessField(null);
+          setActiveReadinessStatus(null);
+        }}
         onClearAll={clearCrossFilters}
       />
 
@@ -566,38 +601,11 @@ export function AnalyticsView() {
           </div>
           <div className="chart-card__body">
             {totalSeverity > 0 ? (
-              <div>
-                <ResponsiveContainer width="100%" height={200}>
-                  <BarChart data={severityData} layout="vertical" margin={{ left: 20, right: 20 }}>
-                    <CartesianGrid strokeDasharray="3 3" stroke="var(--edge)" horizontal={false} />
-                    <XAxis type="number" tick={{ fill: "var(--ink-mute)", fontSize: 11 }} axisLine={false} tickLine={false} />
-                    <YAxis type="category" dataKey="name" tick={{ fill: "var(--ink-dim)", fontSize: 12, fontWeight: 600 }} axisLine={false} tickLine={false} width={80} />
-                    <Tooltip contentStyle={{ background: "var(--surface-2)", border: "1px solid var(--edge)", borderRadius: 8, fontSize: 12, color: "var(--ink)" }} />
-                    <Bar dataKey="value" radius={[0, 6, 6, 0]}>
-                      {severityData.map((entry) => (
-                        <Cell
-                          key={entry.name}
-                          fill={entry.color}
-                          className="analytics-clickable-chart-item"
-                          onClick={() => toggleSeverityFilter(entry.name.toLowerCase() as AnalyticsSeverityBucket)}
-                        />
-                      ))}
-                    </Bar>
-                  </BarChart>
-                </ResponsiveContainer>
-                <div className="analytics-severity-summary">
-                  {severityData.map((item) => (
-                    <button
-                      type="button"
-                      key={item.name}
-                      onClick={() => toggleSeverityFilter(item.name.toLowerCase() as AnalyticsSeverityBucket)}
-                    >
-                      <strong style={{ color: item.color }}>{item.value.toLocaleString()}</strong>
-                      <span>{item.name} ({item.percentage}%)</span>
-                    </button>
-                  ))}
-                </div>
-              </div>
+              <AnalyticsSeverityVisualization
+                data={severityData}
+                activeBucket={activeSeverityBucket}
+                onToggleBucket={toggleSeverityFilter}
+              />
             ) : (
               <EmptyState text="No severity data exists for the applied scope." />
             )}
@@ -732,9 +740,13 @@ export function AnalyticsView() {
           wards: activeWard ? [activeWard] : [],
           severityBuckets: effectiveSeverityBuckets,
         }}
-        activeField={activeMissingField}
-        onSelectMissing={selectMissingManholeField}
-        onClear={() => setActiveMissingField(null)}
+        activeField={activeReadinessField}
+        activeStatus={activeReadinessStatus}
+        onSelect={selectManholeReadiness}
+        onClear={() => {
+          setActiveReadinessField(null);
+          setActiveReadinessStatus(null);
+        }}
       />
 
       <section ref={spatialSectionRef} className="chart-grid chart-grid--2 analytics-spatial-grid">
@@ -834,8 +846,8 @@ export function AnalyticsView() {
         disabledReason={
           scopeDirty
             ? "Apply the draft dataset/category changes before generating a new AI summary."
-            : activeMissingField
-              ? "Clear the Manhole readiness filter before generating an AI summary; AI reports currently use dataset, category, ward, and severity scope only."
+            : activeReadinessField
+              ? "Clear the Manhole readiness view before generating an AI summary; AI reports currently use dataset, category, ward, and severity scope only."
               : null
         }
       />

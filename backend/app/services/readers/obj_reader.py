@@ -24,7 +24,7 @@ from pathlib import Path
 from typing import Any
 
 from geoalchemy2.shape import from_shape
-from pyproj import Transformer
+from pyproj import CRS, Transformer
 from shapely.geometry import Point
 
 from app.db.session import SessionLocal
@@ -124,6 +124,29 @@ def _find_geo_origin(root: Path) -> _GeoOrigin | None:
         crs = srs_el.text.strip()
         log.info("Found geo-reference in %s: crs=%s origin=(%s, %s, %s)", xml_file.name, crs, ox, oy, oz)
         return _GeoOrigin(crs=crs, x=ox, y=oy, z=oz)
+    return _find_prj_origin(root)
+
+
+def _find_prj_origin(root: Path) -> _GeoOrigin | None:
+    """Fallback for bundles that ship a plain `.prj` (CRS only, no anchor)
+    instead of a ContextCapture `metadata.xml` — vertices are then assumed
+    to already be absolute coordinates in that CRS, i.e. an origin of 0."""
+    for prj_file in root.rglob("*.prj"):
+        try:
+            raw = prj_file.read_bytes().decode("utf-8-sig").strip()
+        except UnicodeDecodeError:
+            raw = prj_file.read_bytes().decode("latin-1").strip()
+        if not raw:
+            continue
+        try:
+            crs = CRS.from_user_input(raw)
+        except Exception as exc:  # noqa: BLE001 — malformed/unsupported .prj content
+            log.warning("Could not parse .prj %s: %s", prj_file, exc)
+            continue
+        authority = crs.to_authority()
+        crs_string = f"{authority[0]}:{authority[1]}" if authority else crs.to_wkt()
+        log.info("Found CRS-only geo-reference in %s: crs=%s", prj_file.name, crs_string)
+        return _GeoOrigin(crs=crs_string, x=0.0, y=0.0, z=0.0)
     return None
 
 
@@ -169,12 +192,23 @@ class ObjReader:
 
             model_assets = await self._upload_model_assets(dataset_id, obj_file, mtl_files, texture_files)
             result = await self._persist(parsed, dataset_id=dataset_id, geo_origin=geo_origin)
+
+            dataset_metadata = dict(result.dataset_metadata or {})
+            model_3d = dict(dataset_metadata.get("model_3d") or {})
+            asset_keys = {model_assets["obj_filename"]: model_assets["obj_key"]}
+            if model_assets.get("mtl_filename"):
+                asset_keys[model_assets["mtl_filename"]] = model_assets["mtl_key"]
+            asset_keys.update(model_assets.get("textures") or {})
+            model_3d["asset_keys"] = asset_keys
+            dataset_metadata["model_3d"] = model_3d
+
             return ReaderResult(
                 inserted=result.inserted,
                 skipped=result.skipped,
                 source_crs=result.source_crs,
                 notes=result.notes,
                 model_assets=model_assets,
+                dataset_metadata=dataset_metadata,
             )
 
     async def _upload_model_assets(
@@ -405,4 +439,13 @@ class ObjReader:
             skipped=skipped,
             source_crs=source_crs,
             notes=f"vertices={parsed.vertex_count}, faces={parsed.face_count}, groups={len(parsed.groups)}, position={position_source}",
+            dataset_metadata={
+                "model_3d": {
+                    "source_crs": source_crs,
+                    "vertex_count": parsed.vertex_count,
+                    "face_count": parsed.face_count,
+                    "position_source": position_source,
+                    "is_geo_referenced": position_source != "synthetic",
+                }
+            },
         )

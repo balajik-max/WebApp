@@ -84,6 +84,9 @@ async def _set_status(
             model_assets = result_payload.pop("model_assets", None)
             if model_assets is not None:
                 merged["model_assets"] = model_assets
+            reader_metadata = result_payload.pop("dataset_metadata", None)
+            if reader_metadata:
+                merged.update(reader_metadata)
             ds.dataset_metadata = merged
 
         session.add(
@@ -165,6 +168,7 @@ async def ingest_dataset(*, dataset_id: uuid.UUID, storage_key: str, filename: s
                 "notes": result.notes,
                 "raster_overlay": result.raster_overlay,
                 "model_assets": result.model_assets,
+                "dataset_metadata": result.dataset_metadata,
             },
         )
     except Exception as exc:  # noqa: BLE001 — last-resort guard, see docstring

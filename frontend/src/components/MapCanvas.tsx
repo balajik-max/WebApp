@@ -3,13 +3,15 @@ import { createPortal } from "react-dom";
 import maplibregl, { Map as MLMap, MapMouseEvent, GeoJSONSource } from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
 
-import { fetchFeatureById, fetchFeaturesInViewport } from "../lib/features";
+import { fetchFeatureById, fetchFeaturesInViewport, fetchVisualizationLayerFeatures } from "../lib/features";
 import type { AiHighlight, FeatureFilter, UrbanFeature, FeatureCollectionResponse } from "../lib/types";
 import { ApiError } from "../lib/api";
 import { colorForCategory, UNCATEGORIZED_COLOR } from "../lib/categoryColors";
 import {
-  fetchDatasets, fetchDatasetBounds, type DatasetBounds, type DatasetRow,
+  fetchDatasets, fetchDatasetBounds, fetchVisualizationManifest,
+  type DatasetBounds, type DatasetRow,
   type FeatureTableRow, type LayerFeatureTableFilter,
+  type VisualizationFieldProfile, type VisualizationLayerManifest, type VisualizationManifest,
   fetchAnomalies, runSpatialAudit, updateAnomalyStatus, fetchAllClassMappings,
   type SpatialAnomaly, type AnomalyStatus,
 } from "../lib/workflow";
@@ -20,6 +22,15 @@ import { GoogleStreetView } from "./GoogleStreetView";
 import { LookAroundCompass, DEFAULT_MAP_PITCH, MAX_MAP_PITCH } from "./LookAroundCompass";
 import { DataSourceSelector } from "./DataSourceSelector";
 import { AnomalyAlertCard } from "./AnomalyAlertCard";
+import { PlacemarkEditor } from "./map/PlacemarkEditor";
+import { MyPlacesPanel } from "./map/MyPlacesPanel";
+import { PlacemarkDetailsPanel } from "./map/PlacemarkDetailsPanel";
+import { ReferenceLayersMenu, type ReferenceLayerVisibility } from "./map/ReferenceLayersMenu";
+import { useDraggableMapPanel } from "./map/useDraggableMapPanel";
+import {
+  bulkDeletePlacemarks, createPlacemark, deletePlacemark, fetchElevationSample, fetchPlacemarks,
+  updatePlacemark, type ElevationSample, type Placemark, type PlacemarkDraft,
+} from "../lib/placemarks";
 
 // .obj datasets are persisted with file_type "other" (the enum has no
 // dedicated OBJ value), so detect them from the stored filename instead.
@@ -30,6 +41,13 @@ function isObjDataset(d: DatasetRow): boolean {
   if (d.dataset_metadata?.model_assets) return true;
   const name = (d.storage_key ?? d.name).toLowerCase();
   return name.endsWith(".obj");
+}
+
+function isVectorVisualizationDataset(d: DatasetRow): boolean {
+  if (d.status !== "ready" || isObjDataset(d)) return false;
+  if (d.file_type === "geotiff" || d.file_type === "image") return false;
+  if (d.dataset_metadata?.raster_overlay || d.dataset_metadata?.model_3d) return false;
+  return true;
 }
 
 interface Props {
@@ -136,6 +154,7 @@ function rasterResamplingForSettings(settings: RasterDisplaySettings): "linear" 
 
 const BASE_STYLE: maplibregl.StyleSpecification = {
   version: 8,
+  glyphs: "https://tiles.openfreemap.org/fonts/{fontstack}/{range}.pbf",
   sources: {
     "osm-tiles": {
       type: "raster",
@@ -146,6 +165,11 @@ const BASE_STYLE: maplibregl.StyleSpecification = {
       // valid z19 tiles while our vector inspection camera continues to z24.
       maxzoom: 19,
       attribution: "(c) OpenStreetMap contributors",
+    },
+    "reference-openfreemap": {
+      type: "vector",
+      url: "https://tiles.openfreemap.org/planet",
+      attribution: "OpenMapTiles © OpenStreetMap contributors",
     },
     "satellite-tiles": {
       type: "raster",
@@ -172,6 +196,185 @@ const BASE_STYLE: maplibregl.StyleSpecification = {
       maxzoom: 24,
       layout: { visibility: "none" },
     },
+    {
+      id: "reference-boundaries",
+      type: "line",
+      source: "reference-openfreemap",
+      "source-layer": "boundary",
+      minzoom: 0,
+      layout: { visibility: "none" },
+      paint: {
+        "line-color": [
+          "match", ["to-string", ["get", "admin_level"]],
+          "2", "#f8fafc",
+          "4", "#facc15",
+          "6", "#67e8f9",
+          "8", "#a7f3d0",
+          "#cbd5e1"
+        ],
+        "line-width": ["interpolate", ["linear"], ["zoom"], 3, 0.7, 10, 1.4, 16, 2.1],
+        "line-opacity": 0.92,
+        "line-dasharray": [3, 2],
+      },
+    },
+    {
+      id: "reference-boundary-labels",
+      type: "symbol",
+      source: "reference-openfreemap",
+      "source-layer": "place",
+      minzoom: 3,
+      filter: ["in", ["get", "class"], ["literal", ["country", "state", "province", "county", "city", "town", "village", "suburb", "neighbourhood", "hamlet"]]],
+      layout: {
+        visibility: "none",
+        "text-field": ["coalesce", ["get", "name:en"], ["get", "name"], ""],
+        "text-font": ["Noto Sans Regular"],
+        "text-size": ["interpolate", ["linear"], ["zoom"], 3, 11, 10, 13, 16, 15],
+        "text-letter-spacing": 0.04,
+        "text-variable-anchor": ["top", "bottom", "left", "right"],
+        "text-radial-offset": 0.3,
+      },
+      paint: {
+        "text-color": "#ffffff",
+        "text-halo-color": "#0b1013",
+        "text-halo-width": 1.6,
+      },
+    },
+    {
+      id: "reference-roads",
+      type: "line",
+      source: "reference-openfreemap",
+      "source-layer": "transportation",
+      minzoom: 5,
+      layout: { visibility: "none", "line-cap": "round", "line-join": "round" },
+      paint: {
+        "line-color": [
+          "match", ["get", "class"],
+          ["motorway", "trunk", "primary"], "#fbbf24",
+          ["secondary", "tertiary"], "#fb7185",
+          ["minor", "service", "track", "path"], "#f8fafc",
+          "#e2e8f0"
+        ],
+        "line-width": ["interpolate", ["linear"], ["zoom"], 6, 0.55, 12, 1.9, 17, 5.5],
+        "line-opacity": 1,
+      },
+    },
+    {
+      id: "reference-road-labels",
+      type: "symbol",
+      source: "reference-openfreemap",
+      "source-layer": "transportation_name",
+      minzoom: 9,
+      layout: {
+        visibility: "none",
+        "symbol-placement": "line",
+        "text-field": ["coalesce", ["get", "name:en"], ["get", "name"], ["get", "ref"], ""],
+        "text-font": ["Noto Sans Regular"],
+        "text-size": ["interpolate", ["linear"], ["zoom"], 9, 9, 15, 12, 19, 14],
+        "text-rotation-alignment": "map",
+        "text-pitch-alignment": "viewport",
+        "text-padding": 4,
+      },
+      paint: {
+        "text-color": "#fff7ed",
+        "text-halo-color": "#111827",
+        "text-halo-width": 1.6,
+      },
+    },
+    {
+      id: "reference-buildings",
+      type: "fill",
+      source: "reference-openfreemap",
+      "source-layer": "building",
+      minzoom: 13,
+      layout: { visibility: "none" },
+      paint: {
+        "fill-color": "#22d3ee",
+        "fill-opacity": 0.54,
+        "fill-outline-color": "#ecfeff",
+      },
+    },
+    {
+      id: "reference-building-labels",
+      type: "symbol",
+      source: "reference-openfreemap",
+      "source-layer": "building",
+      minzoom: 15,
+      filter: ["any", ["has", "name"], ["has", "name:en"]],
+      layout: {
+        visibility: "none",
+        "text-field": ["coalesce", ["get", "name:en"], ["get", "name"], ""],
+        "text-font": ["Noto Sans Regular"],
+        "text-size": ["interpolate", ["linear"], ["zoom"], 15, 9, 19, 12],
+        "text-variable-anchor": ["center", "top", "bottom"],
+        "text-radial-offset": 0.2,
+      },
+      paint: {
+        "text-color": "#ecfeff",
+        "text-halo-color": "#083344",
+        "text-halo-width": 1.5,
+      },
+    },
+    {
+      id: "reference-places",
+      type: "symbol",
+      source: "reference-openfreemap",
+      "source-layer": "place",
+      minzoom: 4,
+      filter: ["in", ["get", "class"], ["literal", ["city", "town", "village", "suburb", "neighbourhood", "hamlet", "quarter", "isolated_dwelling"]]],
+      layout: {
+        visibility: "none",
+        "text-field": ["coalesce", ["get", "name:en"], ["get", "name"], ""],
+        "text-font": ["Noto Sans Regular"],
+        "text-size": ["interpolate", ["linear"], ["zoom"], 5, 10, 15, 14, 19, 16],
+        "text-variable-anchor": ["top", "bottom", "left", "right"],
+        "text-radial-offset": 0.35,
+        "text-allow-overlap": false,
+      },
+      paint: {
+        "text-color": "#f8fafc",
+        "text-halo-color": "#0b1013",
+        "text-halo-width": 1.5,
+      },
+    },
+    {
+      id: "reference-pois",
+      type: "circle",
+      source: "reference-openfreemap",
+      "source-layer": "poi",
+      minzoom: 12,
+      layout: { visibility: "none" },
+      paint: {
+        "circle-radius": ["interpolate", ["linear"], ["zoom"], 12, 2.8, 18, 5.5],
+        "circle-color": "#2dd4bf",
+        "circle-stroke-color": "#0b1013",
+        "circle-stroke-width": 1.2,
+        "circle-opacity": 0.95,
+      },
+    },
+    {
+      id: "reference-poi-labels",
+      type: "symbol",
+      source: "reference-openfreemap",
+      "source-layer": "poi",
+      minzoom: 13,
+      filter: ["any", ["has", "name"], ["has", "name:en"]],
+      layout: {
+        visibility: "none",
+        "text-field": ["coalesce", ["get", "name:en"], ["get", "name"], ""],
+        "text-font": ["Noto Sans Regular"],
+        "text-size": ["interpolate", ["linear"], ["zoom"], 13, 9, 18, 12],
+        "text-offset": [0, 1.1],
+        "text-anchor": "top",
+        "text-variable-anchor": ["top", "bottom", "left", "right"],
+        "text-radial-offset": 0.35,
+        "text-allow-overlap": false,
+      },
+      paint: {
+        "text-color": "#ccfbf1",
+        "text-halo-color": "#042f2e",
+        "text-halo-width": 1.5,
+      },
+    },
   ],
 };
 
@@ -184,6 +387,42 @@ const LAYER_POLY_FILL = "urban-features-poly-fill";
 const LAYER_POLY_OUTLINE = "urban-features-poly-outline";
 const LAYER_PHOTOS = "urban-features-photos";
 const PHOTO_ICON_ID = "site-photo-icon";
+const REFERENCE_SURVEY_BUILDING_LABELS = "reference-survey-building-labels";
+
+const PLACEMARK_SOURCE = "user-placemarks-source";
+const PLACEMARK_FOCUS_SOURCE = "user-placemark-focus-source";
+const PLACEMARK_LAYER = "user-placemarks-layer";
+const PLACEMARK_SELECTED_LAYER = "user-placemarks-selected-layer";
+const PLACEMARK_HOVER_LAYER = "user-placemarks-hover-layer";
+const PLACEMARK_HIT_LAYER = "user-placemarks-hit-layer";
+const PLACEMARK_HOVER_HALO_LAYER = "user-placemarks-hover-halo-layer";
+const PLACEMARK_SELECTED_HALO_LAYER = "user-placemarks-selected-halo-layer";
+const PLACEMARK_CLUSTER_LAYER = "user-placemarks-cluster-layer";
+const PLACEMARK_CLUSTER_COUNT_LAYER = "user-placemarks-cluster-count-layer";
+const PLACEMARK_LABEL_LAYER = "user-placemarks-label-layer";
+const PLACEMARK_HOVER_LABEL_LAYER = "user-placemarks-hover-label-layer";
+const PLACEMARK_SELECTED_LABEL_LAYER = "user-placemarks-selected-label-layer";
+const PLACEMARK_ICON_ID = "user-placemark-pin";
+const PLACEMARK_ICON_IDS = {
+  pin: PLACEMARK_ICON_ID,
+  star: "user-placemark-star",
+  flag: "user-placemark-flag",
+  survey: "user-placemark-survey",
+} as const;
+const PLACEMARK_ICON_EXPRESSION: maplibregl.ExpressionSpecification = [
+  "match",
+  ["get", "icon"],
+  "star", PLACEMARK_ICON_IDS.star,
+  "flag", PLACEMARK_ICON_IDS.flag,
+  "survey", PLACEMARK_ICON_IDS.survey,
+  PLACEMARK_ICON_IDS.pin,
+];
+const REFERENCE_LAYER_IDS: Record<keyof ReferenceLayerVisibility, string[]> = {
+  borders: ["reference-boundaries", "reference-boundary-labels"],
+  roads: ["reference-roads", "reference-road-labels"],
+  buildings: ["reference-buildings", "reference-building-labels", REFERENCE_SURVEY_BUILDING_LABELS],
+  places: ["reference-places", "reference-pois", "reference-poi-labels"],
+};
 
 // Attribute-table selection highlight. It uses its own source so the target
 // remains visible even while the selected dataset snapshot is still loading.
@@ -206,16 +445,119 @@ const POINT_BASE_FILTER: maplibregl.FilterSpecification = [
 ];
 const PHOTO_BASE_FILTER: maplibregl.FilterSpecification = ["==", ["get", "category"], "site_photo"];
 
-function withCategoryVisibility(
+const VIZ_SOURCE_LAYER_PROP = "__viz_source_layer";
+const VIZ_LAYER_ID_PROP = "__viz_layer_id";
+const VIZ_VALUE_PROP = "__viz_value";
+const VIZ_MISSING_PROP = "__viz_missing";
+
+const VIZ_SELECTED_SOURCE = "visualization-selected-source";
+const VIZ_SELECTED_POLY_FILL = "visualization-selected-polygon-fill";
+const VIZ_SELECTED_POLY_OUTLINE = "visualization-selected-polygon-outline";
+const VIZ_SELECTED_LINES = "visualization-selected-lines";
+const VIZ_SELECTED_POINTS = "visualization-selected-points";
+
+export type VisualizationMode = "default" | "category" | "numeric" | "missing-data";
+export type VisualizationGeometryTarget = "all" | "point" | "line" | "polygon";
+
+interface VisualizationStylePreview {
+  loadedCount: number;
+  numericMin: number | null;
+  numericMax: number | null;
+  availableCount: number;
+  missingCount: number;
+  categories: Array<{ value: string; count: number; color: string }>;
+}
+
+function visualizationLayerId(datasetId: string, sourceLayer: string): string {
+  return `${datasetId}::${sourceLayer}`;
+}
+
+function sourceLayerFromFeature(feature: GeoJSON.Feature): string {
+  const properties = (feature.properties ?? {}) as Record<string, unknown>;
+  const attributes = (properties.attributes ?? {}) as Record<string, unknown>;
+  const gdbLayer = attributes.gdb_layer;
+  if (typeof gdbLayer === "string" && gdbLayer.trim()) return gdbLayer.trim();
+  const category = properties.category;
+  return typeof category === "string" && category.trim() ? category.trim() : "uncategorized";
+}
+
+function isMissingVisualizationValue(value: unknown): boolean {
+  if (value === null || value === undefined) return true;
+  if (typeof value === "string") return value.trim() === "";
+  if (Array.isArray(value)) return value.length === 0;
+  if (typeof value === "object") return Object.keys(value as Record<string, unknown>).length === 0;
+  return false;
+}
+
+function withFeatureVisibility(
   base: maplibregl.FilterSpecification,
-  hidden: Set<string>
+  hiddenCategories: Set<string>,
+  hiddenVisualizationLayers: Set<string>
 ): maplibregl.FilterSpecification {
-  if (hidden.size === 0) return base;
-  return [
-    "all",
-    base,
-    ["!", ["in", ["coalesce", ["get", "category"], "uncategorized"], ["literal", Array.from(hidden)]]],
-  ] as unknown as maplibregl.FilterSpecification;
+  const clauses: unknown[] = [base];
+  if (hiddenCategories.size > 0) {
+    clauses.push([
+      "!",
+      ["in", ["coalesce", ["get", "category"], "uncategorized"], ["literal", Array.from(hiddenCategories)]],
+    ]);
+  }
+  if (hiddenVisualizationLayers.size > 0) {
+    clauses.push([
+      "!",
+      ["in", ["coalesce", ["get", VIZ_LAYER_ID_PROP], ""], ["literal", Array.from(hiddenVisualizationLayers)]],
+    ]);
+  }
+  if (clauses.length === 1) return base;
+  return ["all", ...clauses] as unknown as maplibregl.FilterSpecification;
+}
+
+function aggregateVisualizationFields(
+  layers: VisualizationLayerManifest[]
+): VisualizationFieldProfile[] {
+  const byName = new Map<string, VisualizationFieldProfile>();
+  for (const layer of layers) {
+    for (const field of layer.fields) {
+      const existing = byName.get(field.name);
+      if (!existing) {
+        byName.set(field.name, { ...field });
+        continue;
+      }
+      const detectedType = existing.detected_type === field.detected_type
+        ? existing.detected_type
+        : "mixed";
+      const uniqueValues = [existing.unique_count, field.unique_count]
+        .filter((value): value is number => typeof value === "number");
+      byName.set(field.name, {
+        name: field.name,
+        detected_type: detectedType,
+        populated_count: existing.populated_count + field.populated_count,
+        missing_count: existing.missing_count + field.missing_count,
+        unique_count: uniqueValues.length > 0 ? Math.max(...uniqueValues) : null,
+      });
+    }
+  }
+  return [...byName.values()].sort((a, b) => a.name.localeCompare(b.name, undefined, {
+    sensitivity: "base",
+    numeric: true,
+  }));
+}
+
+function defaultVisualizationField(
+  fields: VisualizationFieldProfile[],
+  mode: VisualizationMode
+): string | null {
+  if (mode === "default") return null;
+  const eligible = fields.filter((field) => {
+    if (mode === "category") {
+      return (field.detected_type === "string" || field.detected_type === "boolean")
+        && (field.unique_count ?? 0) > 1
+        && (field.unique_count ?? 0) <= 50;
+    }
+    if (mode === "numeric") return field.detected_type === "number";
+    return field.missing_count > 0;
+  });
+  const technical = /^(fid|objectid|shape_(length|area)|x_long|y_lat|gdb_layer)$/i;
+  return eligible.find((field) => !technical.test(field.name))?.name ?? eligible[0]?.name ?? null;
 }
 
 // Separate GeoJSON source + layers for AI highlight overlays so they sit
@@ -656,6 +998,113 @@ function summarizeAnomalyForTooltip(a: SpatialAnomaly): { color: SpatialAnomaly[
 
 const EMPTY_FC: FeatureCollectionResponse = { type: "FeatureCollection", features: [], bbox: [0, 0, 0, 0], count: 0, limit: 0, truncated: false };
 
+
+function createPlacemarkPinImage(color = "#ef4444"): ImageData {
+  const canvas = document.createElement("canvas");
+  canvas.width = 64;
+  canvas.height = 64;
+  const context = canvas.getContext("2d");
+  if (!context) return new ImageData(64, 64);
+  context.clearRect(0, 0, 64, 64);
+  context.save();
+  context.shadowColor = "rgba(0,0,0,0.35)";
+  context.shadowBlur = 5;
+  context.shadowOffsetY = 3;
+  context.beginPath();
+  context.moveTo(32, 60);
+  context.bezierCurveTo(27, 48, 12, 37, 12, 23);
+  context.arc(32, 23, 20, Math.PI, 0, false);
+  context.bezierCurveTo(52, 37, 37, 48, 32, 60);
+  context.closePath();
+  context.fillStyle = color;
+  context.fill();
+  context.restore();
+  context.beginPath();
+  context.arc(32, 23, 7.5, 0, Math.PI * 2);
+  context.fillStyle = "#ffffff";
+  context.fill();
+  context.lineWidth = 2;
+  context.strokeStyle = "rgba(127,29,29,0.75)";
+  context.stroke();
+  return context.getImageData(0, 0, 64, 64);
+}
+
+function createPlacemarkMarkerElement(): HTMLDivElement {
+  const element = document.createElement("div");
+  element.className = "placemark-preview-marker";
+  element.setAttribute("role", "img");
+  element.setAttribute("aria-label", "Temporary placemark pin");
+  element.innerHTML = '<span class="placemark-preview-marker__head"></span><span class="placemark-preview-marker__tail"></span>';
+  return element;
+}
+
+function placemarksToGeoJson(placemarks: Placemark[]): GeoJSON.FeatureCollection {
+  return {
+    type: "FeatureCollection",
+    features: placemarks
+      .filter((placemark) => placemark.is_visible)
+      .map((placemark) => ({
+        type: "Feature",
+        id: placemark.id,
+        geometry: { type: "Point", coordinates: [placemark.longitude, placemark.latitude] },
+        properties: {
+          id: placemark.id,
+          name: placemark.name,
+          category: placemark.category ?? "",
+          icon: placemark.icon,
+        },
+      })),
+  };
+}
+
+function placemarkFocusToGeoJson(
+  placemarks: Placemark[],
+  selectedId: string | null,
+  hoveredId: string | null,
+): GeoJSON.FeatureCollection {
+  const ids = [selectedId, hoveredId].filter((id, index, all): id is string => Boolean(id) && all.indexOf(id) === index);
+  return {
+    type: "FeatureCollection",
+    features: ids.flatMap((id) => {
+      const placemark = placemarks.find((item) => item.id === id);
+      if (!placemark) return [];
+      return [{
+        type: "Feature" as const,
+        id: placemark.id,
+        geometry: {
+          type: "Point" as const,
+          coordinates: [placemark.longitude, placemark.latitude],
+        },
+        properties: {
+          id: placemark.id,
+          name: placemark.name,
+          category: placemark.category ?? "",
+          icon: placemark.icon,
+        },
+      }];
+    }),
+  };
+}
+
+function estimateEyeAltitudeMeters(
+  zoom: number,
+  latitude: number,
+  viewportHeight: number,
+  pitch: number
+): number {
+  const latitudeFactor = Math.max(0.05, Math.cos((latitude * Math.PI) / 180));
+  const metersPerPixel = 156543.03392 * latitudeFactor / (2 ** zoom);
+  const verticalFieldOfView = 36.87 * Math.PI / 180;
+  const baseAltitude = (metersPerPixel * Math.max(1, viewportHeight)) / (2 * Math.tan(verticalFieldOfView / 2));
+  return baseAltitude / Math.max(0.35, Math.cos((pitch * Math.PI) / 180));
+}
+
+function formatMetricDistance(value: number | null): string {
+  if (value === null || !Number.isFinite(value)) return "—";
+  if (value >= 1000) return `${(value / 1000).toFixed(value >= 10000 ? 0 : 2)} km`;
+  return `${Math.round(value)} m`;
+}
+
 export interface ViewportStatus { loading: boolean; count: number; truncated: boolean; error: string | null; bbox: [number, number, number, number] | null; }
 export interface LegendEntry { category: string; color: string; count: number; }
 interface HoverInfo {
@@ -725,6 +1174,24 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
   const [expandedDatasetId, setExpandedDatasetId] = useState<string | null>(null);
   const [rasterSettingsById, setRasterSettingsById] = useState<Record<string, RasterDisplaySettings>>({});
 
+  // Universal visualization UI. Manifests are fetched only for active vector
+  // datasets; raster, image, and OBJ datasets keep their existing renderers.
+  const [visualizationManifests, setVisualizationManifests] = useState<Record<string, VisualizationManifest>>({});
+  const [visualizationLoadingIds, setVisualizationLoadingIds] = useState<Set<string>>(new Set());
+  const [visualizationErrors, setVisualizationErrors] = useState<Record<string, string>>({});
+  const [selectedVisualizationDatasetId, setSelectedVisualizationDatasetId] = useState<string | null>(null);
+  const [visualizationTarget, setVisualizationTarget] = useState<VisualizationGeometryTarget>("all");
+  const [visualizationMode, setVisualizationMode] = useState<VisualizationMode>("default");
+  const [visualizationField, setVisualizationField] = useState<string | null>(null);
+  const [visualizationOpacity, setVisualizationOpacity] = useState(0.85);
+  const [visualizationPointSize, setVisualizationPointSize] = useState(4);
+  const [visualizationLineWidth, setVisualizationLineWidth] = useState(3);
+  const [selectedVisualizationFeatures, setSelectedVisualizationFeatures] = useState<GeoJSON.Feature[]>([]);
+  const [visualizationLayerLoading, setVisualizationLayerLoading] = useState(false);
+  const [visualizationLayerError, setVisualizationLayerError] = useState<string | null>(null);
+  const [visualizationLayerTruncated, setVisualizationLayerTruncated] = useState(false);
+  const visualizationLayerAbortRef = useRef<AbortController | null>(null);
+
   // Spatial Audit Engine — persisted findings for the currently active
   // dataset(s), plus which one (if any) is open in the AI Alert card.
   const [anomalies, setAnomalies] = useState<SpatialAnomaly[]>([]);
@@ -763,6 +1230,36 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
   const [flyError, setFlyError] = useState<string | null>(null);
   const [mapReady, setMapReady] = useState(false);
   const [attributeTable, setAttributeTable] = useState<LayerAttributeTableState | null>(null);
+
+  // User placemarks are a separate persisted annotation system. They never
+  // enter the uploaded survey feature source or analytics/category filters.
+  const [placemarks, setPlacemarks] = useState<Placemark[]>([]);
+  const placemarksRef = useRef<Placemark[]>([]);
+  const [placemarksLoading, setPlacemarksLoading] = useState(false);
+  const [placemarksError, setPlacemarksError] = useState<string | null>(null);
+  const [placemarkMode, setPlacemarkMode] = useState(false);
+  const placemarkModeRef = useRef(false);
+  const placemarkSavedClickRef = useRef(false);
+  const [placemarkDraft, setPlacemarkDraft] = useState<PlacemarkDraft | null>(null);
+  const placemarkDraftRef = useRef<PlacemarkDraft | null>(null);
+  const [placemarkSaving, setPlacemarkSaving] = useState(false);
+  const [placemarkEditorError, setPlacemarkEditorError] = useState<string | null>(null);
+  const placemarkPreviewMarkerRef = useRef<maplibregl.Marker | null>(null);
+  const [selectedPlacemarkId, setSelectedPlacemarkId] = useState<string | null>(null);
+  const [mapHoveredPlacemarkId, setMapHoveredPlacemarkId] = useState<string | null>(null);
+  const [listHoveredPlacemarkId, setListHoveredPlacemarkId] = useState<string | null>(null);
+  const hoveredPlacemarkId = listHoveredPlacemarkId ?? mapHoveredPlacemarkId;
+  const [placemarkDetailsId, setPlacemarkDetailsId] = useState<string | null>(null);
+  const [placemarkNotice, setPlacemarkNotice] = useState<string | null>(null);
+  const [myPlacesOpen, setMyPlacesOpen] = useState(false);
+  const [referenceLayers, setReferenceLayers] = useState<ReferenceLayerVisibility>({
+    borders: false,
+    roads: false,
+    buildings: false,
+    places: false,
+  });
+  const [elevationSample, setElevationSample] = useState<ElevationSample | null>(null);
+
   const [streetPickMode, setStreetPickMode] = useState(false);
   const [streetViewTarget, setStreetViewTarget] = useState<{ latitude: number; longitude: number } | null>(null);
   const [loadedFeatures, setLoadedFeatures] = useState<UrbanFeature[]>([]);
@@ -789,7 +1286,22 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     if (canvas) canvas.style.cursor = "";
   }, []);
 
+  const cancelPlacemarkPlacement = useCallback((clearDraft = true) => {
+    placemarkModeRef.current = false;
+    setPlacemarkMode(false);
+    if (clearDraft) {
+      placemarkDraftRef.current = null;
+      setPlacemarkDraft(null);
+      setPlacemarkEditorError(null);
+    }
+    placemarkPreviewMarkerRef.current?.remove();
+    placemarkPreviewMarkerRef.current = null;
+    const canvas = mapRef.current?.getCanvas();
+    if (canvas) canvas.style.cursor = "";
+  }, []);
+
   const toggleStreetPickMode = useCallback(() => {
+    cancelPlacemarkPlacement();
     deactivateLookAround();
     setStreetPickMode((current) => {
       const next = !current;
@@ -798,7 +1310,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
       if (canvas) canvas.style.cursor = next ? "crosshair" : "";
       return next;
     });
-  }, [deactivateLookAround]);
+  }, [cancelPlacemarkPlacement, deactivateLookAround]);
 
   // Ruler / measurement tool (Google Earth Pro-style dialog: Line, Path,
   // Polygon, Circle) — off by default. `measureActiveRef`/`measurePointsRef`
@@ -971,12 +1483,336 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     return () => ctrl.abort();
   }, []);
 
+  const refreshPlacemarks = useCallback(async (signal?: AbortSignal) => {
+    setPlacemarksLoading(true);
+    setPlacemarksError(null);
+    try {
+      const rows = await fetchPlacemarks(signal);
+      placemarksRef.current = rows;
+      setPlacemarks(rows);
+    } catch (error) {
+      if ((error as Error).name === "AbortError") return;
+      setPlacemarksError(error instanceof ApiError ? "Could not load saved placemarks." : (error as Error).message);
+    } finally {
+      if (!signal?.aborted) setPlacemarksLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    void refreshPlacemarks(controller.signal);
+    return () => controller.abort();
+  }, [refreshPlacemarks]);
+
+  useEffect(() => {
+    placemarksRef.current = placemarks;
+  }, [placemarks]);
+
+  useEffect(() => {
+    if (!placemarkNotice) return;
+    const timeout = window.setTimeout(() => setPlacemarkNotice(null), 2800);
+    return () => window.clearTimeout(timeout);
+  }, [placemarkNotice]);
+
+  useEffect(() => {
+    placemarkDraftRef.current = placemarkDraft;
+    const marker = placemarkPreviewMarkerRef.current;
+    if (!marker || !placemarkDraft) return;
+    const current = marker.getLngLat();
+    if (Math.abs(current.lng - placemarkDraft.longitude) > 1e-9 || Math.abs(current.lat - placemarkDraft.latitude) > 1e-9) {
+      marker.setLngLat([placemarkDraft.longitude, placemarkDraft.latitude]);
+    }
+  }, [placemarkDraft]);
+
   // Keep a fast lookup of which datasets are OBJ meshes so applyFeatureCollection
   // can drop their vertex points from the 2D feature layers (they are rendered
   // as the 3D mesh instead).
   useEffect(() => {
     objDatasetIdsRef.current = new Set(datasets.filter(isObjDataset).map((d) => d.id));
   }, [datasets]);
+
+  const activeVectorDatasets = useMemo(
+    () => datasets.filter((dataset) => activeDatasetIds.includes(dataset.id) && isVectorVisualizationDataset(dataset)),
+    [datasets, activeDatasetIds]
+  );
+
+  useEffect(() => {
+    setSelectedVisualizationDatasetId((current) => {
+      if (current && activeVectorDatasets.some((dataset) => dataset.id === current)) return current;
+      return activeVectorDatasets[0]?.id ?? null;
+    });
+  }, [activeVectorDatasets]);
+
+  useEffect(() => {
+    const pending = activeVectorDatasets.filter(
+      (dataset) => !visualizationManifests[dataset.id]
+    );
+    if (pending.length === 0) return;
+
+    const controller = new AbortController();
+    setVisualizationLoadingIds((current) => {
+      const next = new Set(current);
+      pending.forEach((dataset) => next.add(dataset.id));
+      return next;
+    });
+
+    void Promise.all(
+      pending.map(async (dataset) => {
+        try {
+          const manifest = await fetchVisualizationManifest(dataset.id, controller.signal);
+          return { datasetId: dataset.id, manifest, error: null as string | null };
+        } catch (error) {
+          if ((error as Error).name === "AbortError") throw error;
+          return { datasetId: dataset.id, manifest: null, error: (error as Error).message };
+        }
+      })
+    ).then((results) => {
+      if (controller.signal.aborted) return;
+      setVisualizationManifests((current) => {
+        let changed = false;
+        const next = { ...current };
+        for (const result of results) {
+          if (result.manifest) {
+            next[result.datasetId] = result.manifest;
+            changed = true;
+          }
+        }
+        return changed ? next : current;
+      });
+      setVisualizationErrors((current) => {
+        const next = { ...current };
+        for (const result of results) {
+          if (result.error) next[result.datasetId] = result.error;
+          else delete next[result.datasetId];
+        }
+        return next;
+      });
+      setVisualizationLoadingIds((current) => {
+        const next = new Set(current);
+        pending.forEach((dataset) => next.delete(dataset.id));
+        return next;
+      });
+    }).catch((error: Error) => {
+      if (error.name !== "AbortError") console.error("Visualization manifest load failed", error);
+    });
+
+    return () => controller.abort();
+  }, [activeVectorDatasets, visualizationManifests]);
+
+  const selectedVisualizationManifest = selectedVisualizationDatasetId
+    ? visualizationManifests[selectedVisualizationDatasetId] ?? null
+    : null;
+
+  const selectedVisualizationLayers = useMemo(() => {
+    const layers = selectedVisualizationManifest?.layers ?? [];
+    return layers.filter((layer) => {
+      if (visualizationTarget === "all") {
+        return layer.recommended_renderer === "point"
+          || layer.recommended_renderer === "line"
+          || layer.recommended_renderer === "polygon";
+      }
+      return layer.recommended_renderer === visualizationTarget;
+    });
+  }, [selectedVisualizationManifest, visualizationTarget]);
+
+  const selectedVisualizationFields = useMemo(
+    () => aggregateVisualizationFields(selectedVisualizationLayers),
+    [selectedVisualizationLayers]
+  );
+
+  const selectedVisualizationSourceLayers = useMemo(
+    () => [...new Set(selectedVisualizationLayers.map((layer) => layer.source_layer_name))],
+    [selectedVisualizationLayers]
+  );
+
+  const selectedVisualizationCompositeIds = useMemo(() => {
+    if (!selectedVisualizationDatasetId) return new Set<string>();
+    return new Set(selectedVisualizationSourceLayers.map(
+      (sourceLayer) => visualizationLayerId(selectedVisualizationDatasetId, sourceLayer)
+    ));
+  }, [selectedVisualizationDatasetId, selectedVisualizationSourceLayers]);
+
+  useEffect(() => {
+    if (!selectedVisualizationManifest) return;
+    const available = new Set(selectedVisualizationManifest.layers.map(
+      (layer) => layer.recommended_renderer
+    ));
+    if (visualizationTarget === "all") return;
+    if (!available.has(visualizationTarget)) setVisualizationTarget("all");
+  }, [selectedVisualizationManifest, visualizationTarget]);
+
+  useEffect(() => {
+    setVisualizationMode("default");
+    setVisualizationField(null);
+  }, [selectedVisualizationDatasetId, visualizationTarget]);
+
+  const visualizationPreview = useMemo<VisualizationStylePreview>(() => {
+    const empty: VisualizationStylePreview = {
+      loadedCount: 0,
+      numericMin: null,
+      numericMax: null,
+      availableCount: 0,
+      missingCount: 0,
+      categories: [],
+    };
+    if (selectedVisualizationLayers.length === 0) return empty;
+
+    const numericValues: number[] = [];
+    const categoryCounts = new Map<string, number>();
+    let loadedCount = 0;
+    let availableCount = 0;
+    let missingCount = 0;
+
+    for (const feature of selectedVisualizationFeatures) {
+      const raw = feature as unknown as GeoJSON.Feature;
+      const properties = (raw.properties ?? {}) as Record<string, unknown>;
+      loadedCount += 1;
+      if (!visualizationField) continue;
+      const attributes = (properties.attributes ?? {}) as Record<string, unknown>;
+      const value = attributes[visualizationField];
+      if (isMissingVisualizationValue(value)) {
+        missingCount += 1;
+        continue;
+      }
+      availableCount += 1;
+      const numeric = typeof value === "number" ? value : Number(value);
+      if (Number.isFinite(numeric)) numericValues.push(numeric);
+      const label = String(value);
+      categoryCounts.set(label, (categoryCounts.get(label) ?? 0) + 1);
+    }
+
+    const categories = [...categoryCounts.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 8)
+      .map(([value, count]) => ({
+        value,
+        count,
+        color: colorForCategory(`visualization:${visualizationField}:${value}`),
+      }));
+
+    return {
+      loadedCount,
+      numericMin: numericValues.length ? Math.min(...numericValues) : null,
+      numericMax: numericValues.length ? Math.max(...numericValues) : null,
+      availableCount,
+      missingCount,
+      categories,
+    };
+  }, [selectedVisualizationFeatures, selectedVisualizationLayers.length, visualizationField]);
+
+  const changeVisualizationMode = useCallback((mode: VisualizationMode) => {
+    setVisualizationMode(mode);
+    setVisualizationField(defaultVisualizationField(selectedVisualizationFields, mode));
+  }, [selectedVisualizationFields]);
+
+  const resetVisualizationStyle = useCallback(() => {
+    setVisualizationMode("default");
+    setVisualizationField(null);
+    setVisualizationOpacity(0.85);
+    setVisualizationPointSize(4);
+    setVisualizationLineWidth(3);
+  }, []);
+
+
+  const clearSelectedVisualizationSource = useCallback(() => {
+    setSelectedVisualizationFeatures([]);
+    setVisualizationLayerTruncated(false);
+    const map = mapRef.current;
+    const source = map?.getSource(VIZ_SELECTED_SOURCE) as GeoJSONSource | undefined;
+    source?.setData({ type: "FeatureCollection", features: [] });
+  }, []);
+
+  const refreshSelectedVisualizationLayer = useCallback(async () => {
+    const map = mapRef.current;
+    if (
+      !mapReady
+      || !map
+      || !selectedVisualizationDatasetId
+      || selectedVisualizationLayers.length === 0
+      || selectedVisualizationSourceLayers.length === 0
+    ) {
+      clearSelectedVisualizationSource();
+      return;
+    }
+
+    visualizationLayerAbortRef.current?.abort();
+    const controller = new AbortController();
+    visualizationLayerAbortRef.current = controller;
+    setVisualizationLayerLoading(true);
+    setVisualizationLayerError(null);
+
+    const bounds = map.getBounds();
+    const bbox: [number, number, number, number] = [
+      bounds.getWest(), bounds.getSouth(), bounds.getEast(), bounds.getNorth(),
+    ];
+
+    const batches = visualizationTarget === "all"
+      ? (["point", "line", "polygon"] as const)
+          .map((renderer) => selectedVisualizationLayers
+            .filter((layer) => layer.recommended_renderer === renderer)
+            .map((layer) => layer.source_layer_name))
+          .filter((sourceLayers) => sourceLayers.length > 0)
+      : [selectedVisualizationSourceLayers];
+
+    try {
+      const responses = await Promise.all(batches.map((sourceLayers) => (
+        fetchVisualizationLayerFeatures(
+          bbox,
+          selectedVisualizationDatasetId,
+          sourceLayers,
+          controller.signal
+        )
+      )));
+      if (controller.signal.aborted) return;
+
+      const byId = new Map<string, GeoJSON.Feature>();
+      let anonymousIndex = 0;
+      for (const data of responses) {
+        for (const feature of data.features as unknown as GeoJSON.Feature[]) {
+          const properties = (feature.properties ?? {}) as Record<string, unknown>;
+          const sourceLayer = sourceLayerFromFeature(feature);
+          const featureId = String(properties.id ?? feature.id ?? `anonymous-${anonymousIndex++}`);
+          byId.set(featureId, {
+            ...feature,
+            properties: {
+              ...properties,
+              [VIZ_SOURCE_LAYER_PROP]: sourceLayer,
+              [VIZ_LAYER_ID_PROP]: visualizationLayerId(selectedVisualizationDatasetId, sourceLayer),
+            },
+          } as GeoJSON.Feature);
+        }
+      }
+
+      setSelectedVisualizationFeatures([...byId.values()]);
+      setVisualizationLayerTruncated(responses.some((data) => data.truncated));
+    } catch (error) {
+      if ((error as Error).name === "AbortError") return;
+      setSelectedVisualizationFeatures([]);
+      setVisualizationLayerTruncated(false);
+      setVisualizationLayerError((error as Error).message);
+    } finally {
+      if (!controller.signal.aborted) setVisualizationLayerLoading(false);
+    }
+  }, [
+    clearSelectedVisualizationSource,
+    mapReady,
+    selectedVisualizationDatasetId,
+    selectedVisualizationLayers,
+    selectedVisualizationSourceLayers,
+    visualizationTarget,
+  ]);
+  useEffect(() => {
+    void refreshSelectedVisualizationLayer();
+    return () => visualizationLayerAbortRef.current?.abort();
+  }, [refreshSelectedVisualizationLayer]);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!mapReady || !map) return;
+    const refresh = () => { void refreshSelectedVisualizationLayer(); };
+    map.on("moveend", refresh);
+    return () => { map.off("moveend", refresh); };
+  }, [mapReady, refreshSelectedVisualizationLayer]);
 
   // If a previously-active dataset was deleted (e.g. removed and the same
   // GDB re-uploaded, which mints a brand-new dataset_id), its old id can
@@ -1307,6 +2143,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
       closeMeasureSafely();
       return;
     }
+    cancelPlacemarkPlacement();
     deactivateLookAround();
     measureActiveRef.current = true;
     setMeasureActive(true);
@@ -1322,7 +2159,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     // Close any ordinary data-layer tooltip that happened to be open the
     // instant measurement mode was activated.
     suspendDataLayerInteraction();
-  }, [closeMeasureSafely, deactivateLookAround, flushMeasureSources, cancelScheduledMeasurePreviewUpdate, beginNewSession, setMeasurePhase, syncMeasureCursor, suspendDataLayerInteraction]);
+  }, [cancelPlacemarkPlacement, closeMeasureSafely, deactivateLookAround, flushMeasureSources, cancelScheduledMeasurePreviewUpdate, beginNewSession, setMeasurePhase, syncMeasureCursor, suspendDataLayerInteraction]);
 
   // Toggling Look Around on defers to the same "other tools win" rule as
   // toggleStreetPickMode: it force-exits measurement/street-view-pick first
@@ -1332,11 +2169,195 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
       deactivateLookAround();
       return;
     }
+    cancelPlacemarkPlacement();
     if (measureActiveRef.current) closeMeasureSafely();
     if (streetPickModeRef.current) toggleStreetPickMode();
     lookAroundActiveRef.current = true;
     setLookAroundActive(true);
-  }, [deactivateLookAround, closeMeasureSafely, toggleStreetPickMode]);
+  }, [cancelPlacemarkPlacement, deactivateLookAround, closeMeasureSafely, toggleStreetPickMode]);
+
+  const openPlacemarkDraft = useCallback((draft: PlacemarkDraft) => {
+    const map = mapRef.current;
+    if (!map) return;
+    placemarkPreviewMarkerRef.current?.remove();
+    const marker = new maplibregl.Marker({
+      element: createPlacemarkMarkerElement(),
+      draggable: true,
+      anchor: "bottom",
+    })
+      .setLngLat([draft.longitude, draft.latitude])
+      .addTo(map);
+    marker.on("dragend", () => {
+      const next = marker.getLngLat();
+      setPlacemarkDraft((current) => {
+        if (!current) return current;
+        const updated = {
+          ...current,
+          longitude: next.lng,
+          latitude: next.lat,
+        };
+        placemarkDraftRef.current = updated;
+        return updated;
+      });
+    });
+    placemarkPreviewMarkerRef.current = marker;
+    placemarkDraftRef.current = draft;
+    setPlacemarkDraft(draft);
+    setPlacemarkEditorError(null);
+    setSelectedPlacemarkId(draft.id ?? null);
+  }, []);
+
+  const togglePlacemarkMode = useCallback(() => {
+    if (placemarkModeRef.current) {
+      cancelPlacemarkPlacement();
+      return;
+    }
+    deactivateLookAround();
+    if (measureActiveRef.current) closeMeasureSafely();
+    if (streetPickModeRef.current) toggleStreetPickMode();
+    placemarkModeRef.current = true;
+    setPlacemarkMode(true);
+    setPlacemarkEditorError(null);
+    setHover(null);
+    const canvas = mapRef.current?.getCanvas();
+    if (canvas) canvas.style.cursor = "crosshair";
+  }, [cancelPlacemarkPlacement, closeMeasureSafely, deactivateLookAround, toggleStreetPickMode]);
+
+  const handleSavePlacemark = useCallback(async () => {
+    const draft = placemarkDraftRef.current;
+    if (!draft || !draft.name.trim()) return;
+    const editing = Boolean(draft.id);
+    setPlacemarkSaving(true);
+    setPlacemarkEditorError(null);
+    const payload = {
+      name: draft.name.trim(),
+      description: draft.description?.trim() || null,
+      category: draft.category?.trim() || null,
+      icon: draft.icon || "pin",
+      longitude: draft.longitude,
+      latitude: draft.latitude,
+      altitude: draft.altitude ?? null,
+      dataset_id: draft.dataset_id ?? null,
+      is_visible: true,
+    };
+    try {
+      const saved = draft.id
+        ? await updatePlacemark(draft.id, payload)
+        : await createPlacemark(payload);
+      setPlacemarks((current) => {
+        const without = current.filter((item) => item.id !== saved.id);
+        const next = [saved, ...without];
+        placemarksRef.current = next;
+        return next;
+      });
+      setSelectedPlacemarkId(saved.id);
+      setPlacemarkDetailsId(editing ? saved.id : null);
+      setPlacemarkNotice(editing ? "Placemark updated successfully" : "Location marked successfully");
+      cancelPlacemarkPlacement();
+    } catch (error) {
+      setPlacemarkEditorError(error instanceof ApiError ? "Could not save this placemark." : (error as Error).message);
+    } finally {
+      setPlacemarkSaving(false);
+    }
+  }, [cancelPlacemarkPlacement]);
+
+  const handleEditPlacemark = useCallback((placemark: Placemark) => {
+    setPlacemarkDetailsId(null);
+    deactivateLookAround();
+    if (measureActiveRef.current) closeMeasureSafely();
+    if (streetPickModeRef.current) toggleStreetPickMode();
+    placemarkModeRef.current = true;
+    setPlacemarkMode(true);
+    openPlacemarkDraft({
+      id: placemark.id,
+      name: placemark.name,
+      description: placemark.description,
+      category: placemark.category,
+      icon: placemark.icon,
+      longitude: placemark.longitude,
+      latitude: placemark.latitude,
+      altitude: placemark.altitude,
+      dataset_id: placemark.dataset_id,
+      is_visible: placemark.is_visible,
+    });
+    const map = mapRef.current;
+    if (map) {
+      map.flyTo({
+        center: [placemark.longitude, placemark.latitude],
+        zoom: Math.max(map.getZoom(), 17),
+        duration: 700,
+      });
+    }
+  }, [closeMeasureSafely, deactivateLookAround, openPlacemarkDraft, toggleStreetPickMode]);
+
+  const handleFlyToPlacemark = useCallback((placemark: Placemark) => {
+    cancelPlacemarkPlacement();
+    const visiblePlacemark = { ...placemark, is_visible: true };
+    setPlacemarks((current) => {
+      const next = current.map((item) => item.id === placemark.id ? visiblePlacemark : item);
+      placemarksRef.current = next;
+      return next;
+    });
+    setSelectedPlacemarkId(placemark.id);
+    setPlacemarkDetailsId(placemark.id);
+    setListHoveredPlacemarkId(null);
+
+    if (!placemark.is_visible) {
+      void updatePlacemark(placemark.id, { is_visible: true })
+        .then((updated) => {
+          setPlacemarks((current) => {
+            const next = current.map((item) => item.id === updated.id ? updated : item);
+            placemarksRef.current = next;
+            return next;
+          });
+        })
+        .catch(() => setPlacemarksError("Could not show the selected placemark."));
+    }
+
+    const map = mapRef.current;
+    if (!map) return;
+    map.flyTo({
+      center: [placemark.longitude, placemark.latitude],
+      zoom: Math.max(map.getZoom(), 18),
+      duration: 850,
+      essential: true,
+    });
+  }, [cancelPlacemarkPlacement]);
+
+  const handleTogglePlacemarkVisibility = useCallback(async (placemark: Placemark) => {
+    try {
+      const updated = await updatePlacemark(placemark.id, { is_visible: !placemark.is_visible });
+      setPlacemarks((current) => current.map((item) => item.id === updated.id ? updated : item));
+    } catch {
+      setPlacemarksError("Could not update placemark visibility.");
+    }
+  }, []);
+
+  const handleDeletePlacemark = useCallback(async (placemark: Placemark) => {
+    try {
+      await deletePlacemark(placemark.id);
+      setPlacemarks((current) => current.filter((item) => item.id !== placemark.id));
+      if (selectedPlacemarkId === placemark.id) setSelectedPlacemarkId(null);
+      if (placemarkDetailsId === placemark.id) setPlacemarkDetailsId(null);
+      if (placemarkDraftRef.current?.id === placemark.id) cancelPlacemarkPlacement();
+    } catch {
+      setPlacemarksError("Could not delete placemark.");
+    }
+  }, [cancelPlacemarkPlacement, placemarkDetailsId, selectedPlacemarkId]);
+
+  const handleBulkDeletePlacemarks = useCallback(async (ids: string[]) => {
+    if (ids.length === 0) return;
+    try {
+      await bulkDeletePlacemarks(ids);
+      const deleted = new Set(ids);
+      setPlacemarks((current) => current.filter((item) => !deleted.has(item.id)));
+      if (selectedPlacemarkId && deleted.has(selectedPlacemarkId)) setSelectedPlacemarkId(null);
+      if (placemarkDetailsId && deleted.has(placemarkDetailsId)) setPlacemarkDetailsId(null);
+      if (placemarkDraftRef.current?.id && deleted.has(placemarkDraftRef.current.id)) cancelPlacemarkPlacement();
+    } catch {
+      setPlacemarksError("Could not delete the selected placemarks.");
+    }
+  }, [cancelPlacemarkPlacement, placemarkDetailsId, selectedPlacemarkId]);
 
   // Double-click the compass centre resets bearing AND pitch (unlike the
   // "N" button, which only resets bearing) without touching centre/zoom.
@@ -1533,6 +2554,12 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
       if (target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable)) {
         return;
       }
+      if (placemarkModeRef.current || placemarkDraftRef.current) {
+        e.preventDefault();
+        e.stopPropagation();
+        cancelPlacemarkPlacement();
+        return;
+      }
       if (lookAroundActiveRef.current) {
         e.preventDefault();
         e.stopPropagation();
@@ -1546,8 +2573,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [cancelPlacemarkPlacement, cancelActiveMeasurement, deactivateLookAround]);
 
   const applyFeatureCollection = useCallback((data: FeatureCollectionResponse) => {
     const map = mapRef.current;
@@ -1563,12 +2589,28 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     // their vertex point features here — otherwise they also paint as flat
     // 2D circles on top of the mesh, which the user does not want.
     const objIds = objDatasetIdsRef.current;
-    const features = objIds.size === 0
+    const rawFeatures = objIds.size === 0
       ? (data.features as unknown as GeoJSON.Feature[])
       : (data.features as unknown as GeoJSON.Feature[]).filter((f) => {
           const did = String((f.properties as Record<string, unknown>)?.dataset_id ?? "");
           return !objIds.has(did);
         });
+
+    // Add two internal top-level properties used only by the visualization UI.
+    // Original attributes remain untouched inside properties.attributes.
+    const features = rawFeatures.map((feature) => {
+      const properties = (feature.properties ?? {}) as Record<string, unknown>;
+      const datasetId = String(properties.dataset_id ?? "");
+      const sourceLayer = sourceLayerFromFeature(feature);
+      return {
+        ...feature,
+        properties: {
+          ...properties,
+          [VIZ_SOURCE_LAYER_PROP]: sourceLayer,
+          [VIZ_LAYER_ID_PROP]: visualizationLayerId(datasetId, sourceLayer),
+        },
+      } as GeoJSON.Feature;
+    });
 
     src.setData({ type: "FeatureCollection", features } as unknown as GeoJSON.FeatureCollection);
     // Keep the exact dashboard snapshot available to Street View. The
@@ -1634,12 +2676,140 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
   useEffect(() => {
     const map = mapRef.current;
     if (!mapReady || !map) return;
-    if (map.getLayer(LAYER_POLY_FILL)) map.setFilter(LAYER_POLY_FILL, withCategoryVisibility(POLY_BASE_FILTER, hiddenCategories));
-    if (map.getLayer(LAYER_POLY_OUTLINE)) map.setFilter(LAYER_POLY_OUTLINE, withCategoryVisibility(POLY_BASE_FILTER, hiddenCategories));
-    if (map.getLayer(LAYER_LINES)) map.setFilter(LAYER_LINES, withCategoryVisibility(LINE_BASE_FILTER, hiddenCategories));
-    if (map.getLayer(LAYER_POINTS)) map.setFilter(LAYER_POINTS, withCategoryVisibility(POINT_BASE_FILTER, hiddenCategories));
-    if (map.getLayer(LAYER_PHOTOS)) map.setFilter(LAYER_PHOTOS, withCategoryVisibility(PHOTO_BASE_FILTER, hiddenCategories));
-  }, [mapReady, hiddenCategories]);
+    const hiddenForBase = selectedVisualizationFeatures.length > 0
+      ? new Set(selectedVisualizationCompositeIds)
+      : new Set<string>();
+    if (map.getLayer(LAYER_POLY_FILL)) map.setFilter(LAYER_POLY_FILL, withFeatureVisibility(POLY_BASE_FILTER, hiddenCategories, hiddenForBase));
+    if (map.getLayer(LAYER_POLY_OUTLINE)) map.setFilter(LAYER_POLY_OUTLINE, withFeatureVisibility(POLY_BASE_FILTER, hiddenCategories, hiddenForBase));
+    if (map.getLayer(LAYER_LINES)) map.setFilter(LAYER_LINES, withFeatureVisibility(LINE_BASE_FILTER, hiddenCategories, hiddenForBase));
+    if (map.getLayer(LAYER_POINTS)) map.setFilter(LAYER_POINTS, withFeatureVisibility(POINT_BASE_FILTER, hiddenCategories, hiddenForBase));
+    if (map.getLayer(LAYER_PHOTOS)) map.setFilter(LAYER_PHOTOS, withFeatureVisibility(PHOTO_BASE_FILTER, hiddenCategories, hiddenForBase));
+  }, [mapReady, hiddenCategories, selectedVisualizationCompositeIds, selectedVisualizationFeatures.length]);
+
+  // Publish the selected source layer into its own viewport-scoped overlay.
+  // Large datasets such as AMRUT exceed the normal 5,000-feature base snapshot;
+  // this dedicated source guarantees that the selected layer is actually loaded
+  // and that opacity/size/width changes are visible immediately.
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!mapReady || !map) return;
+    const source = map.getSource(VIZ_SELECTED_SOURCE) as GeoJSONSource | undefined;
+    if (!source) return;
+
+    const features = selectedVisualizationFeatures.map((raw) => {
+      const properties = (raw.properties ?? {}) as Record<string, unknown>;
+      const attributes = (properties.attributes ?? {}) as Record<string, unknown>;
+      const value = visualizationField ? attributes[visualizationField] : null;
+      return {
+        ...raw,
+        properties: {
+          ...properties,
+          [VIZ_VALUE_PROP]: value,
+          [VIZ_MISSING_PROP]: visualizationField ? isMissingVisualizationValue(value) : false,
+        },
+      } as GeoJSON.Feature;
+    });
+
+    source.setData({ type: "FeatureCollection", features });
+  }, [mapReady, selectedVisualizationFeatures, visualizationField]);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!mapReady || !map) return;
+
+    const baseColor = buildCategoryColorExpression(colorByCategoryRef.current);
+    let selectedColor: maplibregl.ExpressionSpecification | string = baseColor;
+
+    if (visualizationMode === "category" && visualizationField) {
+      const pairs: Array<string> = [];
+      for (const item of visualizationPreview.categories) pairs.push(item.value, item.color);
+      selectedColor = pairs.length > 0
+        ? [
+            "match",
+            ["to-string", ["coalesce", ["get", VIZ_VALUE_PROP], "Missing"]],
+            ...pairs,
+            "#94a3b8",
+          ] as unknown as maplibregl.ExpressionSpecification
+        : "#94a3b8";
+    } else if (visualizationMode === "numeric" && visualizationField) {
+      const min = visualizationPreview.numericMin;
+      const max = visualizationPreview.numericMax;
+      if (min !== null && max !== null) {
+        selectedColor = min === max
+          ? "#22c55e"
+          : [
+              "case",
+              ["==", ["get", VIZ_MISSING_PROP], true],
+              "#64748b",
+              [
+                "interpolate",
+                ["linear"],
+                ["to-number", ["get", VIZ_VALUE_PROP], min],
+                min, "#2563eb",
+                min + (max - min) / 2, "#f59e0b",
+                max, "#ef4444",
+              ],
+            ] as unknown as maplibregl.ExpressionSpecification;
+      } else {
+        selectedColor = "#64748b";
+      }
+    } else if (visualizationMode === "missing-data" && visualizationField) {
+      selectedColor = [
+        "case",
+        ["==", ["get", VIZ_MISSING_PROP], true],
+        "#ef4444",
+        "#22c55e",
+      ] as unknown as maplibregl.ExpressionSpecification;
+    }
+
+    const selectedPointRadius = Math.max(2, visualizationPointSize);
+
+    // Restore the normal shared layers. The selected source layer is removed
+    // from these layers by the filter effect and rendered only by the overlay.
+    if (map.getLayer(LAYER_POINTS)) {
+      map.setPaintProperty(LAYER_POINTS, "circle-color", baseColor);
+      map.setPaintProperty(LAYER_POINTS, "circle-radius", 3.5);
+      map.setPaintProperty(LAYER_POINTS, "circle-opacity", 0.9);
+    }
+    if (map.getLayer(LAYER_LINES)) {
+      map.setPaintProperty(LAYER_LINES, "line-color", baseColor);
+      map.setPaintProperty(LAYER_LINES, "line-width", 2.5);
+      map.setPaintProperty(LAYER_LINES, "line-opacity", 1);
+    }
+    const drainsAiActive = aiOverlayEnabled && detectionMode === "drains";
+    if (map.getLayer(LAYER_POLY_FILL) && !drainsAiActive) {
+      map.setPaintProperty(LAYER_POLY_FILL, "fill-color", baseColor);
+      map.setPaintProperty(LAYER_POLY_FILL, "fill-opacity", DEFAULT_FILL_OPACITY);
+    }
+    if (map.getLayer(LAYER_POLY_OUTLINE)) {
+      map.setPaintProperty(LAYER_POLY_OUTLINE, "line-width", 1);
+      map.setPaintProperty(LAYER_POLY_OUTLINE, "line-opacity", 1);
+    }
+
+    if (map.getLayer(VIZ_SELECTED_POINTS)) {
+      map.setPaintProperty(VIZ_SELECTED_POINTS, "circle-color", selectedColor);
+      map.setPaintProperty(VIZ_SELECTED_POINTS, "circle-radius", selectedPointRadius);
+      map.setPaintProperty(VIZ_SELECTED_POINTS, "circle-opacity", visualizationOpacity);
+    }
+    if (map.getLayer(VIZ_SELECTED_LINES)) {
+      map.setPaintProperty(VIZ_SELECTED_LINES, "line-color", selectedColor);
+      map.setPaintProperty(VIZ_SELECTED_LINES, "line-width", visualizationLineWidth);
+      map.setPaintProperty(VIZ_SELECTED_LINES, "line-opacity", visualizationOpacity);
+    }
+    if (map.getLayer(VIZ_SELECTED_POLY_FILL)) {
+      map.setPaintProperty(VIZ_SELECTED_POLY_FILL, "fill-color", selectedColor);
+      map.setPaintProperty(VIZ_SELECTED_POLY_FILL, "fill-opacity", visualizationOpacity);
+    }
+    if (map.getLayer(VIZ_SELECTED_POLY_OUTLINE)) {
+      map.setPaintProperty(VIZ_SELECTED_POLY_OUTLINE, "line-color", selectedColor);
+      map.setPaintProperty(VIZ_SELECTED_POLY_OUTLINE, "line-width", Math.max(1, visualizationLineWidth * 0.55));
+      map.setPaintProperty(VIZ_SELECTED_POLY_OUTLINE, "line-opacity", visualizationOpacity);
+    }
+  }, [
+    aiOverlayEnabled, detectionMode, mapReady, visualizationField,
+    visualizationLineWidth, visualizationMode, visualizationOpacity,
+    visualizationPointSize, visualizationPreview,
+  ]);
 
   const toggleCategoryVisibility = useCallback((category: string) => {
     setHiddenCategories((prev) => {
@@ -2191,6 +3361,12 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     scheduleFetch();
     try {
       const b = await fetchDatasetBounds(dataset.id);
+      if (isObjDataset(dataset)) {
+        // Tilt into a 3/4 view so the newly-draped mesh actually reads as
+        // a 3D model instead of a flat top-down footprint.
+        map.setPitch(58);
+        map.setBearing(-18);
+      }
       map.fitBounds([[b.min_lon, b.min_lat], [b.max_lon, b.max_lat]], { padding: 80, duration: 1000, maxZoom: 18 });
       if (isObjDataset(dataset)) void addObj3DLayer(dataset, b);
     } catch (e) { setFlyError((e as Error).message); }
@@ -2392,7 +3568,41 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
         // site_photo features get their own camera-icon symbol layer below
         // instead of a plain dot.
         filter: POINT_BASE_FILTER,
-        paint: { "circle-radius": ["interpolate", ["linear"], ["zoom"], 8, 3, 12, 6, 16, 10], "circle-color": ["interpolate", ["linear"], ["coalesce", ["get", "severity"], 0], 0, "#3aa1ff", 0.5, "#f5c542", 1, "#ff5a3d"], "circle-stroke-color": "#0b1013", "circle-stroke-width": 1.5, "circle-opacity": 0.9 },
+        paint: { "circle-radius": 3.5, "circle-color": ["interpolate", ["linear"], ["coalesce", ["get", "severity"], 0], 0, "#3aa1ff", 0.5, "#f5c542", 1, "#ff5a3d"], "circle-stroke-color": "#0b1013", "circle-stroke-width": 1.5, "circle-opacity": 0.9 },
+      });
+
+      map.addLayer({
+        id: REFERENCE_SURVEY_BUILDING_LABELS,
+        type: "symbol",
+        source: FEATURE_SOURCE,
+        minzoom: 15,
+        filter: [
+          "all",
+          POLY_BASE_FILTER,
+          ["in", "building", ["downcase", ["coalesce", ["get", "category"], ""]]],
+        ],
+        layout: {
+          visibility: "none",
+          "text-field": [
+            "coalesce",
+            ["get", "building_name", ["get", "attributes"]],
+            ["get", "BUILDING_NAME", ["get", "attributes"]],
+            ["get", "name", ["get", "attributes"]],
+            ["get", "Name", ["get", "attributes"]],
+            ["get", "asset_name", ["get", "attributes"]],
+            "",
+          ],
+          "text-font": ["Noto Sans Regular"],
+          "text-size": ["interpolate", ["linear"], ["zoom"], 15, 9, 20, 12],
+          "text-variable-anchor": ["center", "top", "bottom"],
+          "text-radial-offset": 0.25,
+          "text-allow-overlap": false,
+        },
+        paint: {
+          "text-color": "#ecfeff",
+          "text-halo-color": "#083344",
+          "text-halo-width": 1.6,
+        },
       });
 
       if (!map.hasImage(PHOTO_ICON_ID)) {
@@ -2411,7 +3621,50 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
         },
       });
 
-      const BASE_CLICKABLE = [LAYER_POINTS, LAYER_LINES, LAYER_POLY_FILL, LAYER_PHOTOS];
+      map.addSource(VIZ_SELECTED_SOURCE, {
+        type: "geojson",
+        data: { type: "FeatureCollection", features: [] },
+        promoteId: "id",
+      });
+      map.addLayer({
+        id: VIZ_SELECTED_POLY_FILL,
+        type: "fill",
+        source: VIZ_SELECTED_SOURCE,
+        filter: POLY_BASE_FILTER,
+        paint: { "fill-color": "#14b8a6", "fill-opacity": 0.85 },
+      });
+      map.addLayer({
+        id: VIZ_SELECTED_POLY_OUTLINE,
+        type: "line",
+        source: VIZ_SELECTED_SOURCE,
+        filter: POLY_BASE_FILTER,
+        paint: { "line-color": "#14b8a6", "line-width": 2, "line-opacity": 0.85 },
+      });
+      map.addLayer({
+        id: VIZ_SELECTED_LINES,
+        type: "line",
+        source: VIZ_SELECTED_SOURCE,
+        filter: LINE_BASE_FILTER,
+        paint: { "line-color": "#14b8a6", "line-width": 3, "line-opacity": 0.85 },
+      });
+      map.addLayer({
+        id: VIZ_SELECTED_POINTS,
+        type: "circle",
+        source: VIZ_SELECTED_SOURCE,
+        filter: POINT_BASE_FILTER,
+        paint: {
+          "circle-radius": ["interpolate", ["linear"], ["zoom"], 8, 4, 12, 8, 16, 12],
+          "circle-color": "#14b8a6",
+          "circle-opacity": 0.85,
+          "circle-stroke-color": "#07141c",
+          "circle-stroke-width": 1.2,
+        },
+      });
+
+      const BASE_CLICKABLE = [
+        VIZ_SELECTED_POINTS, VIZ_SELECTED_LINES, VIZ_SELECTED_POLY_FILL,
+        LAYER_POINTS, LAYER_LINES, LAYER_POLY_FILL, LAYER_PHOTOS,
+      ];
       void runFetch();
 
       // AI highlight overlay — separate GeoJSON source so it never
@@ -2523,7 +3776,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
         // photo — otherwise the two click handlers would both fire for the
         // same click. Once Escape deactivates the tool (panel still open),
         // this must stop applying so ordinary feature clicks work again.
-        if (streetPickModeRef.current || streetPickConsumedRef.current || isMeasureInputActive()) return;
+        if (placemarkModeRef.current || streetPickModeRef.current || streetPickConsumedRef.current || isMeasureInputActive()) return;
         const hit = map.queryRenderedFeatures(e.point, { layers: ALL_CLICKABLE });
         if (!hit.length) return;
         const isAi = AI_CLICKABLE.includes(hit[0].layer?.id as string);
@@ -2552,7 +3805,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
         // Leave below). Uses isMeasureInputActive() (not the raw panel-open
         // flag) so hover works normally again as soon as Escape deactivates
         // the tool, even while the Measure panel itself stays open.
-        if (streetPickModeRef.current || isMeasureInputActive()) { setHover(null); return; }
+        if (placemarkModeRef.current || streetPickModeRef.current || isMeasureInputActive()) { setHover(null); return; }
         const hit = map.queryRenderedFeatures(e.point, { layers: ALL_CLICKABLE });
         if (!hit.length) { setHover(null); return; }
         const aiHit = hit.find((f) => AI_CLICKABLE.includes(f.layer?.id as string));
@@ -2583,12 +3836,12 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
       // and these handlers must not overwrite it with "pointer"/"" just
       // because the mouse crossed a feature underneath the measurement layer.
       const handleFeatureMouseEnter = () => {
-        if (streetPickModeRef.current) { map.getCanvas().style.cursor = "crosshair"; return; }
+        if (placemarkModeRef.current || streetPickModeRef.current) { map.getCanvas().style.cursor = "crosshair"; return; }
         if (isMeasureInputActive()) return;
         map.getCanvas().style.cursor = "pointer";
       };
       const handleFeatureMouseLeave = () => {
-        if (streetPickModeRef.current) { map.getCanvas().style.cursor = "crosshair"; setHover(null); return; }
+        if (placemarkModeRef.current || streetPickModeRef.current) { map.getCanvas().style.cursor = "crosshair"; setHover(null); return; }
         if (isMeasureInputActive()) return;
         map.getCanvas().style.cursor = "";
         setHover(null);
@@ -2658,7 +3911,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
       //   drawing → Line/Circle: this is the final (2nd) vertex; Path/Polygon:
       //             append another vertex.
       map.on("click", (e: MapMouseEvent) => {
-        if (streetPickModeRef.current || streetPickConsumedRef.current || !measureActiveRef.current) return;
+        if (placemarkModeRef.current || streetPickModeRef.current || streetPickConsumedRef.current || !measureActiveRef.current) return;
         const phase = measurePhaseRef.current;
         const tab = measureTabRef.current;
         const isMultiPoint = MEASURE_MULTI_POINT_TABS.has(tab);
@@ -2760,11 +4013,609 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
       if (focusClearTimerRef.current !== null) window.clearTimeout(focusClearTimerRef.current);
       if (debounceRef.current !== null) window.clearTimeout(debounceRef.current);
       if (measureRafRef.current !== null) { cancelAnimationFrame(measureRafRef.current); measureRafRef.current = null; }
+      placemarkPreviewMarkerRef.current?.remove();
+      placemarkPreviewMarkerRef.current = null;
       map.remove();
       mapRef.current = null;
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !mapReady) return;
+
+    const placemarkImages: Array<[string, string]> = [
+      [PLACEMARK_ICON_IDS.pin, "#ef4444"],
+      [PLACEMARK_ICON_IDS.star, "#f59e0b"],
+      [PLACEMARK_ICON_IDS.flag, "#a855f7"],
+      [PLACEMARK_ICON_IDS.survey, "#3b82f6"],
+    ];
+    for (const [imageId, color] of placemarkImages) {
+      if (!map.hasImage(imageId)) {
+        map.addImage(imageId, createPlacemarkPinImage(color), { pixelRatio: 2 });
+      }
+    }
+    if (!map.getSource(PLACEMARK_SOURCE)) {
+      map.addSource(PLACEMARK_SOURCE, {
+        type: "geojson",
+        data: placemarksToGeoJson(placemarksRef.current),
+        promoteId: "id",
+        cluster: true,
+        clusterRadius: 52,
+        clusterMaxZoom: 15,
+      });
+    }
+    if (!map.getSource(PLACEMARK_FOCUS_SOURCE)) {
+      map.addSource(PLACEMARK_FOCUS_SOURCE, {
+        type: "geojson",
+        data: placemarkFocusToGeoJson(placemarksRef.current, selectedPlacemarkId, hoveredPlacemarkId),
+        promoteId: "id",
+      });
+    }
+    if (!map.getLayer(PLACEMARK_CLUSTER_LAYER)) {
+      map.addLayer({
+        id: PLACEMARK_CLUSTER_LAYER,
+        type: "circle",
+        source: PLACEMARK_SOURCE,
+        filter: ["has", "point_count"],
+        paint: {
+          "circle-radius": ["step", ["get", "point_count"], 17, 10, 21, 30, 26],
+          "circle-color": "#0f766e",
+          "circle-stroke-color": "#99f6e4",
+          "circle-stroke-width": 2,
+          "circle-opacity": 0.92,
+        },
+      });
+    }
+    if (!map.getLayer(PLACEMARK_CLUSTER_COUNT_LAYER)) {
+      map.addLayer({
+        id: PLACEMARK_CLUSTER_COUNT_LAYER,
+        type: "symbol",
+        source: PLACEMARK_SOURCE,
+        filter: ["has", "point_count"],
+        layout: {
+          "text-field": ["get", "point_count_abbreviated"],
+          "text-font": ["Noto Sans Regular"],
+          "text-size": 12,
+          "text-allow-overlap": true,
+        },
+        paint: {
+          "text-color": "#ecfeff",
+          "text-halo-color": "#042f2e",
+          "text-halo-width": 1,
+        },
+      });
+    }
+    if (!map.getLayer(PLACEMARK_HOVER_HALO_LAYER)) {
+      map.addLayer({
+        id: PLACEMARK_HOVER_HALO_LAYER,
+        type: "circle",
+        source: PLACEMARK_FOCUS_SOURCE,
+        filter: ["all", ["!", ["has", "point_count"]], ["==", ["get", "id"], "__none__"]],
+        paint: {
+          "circle-radius": 18,
+          "circle-color": "rgba(250, 204, 21, 0.2)",
+          "circle-stroke-color": "#fde047",
+          "circle-stroke-width": 3,
+          "circle-blur": 0.12,
+        },
+      });
+    }
+    if (!map.getLayer(PLACEMARK_SELECTED_HALO_LAYER)) {
+      map.addLayer({
+        id: PLACEMARK_SELECTED_HALO_LAYER,
+        type: "circle",
+        source: PLACEMARK_FOCUS_SOURCE,
+        filter: ["all", ["!", ["has", "point_count"]], ["==", ["get", "id"], "__none__"]],
+        paint: {
+          "circle-radius": 17,
+          "circle-color": "rgba(45, 212, 191, 0.16)",
+          "circle-stroke-color": "#5eead4",
+          "circle-stroke-width": 3,
+          "circle-opacity": 0.75,
+        },
+      });
+    }
+    if (!map.getLayer(PLACEMARK_HIT_LAYER)) {
+      map.addLayer({
+        id: PLACEMARK_HIT_LAYER,
+        type: "circle",
+        source: PLACEMARK_SOURCE,
+        filter: ["!", ["has", "point_count"]],
+        paint: {
+          "circle-radius": ["interpolate", ["linear"], ["zoom"], 4, 15, 12, 18, 18, 22],
+          "circle-color": "rgba(255,255,255,0.001)",
+          "circle-stroke-width": 0,
+        },
+      });
+    }
+    if (!map.getLayer(PLACEMARK_LAYER)) {
+      map.addLayer({
+        id: PLACEMARK_LAYER,
+        type: "symbol",
+        source: PLACEMARK_SOURCE,
+        filter: ["!", ["has", "point_count"]],
+        layout: {
+          "icon-image": PLACEMARK_ICON_EXPRESSION,
+          "icon-size": 0.68,
+          "icon-anchor": "bottom",
+          "icon-allow-overlap": true,
+          "icon-ignore-placement": true,
+        },
+      });
+    }
+    if (!map.getLayer(PLACEMARK_HOVER_LAYER)) {
+      map.addLayer({
+        id: PLACEMARK_HOVER_LAYER,
+        type: "symbol",
+        source: PLACEMARK_FOCUS_SOURCE,
+        filter: ["all", ["!", ["has", "point_count"]], ["==", ["get", "id"], "__none__"]],
+        layout: {
+          "icon-image": PLACEMARK_ICON_EXPRESSION,
+          "icon-size": 0.92,
+          "icon-anchor": "bottom",
+          "icon-allow-overlap": true,
+          "icon-ignore-placement": true,
+        },
+      });
+    }
+    if (!map.getLayer(PLACEMARK_SELECTED_LAYER)) {
+      map.addLayer({
+        id: PLACEMARK_SELECTED_LAYER,
+        type: "symbol",
+        source: PLACEMARK_FOCUS_SOURCE,
+        filter: ["all", ["!", ["has", "point_count"]], ["==", ["get", "id"], "__none__"]],
+        layout: {
+          "icon-image": PLACEMARK_ICON_EXPRESSION,
+          "icon-size": 0.84,
+          "icon-anchor": "bottom",
+          "icon-allow-overlap": true,
+        },
+      });
+    }
+    if (!map.getLayer(PLACEMARK_LABEL_LAYER)) {
+      map.addLayer({
+        id: PLACEMARK_LABEL_LAYER,
+        type: "symbol",
+        source: PLACEMARK_SOURCE,
+        minzoom: 13,
+        filter: ["!", ["has", "point_count"]],
+        layout: {
+          "text-field": ["get", "name"],
+          "text-font": ["Noto Sans Regular"],
+          "text-size": 11,
+          "text-offset": [0, 1.15],
+          "text-anchor": "top",
+          "text-allow-overlap": false,
+        },
+        paint: {
+          "text-color": "#f8fafc",
+          "text-halo-color": "#0b1013",
+          "text-halo-width": 1.4,
+        },
+      });
+    }
+    if (!map.getLayer(PLACEMARK_HOVER_LABEL_LAYER)) {
+      map.addLayer({
+        id: PLACEMARK_HOVER_LABEL_LAYER,
+        type: "symbol",
+        source: PLACEMARK_FOCUS_SOURCE,
+        filter: ["all", ["!", ["has", "point_count"]], ["==", ["get", "id"], "__none__"]],
+        layout: {
+          "text-field": ["get", "name"],
+          "text-font": ["Noto Sans Regular"],
+          "text-size": 12,
+          "text-offset": [0, 1.35],
+          "text-anchor": "top",
+          "text-allow-overlap": true,
+          "text-ignore-placement": true,
+        },
+        paint: {
+          "text-color": "#fff7c2",
+          "text-halo-color": "#111827",
+          "text-halo-width": 2,
+        },
+      });
+    }
+    if (!map.getLayer(PLACEMARK_SELECTED_LABEL_LAYER)) {
+      map.addLayer({
+        id: PLACEMARK_SELECTED_LABEL_LAYER,
+        type: "symbol",
+        source: PLACEMARK_FOCUS_SOURCE,
+        filter: ["all", ["!", ["has", "point_count"]], ["==", ["get", "id"], "__none__"]],
+        layout: {
+          "text-field": ["get", "name"],
+          "text-font": ["Noto Sans Regular"],
+          "text-size": 12,
+          "text-offset": [0, 1.35],
+          "text-anchor": "top",
+          "text-allow-overlap": true,
+          "text-ignore-placement": true,
+        },
+        paint: {
+          "text-color": "#99f6e4",
+          "text-halo-color": "#042f2e",
+          "text-halo-width": 2,
+        },
+      });
+    }
+
+    // Always keep saved annotations above survey, AI and reference layers.
+    for (const layerId of [
+      PLACEMARK_HOVER_HALO_LAYER,
+      PLACEMARK_SELECTED_HALO_LAYER,
+      PLACEMARK_CLUSTER_LAYER,
+      PLACEMARK_HIT_LAYER,
+      PLACEMARK_LAYER,
+      PLACEMARK_SELECTED_LAYER,
+      PLACEMARK_HOVER_LAYER,
+      PLACEMARK_LABEL_LAYER,
+      PLACEMARK_SELECTED_LABEL_LAYER,
+      PLACEMARK_HOVER_LABEL_LAYER,
+      PLACEMARK_CLUSTER_COUNT_LAYER,
+    ]) {
+      if (map.getLayer(layerId)) map.moveLayer(layerId);
+    }
+
+    const hoverPopup = new maplibregl.Popup({
+      closeButton: false,
+      closeOnClick: false,
+      offset: [0, -38],
+      className: "placemark-hover-popup",
+    });
+
+    const clearHover = () => {
+      hoverPopup.remove();
+      setMapHoveredPlacemarkId(null);
+    };
+
+    const handlePlacemarkClick = (event: MapMouseEvent) => {
+      const hit = map.queryRenderedFeatures(event.point, { layers: [PLACEMARK_HIT_LAYER] })[0];
+      const id = String(hit?.properties?.id ?? "");
+      const placemark = placemarksRef.current.find((item) => item.id === id);
+      if (!placemark) return;
+      placemarkSavedClickRef.current = true;
+      window.requestAnimationFrame(() => { placemarkSavedClickRef.current = false; });
+      setSelectedPlacemarkId(placemark.id);
+      setPlacemarkDetailsId(placemark.id);
+      event.originalEvent.stopPropagation();
+    };
+
+    const handlePlacemarkMove = (event: MapMouseEvent) => {
+      if (!placemarkModeRef.current) map.getCanvas().style.cursor = "pointer";
+      const hit = map.queryRenderedFeatures(event.point, { layers: [PLACEMARK_HIT_LAYER] })[0];
+      const id = String(hit?.properties?.id ?? "");
+      const placemark = placemarksRef.current.find((item) => item.id === id);
+      if (!placemark) {
+        clearHover();
+        return;
+      }
+
+      setMapHoveredPlacemarkId(placemark.id);
+
+      const card = document.createElement("div");
+      card.className = "placemark-hover-card";
+      const name = document.createElement("strong");
+      name.textContent = placemark.name;
+      const meta = document.createElement("span");
+      meta.textContent = placemark.category || "Saved placemark";
+      card.append(name, meta);
+      hoverPopup
+        .setDOMContent(card)
+        .setLngLat([placemark.longitude, placemark.latitude])
+        .addTo(map);
+    };
+
+    const handlePlacemarkLeave = () => {
+      map.getCanvas().style.cursor = placemarkModeRef.current ? "crosshair" : "";
+      clearHover();
+    };
+
+    const handleClusterClick = (event: MapMouseEvent) => {
+      const hit = map.queryRenderedFeatures(event.point, { layers: [PLACEMARK_CLUSTER_LAYER] })[0];
+      const clusterId = Number(hit?.properties?.cluster_id);
+      const coordinates = hit?.geometry.type === "Point" ? hit.geometry.coordinates : null;
+      if (!Number.isFinite(clusterId) || !coordinates) return;
+      placemarkSavedClickRef.current = true;
+      window.requestAnimationFrame(() => { placemarkSavedClickRef.current = false; });
+      const source = map.getSource(PLACEMARK_SOURCE) as GeoJSONSource | undefined;
+      void source?.getClusterExpansionZoom(clusterId).then((zoom) => {
+        map.easeTo({ center: coordinates as [number, number], zoom, duration: 550 });
+      });
+      event.originalEvent.stopPropagation();
+    };
+
+    const handleClusterEnter = () => {
+      map.getCanvas().style.cursor = "pointer";
+    };
+    const handleClusterLeave = () => {
+      map.getCanvas().style.cursor = placemarkModeRef.current ? "crosshair" : "";
+    };
+
+    const handlePlacementClick = (event: MapMouseEvent) => {
+      if (!placemarkModeRef.current || placemarkSavedClickRef.current) return;
+      const existing = placemarkDraftRef.current;
+      const draft: PlacemarkDraft = {
+        ...(existing ?? {}),
+        name: existing?.name ?? "",
+        description: existing?.description ?? "",
+        category: existing?.category ?? "",
+        icon: existing?.icon ?? "pin",
+        longitude: event.lngLat.lng,
+        latitude: event.lngLat.lat,
+        altitude: existing?.altitude ?? null,
+        dataset_id: existing?.dataset_id ?? activeDatasetIds[0] ?? null,
+        is_visible: existing?.is_visible ?? true,
+      };
+      openPlacemarkDraft(draft);
+    };
+    const handlePlacementCancel = (event: MapMouseEvent) => {
+      if (!placemarkModeRef.current) return;
+      event.preventDefault();
+      event.originalEvent.preventDefault();
+      cancelPlacemarkPlacement();
+    };
+
+    map.on("click", PLACEMARK_HIT_LAYER, handlePlacemarkClick);
+    map.on("mousemove", PLACEMARK_HIT_LAYER, handlePlacemarkMove);
+    map.on("mouseleave", PLACEMARK_HIT_LAYER, handlePlacemarkLeave);
+    map.on("click", PLACEMARK_CLUSTER_LAYER, handleClusterClick);
+    map.on("mouseenter", PLACEMARK_CLUSTER_LAYER, handleClusterEnter);
+    map.on("mouseleave", PLACEMARK_CLUSTER_LAYER, handleClusterLeave);
+    map.on("click", handlePlacementClick);
+    map.on("contextmenu", handlePlacementCancel);
+
+    return () => {
+      clearHover();
+      map.off("click", PLACEMARK_HIT_LAYER, handlePlacemarkClick);
+      map.off("mousemove", PLACEMARK_HIT_LAYER, handlePlacemarkMove);
+      map.off("mouseleave", PLACEMARK_HIT_LAYER, handlePlacemarkLeave);
+      map.off("click", PLACEMARK_CLUSTER_LAYER, handleClusterClick);
+      map.off("mouseenter", PLACEMARK_CLUSTER_LAYER, handleClusterEnter);
+      map.off("mouseleave", PLACEMARK_CLUSTER_LAYER, handleClusterLeave);
+      map.off("click", handlePlacementClick);
+      map.off("contextmenu", handlePlacementCancel);
+    };
+  }, [activeDatasetIds, cancelPlacemarkPlacement, mapReady, openPlacemarkDraft]);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !mapReady) return;
+    const source = map.getSource(PLACEMARK_SOURCE) as GeoJSONSource | undefined;
+    source?.setData(placemarksToGeoJson(placemarks));
+  }, [mapReady, placemarks]);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !mapReady) return;
+    const source = map.getSource(PLACEMARK_FOCUS_SOURCE) as GeoJSONSource | undefined;
+    source?.setData(placemarkFocusToGeoJson(placemarks, selectedPlacemarkId, hoveredPlacemarkId));
+  }, [hoveredPlacemarkId, mapReady, placemarks, selectedPlacemarkId]);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !mapReady) return;
+    const hoverFilter: maplibregl.FilterSpecification = [
+      "all",
+      ["!", ["has", "point_count"]],
+      ["==", ["get", "id"], hoveredPlacemarkId ?? "__none__"],
+    ];
+    for (const layerId of [PLACEMARK_HOVER_HALO_LAYER, PLACEMARK_HOVER_LAYER, PLACEMARK_HOVER_LABEL_LAYER]) {
+      if (map.getLayer(layerId)) map.setFilter(layerId, hoverFilter);
+    }
+  }, [hoveredPlacemarkId, mapReady]);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !mapReady || !map.getLayer(PLACEMARK_SELECTED_LAYER)) return;
+    const selectedFilter: maplibregl.FilterSpecification = [
+      "all",
+      ["!", ["has", "point_count"]],
+      ["==", ["get", "id"], selectedPlacemarkId ?? "__none__"],
+    ];
+    map.setFilter(PLACEMARK_SELECTED_LAYER, selectedFilter);
+    for (const layerId of [PLACEMARK_SELECTED_HALO_LAYER, PLACEMARK_SELECTED_LABEL_LAYER]) {
+      if (map.getLayer(layerId)) map.setFilter(layerId, selectedFilter);
+    }
+
+    if (!selectedPlacemarkId || !map.getLayer(PLACEMARK_SELECTED_HALO_LAYER)) return;
+    const startedAt = performance.now();
+    let frame = 0;
+    const animate = (now: number) => {
+      const elapsed = now - startedAt;
+      const phase = (elapsed % 850) / 850;
+      const wave = (Math.sin(phase * Math.PI * 2 - Math.PI / 2) + 1) / 2;
+      map.setPaintProperty(PLACEMARK_SELECTED_HALO_LAYER, "circle-radius", 15 + wave * 8);
+      map.setPaintProperty(PLACEMARK_SELECTED_HALO_LAYER, "circle-opacity", 0.78 - wave * 0.46);
+      if (elapsed < 2550) frame = window.requestAnimationFrame(animate);
+      else {
+        map.setPaintProperty(PLACEMARK_SELECTED_HALO_LAYER, "circle-radius", 17);
+        map.setPaintProperty(PLACEMARK_SELECTED_HALO_LAYER, "circle-opacity", 0.75);
+      }
+    };
+    frame = window.requestAnimationFrame(animate);
+    return () => {
+      window.cancelAnimationFrame(frame);
+      if (map.getLayer(PLACEMARK_SELECTED_HALO_LAYER)) {
+        map.setPaintProperty(PLACEMARK_SELECTED_HALO_LAYER, "circle-radius", 17);
+        map.setPaintProperty(PLACEMARK_SELECTED_HALO_LAYER, "circle-opacity", 0.75);
+      }
+    };
+  }, [mapReady, selectedPlacemarkId]);
+
+  // REFERENCE LAYERS RELIABLE RUNTIME FIX V6
+  // Do not gate visibility updates on map.isStyleLoaded(). MapLibre reports
+  // false while raster/vector tiles are still arriving during zoom or a
+  // basemap switch, even though existing style layers are already safe to
+  // update. That old guard made the checkboxes change while the map stayed
+  // unchanged. Apply existing layers immediately and retry missing layers
+  // once the style becomes ready.
+  const referenceLayersRef = useRef(referenceLayers);
+
+  useEffect(() => {
+    referenceLayersRef.current = referenceLayers;
+  }, [referenceLayers]);
+
+  const ensureReferenceLayers = useCallback(() => {
+    const map = mapRef.current;
+    if (!map) return;
+
+    // Existing layers can be used while tiles are loading. Adding a missing
+    // source/layer, however, is deferred until the style is ready.
+    if (!map.getSource("reference-openfreemap")) {
+      if (!map.isStyleLoaded()) return;
+      const sourceSpec = BASE_STYLE.sources["reference-openfreemap"];
+      map.addSource(
+        "reference-openfreemap",
+        JSON.parse(JSON.stringify(sourceSpec)) as maplibregl.SourceSpecification
+      );
+    }
+
+    if (!map.isStyleLoaded()) return;
+
+    const firstPlacemarkLayer = [
+      PLACEMARK_HOVER_HALO_LAYER,
+      PLACEMARK_SELECTED_HALO_LAYER,
+      PLACEMARK_CLUSTER_LAYER,
+      PLACEMARK_HIT_LAYER,
+      PLACEMARK_LAYER,
+    ].find((layerId) => Boolean(map.getLayer(layerId)));
+
+    for (const layerSpec of BASE_STYLE.layers) {
+      if (!layerSpec.id.startsWith("reference-") || map.getLayer(layerSpec.id)) continue;
+      map.addLayer(
+        JSON.parse(JSON.stringify(layerSpec)) as maplibregl.LayerSpecification,
+        firstPlacemarkLayer
+      );
+    }
+  }, []);
+
+  const applyReferenceLayerVisibility = useCallback((next: ReferenceLayerVisibility) => {
+    const map = mapRef.current;
+    if (!map) return;
+
+    referenceLayersRef.current = next;
+
+    const applyNow = () => {
+      const currentMap = mapRef.current;
+      if (!currentMap) return;
+
+      ensureReferenceLayers();
+
+      const firstPlacemarkLayer = [
+        PLACEMARK_HOVER_HALO_LAYER,
+        PLACEMARK_SELECTED_HALO_LAYER,
+        PLACEMARK_CLUSTER_LAYER,
+        PLACEMARK_HIT_LAYER,
+        PLACEMARK_LAYER,
+      ].find((layerId) => Boolean(currentMap.getLayer(layerId)));
+
+      for (const [key, layerIds] of Object.entries(REFERENCE_LAYER_IDS) as Array<[keyof ReferenceLayerVisibility, string[]]>) {
+        const visibility = next[key] ? "visible" : "none";
+        for (const layerId of layerIds) {
+          if (!currentMap.getLayer(layerId)) continue;
+          if (currentMap.getLayoutProperty(layerId, "visibility") !== visibility) {
+            currentMap.setLayoutProperty(layerId, "visibility", visibility);
+          }
+          // Keep reference overlays above survey/raster content but below
+          // saved placemark pins, so a selected annotation is never hidden.
+          if (next[key]) currentMap.moveLayer(layerId, firstPlacemarkLayer);
+        }
+      }
+      currentMap.triggerRepaint();
+    };
+
+    // Immediate application plus short retries covers basemap switches,
+    // active zoom animation, and delayed vector-source initialization.
+    applyNow();
+    window.requestAnimationFrame(applyNow);
+    window.setTimeout(applyNow, 180);
+    window.setTimeout(applyNow, 700);
+  }, [ensureReferenceLayers]);
+
+  const handleToggleReferenceLayer = useCallback((
+    key: keyof ReferenceLayerVisibility,
+    visible: boolean
+  ) => {
+    const next = { ...referenceLayersRef.current, [key]: visible };
+    referenceLayersRef.current = next;
+    setReferenceLayers(next);
+    applyReferenceLayerVisibility(next);
+  }, [applyReferenceLayerVisibility]);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !mapReady) return;
+
+    const reapply = () => applyReferenceLayerVisibility(referenceLayersRef.current);
+    reapply();
+    map.on("load", reapply);
+    map.on("styledata", reapply);
+    map.on("idle", reapply);
+
+    return () => {
+      map.off("load", reapply);
+      map.off("styledata", reapply);
+      map.off("idle", reapply);
+    };
+  }, [applyReferenceLayerVisibility, mapReady]);
+
+  useEffect(() => {
+    if (!mapReady) return;
+    applyReferenceLayerVisibility(referenceLayersRef.current);
+  }, [applyReferenceLayerVisibility, basemap, mapReady]);
+
+  const activeStatusDataset = useMemo(() => {
+    for (const id of activeDatasetIds) {
+      const dataset = datasets.find((candidate) => candidate.id === id);
+      if (dataset) return dataset;
+    }
+    return null;
+  }, [activeDatasetIds, datasets]);
+
+  const activeElevationDataset = useMemo(() => {
+    for (const id of activeDatasetIds) {
+      const dataset = datasets.find((candidate) => candidate.id === id && candidate.file_type === "geotiff");
+      if (dataset) return dataset;
+    }
+    return null;
+  }, [activeDatasetIds, datasets]);
+
+  useEffect(() => {
+    if (!cursorLngLat || !activeElevationDataset) {
+      setElevationSample(null);
+      return;
+    }
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => {
+      void fetchElevationSample(activeElevationDataset.id, cursorLngLat[0], cursorLngLat[1], controller.signal)
+        .then(setElevationSample)
+        .catch((error) => {
+          if ((error as Error).name !== "AbortError") setElevationSample(null);
+        });
+    }, 450);
+    return () => {
+      window.clearTimeout(timer);
+      controller.abort();
+    };
+  }, [activeElevationDataset, cursorLngLat]);
+
+  const eyeAltitudeMeters = useMemo(() => {
+    const latitude = cursorLngLat?.[1] ?? mapRef.current?.getCenter().lat ?? DAVANGERE_CENTER[1];
+    const height = containerRef.current?.clientHeight ?? 800;
+    return estimateEyeAltitudeMeters(mapZoom, latitude, height, mapPitch);
+  }, [cursorLngLat, mapPitch, mapZoom]);
+
+  // Retained for backward-compatible placemark actions.
+  void handleTogglePlacemarkVisibility;
+  void handleBulkDeletePlacemarks;
+  const selectedPlacemarkDetails = placemarkDetailsId
+    ? placemarks.find((placemark) => placemark.id === placemarkDetailsId) ?? null
+    : null;
+  const selectedPlacemarkDatasetName = selectedPlacemarkDetails?.dataset_id
+    ? datasets.find((dataset) => dataset.id === selectedPlacemarkDetails.dataset_id)?.name ?? null
+    : null;
 
   return (
     <>
@@ -2789,6 +4640,32 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
         auditError={auditError}
         onOpenAttributeTable={openLayerAttributeTable}
         status={status}
+        visualization={{
+          datasets: activeVectorDatasets,
+          manifests: visualizationManifests,
+          loadingIds: visualizationLoadingIds,
+          errors: visualizationErrors,
+          selectedDatasetId: selectedVisualizationDatasetId,
+          target: visualizationTarget,
+          mode: visualizationMode,
+          field: visualizationField,
+          opacity: visualizationOpacity,
+          pointSize: visualizationPointSize,
+          lineWidth: visualizationLineWidth,
+          preview: visualizationPreview,
+          truncated: status.truncated,
+          layerLoading: visualizationLayerLoading,
+          layerError: visualizationLayerError,
+          layerTruncated: visualizationLayerTruncated,
+          onDatasetChange: setSelectedVisualizationDatasetId,
+          onTargetChange: setVisualizationTarget,
+          onModeChange: changeVisualizationMode,
+          onFieldChange: setVisualizationField,
+          onOpacityChange: setVisualizationOpacity,
+          onPointSizeChange: setVisualizationPointSize,
+          onLineWidthChange: setVisualizationLineWidth,
+          onResetStyle: resetVisualizationStyle,
+        }}
       />
       <div className="map-canvas" data-testid="map-canvas">
         <div ref={containerRef} className="map-canvas__map" data-testid="map-gl" />
@@ -2802,6 +4679,13 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
           onToggleAiOverlay={toggleAiOverlay}
           streetPickMode={streetPickMode}
           onToggleStreetView={toggleStreetPickMode}
+          placemarkMode={placemarkMode}
+          onTogglePlacemark={togglePlacemarkMode}
+          placemarkCount={placemarks.length}
+          myPlacesOpen={myPlacesOpen}
+          onToggleMyPlaces={() => setMyPlacesOpen((current) => !current)}
+          referenceLayers={referenceLayers}
+          onToggleReferenceLayer={handleToggleReferenceLayer}
         />
         <MapLegend entries={legend} />
         <HoverTooltip hover={hover} />
@@ -2813,7 +4697,66 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
             onStale={handleAnomalyStale}
           />
         )}
-        <MapStatusBar lngLat={cursorLngLat} scaleLabel={mapScaleLabel} />
+        {placemarkMode && !placemarkDraft && (
+          <div className="placemark-pick-hint" data-testid="placemark-pick-hint">
+            Click the map to place a pin · right-click or Esc to cancel
+          </div>
+        )}
+        {placemarkNotice && (
+          <div className="placemark-success-toast" role="status" aria-live="polite">
+            <span aria-hidden="true">✓</span>
+            {placemarkNotice}
+          </div>
+        )}
+        {placemarkDraft && (
+          <PlacemarkEditor
+            draft={placemarkDraft}
+            saving={placemarkSaving}
+            error={placemarkEditorError}
+            onChange={(patch) => {
+              setPlacemarkDraft((current) => {
+                if (!current) return current;
+                const updated = { ...current, ...patch };
+                placemarkDraftRef.current = updated;
+                const marker = placemarkPreviewMarkerRef.current;
+                if (marker && (patch.longitude !== undefined || patch.latitude !== undefined)) {
+                  marker.setLngLat([updated.longitude, updated.latitude]);
+                }
+                return updated;
+              });
+            }}
+            onSave={() => void handleSavePlacemark()}
+            onCancel={() => cancelPlacemarkPlacement()}
+          />
+        )}
+        {selectedPlacemarkDetails && (
+          <PlacemarkDetailsPanel
+            placemark={selectedPlacemarkDetails}
+            datasetName={selectedPlacemarkDatasetName}
+            onClose={() => setPlacemarkDetailsId(null)}
+            onEdit={handleEditPlacemark}
+            onDelete={(placemark) => void handleDeletePlacemark(placemark)}
+          />
+        )}
+        {myPlacesOpen && (
+          <MyPlacesPanel
+            placemarks={placemarks}
+            loading={placemarksLoading}
+            error={placemarksError}
+            selectedId={selectedPlacemarkId}
+            onClose={() => { setMyPlacesOpen(false); setListHoveredPlacemarkId(null); }}
+            onFlyTo={handleFlyToPlacemark}
+            onHover={(placemark) => setListHoveredPlacemarkId(placemark?.id ?? null)}
+          />
+        )}
+        <MapStatusBar
+          lngLat={cursorLngLat}
+          scaleLabel={mapScaleLabel}
+          datasetName={activeStatusDataset?.name ?? null}
+          surveyDate={activeStatusDataset?.survey_date ?? null}
+          elevation={elevationSample?.elevation ?? null}
+          eyeAltitudeMeters={eyeAltitudeMeters}
+        />
         <ZoomSlider
           zoom={mapZoom}
           minZoom={4}
@@ -2904,10 +4847,37 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
   );
 });
 
+interface VisualizationPanelProps {
+  datasets: DatasetRow[];
+  manifests: Record<string, VisualizationManifest>;
+  loadingIds: Set<string>;
+  errors: Record<string, string>;
+  selectedDatasetId: string | null;
+  target: VisualizationGeometryTarget;
+  mode: VisualizationMode;
+  field: string | null;
+  opacity: number;
+  pointSize: number;
+  lineWidth: number;
+  preview: VisualizationStylePreview;
+  truncated: boolean;
+  layerLoading: boolean;
+  layerError: string | null;
+  layerTruncated: boolean;
+  onDatasetChange: (datasetId: string | null) => void;
+  onTargetChange: (target: VisualizationGeometryTarget) => void;
+  onModeChange: (mode: VisualizationMode) => void;
+  onFieldChange: (field: string | null) => void;
+  onOpacityChange: (value: number) => void;
+  onPointSizeChange: (value: number) => void;
+  onLineWidthChange: (value: number) => void;
+  onResetStyle: () => void;
+}
+
 function CommandCenter({
   datasets, activeDatasetIds, flyError, onSelectDataset, onSelectAllDatasets, expandedDatasetId, onToggleDatasetSettings,
   rasterSettingsById, onChangeRasterSettings, categoryStats, hiddenCategories, onToggleCategory,
-  onSetAllCategoriesVisible, onRunAudit, auditRunning, auditError, onOpenAttributeTable, status: _status,
+  onSetAllCategoriesVisible, onRunAudit, auditRunning, auditError, onOpenAttributeTable, status: _status, visualization,
 }: {
   datasets: DatasetRow[]; activeDatasetIds: string[]; flyError: string | null; onSelectDataset: (d: DatasetRow) => void;
   onSelectAllDatasets: (active: boolean) => void;
@@ -2924,9 +4894,27 @@ function CommandCenter({
   auditError: string | null;
   onOpenAttributeTable: (category: string) => void;
   status: ViewportStatus;
+  visualization: VisualizationPanelProps;
 }) {
   const [layerQuery, setLayerQuery] = useState("");
   const [layerMenu, setLayerMenu] = useState<{ category: string; x: number; y: number } | null>(null);
+  const [visualizationOpen, setVisualizationOpen] = useState(false);
+  const visualizationTriggerRef = useRef<HTMLButtonElement | null>(null);
+  const visualizationPopupRef = useRef<HTMLDivElement | null>(null);
+  const [visualizationPopupPosition, setVisualizationPopupPosition] = useState<{
+    top: number;
+    left: number;
+    width: number;
+    maxHeight: number;
+  } | null>(null);
+  const visualizationDrag = useDraggableMapPanel<HTMLDivElement>({
+    storageKey: "davangere.geometry-styling-position",
+    boundary: "viewport",
+    initialPosition: visualizationPopupPosition
+      ? { x: visualizationPopupPosition.left, y: visualizationPopupPosition.top }
+      : null,
+    margin: 8,
+  });
   const normalizedLayerQuery = layerQuery.trim().toLocaleLowerCase();
   const displayedLayers = useMemo(
     () => [...categoryStats]
@@ -2953,51 +4941,133 @@ function CommandCenter({
     };
   }, [layerMenu]);
 
+  const updateVisualizationPopupPosition = useCallback(() => {
+    const trigger = visualizationTriggerRef.current;
+    if (!trigger) return;
+    const rect = trigger.getBoundingClientRect();
+    const viewportGap = 8;
+    const top = rect.bottom + 6;
+    setVisualizationPopupPosition({
+      top,
+      left: rect.left,
+      width: rect.width,
+      maxHeight: Math.max(280, window.innerHeight - top - viewportGap),
+    });
+  }, []);
+
+  useEffect(() => {
+    if (!visualizationOpen) return;
+    updateVisualizationPopupPosition();
+
+    const closeOnOutsideClick = (event: MouseEvent) => {
+      const target = event.target as Node;
+      if (visualizationTriggerRef.current?.contains(target)) return;
+      if (visualizationPopupRef.current?.contains(target)) return;
+      setVisualizationOpen(false);
+    };
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      event.stopPropagation();
+      setVisualizationOpen(false);
+      visualizationTriggerRef.current?.focus();
+    };
+    document.addEventListener("mousedown", closeOnOutsideClick);
+    document.addEventListener("keydown", closeOnEscape);
+    return () => {
+      document.removeEventListener("mousedown", closeOnOutsideClick);
+      document.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [updateVisualizationPopupPosition, visualizationOpen]);
+
   return (
     <aside className="command-center" data-testid="command-center">
       <div className="command-center__body">
         {datasets.length > 0 && (
-          <>
-            <DataSourceSelector
-              datasets={datasets}
-              activeDatasetIds={activeDatasetIds}
-              onSelectDataset={onSelectDataset}
-              onSelectAllDatasets={onSelectAllDatasets}
-              expandedDatasetId={expandedDatasetId}
-              onToggleDatasetSettings={onToggleDatasetSettings}
-              rasterSettingsById={rasterSettingsById}
-              onChangeRasterSettings={onChangeRasterSettings}
-              flyError={flyError}
-            />
-            {activeDatasetIds.length > 0 && (
-              <div className="command-center__section">
-                <div className="command-center__section-head">
-                  <span className="command-center__section-title">Spatial Audit</span>
-                </div>
-                <button
-                  type="button"
-                  className="command-center__audit-btn"
-                  disabled={auditRunning}
-                  onClick={() => onRunAudit(activeDatasetIds)}
-                  data-testid="run-spatial-audit"
-                  style={{ marginTop: 8 }}
-                >
-                  {auditRunning ? "Running Spatial Audit…" : "Run Spatial Audit"}
-                </button>
-                {auditError && (
-                  <div style={{ marginTop: 8, padding: "8px 10px", background: "var(--danger-muted)", borderRadius: "var(--radius-sm)", color: "var(--danger)", fontSize: 11 }}>
-                    {auditError}
-                  </div>
-                )}
-              </div>
-            )}
-        </>
-      )}
+          <DataSourceSelector
+            datasets={datasets}
+            activeDatasetIds={activeDatasetIds}
+            onSelectDataset={onSelectDataset}
+            onSelectAllDatasets={onSelectAllDatasets}
+            expandedDatasetId={expandedDatasetId}
+            onToggleDatasetSettings={onToggleDatasetSettings}
+            rasterSettingsById={rasterSettingsById}
+            onChangeRasterSettings={onChangeRasterSettings}
+            flyError={flyError}
+            onRunAudit={onRunAudit}
+            auditRunning={auditRunning}
+            auditError={auditError}
+          />
+        )}
+
+        <div className="visualization-popup-control">
+          <button
+            type="button"
+            ref={visualizationTriggerRef}
+            className={`visualization-popup-trigger${visualizationOpen ? " is-open" : ""}`}
+            disabled={visualization.datasets.length === 0}
+            aria-haspopup="dialog"
+            aria-expanded={visualizationOpen}
+            aria-controls="geometry-styling-popup"
+            onClick={() => setVisualizationOpen((current) => !current)}
+            data-testid="geometry-styling-trigger"
+          >
+            <span className="visualization-popup-trigger__icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                <polygon points="12 2 3 7 12 12 21 7 12 2" />
+                <polyline points="3 12 12 17 21 12" />
+                <polyline points="3 17 12 22 21 17" />
+              </svg>
+            </span>
+            <span className="visualization-popup-trigger__body">
+              <span className="visualization-popup-trigger__main">
+                <span className="visualization-popup-trigger__title">Layers</span>
+                <span className="visualization-popup-trigger__badge">Style</span>
+              </span>
+              <span className="visualization-popup-trigger__sub-row">
+                <span className="visualization-popup-trigger__sub">Open geometry styling</span>
+                <span className={`visualization-popup-trigger__chevron${visualizationOpen ? " is-open" : ""}`} aria-hidden="true">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <polyline points="6 9 12 15 18 9" />
+                  </svg>
+                </span>
+              </span>
+            </span>
+          </button>
+        </div>
+
+        {visualizationOpen && visualizationPopupPosition && createPortal(
+          <div
+            ref={(node) => {
+              visualizationPopupRef.current = node;
+              visualizationDrag.panelRef.current = node;
+            }}
+            id="geometry-styling-popup"
+            className="visualization-popup"
+            role="dialog"
+            aria-modal="false"
+            aria-label="Geometry styling"
+            style={{
+              top: visualizationPopupPosition.top,
+              left: visualizationPopupPosition.left,
+              width: visualizationPopupPosition.width,
+              maxHeight: visualizationPopupPosition.maxHeight,
+              ...visualizationDrag.style,
+            }}
+          >
+            <div className="floating-map-panel__dragbar" onPointerDown={visualizationDrag.onDragStart}>
+              <span>Geometry Styling</span>
+              <small>Drag to reposition</small>
+              <button type="button" onClick={() => setVisualizationOpen(false)} aria-label="Close Geometry Styling">×</button>
+            </div>
+            <VisualizationPanel {...visualization} />
+          </div>,
+          document.body
+        )}
 
         {categoryStats.length > 0 && (
           <div className="command-center__section">
             <div className="command-center__section-head">
-              <span className="command-center__section-title">Layers</span>
+              <span className="command-center__section-title">Category Visibility</span>
               <button
                 type="button"
                 className="command-center__text-btn"
@@ -3102,6 +5172,228 @@ function CommandCenter({
   );
 }
 
+function compactFeatureCount(value: number): string {
+  return new Intl.NumberFormat(undefined, {
+    notation: value >= 1000 ? "compact" : "standard",
+    maximumFractionDigits: value >= 10000 ? 1 : 0,
+  }).format(value);
+}
+
+function VisualizationPanel({
+  datasets,
+  manifests,
+  loadingIds,
+  errors,
+  selectedDatasetId,
+  target,
+  mode,
+  field,
+  opacity,
+  pointSize,
+  lineWidth,
+  preview,
+  truncated,
+  layerLoading,
+  layerError,
+  layerTruncated,
+  onDatasetChange,
+  onTargetChange,
+  onModeChange,
+  onFieldChange,
+  onOpacityChange,
+  onPointSizeChange,
+  onLineWidthChange,
+  onResetStyle,
+}: VisualizationPanelProps) {
+  const effectiveDatasetId = selectedDatasetId ?? datasets[0]?.id ?? null;
+  const selectedDataset = datasets.find((dataset) => dataset.id === effectiveDatasetId) ?? null;
+  const manifest = effectiveDatasetId ? manifests[effectiveDatasetId] ?? null : null;
+  const loading = effectiveDatasetId ? loadingIds.has(effectiveDatasetId) : false;
+  const error = effectiveDatasetId ? errors[effectiveDatasetId] ?? null : null;
+  const layers = manifest?.layers ?? [];
+
+  const geometryLayers = useMemo(() => ({
+    point: layers.filter((layer) => layer.recommended_renderer === "point"),
+    line: layers.filter((layer) => layer.recommended_renderer === "line"),
+    polygon: layers.filter((layer) => layer.recommended_renderer === "polygon"),
+  }), [layers]);
+
+  const targetLayers = useMemo(() => {
+    if (target === "all") {
+      return [...geometryLayers.point, ...geometryLayers.line, ...geometryLayers.polygon];
+    }
+    return geometryLayers[target];
+  }, [geometryLayers, target]);
+
+  const targetFields = useMemo(
+    () => aggregateVisualizationFields(targetLayers),
+    [targetLayers]
+  );
+
+  const eligibleFields = targetFields.filter((candidate) => {
+    if (mode === "category") {
+      return (candidate.detected_type === "string" || candidate.detected_type === "boolean")
+        && (candidate.unique_count ?? 0) > 1
+        && (candidate.unique_count ?? 0) <= 50;
+    }
+    if (mode === "numeric") return candidate.detected_type === "number";
+    if (mode === "missing-data") return candidate.missing_count > 0;
+    return false;
+  });
+
+  const modeOptions: Array<{ value: VisualizationMode; label: string; enabled: boolean }> = [
+    { value: "default", label: "Default", enabled: true },
+    { value: "category", label: "Category", enabled: targetFields.some((candidate) => (
+      (candidate.detected_type === "string" || candidate.detected_type === "boolean")
+      && (candidate.unique_count ?? 0) > 1
+      && (candidate.unique_count ?? 0) <= 50
+    )) },
+    { value: "numeric", label: "Numeric", enabled: targetFields.some((candidate) => candidate.detected_type === "number") },
+    { value: "missing-data", label: "Missing", enabled: targetFields.some((candidate) => candidate.missing_count > 0) },
+  ];
+
+  const countFor = (renderer: "point" | "line" | "polygon") => geometryLayers[renderer]
+    .reduce((total, layer) => total + layer.feature_count, 0);
+  const pointCount = countFor("point");
+  const lineCount = countFor("line");
+  const polygonCount = countFor("polygon");
+  const allCount = pointCount + lineCount + polygonCount;
+
+  const targetOptions: Array<{
+    value: VisualizationGeometryTarget;
+    label: string;
+    count: number;
+  }> = [
+    { value: "all", label: "All", count: allCount },
+    { value: "point", label: "Points", count: pointCount },
+    { value: "line", label: "Lines", count: lineCount },
+    { value: "polygon", label: "Polygons", count: polygonCount },
+  ];
+
+  useEffect(() => {
+    if (mode === "default") return;
+    if (eligibleFields.some((candidate) => candidate.name === field)) return;
+    onFieldChange(eligibleFields[0]?.name ?? null);
+  }, [eligibleFields, field, mode, onFieldChange]);
+
+  return (
+    <section className="visualization-panel visualization-panel--v3" data-testid="visualization-panel">
+      <div className="visualization-panel__head">
+        <div>
+          <div className="visualization-panel__eyebrow">Visualization</div>
+          <div className="visualization-panel__title">Geometry Styling</div>
+        </div>
+        <span className="visualization-panel__live"><span aria-hidden="true" /> Live</span>
+      </div>
+
+      {datasets.length === 0 ? (
+        <div className="visualization-panel__empty">
+          Select a ready vector dataset to open geometry styling.
+        </div>
+      ) : (
+        <>
+          {datasets.length > 1 ? (
+            <label className="visualization-field">
+              <span>Dataset</span>
+              <select value={effectiveDatasetId ?? ""} onChange={(event) => onDatasetChange(event.target.value || null)}>
+                {datasets.map((dataset) => <option key={dataset.id} value={dataset.id}>{dataset.name}</option>)}
+              </select>
+            </label>
+          ) : (
+            <div className="visualization-panel__dataset" title={selectedDataset?.name ?? ""}>{selectedDataset?.name}</div>
+          )}
+
+          {loading && <div className="visualization-panel__loading"><span className="visualization-panel__spinner" />Profiling geometry and fields…</div>}
+          {error && !loading && <div className="visualization-panel__error">Could not load visualization profile: {error}</div>}
+
+          {manifest && !loading && (
+            <>
+              <div className="visualization-panel__summary visualization-panel__summary--v3">
+                <div><strong>{compactFeatureCount(allCount)}</strong><span>Features</span></div>
+                <div><strong>{[pointCount, lineCount, polygonCount].filter((count) => count > 0).length}</strong><span>Geometry types</span></div>
+                <div><strong>{manifest.source_format.toUpperCase()}</strong><span>Source</span></div>
+              </div>
+
+              <div className="visualization-target-block">
+                <div className="visualization-target-block__label">Target geometry</div>
+                <div className="visualization-target-grid" role="group" aria-label="Target geometry">
+                  {targetOptions.map((option) => (
+                    <button
+                      key={option.value}
+                      type="button"
+                      className={target === option.value ? "is-active" : ""}
+                      disabled={option.count === 0}
+                      onClick={() => onTargetChange(option.value)}
+                    >
+                      <strong>{option.label}</strong>
+                      <span>{compactFeatureCount(option.count)}</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div className="visualization-style-card visualization-style-card--geometry">
+                <div className="visualization-style-card__head">
+                  <div><span>Style</span><strong>{targetOptions.find((option) => option.value === target)?.label ?? "All"}</strong></div>
+                  <button type="button" onClick={onResetStyle}>Reset</button>
+                </div>
+
+                {layerLoading && <div className="visualization-layer-runtime"><span className="visualization-panel__spinner" />Loading visible geometry…</div>}
+                {layerError && <div className="visualization-panel__error">Geometry load failed: {layerError}</div>}
+                {!layerLoading && !layerError && (
+                  <div className="visualization-layer-runtime visualization-layer-runtime--ok">
+                    <b>{preview.loadedCount.toLocaleString()}</b> features loaded in the current view
+                    {layerTruncated && <em>Zoom in to load every visible feature</em>}
+                  </div>
+                )}
+
+                <div className="visualization-mode-grid">
+                  {modeOptions.map((option) => (
+                    <button
+                      key={option.value}
+                      type="button"
+                      className={mode === option.value ? "visualization-mode-grid__active" : ""}
+                      disabled={!option.enabled}
+                      onClick={() => onModeChange(option.value)}
+                    >
+                      {option.label}
+                    </button>
+                  ))}
+                </div>
+
+                {mode !== "default" && (
+                  <label className="visualization-field">
+                    <span>Field</span>
+                    <select value={field ?? ""} onChange={(event) => onFieldChange(event.target.value || null)} disabled={eligibleFields.length === 0}>
+                      {eligibleFields.length === 0 && <option value="">No compatible field</option>}
+                      {eligibleFields.map((candidate) => (
+                        <option key={candidate.name} value={candidate.name}>
+                          {candidate.name} · {candidate.populated_count.toLocaleString()} populated
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                )}
+
+                {mode === "category" && field && <div className="visualization-preview-list">{preview.categories.length > 0 ? preview.categories.map((item) => <div key={item.value}><span style={{ background: item.color }} /><strong title={item.value}>{item.value}</strong><small>{item.count.toLocaleString()}</small></div>) : <p>No categorical values are loaded in this view.</p>}</div>}
+                {mode === "numeric" && field && <div className="visualization-numeric-preview"><div className="visualization-numeric-preview__bar" /><div><span>{preview.numericMin === null ? "No value" : preview.numericMin.toLocaleString()}</span><span>{preview.numericMax === null ? "No value" : preview.numericMax.toLocaleString()}</span></div></div>}
+                {mode === "missing-data" && field && <div className="visualization-missing-preview"><span><i className="visualization-missing-preview__available" />Available {preview.availableCount.toLocaleString()}</span><span><i className="visualization-missing-preview__missing" />Missing {preview.missingCount.toLocaleString()}</span></div>}
+
+                <label className="visualization-slider"><span><b>Opacity</b><em>{Math.round(opacity * 100)}%</em></span><input type="range" min="0.15" max="1" step="0.05" value={opacity} onChange={(event) => onOpacityChange(Number(event.target.value))} /></label>
+                {(target === "all" || target === "point") && <label className="visualization-slider"><span><b>Point size</b><em>{pointSize}px</em></span><input type="range" min="3" max="24" step="1" value={pointSize} onChange={(event) => onPointSizeChange(Number(event.target.value))} /></label>}
+                {(target === "all" || target === "line" || target === "polygon") && <label className="visualization-slider"><span><b>{target === "polygon" ? "Outline width" : target === "all" ? "Line / outline width" : "Line width"}</b><em>{lineWidth.toFixed(1)}px</em></span><input type="range" min="1" max="12" step="0.5" value={lineWidth} onChange={(event) => onLineWidthChange(Number(event.target.value))} /></label>}
+              </div>
+
+              {manifest.warnings.length > 0 && <details className="visualization-panel__limitations"><summary>Data limitations</summary>{manifest.warnings.map((warning) => <p key={warning}>{warning}</p>)}</details>}
+              {truncated && <div className="visualization-base-cap-note">The base preview is capped at 5,000 features. Geometry styling uses live viewport requests.</div>}
+            </>
+          )}
+        </>
+      )}
+    </section>
+  );
+}
+
 /** Google Earth Pro-style "Ruler" dialog for the Line measurement tool. */
 const MEASURE_TAB_OPTIONS: Array<{ value: MeasureTab; label: string }> = [
   { value: "line", label: "Line" },
@@ -3124,7 +5416,22 @@ const DETECTION_MODE_LABEL: Record<Exclude<DetectionMode, null>, string> = {
 };
 
 function MapControls({
-  basemap, onChangeBasemap, status, detectionMode, onToggleDetectionMode, aiOverlayEnabled, onToggleAiOverlay, streetPickMode, onToggleStreetView,
+  basemap,
+  onChangeBasemap,
+  status,
+  detectionMode,
+  onToggleDetectionMode,
+  aiOverlayEnabled,
+  onToggleAiOverlay,
+  streetPickMode,
+  onToggleStreetView,
+  placemarkMode,
+  onTogglePlacemark,
+  placemarkCount,
+  myPlacesOpen,
+  onToggleMyPlaces,
+  referenceLayers,
+  onToggleReferenceLayer,
 }: {
   basemap: Basemap;
   onChangeBasemap: (b: Basemap) => void;
@@ -3135,11 +5442,24 @@ function MapControls({
   onToggleAiOverlay: () => void;
   streetPickMode: boolean;
   onToggleStreetView: () => void;
+  placemarkMode: boolean;
+  onTogglePlacemark: () => void;
+  placemarkCount: number;
+  myPlacesOpen: boolean;
+  onToggleMyPlaces: () => void;
+  referenceLayers: ReferenceLayerVisibility;
+  onToggleReferenceLayer: (key: keyof ReferenceLayerVisibility, visible: boolean) => void;
 }) {
   const [menuOpen, setMenuOpen] = useState(false);
   const [menuPos, setMenuPos] = useState<{ top: number; left: number } | null>(null);
   const menuRef = useRef<HTMLDivElement | null>(null);
   const portalMenuRef = useRef<HTMLDivElement | null>(null);
+  const aiMenuDrag = useDraggableMapPanel<HTMLDivElement>({
+    storageKey: "davangere.ai-detection-position",
+    boundary: "viewport",
+    initialPosition: menuPos ? { x: menuPos.left, y: menuPos.top } : null,
+    margin: 8,
+  });
 
   useEffect(() => {
     if (!menuOpen) return;
@@ -3152,8 +5472,15 @@ function MapControls({
         setMenuOpen(false);
       }
     };
+    const onEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setMenuOpen(false);
+    };
     document.addEventListener("mousedown", onClickOutside);
-    return () => document.removeEventListener("mousedown", onClickOutside);
+    document.addEventListener("keydown", onEscape);
+    return () => {
+      document.removeEventListener("mousedown", onClickOutside);
+      document.removeEventListener("keydown", onEscape);
+    };
   }, [menuOpen]);
 
   // MapLibre's WebGL canvas can composite on its own GPU layer that paints
@@ -3232,9 +5559,17 @@ function MapControls({
             <div
               className="ai-detection-menu"
               data-testid="ai-detection-menu"
-              ref={portalMenuRef}
-              style={{ position: "fixed", top: menuPos.top, left: menuPos.left }}
+              ref={(node) => {
+                portalMenuRef.current = node;
+                aiMenuDrag.panelRef.current = node;
+              }}
+              style={{ position: "fixed", top: menuPos.top, left: menuPos.left, ...aiMenuDrag.style }}
             >
+              <div className="ai-detection-menu__dragbar" onPointerDown={aiMenuDrag.onDragStart}>
+                <span>AI Detection</span>
+                <small>Drag</small>
+                <button type="button" onClick={() => setMenuOpen(false)} aria-label="Close AI Detection">×</button>
+              </div>
               {(["poles", "drains", "manholes"] as const).map((mode) => (
                 <button
                   type="button"
@@ -3249,6 +5584,37 @@ function MapControls({
             </div>,
             document.body
           )}
+        </div>
+        <div className="map-controls__group map-controls__group--annotations" data-testid="annotation-controls">
+          <button
+            type="button"
+            className={`map-controls__btn${placemarkMode ? " map-controls__btn--active" : ""}`}
+            onClick={onTogglePlacemark}
+            data-testid="placemark-tool"
+            aria-pressed={placemarkMode}
+            title="Place a saved placemark on the map"
+          >
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" width="15" height="15" style={{ marginRight: 4, verticalAlign: -2 }} aria-hidden="true">
+              <path d="M12 22s7-6.1 7-13a7 7 0 1 0-14 0c0 6.9 7 13 7 13Z" />
+              <circle cx="12" cy="9" r="2.2" />
+            </svg>
+            Placemark
+          </button>
+          <button
+            type="button"
+            className={`map-controls__btn${myPlacesOpen ? " map-controls__btn--active" : ""}`}
+            onClick={onToggleMyPlaces}
+            data-testid="my-places-toggle"
+            aria-pressed={myPlacesOpen}
+            title="Search and manage saved placemarks"
+          >
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" width="15" height="15" style={{ marginRight: 4, verticalAlign: -2 }} aria-hidden="true">
+              <path d="M4 5.5A2.5 2.5 0 0 1 6.5 3H18a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6.5A2.5 2.5 0 0 1 4 18.5v-13Z" />
+              <path d="M8 3v18M12 8h5M12 12h5" />
+            </svg>
+            My Places{placemarkCount > 0 ? ` · ${placemarkCount}` : ""}
+          </button>
+          <ReferenceLayersMenu value={referenceLayers} onChange={onToggleReferenceLayer} />
         </div>
         <div className="map-controls__group map-controls__group--street-view">
           <button
@@ -3381,15 +5747,42 @@ function formatDms(value: number, positiveSuffix: string, negativeSuffix: string
  * that shorten the DMS string), which is why the distance box sits fixed
  * on the wrapper's right edge rather than being laid out purely by flex
  * order against a variable-width neighbour. */
-function MapStatusBar({ lngLat, scaleLabel }: { lngLat: [number, number] | null; scaleLabel: string }) {
-  if (!lngLat && !scaleLabel) return null;
+function MapStatusBar({
+  lngLat,
+  scaleLabel,
+  datasetName,
+  surveyDate,
+  elevation,
+  eyeAltitudeMeters,
+}: {
+  lngLat: [number, number] | null;
+  scaleLabel: string;
+  datasetName: string | null;
+  surveyDate: string | null;
+  elevation: number | null;
+  eyeAltitudeMeters: number;
+}) {
+  if (!lngLat && !scaleLabel && !datasetName) return null;
+  const surveyLabel = surveyDate
+    ? new Intl.DateTimeFormat(undefined, { dateStyle: "medium" }).format(new Date(surveyDate))
+    : "—";
   return (
-    <div className="map__status-bar" data-testid="map-status-bar">
+    <div className="map__status-bar map__status-bar--earth" data-testid="map-status-bar">
+      <div className="map__status-box map__dataset-readout" title={datasetName ?? "No active dataset"}>
+        <span>Survey</span>
+        <strong>{surveyLabel}</strong>
+      </div>
       {lngLat && (
         <div className="map__status-box map__coord-readout" data-testid="map-coord-readout">
           {formatDms(lngLat[1], "N", "S")}&nbsp;&nbsp;{formatDms(lngLat[0], "E", "W")}
         </div>
       )}
+      <div className="map__status-box map__elevation-readout">
+        elev&nbsp;{elevation === null ? "—" : `${Math.round(elevation)} m`}
+      </div>
+      <div className="map__status-box map__eye-altitude-readout">
+        eye alt&nbsp;{formatMetricDistance(eyeAltitudeMeters)}
+      </div>
       {scaleLabel && (
         <div className="map__status-box map__scale-readout" data-testid="map-scale-readout">
           {scaleLabel}
@@ -3611,7 +6004,6 @@ function RulerPanel({
   const style: React.CSSProperties | undefined = position
     ? { top: position.y, left: position.x, transform: "none" }
     : undefined;
-
   return (
     <div className="ruler-panel" data-testid="ruler-panel" role="dialog" aria-label="Measure" ref={panelRef} style={style}>
       <div

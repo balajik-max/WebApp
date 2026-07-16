@@ -31,6 +31,11 @@ class ReaderResult:
     # {"obj_key": str, "obj_filename": str, "mtl_key": str|None,
     #  "mtl_filename": str|None, "textures": {filename: storage_key}}
     model_assets: dict | None = None
+    # Reader-specific structured metadata promoted onto Dataset.metadata
+    # (e.g. {"model_3d": {...}}) — keeps format details such as an OBJ
+    # model's source CRS available to the UI (DataSourceSelector) beyond
+    # the raw asset pointers in `model_assets`.
+    dataset_metadata: dict | None = None
 
 
 @runtime_checkable

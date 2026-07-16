@@ -1,12 +1,12 @@
-"""Manhole data-readiness rules for the existing Gandhinagar GDB fields.
+"""Deterministic Manhole data-readiness rules.
 
-The rules are deliberately narrow and deterministic. They only inspect fields
-that are meaningful for the Manhole category and never mutate source data.
+The rules only inspect existing attributes. They never modify a source GDB,
+feature, or ingestion record.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Iterable
+from typing import Iterable, Literal, Mapping
 
 from fastapi import HTTPException
 from sqlalchemy import and_, func, not_, or_
@@ -14,6 +14,7 @@ from sqlalchemy import and_, func, not_, or_
 from app.models import Feature
 
 _EMPTY_TEXT_VALUES = ("", "-", "n/a", "na", "nan", "none", "null", "unknown")
+ReadinessStatus = Literal["all", "available", "missing"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -72,7 +73,7 @@ MANHOLE_READINESS_FIELDS: tuple[ManholeReadinessField, ...] = (
 _FIELD_BY_KEY = {field.key: field for field in MANHOLE_READINESS_FIELDS}
 
 
-def clean_missing_field(value: str | None) -> str | None:
+def clean_readiness_field(value: str | None) -> str | None:
     if value is None:
         return None
     cleaned = value.strip().lower()
@@ -82,13 +83,55 @@ def clean_missing_field(value: str | None) -> str | None:
         allowed = ", ".join(field.key for field in MANHOLE_READINESS_FIELDS)
         raise HTTPException(
             status_code=400,
-            detail=f"missing_field must be one of: {allowed}",
+            detail=f"readiness_field must be one of: {allowed}",
         )
     return cleaned
 
 
+def clean_missing_field(value: str | None) -> str | None:
+    """Backward-compatible alias used by the Phase 4 missing-only API."""
+    return clean_readiness_field(value)
+
+
+def clean_readiness_status(value: str | None) -> ReadinessStatus:
+    cleaned = (value or "all").strip().lower()
+    if cleaned not in {"all", "available", "missing"}:
+        raise HTTPException(
+            status_code=400,
+            detail="readiness_status must be one of: all, available, missing",
+        )
+    return cleaned  # type: ignore[return-value]
+
+
+def resolve_readiness_filter(
+    *,
+    readiness_field: str | None = None,
+    readiness_status: str | None = None,
+    missing_field: str | None = None,
+) -> tuple[str | None, ReadinessStatus | None]:
+    """Resolve new readiness parameters while preserving missing_field clients."""
+    cleaned_field = clean_readiness_field(readiness_field)
+    legacy_field = clean_missing_field(missing_field)
+    if cleaned_field and legacy_field and cleaned_field != legacy_field:
+        raise HTTPException(
+            status_code=400,
+            detail="readiness_field and missing_field must reference the same field",
+        )
+    field = cleaned_field or legacy_field
+    if not field:
+        if readiness_status and readiness_status.strip().lower() not in {"", "all"}:
+            raise HTTPException(
+                status_code=400,
+                detail="readiness_status requires readiness_field",
+            )
+        return None, None
+    if legacy_field and readiness_status is None:
+        return field, "missing"
+    return field, clean_readiness_status(readiness_status)
+
+
 def get_readiness_field(key: str) -> ManholeReadinessField:
-    cleaned = clean_missing_field(key)
+    cleaned = clean_readiness_field(key)
     assert cleaned is not None
     return _FIELD_BY_KEY[cleaned]
 
@@ -109,6 +152,37 @@ def field_available_condition(field_key: str):
 
 def field_missing_condition(field_key: str):
     return and_(manhole_category_condition(), not_(field_available_condition(field_key)))
+
+
+def readiness_scope_condition(field_key: str, status: ReadinessStatus):
+    if status == "available":
+        return and_(manhole_category_condition(), field_available_condition(field_key))
+    if status == "missing":
+        return field_missing_condition(field_key)
+    return manhole_category_condition()
+
+
+def attribute_value(attributes: Mapping[str, object] | None, field_key: str) -> object | None:
+    """Return the first meaningful configured alias value for one feature."""
+    if not isinstance(attributes, Mapping):
+        return None
+    field = get_readiness_field(field_key)
+    for alias in field.aliases:
+        value = attributes.get(alias)
+        if value is None:
+            continue
+        text = str(value).strip()
+        if text.lower() in _EMPTY_TEXT_VALUES:
+            continue
+        return value
+    return None
+
+
+def attribute_readiness_status(
+    attributes: Mapping[str, object] | None,
+    field_key: str,
+) -> Literal["available", "missing"]:
+    return "available" if attribute_value(attributes, field_key) is not None else "missing"
 
 
 def readiness_fields() -> Iterable[ManholeReadinessField]:

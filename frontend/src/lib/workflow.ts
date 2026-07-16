@@ -4,6 +4,8 @@ import { apiDelete, apiDownload, apiGet, apiPatch, apiPost } from "./api";
 import type { FeatureCollectionResponse } from "./types";
 
 export type AnalyticsSeverityBucket = "low" | "medium" | "high";
+export type SeverityVisualizationType = "bar" | "pie" | "treemap";
+export type ManholeReadinessStatus = "all" | "available" | "missing";
 export type ManholeReadinessFieldKey =
   | "depth"
   | "bottom_level"
@@ -16,6 +18,9 @@ export type ManholeReadinessFieldKey =
 export interface AnalyticsCrossFilters {
   wards?: string[];
   severityBuckets?: AnalyticsSeverityBucket[];
+  readinessField?: ManholeReadinessFieldKey | null;
+  readinessStatus?: ManholeReadinessStatus | null;
+  /** Backward-compatible missing-only filter. */
   missingField?: ManholeReadinessFieldKey | null;
 }
 
@@ -87,6 +92,14 @@ export interface DatasetRow {
       mtl_filename?: string;
       textures: Record<string, string>;
     };
+    model_3d?: {
+      source_crs: string;
+      vertex_count?: number;
+      face_count?: number;
+      position_source?: string;
+      is_geo_referenced?: boolean;
+      asset_keys?: Record<string, string>;
+    };
     [key: string]: unknown;
   };
   created_at: string;
@@ -140,6 +153,56 @@ export function fetchDatasetBounds(datasetId: string, signal?: AbortSignal) {
   return apiGet<DatasetBounds>(`/api/v1/datasets/${datasetId}/bounds`, signal);
 }
 
+export type VisualizationRenderer = "point" | "line" | "polygon" | "generic";
+export type VisualizationFieldType =
+  | "string"
+  | "number"
+  | "boolean"
+  | "object"
+  | "array"
+  | "mixed"
+  | "unknown";
+
+export interface VisualizationFieldProfile {
+  name: string;
+  detected_type: VisualizationFieldType;
+  populated_count: number;
+  missing_count: number;
+  unique_count: number | null;
+}
+
+export interface VisualizationLayerManifest {
+  layer_key: string;
+  source_layer_name: string;
+  display_name: string;
+  geometry_types: string[];
+  feature_count: number;
+  bounds: [number, number, number, number] | null;
+  fields: VisualizationFieldProfile[];
+  recommended_renderer: VisualizationRenderer;
+  recommended_modes: string[];
+  warnings: string[];
+}
+
+export interface VisualizationManifest {
+  dataset_id: string;
+  dataset_name: string;
+  source_format: string;
+  source_crs: string | null;
+  display_crs: string;
+  bounds: [number, number, number, number] | null;
+  total_features: number;
+  layers: VisualizationLayerManifest[];
+  warnings: string[];
+}
+
+export function fetchVisualizationManifest(datasetId: string, signal?: AbortSignal) {
+  return apiGet<VisualizationManifest>(
+    `/api/v1/visualization/datasets/${datasetId}/manifest`,
+    signal
+  );
+}
+
 export interface CategoryOption {
   category: string;
   count: number;
@@ -170,6 +233,9 @@ export interface AnalyticsFeatureRow {
   severity: number;
   geometry_type: string;
   created_at: string;
+  readiness_field_label?: string | null;
+  readiness_status?: "available" | "missing" | null;
+  readiness_value?: string | null;
 }
 
 export interface AnalyticsFeaturePage {
@@ -189,7 +255,12 @@ function analyticsScopeParams(
   for (const category of categories) params.append("category", category);
   for (const ward of filters.wards ?? []) params.append("ward", ward);
   for (const bucket of filters.severityBuckets ?? []) params.append("severity_bucket", bucket);
-  if (filters.missingField) params.set("missing_field", filters.missingField);
+  if (filters.readinessField) {
+    params.set("readiness_field", filters.readinessField);
+    params.set("readiness_status", filters.readinessStatus ?? "all");
+  } else if (filters.missingField) {
+    params.set("missing_field", filters.missingField);
+  }
   return params;
 }
 
@@ -201,10 +272,17 @@ export function fetchAnalyticsFeatures(
 ) {
   const params = analyticsScopeParams(datasetIds, categories, filters);
   params.set("limit", "5000");
-  if (filters.missingField) {
+  const readinessField = filters.readinessField ?? filters.missingField ?? null;
+  if (readinessField) {
+    const readinessStatus = filters.readinessField
+      ? filters.readinessStatus ?? "all"
+      : "missing";
     params.delete("category");
+    params.delete("readiness_field");
+    params.delete("readiness_status");
     params.delete("missing_field");
-    params.set("field", filters.missingField);
+    params.set("field", readinessField);
+    params.set("status", readinessStatus);
     return apiGet<FeatureCollectionResponse>(
       `/api/v1/analytics/manhole-readiness/features?${params.toString()}`,
       signal

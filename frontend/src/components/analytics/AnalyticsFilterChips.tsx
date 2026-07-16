@@ -1,14 +1,18 @@
-import type { AnalyticsSeverityBucket } from "../../lib/workflow";
+import type {
+  AnalyticsSeverityBucket,
+  ManholeReadinessStatus,
+} from "../../lib/workflow";
 
 interface Props {
   category: string | null;
   ward: string | null;
   severityBucket: AnalyticsSeverityBucket | null;
-  missingFieldLabel: string | null;
+  readinessFieldLabel: string | null;
+  readinessStatus: ManholeReadinessStatus | null;
   onClearCategory: () => void;
   onClearWard: () => void;
   onClearSeverity: () => void;
-  onClearMissingField: () => void;
+  onClearReadiness: () => void;
   onClearAll: () => void;
 }
 
@@ -16,18 +20,19 @@ export function AnalyticsFilterChips({
   category,
   ward,
   severityBucket,
-  missingFieldLabel,
+  readinessFieldLabel,
+  readinessStatus,
   onClearCategory,
   onClearWard,
   onClearSeverity,
-  onClearMissingField,
+  onClearReadiness,
   onClearAll,
 }: Props) {
   const activeCount =
     Number(Boolean(category)) +
     Number(Boolean(ward)) +
     Number(Boolean(severityBucket)) +
-    Number(Boolean(missingFieldLabel));
+    Number(Boolean(readinessFieldLabel));
   if (activeCount === 0) return null;
 
   return (
@@ -49,9 +54,10 @@ export function AnalyticsFilterChips({
             Severity: {severityBucket}<span aria-hidden="true">×</span>
           </button>
         )}
-        {missingFieldLabel && (
-          <button type="button" onClick={onClearMissingField} title="Show all Manholes">
-            Missing field: {missingFieldLabel}<span aria-hidden="true">×</span>
+        {readinessFieldLabel && (
+          <button type="button" onClick={onClearReadiness} title="Clear Manhole readiness view">
+            {readinessFieldLabel}: {readinessStatus === "available" ? "Available" : readinessStatus === "missing" ? "Missing" : "All"}
+            <span aria-hidden="true">×</span>
           </button>
         )}
       </div>
