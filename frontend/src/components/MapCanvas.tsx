@@ -816,6 +816,15 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
   const [manholeRecommendLoading, setManholeRecommendLoading] = useState(false);
   const [manholeRecommendError, setManholeRecommendError] = useState<string | null>(null);
   const [manholeRecommendOpen, setManholeRecommendOpen] = useState(false);
+  // Single-manhole click ("feature" mode: real pipe suggestion — material,
+  // diameter, RLs, route) — deliberately its OWN state, separate from the
+  // network-mode state above. The map's drawn network (MANHOLE_ROUTES_SOURCE)
+  // reads only manholeRecommendAnswer, never this one, so clicking a manhole
+  // to see its pipe suggestion can never clear an already-drawn network.
+  const [manholeFeatureAnswer, setManholeFeatureAnswer] = useState<AiAnswer | null>(null);
+  const [manholeFeatureLoading, setManholeFeatureLoading] = useState(false);
+  const [manholeFeatureError, setManholeFeatureError] = useState<string | null>(null);
+  const [manholeFeatureOpen, setManholeFeatureOpen] = useState(false);
   // Phase C — 3D subsurface view, opened from the same recommend result
   // (or on its own, showing real terrain/buildings/manholes with no plan
   // run yet) so it never shows a fact the 2D view didn't already show.
@@ -2306,23 +2315,25 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     setAuditRunning(false);
   }, []);
 
-  // AI Manhole Recommendation Engine — "feature" mode for a single clicked
-  // manhole, "area" mode for a whole-dataset plan. Computed fresh on every
-  // call (unlike the spatial audit engine, there is nothing to persist —
-  // a recommendation is a point-in-time read of the current network).
   const runManholeFeatureRecommend = useCallback(async (datasetId: string, featureId: string) => {
-    setManholeRecommendOpen(true);
-    setManholeRecommendLoading(true);
-    setManholeRecommendError(null);
-    setManholeRecommendAnswer(null);
+    setManholeFeatureOpen(true);
+    setManholeFeatureLoading(true);
+    setManholeFeatureError(null);
+    setManholeFeatureAnswer(null);
     try {
       const answer = await aiManholeRecommend({ mode: "feature", dataset_id: datasetId, feature_id: featureId });
-      setManholeRecommendAnswer(answer);
+      setManholeFeatureAnswer(answer);
     } catch (e) {
-      setManholeRecommendError((e as Error).message);
+      setManholeFeatureError((e as Error).message);
     } finally {
-      setManholeRecommendLoading(false);
+      setManholeFeatureLoading(false);
     }
+  }, []);
+
+  const closeManholeFeature = useCallback(() => {
+    setManholeFeatureOpen(false);
+    setManholeFeatureAnswer(null);
+    setManholeFeatureError(null);
   }, []);
 
   const runManholeNetwork = useCallback(async (datasetIds: string[]) => {
@@ -2929,6 +2940,13 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
           classMapRef.current[selected.properties.category ?? ""] === "Access_Point" &&
           selected.properties.dataset_id
         ) {
+          // The real pipe-suggestion card (material/diameter/RL/slope/route)
+          // — kept in its OWN state (manholeFeatureAnswer), never touching
+          // manholeRecommendAnswer/routes, so a "Full Drainage Network"
+          // already drawn on the map stays exactly as-is. Same courtesy as
+          // Poles/Drains: only hide the network SUMMARY PANEL (not its
+          // data) so the two cards don't visually stack in the same corner.
+          setManholeRecommendOpen(false);
           void runManholeFeatureRecommend(selected.properties.dataset_id, selected.properties.id);
           return;
         }
@@ -3251,6 +3269,15 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
             onView3D={() => setShow3DPlan(true)}
           />
         )}
+        {manholeFeatureOpen && (
+          <ManholeRecommendCard
+            answer={manholeFeatureAnswer}
+            loading={manholeFeatureLoading}
+            error={manholeFeatureError}
+            onClose={closeManholeFeature}
+            onView3D={() => setShow3DPlan(true)}
+          />
+        )}
         {measureActive && (
           <RulerPanel
             tab={measureTab}
@@ -3307,7 +3334,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
           features={loadedFeatures}
           classMap={classMap}
           anomalies={anomalies}
-          manholeAnswer={manholeRecommendAnswer}
+          manholeAnswer={manholeFeatureOpen ? manholeFeatureAnswer : manholeRecommendAnswer}
           datasets={datasets}
           activeDatasetIds={activeDatasetIds}
           onClose={() => setShow3DPlan(false)}

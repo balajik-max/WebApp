@@ -1033,79 +1033,135 @@ def _snap_manholes(
     return node_for, nearest_m
 
 
-def _uf_find(parent: dict[str, str], x: str) -> str:
-    while parent.get(x, x) != x:
-        x = parent[x]
-    return x
+def _point_segment_projection_m(
+    p: tuple[float, float], a: tuple[float, float], b: tuple[float, float]
+) -> tuple[float, float]:
+    """(perpendicular_distance_m, t) of point p's projection onto segment
+    a-b, using a local equirectangular projection around a — accurate for
+    the short (tens of metres) segments a manhole network deals in. t=0 is
+    at a, t=1 is at b; t is NOT clamped, so a caller can tell whether the
+    closest point actually falls strictly inside the segment or beyond
+    either endpoint."""
+    lat0 = math.radians(a[1])
+    kx, ky = 111_320.0 * math.cos(lat0), 111_320.0
+    px, py = (p[0] - a[0]) * kx, (p[1] - a[1]) * ky
+    bx, by = (b[0] - a[0]) * kx, (b[1] - a[1]) * ky
+    seg_len2 = bx * bx + by * by
+    if seg_len2 == 0:
+        return math.hypot(px, py), 0.0
+    t = (px * bx + py * by) / seg_len2
+    tc = max(0.0, min(1.0, t))
+    cx, cy = tc * bx, tc * by
+    return math.hypot(px - cx, py - cy), t
 
 
-def _uf_union(parent: dict[str, str], a: str, b: str) -> None:
-    ra, rb = _uf_find(parent, a), _uf_find(parent, b)
-    if ra != rb:
-        parent[ra] = rb
+_SKIP_TOLERANCE_M = 8.0
+# A third manhole only counts as "skipped over" if its closest point on the
+# path falls at least this many metres in from BOTH ends — one sitting near
+# an endpoint is part of the same tight manhole cluster as A or B (a common
+# real survey pattern: two or three manholes surveyed a couple of metres
+# apart at one structure), not a real intermediate stop on the way to B.
+_SKIP_END_MARGIN_M = 4.0
 
 
-def _mst_candidate_edges(
-    manholes: list[dict], graph: RoadGraph, node_for: dict[str, tuple[float, float]]
-) -> list[tuple[float, str, str, list[tuple[float, float]]]]:
-    """Every manhole-pair distance reachable on one graph (pipe or road),
-    computed with ONE Dijkstra run per snapped manhole (dijkstra_to_all)
-    rather than one run per pair — cheap even for ~80 manholes. Returns
-    (distance_m, id_a, id_b, path_coords) tuples, each pair appearing once."""
-    by_id = {m["id"]: m for m in manholes}
-    snapped_ids = sorted(node_for.keys())
-    candidates: list[tuple[float, str, str, list[tuple[float, float]]]] = []
-    for i, a_id in enumerate(snapped_ids):
-        an = node_for[a_id]
-        dist, prev = dijkstra_to_all(graph, an)
-        a = by_id[a_id]
-        for b_id in snapped_ids[i + 1 :]:
-            bn = node_for[b_id]
-            if bn == an or bn not in dist:
-                continue
-            path = path_from_prev(graph, prev, an, bn)
-            if not path:
-                continue
-            b = by_id[b_id]
-            coords = [(a["lon"], a["lat"])] + path[1:-1] + [(b["lon"], b["lat"])]
-            candidates.append((dist[bn], a_id, b_id, coords))
-    return candidates
+def _path_skips_manhole(
+    coords: list[tuple[float, float]], a_id: str, b_id: str, manholes: list[dict]
+) -> str | None:
+    """A candidate connection from a_id to b_id is only valid if it doesn't
+    run past a THIRD real manhole without stopping there — exactly the "row
+    of three manholes: connect 1-2 and 2-3, never 1-3 straight past 2" rule.
+    Returns the id of the first other manhole found genuinely along the
+    interior of the path (not just near one of its two endpoints), or None
+    if the path is clear."""
+    seg_lengths_m = [
+        _haversine_m(coords[i], coords[i + 1]) for i in range(len(coords) - 1)
+    ]
+    total_len_m = sum(seg_lengths_m)
+    if total_len_m <= 2 * _SKIP_END_MARGIN_M:
+        return None  # too short a hop for an "in-between" manhole to even be possible
+
+    for m in manholes:
+        if m["id"] in (a_id, b_id):
+            continue
+        p = (m["lon"], m["lat"])
+        arc_so_far = 0.0
+        for i in range(len(coords) - 1):
+            seg_len = seg_lengths_m[i]
+            dist_m, t = _point_segment_projection_m(p, coords[i], coords[i + 1])
+            if dist_m <= _SKIP_TOLERANCE_M and 0.0 <= t <= 1.0:
+                arc_here = arc_so_far + t * seg_len
+                if _SKIP_END_MARGIN_M <= arc_here <= total_len_m - _SKIP_END_MARGIN_M:
+                    return m["id"]
+            arc_so_far += seg_len
+    return None
+
+
+async def _nearest_safe_manhole_via_graph(
+    dataset_id: uuid.UUID,
+    graph: RoadGraph,
+    node_for: dict[str, tuple[float, float]],
+    manholes: list[dict],
+    m: dict,
+    db: AsyncSession,
+) -> tuple[dict, list[tuple[float, float]], float] | None:
+    """Nearest OTHER manhole reachable from `m` on this graph (pipe or
+    road), tried nearest-candidate-first, rejecting any candidate whose
+    path either cuts through a Building or runs past a real intermediate
+    manhole without connecting to it first (see _path_skips_manhole) — the
+    two hard rules a real sewer layout can never violate. Returns None if
+    `m` isn't snapped onto this graph, or no candidate satisfies both rules."""
+    snapped = node_for.get(m["id"])
+    if snapped is None:
+        return None
+    dist, prev = dijkstra_to_all(graph, snapped)
+    candidates: list[tuple[float, dict, tuple[float, float]]] = []
+    for o in manholes:
+        if o["id"] == m["id"]:
+            continue
+        on = node_for.get(o["id"])
+        if on is None or on == snapped or on not in dist:
+            continue
+        candidates.append((dist[on], o, on))
+    candidates.sort(key=lambda c: c[0])
+
+    for d, target, on in candidates:
+        path = path_from_prev(graph, prev, snapped, on)
+        if not path:
+            continue
+        coords = [(m["lon"], m["lat"])] + path[1:-1] + [(target["lon"], target["lat"])]
+        if await route_crosses_building(dataset_id, coords, db):
+            continue
+        if _path_skips_manhole(coords, m["id"], target["id"], manholes) is not None:
+            continue
+        return target, coords, d
+    return None
 
 
 async def build_full_network(dataset_id: uuid.UUID, db: AsyncSession) -> tuple[list[NetworkEdge], list[UnconnectedManhole]]:
-    """Build the complete manhole drainage network as a single unified tree
-    — a Minimum Spanning Tree, not an independent nearest-neighbour pick per
-    manhole. The earlier per-manhole "connect to whichever other manhole is
-    nearest" approach could have two different manholes both route through
-    the same shared corridor from different directions, drawing multiple
-    overlapping/duplicate-looking lines along it. An MST guarantees exactly
-    ONE path between any two manholes and the minimum possible total pipe
-    length, so no stretch of the network is ever drawn twice.
+    """Build the manhole drainage network from REAL sewage/drain-pipe and
+    concrete-road geometry only — no arbitrary straight-line bridging.
 
-    Kruskal's algorithm is run in three ordered passes, matching how a real
-    engineer would prioritise evidence:
-      1. Real, directly-surveyed sewage/drain pipe connections (cheapest
-         first, skipping anything that would form a cycle or cut through a
-         Building) — route_basis="sewage_line".
-      2. Whatever the pipe layer's real digitization gaps couldn't reach
-         falls back to the concrete road network (real sewage pipes run
-         alongside/beneath roads almost everywhere) — route_basis=
-         "concrete_road".
-      3. Any manhole (or small cluster) still unreached by either real
-         layer is connected with a direct, building-checked line to its
-         nearest still-disconnected neighbour, purely to keep the network
-         from being reported as fragmented when it doesn't have to be —
-         route_basis="bridge", the least-grounded of the three and always
-         labelled as such.
-    A manhole with no safe path on any of the three passes is reported as
-    an UnconnectedManhole rather than ever being forced through a Building.
+    Each manhole is connected to its nearest OTHER manhole reachable via the
+    real sewage/drain pipe network (route_basis="sewage_line"); if no pipe
+    path exists, it falls back to the concrete road network (real sewage
+    pipes run alongside/beneath roads almost everywhere) — route_basis=
+    "concrete_road". Two hard rules apply to every candidate, checked
+    nearest-candidate-first so a rejected candidate simply tries the next
+    one: (1) never draw a line through a Building, and (2) never connect
+    past a real THIRD manhole without stopping there first (a row of three
+    manholes must chain 1-2 and 2-3, never 1-3 skipping the middle one).
+    A manhole with no real sewage/drain pipe or concrete road within reach —
+    or with no candidate that satisfies both rules — is reported as an
+    UnconnectedManhole rather than ever being forced into a connection.
 
     Flow direction is decided entirely by terrain — each manhole's elevation
     is taken from the DTM raster first, then the contour lines, then the
     surveyed value (see _manhole_elevation_m), deliberately in that order so
     direction stays coherent along a chain instead of flipping pair-to-pair
     on noisy hand-surveyed levels. Every edge is stored pointing from the
-    higher manhole to the lower one, so water visibly flows downhill.
+    higher manhole to the lower one, so water visibly flows downhill. Pairs
+    are deduplicated so each manhole pair appears once, preferring a
+    sewage_line basis over a concrete_road one when both exist.
     """
     dtm_dataset_id = await _find_dtm_dataset_id(db)
     rows = await _fetch_manhole_rows(dataset_id, db)
@@ -1123,7 +1179,6 @@ async def build_full_network(dataset_id: uuid.UUID, db: AsyncSession) -> tuple[l
             "elevation_m": elevation_m, "source": source,
             "condition": parsed.condition,
         })
-    by_id = {m["id"]: m for m in manholes}
 
     node_for_pipe, nearest_pipe_m = _snap_manholes(pipe_graph, manholes, PIPE_SNAP_TOLERANCE_M)
     node_for_road, nearest_road_m = _snap_manholes(road_graph, manholes, PIPE_SNAP_TOLERANCE_M)
@@ -1136,110 +1191,104 @@ async def build_full_network(dataset_id: uuid.UUID, db: AsyncSession) -> tuple[l
             and _haversine_m((m["lon"], m["lat"]), (o["lon"], o["lat"])) <= radius
         ]
 
-    parent: dict[str, str] = {m["id"]: m["id"] for m in manholes}
     raw_edges: dict[frozenset[str], NetworkEdge] = {}
+    unconnected: list[UnconnectedManhole] = []
 
-    def _add_edge(a_id: str, b_id: str, coords: list[tuple[float, float]], length_m: float, route_basis: str) -> None:
-        a, b = by_id[a_id], by_id[b_id]
-        ae, be = a["elevation_m"], b["elevation_m"]
-        if ae is not None and be is not None and ae >= be:
-            frm, to, fcoords, frm_e, to_e, confirmed = a, b, coords, ae, be, True
-        elif ae is not None and be is not None and ae < be:
-            frm, to, fcoords, frm_e, to_e, confirmed = b, a, list(reversed(coords)), be, ae, True
+    for m in manholes:
+        target: dict | None = None
+        coords: list[tuple[float, float]] | None = None
+        length_m = 0.0
+        route_basis = "sewage_line"
+
+        result = await _nearest_safe_manhole_via_graph(dataset_id, pipe_graph, node_for_pipe, manholes, m, db)
+        if result is not None:
+            target, coords, length_m = result
+            route_basis = "sewage_line"
         else:
-            frm, to, fcoords, frm_e, to_e, confirmed = a, b, coords, ae, be, False
+            result = await _nearest_safe_manhole_via_graph(dataset_id, road_graph, node_for_road, manholes, m, db)
+            if result is not None:
+                target, coords, length_m = result
+                route_basis = "concrete_road"
+
+        if target is None or coords is None:
+            on_pipe = m["id"] in node_for_pipe
+            on_road = m["id"] in node_for_road
+            if not on_pipe and not on_road:
+                nearest_m = nearest_pipe_m.get(m["id"])
+                nearest_r = nearest_road_m.get(m["id"])
+                reason = (
+                    "Not connected to the sewage line or a concrete road — "
+                    f"nearest sewage/drain pipe is "
+                    f"{f'{nearest_m:.0f} m away' if nearest_m is not None else 'not found'}, "
+                    f"nearest concrete road is "
+                    f"{f'{nearest_r:.0f} m away' if nearest_r is not None else 'not found'} "
+                    f"(tolerance {PIPE_SNAP_TOLERANCE_M:.0f} m)"
+                )
+            else:
+                reason = (
+                    "On the sewage line and/or a concrete road, but no other manhole is "
+                    "reachable there without crossing a building or skipping past a real "
+                    "intermediate manhole"
+                )
+            unconnected.append(UnconnectedManhole(manhole_id=m["id"], lon=m["lon"], lat=m["lat"], reason=reason))
+            continue
+
+        me, te = m["elevation_m"], target["elevation_m"]
+        if me is not None and te is not None and me >= te:
+            frm, to, fcoords = m, target, coords
+            frm_e, to_e, confirmed = me, te, True
+        elif me is not None and te is not None and me < te:
+            frm, to, fcoords = target, m, list(reversed(coords))
+            frm_e, to_e, confirmed = te, me, True
+        else:
+            frm, to, fcoords = m, target, coords
+            frm_e, to_e, confirmed = me, te, False
 
         spec = PipeSpec(
-            material="PVC", diameter_mm=next_standard_diameter_mm(None),
-            from_rl=frm_e, to_rl=to_e,
+            material="PVC",
+            diameter_mm=next_standard_diameter_mm(None),
+            from_rl=frm_e,
+            to_rl=to_e,
             slope=_slope(frm_e, to_e, length_m) if confirmed else None,
         )
         route = PipeRoute(from_id=frm["id"], to_id=to["id"], coordinates=fcoords, pipe_spec=spec)
 
-        has_bad_condition = is_bad_condition(a.get("condition")) or is_bad_condition(b.get("condition"))
-        near = straight_neighbours(a, NETWORK_CANDIDATE_RADIUS_M)
+        has_bad_condition = is_bad_condition(m.get("condition"))
+        near = straight_neighbours(m, NETWORK_CANDIDATE_RADIUS_M)
         is_local_low_point = (
-            ae is not None
+            me is not None
             and bool(near)
-            and all(o["elevation_m"] is None or ae <= o["elevation_m"] for _, o in near)
+            and all(o["elevation_m"] is None or me <= o["elevation_m"] for _, o in near)
         )
         rainy_season_closed = has_bad_condition or is_local_low_point or not confirmed
 
         edge = NetworkEdge(
-            from_id=frm["id"], to_id=to["id"], from_elevation_m=frm_e, to_elevation_m=to_e,
-            elevation_source=frm["source"], flow_confirmed=confirmed, route=route,
-            rainy_season_closed=rainy_season_closed, route_basis=route_basis,
+            from_id=frm["id"],
+            to_id=to["id"],
+            from_elevation_m=frm_e,
+            to_elevation_m=to_e,
+            elevation_source=m["source"],
+            flow_confirmed=confirmed,
+            route=route,
+            rainy_season_closed=rainy_season_closed,
+            route_basis=route_basis,
         )
-        raw_edges[frozenset({a_id, b_id})] = edge
-        _uf_union(parent, a_id, b_id)
 
-    for graph, node_for, basis in (
-        (pipe_graph, node_for_pipe, "sewage_line"),
-        (road_graph, node_for_road, "concrete_road"),
-    ):
-        candidates = _mst_candidate_edges(manholes, graph, node_for)
-        candidates.sort(key=lambda c: c[0])
-        for dist, a_id, b_id, coords in candidates:
-            if _uf_find(parent, a_id) == _uf_find(parent, b_id):
-                continue  # would form a cycle / redundant duplicate path — skip
-            if await route_crosses_building(dataset_id, coords, db):
-                continue  # never draw a line through a building's middle
-            _add_edge(a_id, b_id, coords, dist, basis)
-
-    # Anything still disconnected after both real-geometry passes gets
-    # bridged with a direct line — only ever between two DIFFERENT remaining
-    # clusters (so it stays a tree, never a redundant extra edge),
-    # nearest-pair-first, skipping any pair whose direct line would cross a
-    # Building in favour of the next-nearest cross-cluster pair.
-    guard = 0
-    max_guard = len(manholes) * 2
-    while guard <= max_guard:
-        guard += 1
-        groups: dict[str, list[dict]] = {}
-        for m in manholes:
-            groups.setdefault(_uf_find(parent, m["id"]), []).append(m)
-        if len(groups) <= 1:
-            break
-        comp_roots = list(groups.keys())
-        bridge_candidates: list[tuple[float, str, str]] = []
-        for i in range(len(comp_roots)):
-            for j in range(i + 1, len(comp_roots)):
-                for a in groups[comp_roots[i]]:
-                    for b in groups[comp_roots[j]]:
-                        d = _haversine_m((a["lon"], a["lat"]), (b["lon"], b["lat"]))
-                        bridge_candidates.append((d, a["id"], b["id"]))
-        if not bridge_candidates:
-            break
-        bridge_candidates.sort(key=lambda c: c[0])
-        bridged = False
-        for d, a_id, b_id in bridge_candidates:
-            if _uf_find(parent, a_id) == _uf_find(parent, b_id):
-                continue
-            a, b = by_id[a_id], by_id[b_id]
-            direct = [(a["lon"], a["lat"]), (b["lon"], b["lat"])]
-            if await route_crosses_building(dataset_id, direct, db):
-                continue
-            _add_edge(a_id, b_id, direct, d, "bridge")
-            bridged = True
-            break
-        if not bridged:
-            break  # every remaining cross-cluster pair is building-blocked
-
-    unconnected: list[UnconnectedManhole] = []
-    connected_ids = {e.from_id for e in raw_edges.values()} | {e.to_id for e in raw_edges.values()}
-    for m in manholes:
-        if m["id"] in connected_ids:
-            continue
-        nearest_m = nearest_pipe_m.get(m["id"])
-        nearest_r = nearest_road_m.get(m["id"])
-        reason = (
-            "Not connected to the sewage line or a concrete road, and no safe bridge to "
-            "the rest of the network was found — "
-            f"nearest sewage/drain pipe is "
-            f"{f'{nearest_m:.0f} m away' if nearest_m is not None else 'not found'}, "
-            f"nearest concrete road is "
-            f"{f'{nearest_r:.0f} m away' if nearest_r is not None else 'not found'}"
-        )
-        unconnected.append(UnconnectedManhole(manhole_id=m["id"], lon=m["lon"], lat=m["lat"], reason=reason))
+        # Deduplicate: only one edge per pair — prefer a directly-surveyed
+        # sewage_line basis over a concrete_road guess, then the confirmed-
+        # flow one, else the one whose direction is downhill (higher -> lower).
+        pair_key = frozenset({frm["id"], to["id"]})
+        if pair_key in raw_edges:
+            existing = raw_edges[pair_key]
+            if route_basis == "sewage_line" and existing.route_basis != "sewage_line":
+                raw_edges[pair_key] = edge
+            elif route_basis == existing.route_basis:
+                if confirmed and not existing.flow_confirmed:
+                    raw_edges[pair_key] = edge
+                elif confirmed == existing.flow_confirmed:
+                    if (frm_e or 0) > (existing.from_elevation_m or 0):
+                        raw_edges[pair_key] = edge
+        else:
+            raw_edges[pair_key] = edge
 
     return list(raw_edges.values()), unconnected

@@ -685,19 +685,14 @@ async def _manhole_network_response(dataset_id: uuid.UUID, model: str, db: Async
     )
     answer_markdown = (
         f"## Full Drainage Network\n\n"
-        f"**{len(connected_manhole_ids)} of {total_manholes}** manholes are connected into one unified network, "
-        f"linked by **{len(edges)}** segments to their real downstream neighbour — never a straight line between "
-        f"two manholes that just happen to be nearby.\n\n"
+        f"**{len(connected_manhole_ids)} of {total_manholes}** manholes are connected to their real nearest "
+        f"downstream neighbour, linked by **{len(edges)}** segments — each one following the actual sewage/drain "
+        f"pipe or road, never a straight line between two manholes that just happen to be nearby, and never "
+        f"skipping past a real intermediate manhole without connecting to it first.\n\n"
         f"- **{len(sewage_routed)}** segments follow a real, directly-surveyed sewage/drain pipe.\n"
         f"- **{len(road_routed)}** segments had no sewage-pipe path (a digitization gap in that layer) and instead "
         f"follow the concrete road network as a stated assumption — real sewage pipes run alongside/beneath roads "
         f"almost everywhere, but this is an inferred path, not a directly-surveyed one.\n"
-        + (
-            f"- **{len(bridge_routed)}** segments bridge two otherwise-disconnected clusters with a direct line "
-            f"(verified clear of every building) — neither the sewage-pipe nor the road layer spans this specific "
-            f"gap, so this is the least-grounded connection type, used only to keep the network unified.\n"
-            if bridge_routed else ""
-        )
         + f"- **{len(confirmed)} of {len(edges)}** connections have a flow direction confirmed by real elevation data "
         f"(high → low is a genuine, evidenced fact here, not an assumption).\n"
         f"- **{len(edges) - len(confirmed)}** connections are drawn but have **no confirmed flow direction** — "
@@ -960,6 +955,49 @@ async def list_anomalies(
     return [_anomaly_out(row, lon, lat) for row, lon, lat in rows]
 
 
+async def _manhole_pipe_suggestion_facts(row: SpatialAnomaly, db: AsyncSession) -> str:
+    """Runs the same manhole-recommend engine used by the "Full Drainage
+    Network"/single-feature card to get a real, computed pipe suggestion
+    (material, diameter, RLs, slope, route) for THIS manhole, and renders it
+    as extra FACTS lines — so the click-to-explain card keeps the concrete
+    pipe recommendation it used to show before it was switched to reuse the
+    spatial-audit AnomalyAlertCard, instead of losing that detail."""
+    manhole_id = row.anomaly_metadata.get("manhole_id")
+    if not manhole_id:
+        return "No pipe suggestion available (manhole id not on this finding)."
+    try:
+        rec: FeatureRecommendation | None = await build_feature_recommendation(
+            row.dataset_id, uuid.UUID(manhole_id), db
+        )
+    except Exception:  # noqa: BLE001 — a failed recommendation must not block the explanation
+        return "No pipe suggestion available (recommendation engine could not compute one)."
+    if rec is None:
+        return "No pipe suggestion available (manhole not found for recommendation)."
+    if rec.route is None:
+        return (
+            f"PIPE_SUGGESTION: none — {rec.reason} "
+            "(no safe road/sewage-line-routed connection was found; do not invent one)."
+        )
+    spec = rec.route.pipe_spec
+    lines = [
+        "PIPE_SUGGESTION (real, computed by the manhole recommendation engine — cite these exact values):",
+        f"  material: {spec.material}",
+        f"  diameter_mm: {spec.diameter_mm:.0f}",
+    ]
+    if spec.from_rl is not None:
+        lines.append(f"  from_rl: {spec.from_rl}")
+    if spec.to_rl is not None:
+        lines.append(f"  to_rl: {spec.to_rl}")
+    if spec.slope is not None:
+        lines.append(f"  slope: {spec.slope}")
+    lines.append(
+        f"  route: {len(rec.route.coordinates)}-vertex path from this manhole to "
+        f"{'the connected drain' if rec.route.to_id else 'the nearest other manhole'}, "
+        "confirmed clear of every Building."
+    )
+    return "\n".join(lines)
+
+
 def _manhole_status_explain_prompt(row: SpatialAnomaly, crib: str) -> str:
     """manhole_status gets its own structured prompt (Issue / Required /
     How to fix) rather than the generic drain/pole one below — the generic
@@ -976,7 +1014,10 @@ def _manhole_status_explain_prompt(row: SpatialAnomaly, crib: str) -> str:
             "the real condition/level/distance figures given), 'Required:' (what must "
             "be done — desilting, cover/frame replacement, structural repair, or "
             "re-routing, whichever fits FACTS), and 'How to fix:' (the concrete field "
-            "steps an engineer or contractor would take, in order)."
+            "steps an engineer or contractor would take, in order). If FACTS includes a "
+            "PIPE_SUGGESTION with a real material/diameter (not 'none'), your 'How to "
+            "fix:' MUST cite that exact material and diameter as the pipe to use for any "
+            "re-routing/replacement — never invent a different size or material."
         )
     elif color == "yellow":
         guidance = (
@@ -986,7 +1027,9 @@ def _manhole_status_explain_prompt(row: SpatialAnomaly, crib: str) -> str:
             "'Required:' (what should be checked or monitored — typically a field "
             "inspection to confirm actual condition), and 'How to fix:' (the "
             "preventive/monitoring step to take now so this does not become a red "
-            "finding)."
+            "finding). If FACTS includes a PIPE_SUGGESTION with a real material/"
+            "diameter (not 'none'), mention it in 'How to fix:' as the pipe already "
+            "identified for this manhole should it need replacement later."
         )
     else:
         guidance = (
@@ -1031,6 +1074,7 @@ async def explain_anomaly(anomaly_id: uuid.UUID, db: AsyncSession = Depends(get_
 
     crib = _anomaly_fact_sheet(row)
     if row.anomaly_type.value == "manhole_status":
+        crib = f"{crib}\n{await _manhole_pipe_suggestion_facts(row, db)}"
         prompt = _manhole_status_explain_prompt(row, crib)
     else:
         prompt = (
