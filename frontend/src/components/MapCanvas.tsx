@@ -33,7 +33,7 @@ import {
   updatePlacemark, type ElevationSample, type Placemark, type PlacemarkDraft,
 } from "../lib/placemarks";
 import { ManholeRecommendCard } from "./ManholeRecommendCard";
-import { ManholePlan3D } from "./ManholePlan3D";
+import { Map3DViewer } from "./Map3DViewer";
 import { aiManholeRecommend, type AiAnswer } from "../lib/ai";
 
 // .obj datasets are persisted with file_type "other" (the enum has no
@@ -5274,6 +5274,19 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
               </g>
             </svg>
           </button>
+          <button
+            type="button"
+            className="map-measure-btn"
+            onClick={() => setShow3DPlan(true)}
+            title="3D Viewer"
+            aria-label="Open 3D Viewer"
+            data-testid="topbar-3d-viewer"
+          >
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <path d="M12 3.5l7.5 4.2v8.6L12 20.5l-7.5-4.2V7.7L12 3.5z" />
+              <path d="M12 12v8.5M12 12l7.5-4.3M12 12L4.5 7.7" />
+            </svg>
+          </button>
         </div>
         {manholeRecommendOpen && (
           <ManholeRecommendCard
@@ -5345,7 +5358,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
         />
       )}
       {show3DPlan && (
-        <ManholePlan3D
+        <Map3DViewer
           features={loadedFeatures}
           classMap={classMap}
           anomalies={anomalies}
