@@ -60,3 +60,5 @@ sample_data/extracted_gdb/
 # Large local GIS datasets / generated output
 Davangere_Ghandinagar Ward/
 graphify-out/
+.claude/
+.claude/

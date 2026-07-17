@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useDraggableMapPanel } from "./useDraggableMapPanel";
+import { useIsMobile } from "../../lib/useIsMobile";
 
 export interface ReferenceLayerVisibility {
   borders: boolean;
@@ -26,12 +27,14 @@ export function ReferenceLayersMenu({ value, onChange }: Props) {
   const [anchor, setAnchor] = useState<{ x: number; y: number } | null>(null);
   const triggerRef = useRef<HTMLButtonElement | null>(null);
   const enabledCount = Object.values(value).filter(Boolean).length;
+  const isMobile = useIsMobile();
   const initialPosition = useMemo(() => anchor, [anchor?.x, anchor?.y]);
   const { panelRef, style, onDragStart } = useDraggableMapPanel<HTMLDivElement>({
     storageKey: "davangere.reference-layers-position",
     boundary: "viewport",
     initialPosition,
     margin: 8,
+    disabled: isMobile,
   });
 
   useEffect(() => {
@@ -68,7 +71,7 @@ export function ReferenceLayersMenu({ value, onChange }: Props) {
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" width="15" height="15" style={{ marginRight: 4, verticalAlign: -2 }} aria-hidden="true">
           <polygon points="12 2 3 7 12 12 21 7 12 2" /><polyline points="3 12 12 17 21 12" /><polyline points="3 17 12 22 21 17" />
         </svg>
-        Map Layers{enabledCount > 0 ? ` · ${enabledCount}` : ""}
+        <span className="map-controls__btn-label">Map Layers{enabledCount > 0 ? ` · ${enabledCount}` : ""}</span>
       </button>
       {open && anchor && createPortal(
         <div

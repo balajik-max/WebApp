@@ -28,6 +28,7 @@ import { MyPlacesPanel } from "./map/MyPlacesPanel";
 import { PlacemarkDetailsPanel } from "./map/PlacemarkDetailsPanel";
 import { ReferenceLayersMenu, type ReferenceLayerVisibility } from "./map/ReferenceLayersMenu";
 import { useDraggableMapPanel } from "./map/useDraggableMapPanel";
+import { useIsMobile } from "../lib/useIsMobile";
 import {
   bulkDeletePlacemarks, createPlacemark, deletePlacemark, fetchElevationSample, fetchPlacemarks,
   updatePlacemark, type ElevationSample, type Placemark, type PlacemarkDraft,
@@ -71,6 +72,11 @@ interface Props {
   focusFeatureId?: string;
   /** Clears the one-shot route request after the feature has been handled. */
   onFocusHandled?: () => void;
+  /** Whether the mobile Data Sources drawer is open — lifted up to
+   * WorkspaceLayout so the topbar's menu button can open it. Ignored on
+   * desktop, where the sidebar is always visible. */
+  commandCenterMobileOpen: boolean;
+  onCommandCenterMobileOpenChange: (open: boolean) => void;
 }
 
 const DAVANGERE_CENTER: [number, number] = [75.9218, 14.4644];
@@ -1240,7 +1246,10 @@ export interface MapCanvasHandle {
 }
 
 export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
-  { filter, onFeatureSelect, onActiveDatasetsChange, initialActiveDatasets, aiHighlights, focusFeatureId, onFocusHandled },
+  {
+    filter, onFeatureSelect, onActiveDatasetsChange, initialActiveDatasets, aiHighlights, focusFeatureId, onFocusHandled,
+    commandCenterMobileOpen, onCommandCenterMobileOpenChange,
+  },
   ref
 ) {
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -1393,6 +1402,11 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
   const [placemarkDetailsId, setPlacemarkDetailsId] = useState<string | null>(null);
   const [placemarkNotice, setPlacemarkNotice] = useState<string | null>(null);
   const [myPlacesOpen, setMyPlacesOpen] = useState(false);
+  // Below the mobile breakpoint the Data Sources sidebar becomes a
+  // slide-in drawer rather than a permanent fixed panel — open state is
+  // lifted up to WorkspaceLayout (see commandCenterMobileOpen prop) so the
+  // topbar's menu button can open it.
+  const isMobile = useIsMobile();
   const [referenceLayers, setReferenceLayers] = useState<ReferenceLayerVisibility>({
     borders: false,
     roads: false,
@@ -5067,6 +5081,9 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
   return (
     <>
       <CommandCenter
+        isMobile={isMobile}
+        open={!isMobile || commandCenterMobileOpen}
+        onRequestClose={() => onCommandCenterMobileOpenChange(false)}
         datasets={datasets}
         activeDatasetIds={activeDatasetIds}
         flyError={flyError}
@@ -5375,12 +5392,14 @@ interface VisualizationPanelProps {
 }
 
 function CommandCenter({
+  isMobile, open, onRequestClose,
   datasets, activeDatasetIds, flyError, onSelectDataset, onSelectAllDatasets, expandedDatasetId, onToggleDatasetSettings,
   rasterSettingsById, onChangeRasterSettings, categoryStats, hiddenCategories, onToggleCategory,
   onSetAllCategoriesVisible, onRunAudit, auditRunning, auditError, onOpenAttributeTable, status: _status, visualization,
   detectionMode, onRunManholeNetwork, manholeRecommendLoading,
   classMap, extraVisibleCategories, onToggleExtraVisibleCategory, onSetAllExtraVisibleCategories,
 }: {
+  isMobile: boolean; open: boolean; onRequestClose: () => void;
   datasets: DatasetRow[]; activeDatasetIds: string[]; flyError: string | null; onSelectDataset: (d: DatasetRow) => void;
   onSelectAllDatasets: (active: boolean) => void;
   expandedDatasetId: string | null;
@@ -5423,6 +5442,7 @@ function CommandCenter({
       ? { x: visualizationPopupPosition.left, y: visualizationPopupPosition.top }
       : null,
     margin: 8,
+    disabled: isMobile,
   });
   const normalizedLayerQuery = layerQuery.trim().toLocaleLowerCase();
   const displayedLayers = useMemo(
@@ -5489,7 +5509,31 @@ function CommandCenter({
   }, [updateVisualizationPopupPosition, visualizationOpen]);
 
   return (
-    <aside className="command-center" data-testid="command-center">
+    <>
+      {isMobile && open && (
+        <div
+          className="command-center__backdrop"
+          onClick={onRequestClose}
+          data-testid="command-center-backdrop"
+        />
+      )}
+      <aside
+        className={`command-center${isMobile && !open ? " command-center--closed" : ""}`}
+        data-testid="command-center"
+      >
+        {isMobile && (
+          <button
+            type="button"
+            className="command-center__close"
+            onClick={onRequestClose}
+            aria-label="Close data sources"
+            data-testid="command-center-close"
+          >
+            <svg viewBox="0 0 24 24" aria-hidden="true" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2">
+              <path d="M6 6l12 12M18 6L6 18" />
+            </svg>
+          </button>
+        )}
       <div className="command-center__body">
         {datasets.length > 0 && (
           <DataSourceSelector
@@ -5748,7 +5792,8 @@ function CommandCenter({
         </div>,
         document.body
       )}
-    </aside>
+      </aside>
+    </>
   );
 }
 
@@ -6034,11 +6079,13 @@ function MapControls({
   const [menuPos, setMenuPos] = useState<{ top: number; left: number } | null>(null);
   const menuRef = useRef<HTMLDivElement | null>(null);
   const portalMenuRef = useRef<HTMLDivElement | null>(null);
+  const isMobile = useIsMobile();
   const aiMenuDrag = useDraggableMapPanel<HTMLDivElement>({
     storageKey: "davangere.ai-detection-position",
     boundary: "viewport",
     initialPosition: menuPos ? { x: menuPos.left, y: menuPos.top } : null,
     margin: 8,
+    disabled: isMobile,
   });
 
   useEffect(() => {
@@ -6087,14 +6134,14 @@ function MapControls({
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="14" height="14" style={{ marginRight: 4, verticalAlign: -2 }}>
               <path d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-4 0h4" />
             </svg>
-            Map
+            <span className="map-controls__btn-label">Map</span>
           </button>
           <button className={`map-controls__btn${basemap === "satellite" ? " map-controls__btn--active" : ""}`} onClick={() => onChangeBasemap("satellite")} data-testid="basemap-satellite">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="14" height="14" style={{ marginRight: 4, verticalAlign: -2 }}>
               <circle cx="12" cy="12" r="10" />
               <path d="M2 12h20M12 2a15.3 15.3 0 014 10 15.3 15.3 0 01-4 10 15.3 15.3 0 01-4-10 15.3 15.3 0 014-10z" />
             </svg>
-            Satellite
+            <span className="map-controls__btn-label">Satellite</span>
           </button>
           <button
             className={`map-controls__btn${basemap === "off" ? " map-controls__btn--active" : ""}`}
@@ -6105,7 +6152,7 @@ function MapControls({
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="14" height="14" style={{ marginRight: 4, verticalAlign: -2 }}>
               <path d="M3 3l18 18M10.58 10.58a2 2 0 002.83 2.83M9.88 4.24A9.4 9.4 0 0112 4c5 0 8.5 4 10 8-.46 1.3-1.13 2.6-2 3.79M6.6 6.6C4.7 8 3.2 10 2 12c1.5 4 5 8 10 8 1.35 0 2.63-.28 3.8-.78" />
             </svg>
-            Off
+            <span className="map-controls__btn-label">Off</span>
           </button>
         </div>
         <div className="map-controls__group ai-detection-control" data-testid="ai-detection-control" ref={menuRef}>
@@ -6119,7 +6166,7 @@ function MapControls({
               <path d="M12 2l1.8 5.2L19 9l-5.2 1.8L12 16l-1.8-5.2L5 9l5.2-1.8L12 2z" />
               <path d="M19 13l.9 2.1L22 16l-2.1.9L19 19l-.9-2.1L16 16l2.1-.9L19 13z" />
             </svg>
-            AI Detection{detectionMode ? `: ${DETECTION_MODE_LABEL[detectionMode]}` : ""}
+            <span className="map-controls__btn-label">AI Detection{detectionMode ? `: ${DETECTION_MODE_LABEL[detectionMode]}` : ""}</span>
           </button>
           {detectionMode && (
             <button
@@ -6132,7 +6179,7 @@ function MapControls({
               <span className="ai-overlay-toggle__track">
                 <span className="ai-overlay-toggle__knob" />
               </span>
-              AI {aiOverlayEnabled ? "ON" : "OFF"}
+              <span className="map-controls__btn-label">AI {aiOverlayEnabled ? "ON" : "OFF"}</span>
             </button>
           )}
           {menuOpen && menuPos && createPortal(
@@ -6178,7 +6225,7 @@ function MapControls({
               <path d="M12 22s7-6.1 7-13a7 7 0 1 0-14 0c0 6.9 7 13 7 13Z" />
               <circle cx="12" cy="9" r="2.2" />
             </svg>
-            Placemark
+            <span className="map-controls__btn-label">Placemark</span>
           </button>
           <button
             type="button"
@@ -6192,7 +6239,7 @@ function MapControls({
               <path d="M4 5.5A2.5 2.5 0 0 1 6.5 3H18a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6.5A2.5 2.5 0 0 1 4 18.5v-13Z" />
               <path d="M8 3v18M12 8h5M12 12h5" />
             </svg>
-            My Places{placemarkCount > 0 ? ` · ${placemarkCount}` : ""}
+            <span className="map-controls__btn-label">My Places{placemarkCount > 0 ? ` · ${placemarkCount}` : ""}</span>
           </button>
           <ReferenceLayersMenu value={referenceLayers} onChange={onToggleReferenceLayer} />
         </div>
@@ -6208,7 +6255,7 @@ function MapControls({
               <circle cx="12" cy="5" r="2.5" fill="currentColor" stroke="none" />
               <path d="M8 10c1.2-1.2 2.5-1.8 4-1.8s2.8.6 4 1.8M9.2 10.2 8 16m6.8-5.8L16 16M9.3 13h5.4M10.5 16v5m3-5v5" />
             </svg>
-            Street View
+            <span className="map-controls__btn-label">Street View</span>
           </button>
         </div>
       </div>

@@ -1,4 +1,10 @@
-"""users table — admin & architect are the only v1 roles."""
+"""users table — role hierarchy is commissioner > admin > architect.
+
+The role enum is deliberately a `str` enum stored as a plain VARCHAR
+(`native_enum=False`), so adding a new role is a code-only change that needs
+no database migration. New roles simply append a member here and are lifted
+into the RBAC guards / seed logic as required.
+"""
 from __future__ import annotations
 
 import enum
@@ -13,6 +19,9 @@ from app.models._mixins import created_at_col, updated_at_col, uuid_pk
 
 
 class UserRole(str, enum.Enum):
+    COMMISSIONER = "commissioner"
+    AEE = "aee"
+    AE = "ae"
     ADMIN = "admin"
     ARCHITECT = "architect"
 

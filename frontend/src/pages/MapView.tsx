@@ -10,10 +10,18 @@ interface LayoutCtx {
   filter: FeatureFilter;
   selectedDatasets: DatasetRow[];
   setSelectedDatasets: (rows: DatasetRow[]) => void;
+  commandCenterMobileOpen: boolean;
+  setCommandCenterMobileOpen: (open: boolean) => void;
 }
 
 export function MapView() {
-  const { filter, selectedDatasets, setSelectedDatasets } = useOutletContext<LayoutCtx>();
+  const {
+    filter,
+    selectedDatasets,
+    setSelectedDatasets,
+    commandCenterMobileOpen,
+    setCommandCenterMobileOpen,
+  } = useOutletContext<LayoutCtx>();
   const [selected, setSelected] = useState<UrbanFeature | null>(null);
   const [aiHighlights, setAiHighlights] = useState<AiHighlight[]>([]);
   const mapRef = useRef<MapCanvasHandle | null>(null);
@@ -41,6 +49,8 @@ export function MapView() {
         aiHighlights={aiHighlights}
         focusFeatureId={locateFeatureId}
         onFocusHandled={handleFeatureLocated}
+        commandCenterMobileOpen={commandCenterMobileOpen}
+        onCommandCenterMobileOpenChange={setCommandCenterMobileOpen}
       />
       <ReportGenerator datasets={selectedDatasets} />
       <AiAssistant

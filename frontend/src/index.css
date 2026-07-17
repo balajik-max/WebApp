@@ -251,6 +251,161 @@ body {
   transform: scale(0.96);
 }
 
+/* ── NOTIFICATIONS ───────────────────────────────────────────────────── */
+/* Self-contained wrapper so the panel can anchor to the bell without
+   affecting the header flex layout (no absolute positioning on the bell
+   itself). The header's existing gap (8px) spaces bell + avatar. */
+.notif {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.notif__btn {
+  position: relative;
+}
+
+.notif__icon {
+  display: block;
+  transition: transform var(--transition-fast), color var(--transition-fast);
+}
+
+.notif__btn:hover .notif__icon {
+  transform: scale(1.05);
+  color: var(--ink);
+}
+
+/* Small unread indicator, anchored to the bell's top-right corner. Hidden
+   when there are no unread notifications. */
+.notif__badge {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  width: 8px;
+  height: 8px;
+  border-radius: var(--radius-full);
+  background: var(--danger);
+  border: 2px solid var(--surface);
+  box-sizing: content-box;
+  pointer-events: none;
+}
+
+/* Panel anchored below the bell, aligned to the right edge so it never
+   covers the user avatar or the nav tabs. */
+.notif__panel {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  width: 330px;
+  max-width: calc(100vw - 24px);
+  background: var(--surface);
+  border: 1px solid var(--edge);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-lg);
+  z-index: 200;
+  overflow: hidden;
+  transform-origin: top right;
+  animation: notif-panel-in var(--transition-base);
+}
+
+@keyframes notif-panel-in {
+  from {
+    opacity: 0;
+    transform: translateY(-6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.notif__panel-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--edge);
+}
+
+.notif__panel-title {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--ink);
+}
+
+.notif__panel-count {
+  margin-left: auto;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  font-weight: 700;
+  color: #fff;
+  background: var(--danger);
+  border-radius: var(--radius-full);
+}
+
+.notif__panel-body {
+  max-height: 320px;
+  overflow-y: auto;
+  padding: 6px;
+}
+
+.notif__empty {
+  padding: 24px 14px;
+  text-align: center;
+  font-size: 13px;
+  color: var(--ink-mute);
+}
+
+.notif__list {
+  list-style: none;
+}
+
+.notif__item {
+  padding: 10px 12px;
+  border-radius: var(--radius-sm);
+  transition: background var(--transition-fast);
+}
+
+.notif__item + .notif__item {
+  border-top: 1px solid var(--edge);
+}
+
+.notif__item:hover {
+  background: var(--surface-2);
+}
+
+.notif__item-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.notif__item-body {
+  margin-top: 2px;
+  font-size: 12px;
+  color: var(--ink-dim);
+}
+
+.notif__item-time {
+  margin-top: 4px;
+  font-size: 11px;
+  color: var(--ink-mute);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .notif__icon {
+    transition: none;
+  }
+  .notif__panel {
+    animation: none;
+  }
+}
+
 .workspace__body {
   position: relative;
   min-height: 0;
@@ -332,6 +487,43 @@ body {
   .tabs__list.is-animation-ready .tabs__indicator {
     transition-duration: 1ms;
   }
+}
+
+/* ── ACTIVITY PLACEHOLDER (pre-dashboard) ─────────────────────────────── */
+.activity-coming-soon {
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  color: var(--ink-dim);
+}
+
+.activity-coming-soon__inner {
+  text-align: center;
+}
+
+.activity-coming-soon__eyebrow {
+  display: inline-block;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--accent);
+  margin-bottom: 10px;
+}
+
+.activity-coming-soon h1 {
+  font-size: 22px;
+  font-weight: 700;
+  color: var(--ink);
+  letter-spacing: -0.01em;
+  margin-bottom: 6px;
+}
+
+.activity-coming-soon p {
+  font-size: 14px;
+  color: var(--ink-mute);
 }
 
 /* ── BUTTONS ──────────────────────────────────────────────────────────── */
@@ -1190,6 +1382,21 @@ body {
 .login__demo-badge--architect {
   background: var(--purple-muted);
   color: var(--purple);
+}
+
+.login__demo-badge--commissioner {
+  background: var(--danger-muted);
+  color: var(--danger);
+}
+
+.login__demo-badge--aee {
+  background: var(--blue-muted);
+  color: var(--blue);
+}
+
+.login__demo-badge--ae {
+  background: var(--ok-muted);
+  color: var(--ok);
 }
 
 /* ── MAP PAGE ─────────────────────────────────────────────────────────── */
