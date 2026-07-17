@@ -6955,6 +6955,37 @@ body {
 }
 .manhole-3d-overlay__legend span { display: inline-flex; align-items: center; gap: 5px; }
 .manhole-3d-overlay__legend i { width: 9px; height: 9px; border-radius: 50%; display: inline-block; }
+.manhole-3d-overlay__cut {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 8px 18px;
+  font-size: 12px;
+  color: var(--ink-mute);
+  background: var(--surface-1);
+  border-bottom: 1px solid var(--edge);
+}
+.manhole-3d-overlay__cut label { font-weight: 600; }
+.manhole-3d-overlay__cut input[type="range"] { flex: 1; max-width: 320px; accent-color: var(--accent); }
+.manhole-3d-overlay__cut .btn { padding: 5px 12px; font-size: 12px; border-radius: var(--radius-sm); border: 1px solid var(--edge); background: var(--surface-2); color: var(--ink); cursor: pointer; }
+.manhole-3d-overlay__cut .btn--active { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+.manhole-3d-overlay__cats { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.manhole-3d-overlay__chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 9px;
+  font-size: 11px;
+  border-radius: 999px;
+  border: 1px solid var(--edge);
+  background: var(--surface-2);
+  color: var(--ink-mute);
+  cursor: pointer;
+  opacity: 0.55;
+}
+.manhole-3d-overlay__chip.is-on { opacity: 1; color: var(--ink); border-color: var(--accent); }
+.manhole-3d-overlay__chip i { width: 9px; height: 9px; border-radius: 50%; display: inline-block; }
 .manhole-3d-overlay__canvas { flex: 1; position: relative; }
 .manhole-3d-overlay__status {
   position: absolute;
@@ -6983,6 +7014,44 @@ body {
   max-width: 320px;
 }
 .manhole-3d-overlay__info b { text-transform: capitalize; color: var(--accent); }
+.manhole-3d-overlay__info-hint { margin-top: 6px; font-size: 11px; color: var(--ink-mute); font-style: italic; }
+.manhole-3d-overlay__popup {
+  position: absolute;
+  z-index: 9;
+  padding: 10px 12px;
+  background: var(--surface-1);
+  border: 1px solid var(--edge);
+  border-radius: var(--radius-md);
+  color: var(--ink);
+  font-size: 12px;
+  max-width: 280px;
+  box-shadow: 0 8px 22px rgba(0, 0, 0, 0.35);
+}
+.manhole-3d-overlay__popup-close {
+  position: absolute;
+  top: 4px;
+  right: 6px;
+  border: none;
+  background: transparent;
+  color: var(--ink-mute);
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+}
+.manhole-3d-overlay__popup .map__tooltip-attrs { margin-top: 6px; }
+.manhole-3d-overlay__popup-go {
+  margin-top: 10px;
+  width: 100%;
+  padding: 6px 10px;
+  border: 1px solid var(--accent);
+  background: var(--accent);
+  color: var(--accent-ink);
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.manhole-3d-overlay__popup-go:hover { filter: brightness(1.08); }
 
 /* ── MAP TOOLTIP ──────────────────────────────────────────────────────── */
 .map__tooltip {
