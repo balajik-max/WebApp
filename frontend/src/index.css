@@ -68,6 +68,19 @@
   --transition-base: 150ms ease;
   --transition-slow: 250ms ease;
 
+  /* Left Map sidebar (Command Center) width — single source of truth,
+     tuned to a compact enterprise-GIS dashboard size and stepped down at
+     smaller breakpoints below (see .map-page--dual media queries). Not a
+     colour token, so it is intentionally defined only here and inherited
+     unchanged by [data-theme="light"]. */
+  --map-sidebar-width: 300px;
+
+  /* Bottom offset shared by every map-footer-row overlay (the coordinate/
+     status bar and the feature-count pill) so they always sit on the same
+     horizontal level. Single source of truth — change here to move the whole
+     footer row. Non-colour token, inherited unchanged by the light theme. */
+  --map-footer-offset: 8px;
+
   color-scheme: dark;
 }
 
@@ -151,13 +164,13 @@ body {
 .workspace {
   height: 100vh;
   display: grid;
-  grid-template-rows: 52px auto 1fr;
+  grid-template-rows: 52px 1fr;
   background: var(--bg);
 }
 
 .workspace__topbar {
-  display: grid;
-  grid-template-columns: auto 1fr auto;
+  position: relative;
+  display: flex;
   align-items: center;
   gap: 16px;
   padding: 0 16px;
@@ -206,7 +219,9 @@ body {
 .workspace__right {
   display: flex;
   align-items: center;
+  justify-content: flex-end;
   gap: 8px;
+  margin-left: auto;
 }
 
 .user-avatar {
@@ -236,29 +251,6 @@ body {
   transform: scale(0.96);
 }
 
-.workspace__subbar {
-  display: flex;
-  align-items: center;
-  padding-top: 6px;
-  padding-bottom: 6px;
-  padding-left: 16px;
-  /* Matches the fixed-position right panel's width (290px, see
-     .workspace-panel) so content pushed to the far right via
-     margin-left: auto (the Measure button) lands in the subbar's visible
-     strip instead of underneath that panel, which stacks above the subbar
-     on the map route. */
-  padding-right: calc(16px + 290px);
-  background: var(--surface);
-  border-bottom: 1px solid var(--edge);
-  z-index: 99;
-}
-
-.workspace__subbar .filters input,
-.workspace__subbar .filters select,
-.workspace__subbar .filters button {
-  height: 26px;
-}
-
 .workspace__body {
   position: relative;
   min-height: 0;
@@ -268,8 +260,7 @@ body {
 /* â”€â”€ TABS â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 .tabs {
   display: flex;
-  justify-content: center;
-  justify-self: center;
+  align-items: center;
 }
 
 .tabs__list {
@@ -442,256 +433,47 @@ body {
   background: var(--surface-3);
 }
 
-/* â”€â”€ FILTERS â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
-.filters {
-  display: flex;
-  flex: 1;
-  gap: 6px;
-  align-items: center;
-}
-
-.filters input,
-.filters select {
-  height: 32px;
-  padding: 0 10px;
-  background: var(--surface-2);
-  border: 1px solid var(--edge);
-  border-radius: var(--radius-sm);
-  color: var(--ink);
-  font-size: 12px;
-  font-family: var(--font);
-  transition: all var(--transition-fast);
-}
-
-.filters input:focus,
-.filters select:focus {
-  outline: none;
-  border-color: var(--accent);
-  box-shadow: 0 0 0 3px var(--accent-muted);
-}
-
-.filters input { width: 100px; }
-
-.filters button {
-  height: 32px;
-  padding: 0 14px;
-  border-radius: var(--radius-sm);
-  background: var(--accent);
-  color: var(--accent-ink);
-  border: none;
-  font-family: var(--font);
-  font-weight: 600;
-  font-size: 10px;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  cursor: pointer;
-  transition: all var(--transition-fast);
-}
-
-.filters button:hover { background: var(--accent-hover); }
-.filters button.ghost { background: transparent; color: var(--ink-dim); border: 1px solid var(--edge); }
-.filters button.ghost:hover { background: var(--surface-3); color: var(--ink); }
-
-/* Top-bar Measure button â€” mirrors the Reset/Apply controls in the filter
-   row, pushed to the extreme right of the subbar via margin-left: auto. */
-.filters button.topbar-measure-btn {
-  width: 32px;
-  padding: 0;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  /* Pushes this button (and only this one) to the far right of the
-     .filters flex row, away from the ward/category/severity/Apply/Reset
-     group that stays packed on the left. */
-  margin-left: auto;
-}
-
-.filters button.topbar-measure-btn svg {
-  width: 16px;
-  height: 16px;
-}
-
-.filters button.topbar-measure-btn--active {
-  background: var(--accent);
-  color: var(--accent-ink);
-  border-color: var(--accent);
-}
-
-/* Searchable category multi-select. Kept inside the existing filter slot so
-   it occupies the same top-bar position as the native category select. */
-.category-picker {
-  position: relative;
-  width: 140px;
-}
-
-.filters .category-picker__trigger {
-  width: 100%;
-  height: 32px;
-  padding: 0 9px 0 10px;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  background: var(--surface-2);
-  color: var(--ink);
-  border: 1px solid var(--edge);
-  border-radius: var(--radius-sm);
-  font-family: var(--font);
-  font-size: 12px;
-  font-weight: 400;
-  letter-spacing: 0;
-  text-transform: none;
-  box-shadow: none;
-}
-
-.filters .category-picker__trigger:hover,
-.filters .category-picker__trigger--open {
-  background: var(--surface-2);
-  border-color: var(--accent);
-}
-
-.category-picker__trigger-label {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.category-picker__trigger svg {
-  width: 16px;
-  height: 16px;
-  flex: 0 0 auto;
-  fill: none;
-  stroke: currentColor;
-  stroke-width: 1.8;
-  transition: transform var(--transition-fast);
-}
-
-.category-picker__trigger--open svg { transform: rotate(180deg); }
-
-.category-picker__menu {
+/* Direct source-FID lookup, centered in the primary top bar. Left edge is
+   pinned at the midpoint of the original (380px) box instead of scaling
+   with `transform: translateX(-50%)`, so widening .fid-search only grows
+   the box rightward — the left/right whitespace either side of the topbar
+   is asymmetric (brand+tabs on the left, just the avatar on the right), so
+   symmetric centering reads as left-shifted; extending right compensates. */
+.workspace__search {
   position: absolute;
-  top: calc(100% + 5px);
-  left: 0;
-  z-index: 1000;
-  width: 300px;
-  padding: 7px;
-  background: var(--surface);
-  border: 1px solid var(--edge-strong);
-  border-radius: var(--radius-md);
-  box-shadow: var(--shadow-lg);
-}
-
-.category-picker__search-wrap {
-  position: relative;
-  margin-bottom: 6px;
-}
-
-.category-picker__search-wrap > svg {
-  position: absolute;
-  left: 10px;
   top: 50%;
-  width: 15px;
-  height: 15px;
+  left: calc(50% - 190px);
   transform: translateY(-50%);
-  fill: none;
-  stroke: var(--ink-mute);
-  stroke-width: 1.8;
-  pointer-events: none;
+  z-index: 5;
 }
 
-.filters .category-picker__search {
-  width: 100%;
-  height: 34px;
-  padding: 0 10px 0 32px;
-  box-sizing: border-box;
-  background: var(--surface-2);
-}
-
-.category-picker__list {
-  max-height: 350px;
-  overflow-y: auto;
-  overscroll-behavior: contain;
-}
-
-.filters .category-picker__option {
-  width: 100%;
-  height: auto;
-  min-height: 32px;
-  padding: 5px 8px;
-  display: grid;
-  grid-template-columns: 17px minmax(0, 1fr) auto;
-  align-items: center;
-  gap: 8px;
-  background: transparent;
-  color: var(--ink-dim);
-  border: none;
-  border-radius: var(--radius-xs);
-  font-family: var(--font);
-  font-size: 12px;
-  font-weight: 400;
-  letter-spacing: 0;
-  line-height: 1.25;
-  text-align: left;
-  text-transform: none;
-}
-
-.filters .category-picker__option:hover {
-  background: var(--surface-3);
-  color: var(--ink);
-}
-
-.filters .category-picker__option--selected {
-  background: var(--accent-muted);
-  color: var(--ink);
-}
-
-.filters .category-picker__option--selected:hover { background: var(--accent-muted); }
-
-.category-picker__check {
-  width: 16px;
-  height: 16px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  border: 1px solid var(--edge-strong);
-  border-radius: 4px;
-  color: var(--accent-ink);
-  font-size: 11px;
-  font-weight: 700;
-}
-
-.category-picker__option--selected .category-picker__check {
-  background: var(--accent);
-  border-color: var(--accent);
-}
-
-.category-picker__name {
-  min-width: 0;
-  overflow-wrap: anywhere;
-}
-
-.category-picker__count {
-  color: var(--ink-mute);
-  font-variant-numeric: tabular-nums;
-}
-
-.category-picker__empty {
-  padding: 18px 10px;
-  color: var(--ink-mute);
-  font-size: 11px;
-  text-align: center;
-}
-
-/* Direct source-FID lookup in the map toolbar. */
 .fid-search {
   position: relative;
-  width: 150px;
+  width: 440px;
+  /* Animation tokens — the detached circle inherits the field's own
+     background / border / shadow via the theme variables below. */
+  --fid-clear-size: 30px;
+  --fid-clear-gap: 8px;
+  --fid-travel: 12px;
+  --fid-motion-duration: 260ms;
+  --fid-motion-easing: cubic-bezier(0.22, 1, 0.36, 1);
 }
 
-.fid-search__input-wrap { position: relative; }
+/* The field is the element that visually "pulls away" — its right edge
+   contracts by the reserved circle+gap space only while the clear control
+   is detached, so the wrapper width (and therefore the whole header) never
+   changes. */
+.fid-search__field {
+  position: relative;
+  transition: margin-right var(--fid-motion-duration) var(--fid-motion-easing);
+}
 
-.fid-search__input-wrap > svg {
+.fid-search--detaching .fid-search__field,
+.fid-search--clear-visible .fid-search__field {
+  margin-right: calc(var(--fid-clear-size) + var(--fid-clear-gap));
+}
+
+.fid-search__field > svg {
   position: absolute;
   left: 9px;
   top: 50%;
@@ -704,10 +486,23 @@ body {
   pointer-events: none;
 }
 
-.filters .fid-search input {
+.fid-search input {
   width: 100%;
-  padding-left: 29px;
-  padding-right: 25px;
+  height: 32px;
+  padding: 0 25px 0 32px;
+  background: var(--surface-2);
+  border: 1px solid var(--edge);
+  border-radius: var(--radius-full);
+  color: var(--ink);
+  font-size: 12px;
+  font-family: var(--font);
+  transition: all var(--transition-fast);
+}
+
+.fid-search input:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-muted);
 }
 
 .fid-search__spinner {
@@ -722,6 +517,113 @@ body {
   animation: spin 0.7s linear infinite;
 }
 
+/* Subtle seam between the contracted field edge and the detached circle.
+   Only visible while the clear control is separated from the field. */
+.fid-search__seam {
+  position: absolute;
+  top: 50%;
+  right: 0;
+  width: 14px;
+  height: 54%;
+  transform: translateY(-50%);
+  border-radius: var(--radius-full);
+  background: linear-gradient(to right, transparent, var(--edge-strong));
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--fid-motion-duration) var(--fid-motion-easing);
+}
+
+.fid-search--detaching .fid-search__seam,
+.fid-search--clear-visible .fid-search__seam {
+  opacity: 0.85;
+}
+
+/* The clear control starts (hidden) tucked inside the field's right edge
+   and detaches outward into a self-contained circle that carries the same
+   surface / border / shadow as the search field. */
+.fid-search__clear {
+  position: absolute;
+  top: 50%;
+  right: 0;
+  width: var(--fid-clear-size);
+  height: var(--fid-clear-size);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  background: var(--surface-2);
+  border: 1px solid var(--edge);
+  border-radius: 50%;
+  color: var(--ink-mute);
+  box-shadow: var(--shadow-sm);
+  cursor: pointer;
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(-50%) translateX(calc(-1 * var(--fid-travel))) scale(0.55);
+  transition:
+    transform var(--fid-motion-duration) var(--fid-motion-easing),
+    opacity 180ms ease,
+    background-color var(--transition-fast),
+    border-color var(--transition-fast),
+    color var(--transition-fast),
+    box-shadow var(--fid-motion-duration) var(--fid-motion-easing);
+  will-change: transform, opacity;
+}
+
+.fid-search--detaching .fid-search__clear,
+.fid-search--clear-visible .fid-search__clear {
+  opacity: 1;
+  pointer-events: auto;
+  transform: translateY(-50%) translateX(0) scale(1);
+}
+
+.fid-search--clear-visible .fid-search__clear:hover {
+  background: var(--surface-3);
+  color: var(--ink);
+  border-color: var(--edge-strong);
+  transform: translateY(-50%) translateX(0) scale(1.05);
+  box-shadow: var(--shadow-md);
+}
+
+.fid-search--clear-visible .fid-search__clear:active {
+  transform: translateY(-50%) translateX(0) scale(0.96);
+}
+
+.fid-search--clear-visible .fid-search__clear:focus-visible {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-muted);
+}
+
+.fid-search__clear-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+}
+
+.fid-search__clear svg {
+  width: 12px;
+  height: 12px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .fid-search__field,
+  .fid-search__clear,
+  .fid-search__seam,
+  .fid-search__clear-icon {
+    transition-duration: 1ms !important;
+  }
+}
+
+/* --surface-1 isn't a defined theme token (falls back to transparent, which
+   let the map show through) — --surface-elev is the same near-opaque panel
+   background used by other floating menus/tooltips in this file. */
 .fid-search__results {
   position: absolute;
   z-index: 1200;
@@ -731,13 +633,14 @@ body {
   max-height: 320px;
   overflow-y: auto;
   padding: 5px;
-  background: var(--surface-1);
+  background: var(--surface-elev);
+  backdrop-filter: blur(16px) saturate(1.4);
   border: 1px solid var(--edge-strong);
   border-radius: var(--radius-md);
   box-shadow: var(--shadow-lg);
 }
 
-.filters .fid-search__result {
+.fid-search__result {
   width: 100%;
   height: auto;
   min-height: 48px;
@@ -750,11 +653,14 @@ body {
   letter-spacing: 0;
   color: var(--ink);
   background: transparent;
+  border: none;
   border-radius: var(--radius-sm);
+  cursor: pointer;
+  font-family: var(--font);
 }
 
-.filters .fid-search__result:hover,
-.filters .fid-search__result:focus-visible {
+.fid-search__result:hover,
+.fid-search__result:focus-visible {
   background: var(--accent-muted);
 }
 
@@ -775,7 +681,7 @@ body {
   text-align: center;
 }
 
-/* â”€â”€ LOGIN PAGE â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
+/* ── LOGIN PAGE ───────────────────────────────────────────────────────── */
 .login {
   display: flex;
   height: 100vh;
@@ -1294,18 +1200,7 @@ body {
 }
 
 .map-page--dual {
-  grid-template-columns: 290px 1fr;
-}
-
-.map-page--triple {
-  grid-template-columns: 290px 1fr 290px;
-  transition: grid-template-columns var(--transition-base);
-}
-
-/* Third column mirrors .workspace-panel--collapsed's width so the map (1fr)
-   reflows into the space the right panel gives up as it shrinks. */
-.map-page--triple.map-page--report-collapsed {
-  grid-template-columns: 290px 1fr 30px;
+  grid-template-columns: var(--map-sidebar-width) 1fr;
 }
 
 /* â”€â”€ MAP CANVAS â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
@@ -1342,6 +1237,107 @@ body {
   flex: 1;
   overflow-y: auto;
   padding: 12px;
+}
+
+/* Pinned below the scrollable body (sibling with no flex value, so it
+   keeps its natural height while .command-center__body absorbs the rest)
+   — relocated here from the old right-hand report panel. */
+.command-center__footer {
+  flex-shrink: 0;
+  padding: 12px 16px;
+  border-top: 1px solid var(--edge);
+  background: var(--surface);
+}
+
+.command-center__import-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  width: 100%;
+  padding: 8px 10px;
+  background: var(--surface-2);
+  border: 1px dashed var(--edge-strong);
+  border-radius: var(--radius-sm);
+  color: var(--ink-dim);
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background var(--transition-fast), border-color var(--transition-fast), color var(--transition-fast);
+}
+
+.command-center__import-btn svg {
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+}
+
+.command-center__import-btn:hover {
+  background: var(--accent-muted);
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.command-center__import-btn:focus-visible {
+  box-shadow: 0 0 0 3px var(--accent-muted);
+  outline: none;
+}
+
+.command-center__import-hint {
+  margin-top: 6px;
+  font-size: 10px;
+  color: var(--ink-mute);
+  text-align: center;
+}
+
+.command-center__import-list {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 8px;
+}
+
+.command-center__import-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 8px;
+  background: var(--surface-2);
+  border-radius: var(--radius-sm);
+  font-size: 10px;
+  color: var(--ink-dim);
+}
+
+.command-center__import-item-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.command-center__import-item-remove {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--ink-mute);
+  cursor: pointer;
+}
+
+.command-center__import-item-remove svg {
+  width: 10px;
+  height: 10px;
+}
+
+.command-center__import-item-remove:hover {
+  color: var(--danger);
 }
 
 .command-center__section {
@@ -2015,76 +2011,8 @@ body {
   accent-color: var(--accent);
 }
 
-/* â”€â”€ DATA SOURCE SELECTOR (compact trigger + popover) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
-@keyframes dss-pop {
-  from { opacity: 0; transform: translateY(-4px); }
-  to { opacity: 1; transform: translateY(0); }
-}
-
-.dss {
-  margin-bottom: 16px;
-}
-
-.dss-trigger {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  width: 100%;
-  padding: 10px 12px;
-  background: var(--surface-2);
-  border: 1px solid var(--edge);
-  border-radius: var(--radius-md);
-  box-shadow: var(--shadow-xs);
-  cursor: pointer;
-  text-align: left;
-  font: inherit;
-  color: var(--ink);
-  transition: border-color var(--transition-fast), background var(--transition-fast),
-    box-shadow var(--transition-fast);
-}
-
-.dss-trigger:hover {
-  border-color: var(--edge-strong);
-  background: var(--surface-3);
-  box-shadow: var(--shadow-sm);
-}
-
-.dss-trigger--open,
-.dss-trigger:focus-visible {
-  border-color: var(--accent);
-  background: var(--accent-muted);
-  box-shadow: var(--shadow-glow);
-  outline: none;
-}
-
-.dss-trigger__icon {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 20px;
-  height: 20px;
-  flex-shrink: 0;
-  color: var(--accent);
-}
-
-.dss-trigger__icon svg {
-  width: 20px;
-  height: 20px;
-}
-
-.dss-trigger__body {
-  flex: 1;
-  min-width: 0;
-}
-
-.dss-trigger__main {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-}
-
-.dss-trigger__title {
+/* ── DATA SOURCE SELECTOR (inline in the Command Center) ───────────────── */
+.dss-heading {
   font-size: 9px;
   font-weight: 700;
   letter-spacing: 0.12em;
@@ -2092,77 +2020,27 @@ body {
   color: var(--ink-mute);
 }
 
-.dss-trigger__count {
-  flex-shrink: 0;
-  font-size: 10px;
-  font-weight: 700;
-  color: var(--accent);
-  background: var(--accent-muted);
-  padding: 1px 7px;
-  border-radius: var(--radius-full);
-}
-
-.dss-trigger__sub-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  margin-top: 2px;
-}
-
-.dss-trigger__sub {
-  font-size: 10.5px;
-  color: var(--ink-dim);
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.dss-trigger__chevron {
-  display: inline-flex;
-  flex-shrink: 0;
-  color: var(--ink-mute);
-  transition: transform var(--transition-base);
-}
-
-.dss-trigger__chevron svg {
-  width: 15px;
-  height: 15px;
-}
-
-.dss-trigger__chevron--up {
-  transform: rotate(180deg);
-}
-
-.dss-panel {
-  position: fixed;
-  z-index: 1200;
-  background: var(--surface);
-  border: 1px solid var(--edge-strong);
-  border-radius: var(--radius-lg);
-  box-shadow: var(--shadow-xl);
-  overflow: hidden;
+/* The dataset rows now sit directly inside the left sidebar
+   (.command-center); there is no separate Data Sources card wrapper. The
+   `.dss` group only provides flex flow + spacing so the header/Select All
+   stays pinned while the rows scroll underneath. */
+.dss {
   display: flex;
   flex-direction: column;
-  animation: dss-pop 0.15s ease;
+  min-height: 0;
+  margin-bottom: 16px;
 }
 
-.dss-panel__header {
+/* Heading + Select All / Clear share a single horizontal row, vertically
+   centre-aligned and pushed to opposite ends so they stay aligned as the
+   sidebar resizes (no absolute positioning). */
+.dss-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  padding: 10px 12px;
-  border-bottom: 1px solid var(--edge);
-}
-
-.dss-panel__title {
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  color: var(--ink);
+  padding: 0 0 8px;
+  min-height: 24px;
 }
 
 .dss-selectall {
@@ -2176,52 +2054,18 @@ body {
   user-select: none;
 }
 
-/* Row height (53px, measured from the rendered .dss-row) x 4 visible rows,
-   plus the 3 inter-row gaps (flex `gap: 4px`) between them â€” the list stays
-   fixed at this height so a 5th+ source only appears on scroll instead of
-   growing the panel. */
+/* Rows flow directly in the sidebar — no nested scroll box. The dataset
+   rows are laid out in normal flow and the existing sidebar
+   (.command-center__body) provides the single scroll region, so there is no
+   separate scrollable list component and the whole sidebar (never the map
+   or page) is what scrolls when many datasets exist. */
 .dss-panel__list {
-  --dss-row-height: 53px;
   --dss-row-gap: 4px;
-  --dss-list-pad: 6px;
-  --dss-visible-rows: 4;
-  --dss-list-height: calc(
-    var(--dss-row-height) * var(--dss-visible-rows)
-    + var(--dss-row-gap) * (var(--dss-visible-rows) - 1)
-    + var(--dss-list-pad) * 2
-  );
-  height: var(--dss-list-height);
-  min-height: var(--dss-list-height);
-  max-height: var(--dss-list-height);
-  flex: 0 0 var(--dss-list-height);
-  overflow-y: auto;
-  overflow-x: hidden;
-  padding: var(--dss-list-pad);
   display: flex;
   flex-direction: column;
   gap: var(--dss-row-gap);
-  scrollbar-gutter: stable;
-  scrollbar-width: thin;
-  scrollbar-color: rgba(15, 157, 145, 0.4) transparent;
-  overscroll-behavior: contain;
+  padding: 0;
   box-sizing: border-box;
-}
-
-.dss-panel__list::-webkit-scrollbar {
-  width: 6px;
-}
-
-.dss-panel__list::-webkit-scrollbar-track {
-  background: transparent;
-}
-
-.dss-panel__list::-webkit-scrollbar-thumb {
-  background: rgba(15, 157, 145, 0.35);
-  border-radius: 999px;
-}
-
-.dss-panel__list::-webkit-scrollbar-thumb:hover {
-  background: rgba(15, 157, 145, 0.55);
 }
 
 .dss-clear {
@@ -2269,10 +2113,10 @@ body {
   display: flex;
   align-items: center;
   gap: 10px;
-  height: var(--dss-row-height);
-  min-height: var(--dss-row-height);
-  max-height: var(--dss-row-height);
-  flex: 0 0 var(--dss-row-height);
+  height: 53px;
+  min-height: 53px;
+  max-height: 53px;
+  flex: 0 0 53px;
   box-sizing: border-box;
   padding: 8px 10px;
   border: 1px solid transparent;
@@ -2394,45 +2238,16 @@ body {
   font-weight: 700;
 }
 
-.dss-panel__audit {
-  padding: 0 6px 6px;
-}
-
-.dss-panel__audit .command-center__audit-btn {
-  width: 100%;
-}
-
-.dss-panel__audit-error {
-  margin-top: 6px;
-  padding: 8px 10px;
-  background: var(--danger-muted);
-  border-radius: var(--radius-sm);
-  color: var(--danger);
-  font-size: 11px;
-}
-
 .dss-panel__error {
   padding: 8px 10px;
-  margin: 6px;
+  margin: 6px 0;
   background: var(--danger-muted);
   border-radius: var(--radius-sm);
   color: var(--danger);
   font-size: 11px;
 }
 
-@media (prefers-reduced-motion: reduce) {
-  .dss-panel {
-    animation: none;
-  }
-}
-
-@media (max-width: 640px) {
-  .dss-panel {
-    max-width: calc(100vw - 24px);
-  }
-}
-
-/* â”€â”€ SEVERITY LIST â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
+/* ── SEVERITY LIST ────────────────────────────────────────────────────── */
 .severity-item {
   display: flex;
   align-items: center;
@@ -2541,21 +2356,17 @@ body {
   color: var(--ink-mute);
 }
 
-/* â”€â”€ WORKSPACE PANEL (Right) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
+/* ── WORKSPACE PANEL (Right) ──────────────────────────────────────────── */
 .workspace-panel {
   display: flex;
   flex-direction: column;
   background: var(--surface);
   border-left: 1px solid var(--edge);
   overflow: hidden;
-  /* Pinned to the viewport so it visually extends up alongside the second
-     nav bar (.workspace__subbar) instead of only starting below it â€” its
-     top edge lines up with the bottom of the first nav bar (.workspace__
-     topbar, 52px) same as the left Command Center panel already does. Its
-     grid column in .map-page--triple is left empty as a same-width spacer
-     so the map/left panel don't reflow to fill the gap. z-index sits above
-     the subbar (99) so it visually covers the subbar's row on the right
-     edge, but below the topbar (100) so the avatar stays on top. */
+  /* Pinned to the viewport, top edge lined up with the bottom of the top
+     nav bar (.workspace__topbar, 52px) same as the left Command Center
+     panel already does. z-index sits below the topbar (100) so the avatar
+     stays on top. */
   position: fixed;
   top: 52px;
   right: 0;
@@ -2563,94 +2374,6 @@ body {
   width: 290px;
   z-index: 99;
   transition: width var(--transition-base);
-}
-
-/* Collapsed: shrinks to a thin strip exactly half the width of the AI
-   assistant FAB below it (60px wide â†’ 30px). */
-.workspace-panel--collapsed {
-  width: 30px;
-}
-
-.workspace-panel__welcome {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 14px 16px;
-  border-bottom: 1px solid var(--edge);
-  background: var(--surface);
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--ink);
-  transition: padding var(--transition-base);
-}
-
-/* At 30px the panel is narrower than the welcome bar's normal padding â€”
-   drop to a minimal pad so the collapse button stays centered without
-   clipping against the panel edge. */
-.workspace-panel--collapsed .workspace-panel__welcome {
-  padding: 14px 4px;
-  justify-content: center;
-}
-
-.workspace-panel__welcome-text {
-  overflow: hidden;
-  white-space: nowrap;
-  opacity: 1;
-  transition: opacity var(--transition-fast);
-}
-
-.workspace-panel--collapsed .workspace-panel__welcome-text {
-  opacity: 0;
-  pointer-events: none;
-}
-
-.workspace-panel__collapse-btn {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  flex-shrink: 0;
-  width: 22px;
-  height: 22px;
-  padding: 0;
-  border: 1px solid var(--edge);
-  border-radius: var(--radius-full);
-  background: var(--surface-2);
-  color: var(--ink-dim);
-  cursor: pointer;
-  transition: background var(--transition-fast), color var(--transition-fast), transform var(--transition-base);
-}
-
-.workspace-panel__collapse-btn svg {
-  width: 13px;
-  height: 13px;
-  transition: transform var(--transition-base);
-}
-
-.workspace-panel__collapse-btn:hover {
-  background: var(--accent-muted);
-  color: var(--accent);
-}
-
-.workspace-panel__collapse-btn:focus-visible {
-  box-shadow: 0 0 0 3px var(--accent-muted);
-  outline: none;
-}
-
-.workspace-panel__collapse-btn--collapsed svg {
-  transform: rotate(180deg);
-}
-
-/* Fade out everything below the header while collapsing/expanding, so the
-   inner report content doesn't visibly clip as the bar narrows. */
-.workspace-panel__head,
-.workspace-panel > div:not(.workspace-panel__welcome) {
-  transition: opacity var(--transition-fast);
-}
-
-.workspace-panel--collapsed .workspace-panel__head,
-.workspace-panel--collapsed > div:not(.workspace-panel__welcome) {
-  opacity: 0;
-  pointer-events: none;
 }
 
 .workspace-panel__head {
@@ -2688,104 +2411,6 @@ body {
 .workspace-panel__sub b {
   color: var(--accent);
   font-weight: 600;
-}
-
-/* â”€â”€ SUPPORTING FILES IMPORT â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
-.workspace-panel__import {
-  padding: 12px 16px;
-  border-bottom: 1px solid var(--edge);
-  background: var(--surface);
-}
-
-.workspace-panel__import-btn {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 6px;
-  width: 100%;
-  padding: 8px 10px;
-  background: var(--surface-2);
-  border: 1px dashed var(--edge-strong);
-  border-radius: var(--radius-sm);
-  color: var(--ink-dim);
-  font-size: 11px;
-  font-weight: 600;
-  cursor: pointer;
-  transition: background var(--transition-fast), border-color var(--transition-fast), color var(--transition-fast);
-}
-
-.workspace-panel__import-btn svg {
-  width: 14px;
-  height: 14px;
-  flex-shrink: 0;
-}
-
-.workspace-panel__import-btn:hover {
-  background: var(--accent-muted);
-  border-color: var(--accent);
-  color: var(--accent);
-}
-
-.workspace-panel__import-btn:focus-visible {
-  box-shadow: 0 0 0 3px var(--accent-muted);
-  outline: none;
-}
-
-.workspace-panel__import-hint {
-  margin-top: 6px;
-  font-size: 10px;
-  color: var(--ink-mute);
-  text-align: center;
-}
-
-.workspace-panel__import-list {
-  list-style: none;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  margin-top: 8px;
-}
-
-.workspace-panel__import-item {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 5px 8px;
-  background: var(--surface-2);
-  border-radius: var(--radius-sm);
-  font-size: 10px;
-  color: var(--ink-dim);
-}
-
-.workspace-panel__import-item-name {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
-}
-
-.workspace-panel__import-item-remove {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  flex-shrink: 0;
-  width: 16px;
-  height: 16px;
-  padding: 0;
-  border: none;
-  background: transparent;
-  color: var(--ink-mute);
-  cursor: pointer;
-}
-
-.workspace-panel__import-item-remove svg {
-  width: 10px;
-  height: 10px;
-}
-
-.workspace-panel__import-item-remove:hover {
-  color: var(--danger);
 }
 
 .workspace-panel__close {
@@ -3338,12 +2963,23 @@ body {
   pointer-events: none;
 }
 
-/* â”€â”€ LOOK AROUND COMPASS (Google Earth Pro-style, original design) â”€â”€â”€â”€â”€â”€â”€ */
-.look-around-compass {
+/* ── LOOK AROUND COMPASS (Google Earth Pro-style, original design) ─────── */
+/* Stacks the Look Around compass and the round Measure button in a single
+   column at the map's top-right corner — a shared wrapper (rather than each
+   control positioning itself independently) so Measure always sits flush
+   below the compass whether it's expanded or collapsed. */
+.map-side-controls {
   position: absolute;
   top: 60px;
   right: 12px;
   z-index: 10;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+}
+
+.look-around-compass {
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -3523,10 +3159,57 @@ body {
 .look-around-compass__collapse:hover { color: var(--ink); background: var(--surface-3); }
 
 .look-around-compass--collapsed {
+  position: relative;
+  width: 36px;
+  height: 36px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--glass-strong);
+  backdrop-filter: blur(16px) saturate(1.4);
+  border: 1px solid var(--edge);
+  border-radius: 50%;
+  box-shadow: var(--shadow-md);
+  color: var(--ink-dim);
+  /* Static north indicator — non-interactive, so no pointer cursor or
+     hover affordance. */
+  cursor: default;
+  user-select: none;
+}
+
+/* Rotating wrapper that holds the needle + the "N" label. The whole rotor
+   counter-rotates by -bearing so the N stays pinned to geographic north on
+   screen (the needle points the same way). Kept absolutely filled inside the
+   badge and centred so the glyph + N rotate about the badge centre. */
+.look-around-compass__rotor {
   position: absolute;
-  top: 60px;
-  right: 12px;
-  z-index: 10;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+  will-change: transform;
+}
+
+/* Small "N" sitting at the north (top) position inside the rotating rotor —
+   it belongs to the compass graphic and turns with it. */
+.look-around-compass__north-label {
+  position: absolute;
+  top: 2px;
+  left: 50%;
+  transform: translateX(-50%);
+  font-size: 8px;
+  font-weight: 800;
+  line-height: 1;
+  letter-spacing: 0.04em;
+  color: var(--accent);
+  pointer-events: none;
+}
+
+/* Round Measure toggle, stacked directly below the compass via
+   .map-side-controls — same glass-pill treatment as the collapsed compass
+   button so the two read as one control cluster. */
+.map-measure-btn {
   width: 36px;
   height: 36px;
   display: flex;
@@ -3542,7 +3225,16 @@ body {
   transition: all var(--transition-fast);
 }
 
-.look-around-compass--collapsed:hover { border-color: var(--accent); color: var(--ink); }
+.map-measure-btn svg { width: 16px; height: 16px; }
+
+.map-measure-btn:hover { border-color: var(--accent); color: var(--ink); }
+
+.map-measure-btn--active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-ink);
+  box-shadow: var(--shadow-glow), var(--shadow-md);
+}
 
 @media (prefers-reduced-motion: reduce) {
   .look-around-compass__ring,
@@ -3563,9 +3255,8 @@ body {
 /* â”€â”€ FEATURE COUNT â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 .feature-count {
   position: absolute;
-  top: 12px;
-  left: 50%;
-  transform: translateX(-50%);
+  left: 16px;
+  bottom: var(--map-footer-offset);
   z-index: 10;
   padding: 6px 14px;
   background: var(--glass-strong);
@@ -3576,6 +3267,7 @@ body {
   font-weight: 600;
   color: var(--ink);
   box-shadow: var(--shadow-md);
+  pointer-events: none;
 }
 
 /* â”€â”€ TOAST â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
@@ -3606,10 +3298,12 @@ body {
   to { opacity: 0; transform: translateY(-10px); }
 }
 
-/* â”€â”€ AI FAB â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
+/* ── AI FAB ───────────────────────────────────────────────────────────── */
+/* Sits above .report-fab (bottom: 24px, same corner) so Generate Report
+   reads as "right below" the AI assistant button. */
 .ai-fab {
   position: fixed;
-  bottom: 24px;
+  bottom: 96px;
   right: 24px;
   z-index: 500;
   width: 60px;
@@ -3662,10 +3356,68 @@ body {
 }
 .ai-fab--open::before { animation: none; opacity: 0; }
 
-/* â”€â”€ AI PANEL â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
+/* ── REPORT FAB ───────────────────────────────────────────────────────── */
+/* Same corner stack as .ai-fab, one slot below it — relocated here from the
+   old right-hand report panel's "Generate Report" button. */
+.report-fab {
+  position: fixed;
+  bottom: 24px;
+  right: 24px;
+  z-index: 500;
+  width: 60px;
+  height: 60px;
+  border-radius: 50%;
+  background: var(--surface-elev);
+  backdrop-filter: blur(16px) saturate(1.4);
+  color: var(--accent);
+  border: 1px solid var(--edge-strong);
+  font-size: 20px;
+  cursor: pointer;
+  box-shadow: var(--shadow-md);
+  transition: all var(--transition-base);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.report-fab svg { width: 22px; height: 22px; }
+
+.report-fab:hover {
+  transform: scale(1.1);
+  border-color: var(--accent);
+  box-shadow: var(--shadow-lg);
+}
+
+.report-fab--open {
+  background: var(--surface-3);
+  color: var(--ink);
+}
+
+/* ── REPORT PANEL ─────────────────────────────────────────────────────── */
+/* Opens above both corner buttons (.ai-fab tops out at bottom+height =
+   96 + 60 = 156px) so it never sits underneath the AI fab. */
+.report-panel {
+  position: fixed;
+  bottom: 168px;
+  right: 24px;
+  z-index: 499;
+  width: 340px;
+  max-height: 460px;
+  background: var(--glass-strong);
+  backdrop-filter: blur(24px) saturate(1.4);
+  border: 1px solid var(--edge-strong);
+  border-radius: var(--radius-xl);
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.4), 0 0 0 1px rgba(255, 255, 255, 0.05) inset;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  animation: panelSlideUp 0.3s ease;
+}
+
+/* ── AI PANEL ─────────────────────────────────────────────────────────── */
 .ai-panel {
   position: fixed;
-  bottom: 96px;
+  bottom: 168px;
   right: 24px;
   z-index: 499;
   width: 340px;
@@ -6800,60 +6552,7 @@ body {
   display: block;
 }
 
-/* â”€â”€ MAP LEGEND (Overlay on map) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
-.map__legend {
-  position: absolute;
-  bottom: 16px;
-  left: 16px;
-  z-index: 10;
-  background: var(--glass-strong);
-  backdrop-filter: blur(16px) saturate(1.4);
-  border: 1px solid var(--edge);
-  border-radius: var(--radius-md);
-  padding: 12px;
-  box-shadow: var(--shadow-md);
-  max-width: 200px;
-}
-
-.map__legend-title {
-  font-size: 9px;
-  font-weight: 700;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
-  color: var(--ink-mute);
-  margin-bottom: 8px;
-}
-
-.map__legend-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 3px 0;
-  font-size: 11px;
-}
-
-.map__legend-swatch {
-  width: 10px;
-  height: 10px;
-  border-radius: 2px;
-  flex-shrink: 0;
-}
-
-.map__legend-label {
-  flex: 1;
-  color: var(--ink-dim);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.map__legend-count {
-  font-weight: 600;
-  font-family: var(--font-mono);
-  color: var(--ink-mute);
-}
-
-/* â”€â”€ MAP BOTTOM-RIGHT STATUS BAR (coordinates + fixed-size scale chip) â”€â”€â”€ */
+/* ── MAP BOTTOM-RIGHT STATUS BAR (coordinates + fixed-size scale chip) ─── */
 /* Single positioned wrapper for both boxes so they can never drift apart
    or independently overlap something else â€” matches the existing
    bottom-right spacing (8px) previously used by the coordinate box alone.
@@ -6862,7 +6561,7 @@ body {
    non-interactive individually instead. */
 .map__status-bar {
   position: absolute;
-  bottom: 8px;
+  bottom: var(--map-footer-offset);
   right: 8px;
   display: flex;
   gap: 6px;
@@ -7105,9 +6804,9 @@ body {
    mode never changes the element's containing block out from under it. */
 .ruler-panel {
   position: fixed;
-  /* Below .workspace__topbar and .workspace__subbar (z-index: 100/99) so
-     the panel starts clear of the header instead of colliding with it. */
-  top: 108px;
+  /* Below .workspace__topbar (52px, z-index: 100) so the panel starts clear
+     of the header instead of colliding with it. */
+  top: 64px;
   left: 50%;
   transform: translateX(-50%);
   /* Above the topbar and other floating chrome so the whole panel â€”
@@ -7466,12 +7165,16 @@ body {
 .map-controls__btn:hover { background: var(--surface-3); color: var(--ink); }
 .map-controls__btn--active { background: var(--accent); color: var(--accent-ink); }
 
-/* â”€â”€ FEATURE COUNT â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
+/* ── FEATURE COUNT ────────────────────────────────────────────────────── */
+/* Bottom-left of the map viewport, on the SAME horizontal row as the
+   coordinate/status footer (.map__status-bar) by sharing the single
+   --map-footer-offset anchor. Map-relative (absolute inside .map-canvas) so
+   it pans/zooms/resizes with the map and never overlaps the sidebar, footer,
+   coordinate readout, compass or zoom bar. */
 .feature-count {
   position: absolute;
-  top: 12px;
-  left: 50%;
-  transform: translateX(-50%);
+  left: 16px;
+  bottom: var(--map-footer-offset);
   z-index: 10;
   padding: 6px 14px;
   background: var(--glass-strong);
@@ -7482,6 +7185,7 @@ body {
   font-weight: 600;
   color: var(--ink);
   box-shadow: var(--shadow-md);
+  pointer-events: none;
 }
 
 /* â”€â”€ RESPONSIVE â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
@@ -7491,9 +7195,6 @@ body {
   }
   .login__right {
     flex: 1;
-  }
-  .map-page--triple {
-    grid-template-columns: 56px 300px 1fr;
   }
   .architect-workspace {
     position: fixed;
@@ -10099,10 +9800,17 @@ button.analytics-readiness-count--missing.is-active { box-shadow: inset 0 0 0 1p
   }
 }
 
-@media (min-width: 769px) {
-  .map-page--dual { grid-template-columns: 380px 1fr; }
-  .map-page--triple { grid-template-columns: 380px 1fr 290px; }
-  .map-page--triple.map-page--report-collapsed { grid-template-columns: 380px 1fr 30px; }
+/* Responsive Command Center width — compact enterprise-GIS sizing.
+   Desktop (>=1440px) uses the base 300px token; laptop and tablet ranges
+   step it down so the map keeps the majority of the screen without ever
+   overflowing or compressing the map controls. Mobile (<=768px) keeps the
+   existing fixed off-canvas drawer behaviour defined elsewhere. */
+@media (min-width: 1200px) and (max-width: 1439.98px) {
+  .map-page--dual { --map-sidebar-width: 280px; }
+}
+
+@media (min-width: 769px) and (max-width: 1199.98px) {
+  .map-page--dual { --map-sidebar-width: 260px; }
 }
 
 
@@ -10274,7 +9982,7 @@ button.analytics-readiness-count--missing.is-active { box-shadow: inset 0 0 0 1p
   padding: 11px 12px;
   border: 1px solid var(--edge);
   border-radius: 10px;
-  background: rgba(20, 38, 55, .88);
+  background: var(--surface-2);
   color: var(--ink);
   text-align: left;
   cursor: pointer;
@@ -10284,9 +9992,9 @@ button.analytics-readiness-count--missing.is-active { box-shadow: inset 0 0 0 1p
 
 .visualization-popup-trigger:hover:not(:disabled),
 .visualization-popup-trigger.is-open {
-  border-color: rgba(45, 212, 191, .65);
-  background: rgba(20, 49, 63, .96);
-  box-shadow: 0 10px 24px rgba(2, 12, 24, .28), inset 0 0 0 1px rgba(45, 212, 191, .08);
+  border-color: var(--accent);
+  background: var(--surface-3);
+  box-shadow: var(--shadow-md), inset 0 0 0 1px var(--accent-muted);
 }
 
 .visualization-popup-trigger:active:not(:disabled) {
@@ -10305,7 +10013,7 @@ button.analytics-readiness-count--missing.is-active { box-shadow: inset 0 0 0 1p
   display: grid;
   place-items: center;
   border-radius: 8px;
-  background: rgba(20, 184, 166, .12);
+  background: var(--accent-muted);
   color: var(--accent);
 }
 
@@ -10348,10 +10056,10 @@ button.analytics-readiness-count--missing.is-active { box-shadow: inset 0 0 0 1p
 .visualization-popup-trigger__badge {
   flex: 0 0 auto;
   padding: 2px 7px;
-  border: 1px solid rgba(45, 212, 191, .28);
+  border: 1px solid var(--accent-strong);
   border-radius: 999px;
-  background: rgba(20, 184, 166, .1);
-  color: #5eead4;
+  background: var(--accent-muted);
+  color: var(--accent);
   font-size: 9px;
   font-weight: 800;
   letter-spacing: .05em;
@@ -10836,15 +10544,15 @@ button.analytics-readiness-count--missing.is-active { box-shadow: inset 0 0 0 1p
 .map__status-bar--earth {
   left: 50%;
   right: auto;
-  bottom: 8px;
+  bottom: var(--map-footer-offset);
   transform: translateX(-50%);
   max-width: calc(100% - 32px);
   gap: 0;
   overflow: hidden;
-  border: 1px solid rgba(72, 101, 128, .62);
+  border: 1px solid var(--edge);
   border-radius: 7px;
-  background: rgba(8, 19, 29, .9);
-  box-shadow: 0 10px 26px rgba(0, 8, 20, .28);
+  background: var(--glass-strong);
+  box-shadow: var(--shadow-md);
   backdrop-filter: blur(14px);
 }
 
@@ -10854,7 +10562,7 @@ button.analytics-readiness-count--missing.is-active { box-shadow: inset 0 0 0 1p
   bottom: auto;
   height: 25px;
   border: 0;
-  border-right: 1px solid rgba(72, 101, 128, .46);
+  border-right: 1px solid var(--edge);
   border-radius: 0;
   background: transparent;
   backdrop-filter: none;
@@ -10863,9 +10571,9 @@ button.analytics-readiness-count--missing.is-active { box-shadow: inset 0 0 0 1p
 .map__status-bar--earth .map__status-box:last-child { border-right: 0; }
 .map__dataset-readout { gap: 6px; max-width: 185px; }
 .map__dataset-readout span { color: var(--ink-mute); text-transform: uppercase; font-size: 8px; letter-spacing: .06em; }
-.map__dataset-readout strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #dbeafe; font-weight: 700; }
+.map__dataset-readout strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--ink); font-weight: 700; }
 .map__elevation-readout,
-.map__eye-altitude-readout { color: #cbd5e1; }
+.map__eye-altitude-readout { color: var(--ink-dim); }
 .map__status-bar--earth .map__scale-readout { width: 64px; min-width: 64px; max-width: 64px; }
 
 @media (max-width: 900px) {

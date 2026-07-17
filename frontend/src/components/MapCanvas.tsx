@@ -21,6 +21,7 @@ import { CylinderPanoramaViewer } from "./CylinderPanoramaViewer";
 import { GoogleStreetView } from "./GoogleStreetView";
 import { LookAroundCompass, DEFAULT_MAP_PITCH, MAX_MAP_PITCH } from "./LookAroundCompass";
 import { DataSourceSelector } from "./DataSourceSelector";
+import { SupportingFilesImport } from "./WardReportPanel";
 import { AnomalyAlertCard } from "./AnomalyAlertCard";
 import { PlacemarkEditor } from "./map/PlacemarkEditor";
 import { MyPlacesPanel } from "./map/MyPlacesPanel";
@@ -41,7 +42,7 @@ import { aiManholeRecommend, type AiAnswer } from "../lib/ai";
 // dedicated OBJ value), so detect them from the stored filename instead.
 function isObjDataset(d: DatasetRow): boolean {
   // A bundled upload (.obj + .mtl + textures, zipped client-side) has a
-  // storage_key ending in .zip, not .obj Ã¢â‚¬â€ model_assets is the reliable
+  // storage_key ending in .zip, not .obj — model_assets is the reliable
   // signal for those; the plain extension check covers a bare .obj upload.
   if (d.dataset_metadata?.model_assets) return true;
   const name = (d.storage_key ?? d.name).toLowerCase();
@@ -70,23 +71,19 @@ interface Props {
   filter: FeatureFilter;
   onFeatureSelect: (feature: UrbanFeature | null) => void;
   /** Fires whenever the set of datasets selected in the Command Center
-   * changes ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â used to drive the ward/dataset-level report panel. */
+   * changes — used to drive the ward/dataset-level report panel. */
   onActiveDatasetsChange?: (rows: DatasetRow[]) => void;
   /** Dataset selection persisted by the parent (survives this component
-   * being unmounted/remounted on tab navigation) ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â seeds the initial
+   * being unmounted/remounted on tab navigation) — seeds the initial
    * selection and is re-applied once the map and dataset list are ready. */
   initialActiveDatasets?: DatasetRow[];
-  /** AI-produced highlight overrides Ã¢â‚¬â€ redundant poles show red,
+  /** AI-produced highlight overrides — redundant poles show red,
    * needed poles show green. Empty array clears the overlay. */
   aiHighlights?: AiHighlight[];
   /** Feature requested from an attribute-table row on another route. */
   focusFeatureId?: string;
   /** Clears the one-shot route request after the feature has been handled. */
   onFocusHandled?: () => void;
-  /** Notifies a parent (the top navigation bar) whenever the authoritative
-   * Measure visibility changes, so a mirrored top-bar button can stay in sync
-   * without duplicating the real Measure state owned here. */
-  onMeasureChange?: (active: boolean) => void;
 }
 
 const DAVANGERE_CENTER: [number, number] = [75.9218, 14.4644];
@@ -97,7 +94,7 @@ const DAVANGERE_ZOOM = 12;
 // selected dataset/ward/category filters define the data scope.
 const COMPLETE_DATA_BBOX: [number, number, number, number] = [-180, -90, 180, 90];
 
-// Same base the rest of the app's fetch wrapper (lib/api.ts) uses ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â the
+// Same base the rest of the app's fetch wrapper (lib/api.ts) uses — the
 // dev setup serves the API from a different origin/port than the SPA, so
 // raster preview image requests need the same credentials treatment as
 // every other authenticated call.
@@ -147,6 +144,51 @@ export function resolveRasterSettings(settings?: Partial<RasterDisplaySettings>)
   };
 }
 
+// Every raster overlay in this project is stored with file_type "geotiff"
+// (uploaded .tif/.tiff/.geotiff all normalise to this — see DatasetsView),
+// so this is the reliable, project-standard way to identify TIFF/GeoTIFF
+// rasters. NOTE: DSM/DTM are a name-matched *subset* of these geotiffs and
+// are handled separately (Enhanced) by isElevationRasterDataset below.
+export function isGeoTiffDataset(dataset: Pick<DatasetRow, "file_type">): boolean {
+  return dataset.file_type === "geotiff";
+}
+
+// Digital Surface / Terrain Model rasters. There is no dedicated dataset
+// "type" field for these — they are single-band elevation GeoTIFFs
+// distinguished by name, matching the backend's own established heuristic
+// (see manhole_recommend.py: `name ILIKE '%dtm%'` / `%dsm%`). DSM/DTM must
+// always render in Enhanced mode and expose no per-dataset display settings.
+export function isElevationRasterDataset(dataset: Pick<DatasetRow, "file_type" | "name">): boolean {
+  if (dataset.file_type !== "geotiff") return false;
+  // Match "dsm"/"dtm" as a distinct token in the name (case-insensitive),
+  // allowing the usual separators used in dataset names — e.g.
+  // "Davangere_DSM", "DTM ward 5", "dsm-2024", "ward.dtm" — without matching
+  // it as an incidental substring inside an unrelated word.
+  return /(^|[^a-z0-9])(dsm|dtm)([^a-z0-9]|$)/i.test(dataset.name);
+}
+
+// Fixed, non-configurable render modes per raster kind, applied at the
+// rendering layer (not just the UI) so they hold across load, selection,
+// style updates, layer refresh, and page refresh:
+//   • DSM/DTM elevation GeoTIFFs  -> Enhanced (rainbow + hillshade)
+//   • all other TIFF/GeoTIFF      -> RGB
+// Any previously-chosen (in-memory) colorMode is overridden, so a stale
+// Grayscale/Enhanced selection can never persist for an ordinary GeoTIFF.
+// Non-raster datasets fall through to the resolved user/default settings.
+export function effectiveRasterSettings(
+  dataset: Pick<DatasetRow, "file_type" | "name">,
+  settings?: Partial<RasterDisplaySettings>
+): RasterDisplaySettings {
+  const resolved = resolveRasterSettings(settings);
+  if (isElevationRasterDataset(dataset)) {
+    return { ...resolved, colorMode: "enhanced" };
+  }
+  if (isGeoTiffDataset(dataset)) {
+    return { ...resolved, colorMode: "rgb" };
+  }
+  return resolved;
+}
+
 function rasterPaintForSettings(settings: RasterDisplaySettings): Record<string, number> {
   const normalized = resolveRasterSettings(settings);
   // The backend now renders the correct rainbow/hillshade image.
@@ -185,7 +227,7 @@ const BASE_STYLE: maplibregl.StyleSpecification = {
     "reference-openfreemap": {
       type: "vector",
       url: "https://tiles.openfreemap.org/planet",
-      attribution: "OpenMapTiles Ã‚Â© OpenStreetMap contributors",
+      attribution: "OpenMapTiles © OpenStreetMap contributors",
     },
     "satellite-tiles": {
       type: "raster",
@@ -448,7 +490,7 @@ const TABLE_FOCUS_LINE = "attribute-table-focus-line";
 const TABLE_FOCUS_POINT = "attribute-table-focus-point";
 const TABLE_FOCUS_DURATION_MS = 8000;
 
-// Base (category-agnostic) filters for the layers above Ã¢â‚¬â€ kept as named
+// Base (category-agnostic) filters for the layers above — kept as named
 // constants so the category-visibility checklist can AND a hidden-category
 // clause onto them without duplicating the geometry/role logic.
 const POLY_BASE_FILTER: maplibregl.FilterSpecification = ["in", ["geometry-type"], ["literal", ["Polygon", "MultiPolygon"]]];
@@ -612,7 +654,7 @@ const LAYER_AI_NEEDED = "ai-highlight-needed";
 const AI_REDUNDANT_COLOR = "#ef4444"; // red
 const AI_NEEDED_COLOR = "#22c55e";    // green
 
-// Spatial Audit Engine Ã¢â‚¬â€ persisted findings (pole redundancy, drain
+// Spatial Audit Engine — persisted findings (pole redundancy, drain
 // encroachment, manhole status), one shared point layer colored by the
 // backend-assigned `color` field directly (red/yellow/green already
 // decided server-side, no client bucket math needed).
@@ -639,7 +681,7 @@ const ANOMALY_COLOR_EXPR: maplibregl.ExpressionSpecification = [
   "#94a3b8",
 ];
 
-// Measurement (ruler) tool Ã¢â‚¬â€ separate GeoJSON sources for the vertex
+// Measurement (ruler) tool — separate GeoJSON sources for the vertex
 // points, the outline (line/path/polygon-ring/circle-ring), and the filled
 // area (polygon/circle only) so each can have its own paint without
 // touching any of the feature/AI layers above.
@@ -674,7 +716,7 @@ function haversineDistance(a: [number, number], b: [number, number]): number {
 }
 
 /** "Nice" round scale-bar distances (metric), same ladder a cartographic
- * scale bar picks from Ã¢â‚¬â€ used to turn a raw pixel-to-meters measurement
+ * scale bar picks from — used to turn a raw pixel-to-meters measurement
  * into a label like "200 m" or "2 km" instead of an arbitrary number. */
 const NICE_SCALE_METERS = [
   1, 2, 5, 10, 20, 50, 100, 200, 500,
@@ -686,7 +728,7 @@ function formatNiceScaleMeters(meters: number): string {
 }
 
 /** Picks the largest "nice" round distance that still fits within the given
- * pixel budget at the map's current resolution Ã¢â‚¬â€ the same approach a
+ * pixel budget at the map's current resolution — the same approach a
  * cartographic scale bar uses, just without drawing a proportional line:
  * the label always fits in a fixed-width box because the box shows the
  * chosen round number's text ("2 km"), never the sample width itself. */
@@ -720,14 +762,14 @@ function pathLength(points: [number, number][]): number {
   return total;
 }
 
-/** Perimeter in meters of a closed ring Ã¢â‚¬â€ same as pathLength plus the
+/** Perimeter in meters of a closed ring — same as pathLength plus the
  * closing segment back to the first point. */
 function ringPerimeter(points: [number, number][]): number {
   if (points.length < 2) return 0;
   return pathLength(points) + haversineDistance(points[points.length - 1], points[0]);
 }
 
-/** Destination point in meters/bearing from a start [lon, lat] Ã¢â‚¬â€ the
+/** Destination point in meters/bearing from a start [lon, lat] — the
  * inverse of haversineDistance/bearing, used to draw a geodesic circle. */
 function destinationPoint(start: [number, number], distanceMeters: number, bearingDeg: number): [number, number] {
   const toRad = (deg: number) => (deg * Math.PI) / 180;
@@ -746,7 +788,7 @@ function destinationPoint(start: [number, number], distanceMeters: number, beari
 }
 
 /** Approximate area in square meters of a geographic ring, via the
- * spherical-excess (Girard's theorem) polygon-area formula Ã¢â‚¬â€ accurate
+ * spherical-excess (Girard's theorem) polygon-area formula — accurate
  * enough for city/district-scale ruler measurements without pulling in a
  * full geodesic library. */
 function ringArea(points: [number, number][]): number {
@@ -773,13 +815,13 @@ function circlePolygon(center: [number, number], radiusMeters: number, steps = 6
 type MeasureTab = "line" | "path" | "polygon" | "circle";
 
 // Authoritative measurement interaction state machine. Replaces the old
-// scattered booleans / point-count heuristics (which could desync Ã¢â‚¬â€ e.g. a
+// scattered booleans / point-count heuristics (which could desync — e.g. a
 // finished Line lingering as "2 points" so the next click was silently read
 // as a third vertex). Handlers read `measurePhaseRef`; the mirrored state
 // only drives React rendering / effects.
-//   inactive Ã¢â‚¬â€ tool off; map clicks must not touch measurement.
-//   idle     Ã¢â‚¬â€ tool on, waiting for the first vertex (no start coord).
-//   drawing  Ã¢â‚¬â€ at least one vertex placed; cursor rubber-bands a preview.
+//   inactive — tool off; map clicks must not touch measurement.
+//   idle     — tool on, waiting for the first vertex (no start coord).
+//   drawing  — at least one vertex placed; cursor rubber-bands a preview.
 type MeasurePhase = "inactive" | "idle" | "drawing";
 
 // Line/Circle finish after exactly 2 points; Path/Polygon accept unlimited
@@ -829,7 +871,7 @@ function roundRectPath(ctx: CanvasRenderingContext2D, x: number, y: number, w: n
 }
 
 /** Draws a standard map-pin marker (teardrop + circular badge + camera
- * glyph) at high resolution and returns raw pixel data Ã¢â‚¬â€ the same visual
+ * glyph) at high resolution and returns raw pixel data — the same visual
  * pattern mapping apps use for photo locations (Google Maps, Mapillary,
  * etc.), rendered crisp rather than the small hand-drawn glyph this
  * replaced, which looked muddy at map scale. */
@@ -984,7 +1026,7 @@ function buildCategoryColorExpression(
   colorByCategory: Map<string, string>
 ): maplibregl.ExpressionSpecification | string {
   // A MapLibre "match" expression requires at least one input/output pair
-  // before its fallback value ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â with zero categories seen yet (empty map,
+  // before its fallback value — with zero categories seen yet (empty map,
   // no features loaded), building one anyway produces an invalid
   // expression that throws at runtime. Fall back to a plain solid color.
   if (colorByCategory.size === 0) return UNCATEGORIZED_COLOR;
@@ -993,7 +1035,7 @@ function buildCategoryColorExpression(
   return ["match", ["coalesce", ["get", "category"], "uncategorized"], ...pairs, UNCATEGORIZED_COLOR] as unknown as maplibregl.ExpressionSpecification;
 }
 
-/** AI Detection focus modes Ã¢â‚¬â€ each isolates the map to one asset family and
+/** AI Detection focus modes — each isolates the map to one asset family and
  * one anomaly type, instead of showing every layer/finding at once. */
 export type DetectionMode = "poles" | "drains" | "manholes" | null;
 
@@ -1010,22 +1052,22 @@ const DETECTION_MODE_ANOMALY_TYPE: Record<Exclude<DetectionMode, null>, string> 
 };
 
 // Deliberately darker/more saturated than the category-color palette used
-// elsewhere Ã¢â‚¬â€ these need to read clearly as a choropleth at a glance, not
+// elsewhere — these need to read clearly as a choropleth at a glance, not
 // blend into the basemap at the low opacity used for the normal severity
 // fill (see DRAINS_MODE_FILL_OPACITY below).
 // Deliberately a true red/gold/green trio, not two dark brownish-orange
-// tones Ã¢â‚¬â€ #b91c1c red and the old #b45309 amber read as near-identical at
+// tones — #b91c1c red and the old #b45309 amber read as near-identical at
 // 0.75 fill opacity over a cream basemap, which is why crossed (red) and
 // grazed (yellow) buildings were hard to tell apart by eye. Matches the
 // --danger/--warn/--ok tokens used by the AI Alert card badges.
-const BUILDING_DEFAULT_COLOR = "#16a34a"; // green Ã¢â‚¬â€ not (meaningfully) encroached
-const BUILDING_RED_COLOR = "#dc2626"; // red Ã¢â‚¬â€ drain crosses straight through
-const BUILDING_YELLOW_COLOR = "#eab308"; // gold/yellow Ã¢â‚¬â€ partial graze, no full crossing
+const BUILDING_DEFAULT_COLOR = "#16a34a"; // green — not (meaningfully) encroached
+const BUILDING_RED_COLOR = "#dc2626"; // red — drain crosses straight through
+const BUILDING_YELLOW_COLOR = "#eab308"; // gold/yellow — partial graze, no full crossing
 const DRAINS_MODE_FILL_OPACITY = 0.75;
 const DEFAULT_FILL_OPACITY = 0.35;
 
 /** In Drains mode, buildings are recolored by their OWN encroachment
- * finding rather than shown as a separate point marker Ã¢â‚¬â€ a fully/partly
+ * finding rather than shown as a separate point marker — a fully/partly
  * encroached building is highlighted red/yellow, everything else defaults
  * to green ("confirmed OK"), matching a real choropleth rather than pins. */
 function buildBuildingColorExpression(
@@ -1051,23 +1093,23 @@ const ANOMALY_TYPE_LABEL: Record<SpatialAnomaly["anomaly_type"], string> = {
 };
 
 /** One-line, numbers-first summary for the hover tooltip's AI Detected
- * badge Ã¢â‚¬â€ same underlying facts as the click-through AI Alert card, just
+ * badge — same underlying facts as the click-through AI Alert card, just
  * condensed so it's readable at a glance without opening anything. */
 function summarizeAnomalyForTooltip(a: SpatialAnomaly): { color: SpatialAnomaly["color"]; typeLabel: string; metric: string } {
   const m = a.anomaly_metadata;
   let metric = "";
   if (a.anomaly_type === "pole_redundancy") {
     metric = a.color === "green"
-      ? `Kept Ã¢â‚¬â€ cluster of ${m.cluster_size ?? "?"}`
+      ? `Kept — cluster of ${m.cluster_size ?? "?"}`
       : a.color === "red"
-      ? `Redundant Ã¢â‚¬â€ cluster of ${m.cluster_size ?? "?"}`
-      : `Borderline Ã¢â‚¬â€ ${m.nearest_neighbor_m ?? "?"}m from nearest`;
+      ? `Redundant — cluster of ${m.cluster_size ?? "?"}`
+      : `Borderline — ${m.nearest_neighbor_m ?? "?"}m from nearest`;
   } else if (a.anomaly_type === "drain_encroachment") {
     const ratioPct = m.crossing_ratio_pct ? Number(m.crossing_ratio_pct) : 0;
-    const areaTxt = `${m.overlap_area_m2 ?? "?"}mÃ‚Â² encroached of ${m.building_area_m2 ?? "?"}mÃ‚Â² footprint`;
+    const areaTxt = `${m.overlap_area_m2 ?? "?"}m² encroached of ${m.building_area_m2 ?? "?"}m² footprint`;
     metric = m.drain_crosses_building
-      ? `Drain crosses straight through this building Ã¢â‚¬â€ spans ${ratioPct.toFixed(0)}% of its own width (${areaTxt})`
-      : `Building touches the drain line, only a partial clip Ã¢â‚¬â€ spans ${ratioPct.toFixed(0)}% of its own width (${areaTxt})`;
+      ? `Drain crosses straight through this building — spans ${ratioPct.toFixed(0)}% of its own width (${areaTxt})`
+      : `Building touches the drain line, only a partial clip — spans ${ratioPct.toFixed(0)}% of its own width (${areaTxt})`;
   } else if (a.anomaly_type === "manhole_status") {
     metric = typeof m.basis === "string" ? m.basis : (
       m.nearest_drain_category
@@ -1191,7 +1233,7 @@ function estimateEyeAltitudeMeters(
 }
 
 function formatMetricDistance(value: number | null): string {
-  if (value === null || !Number.isFinite(value)) return "Ã¢â‚¬â€";
+  if (value === null || !Number.isFinite(value)) return "—";
   if (value >= 1000) return `${(value / 1000).toFixed(value >= 10000 ? 0 : 2)} km`;
   return `${Math.round(value)} m`;
 }
@@ -1208,7 +1250,7 @@ interface HoverInfo {
   attributes: Record<string, unknown>;
   aiStatus?: "redundant" | "needed";
   /** Populated only while the AI Detection overlay is on and this feature
-   * has a finding of its own Ã¢â‚¬â€ a quick "AI Detected" badge at a glance,
+   * has a finding of its own — a quick "AI Detected" badge at a glance,
    * without needing to click. */
   aiDetection?: { color: SpatialAnomaly["color"]; typeLabel: string; metric: string };
 }
@@ -1217,12 +1259,10 @@ interface LayerAttributeTableState extends LayerFeatureTableFilter {
 }
 export interface MapCanvasHandle {
   clearDatasets: () => void;
-  toggleMeasure: () => void;
-  isMeasureActive: () => boolean;
 }
 
 export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
-  { filter, onFeatureSelect, onActiveDatasetsChange, initialActiveDatasets, aiHighlights, focusFeatureId, onFocusHandled, onMeasureChange },
+  { filter, onFeatureSelect, onActiveDatasetsChange, initialActiveDatasets, aiHighlights, focusFeatureId, onFocusHandled },
   ref
 ) {
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -1236,12 +1276,11 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
   const filterRef = useRef<FeatureFilter>(filter);
 
   const [status, setStatus] = useState<ViewportStatus>({ loading: false, count: 0, truncated: false, error: null, bbox: null });
-  const [legend, setLegend] = useState<LegendEntry[]>([]);
   // Full (unsliced) per-category breakdown of the currently loaded features,
-  // for the QGIS-style layer-visibility checklist in the Command Center Ã¢â‚¬â€
+  // for the QGIS-style layer-visibility checklist in the Command Center.
   // `legend` above stays capped at 10 entries for the compact map overlay.
   const [categoryStats, setCategoryStats] = useState<LegendEntry[]>([]);
-  // Categories unchecked in that checklist Ã¢â‚¬â€ purely a client-side paint/
+  // Categories unchecked in that checklist — purely a client-side paint/
   // filter toggle on already-fetched features, so it applies instantly and
   // never touches the topbar ward/category filter or triggers a refetch.
   const [hiddenCategories, setHiddenCategories] = useState<Set<string>>(new Set());
@@ -1266,7 +1305,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
   );
   const rasterLayersRef = useRef<Set<string>>(new Set());
   const obj3dLayersRef = useRef<Set<string>>(new Set());
-  // Dataset ids whose data is an OBJ mesh Ã¢â‚¬â€ their vertex point features are
+  // Dataset ids whose data is an OBJ mesh — their vertex point features are
   // drawn as the draped 3D mesh (Obj3DMapLayer), so they must NOT also be
   // plotted as flat 2D circles in the feature source below.
   const objDatasetIdsRef = useRef<Set<string>>(new Set());
@@ -1291,7 +1330,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
   const [visualizationLayerTruncated, setVisualizationLayerTruncated] = useState(false);
   const visualizationLayerAbortRef = useRef<AbortController | null>(null);
 
-  // Spatial Audit Engine Ã¢â‚¬â€ persisted findings for the currently active
+  // Spatial Audit Engine — persisted findings for the currently active
   // dataset(s), plus which one (if any) is open in the AI Alert card.
   const [anomalies, setAnomalies] = useState<SpatialAnomaly[]>([]);
   const [selectedAnomalyId, setSelectedAnomalyId] = useState<string | null>(null);
@@ -1326,21 +1365,21 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
   const [detectionMode, setDetectionMode] = useState<DetectionMode>(null);
   const detectionModeRef = useRef<DetectionMode>(null);
   // Selecting a mode only isolates the map to that asset family (plain
-  // category colors) Ã¢â‚¬â€ the actual AI red/yellow/green overlay is a
+  // category colors) — the actual AI red/yellow/green overlay is a
   // separate, explicit step, so a fresh mode selection always starts with
   // this off until the user turns it on.
   const [aiOverlayEnabled, setAiOverlayEnabled] = useState(false);
   const aiOverlayEnabledRef = useRef(false);
   const buildingColorMapRef = useRef<Record<string, "red" | "yellow">>({});
   // feature id -> its own anomaly, for the hover tooltip's "AI Detected"
-  // badge Ã¢â‚¬â€ populated whenever anomalies changes, read via ref from the
+  // badge — populated whenever anomalies changes, read via ref from the
   // hover handler (registered once at map load).
   const anomalyByFeatureIdRef = useRef<Record<string, SpatialAnomaly>>({});
   // building feature id -> its drain_encroachment SpatialAnomaly id, so a
   // click on a recolored building in Drains mode can open the AI Alert card
   // for that specific finding (read via ref from the click handler, which
   // is registered once at map load and would otherwise close over stale
-  // state Ã¢â‚¬â€ same pattern as the other mode-driven refs above).
+  // state — same pattern as the other mode-driven refs above).
   const buildingAnomalyIdMapRef = useRef<Record<string, string>>({});
   // raw_category -> canonical_class, fetched once, used to compute which
   // categories a detection mode should hide (e.g. Poles mode hides
@@ -1483,7 +1522,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
   }, [cancelPlacemarkPlacement, deactivateLookAround]);
 
   // Ruler / measurement tool (Google Earth Pro-style dialog: Line, Path,
-  // Polygon, Circle) Ã¢â‚¬â€ off by default. `measureActiveRef`/`measurePointsRef`
+  // Polygon, Circle) — off by default. `measureActiveRef`/`measurePointsRef`
   // mirror state into refs so the map click/mousemove handlers (registered
   // once on "load") always read the latest value instead of a stale closure.
   const [measureActive, setMeasureActive] = useState(false);
@@ -1498,7 +1537,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
   const [measurePoints, setMeasurePoints] = useState<[number, number][]>([]);
   const measurePointsRef = useRef<[number, number][]>([]);
   const [measurePreviewPoint, setMeasurePreviewPoint] = useState<[number, number] | null>(null);
-  // Explicit drawing state machine Ã¢â‚¬â€ see `MeasurePhase`. Handlers read the
+  // Explicit drawing state machine — see `MeasurePhase`. Handlers read the
   // ref; the state mirror only drives React rendering / effects.
   const [measurePhase, setMeasurePhaseState] = useState<MeasurePhase>("inactive");
   const measurePhaseRef = useRef<MeasurePhase>("inactive");
@@ -1507,18 +1546,18 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
   // frame can never re-draw old geometry after the state has moved on.
   const measureSessionRef = useRef(0);
   // Last known cursor position in map-container pixel space (screen point,
-  // NOT lng/lat) Ã¢â‚¬â€ the authoritative geographic preview endpoint is always
+  // NOT lng/lat) — the authoritative geographic preview endpoint is always
   // re-derived from this via map.unproject() against the *current* camera.
   // A stationary cursor still points at a different geographic location
   // once the map pans/zooms under it, and MapLibre does not synthesize a
-  // "mousemove" for that Ã¢â‚¬â€ only "render" fires on every frame of a pan,
+  // "mousemove" for that — only "render" fires on every frame of a pan,
   // zoom, or programmatic camera animation (flyTo/easeTo/fitBounds), so
   // that's what re-syncs the preview instead of relying on move/zoom end.
   const latestPointerPointRef = useRef<{ x: number; y: number } | null>(null);
   const measureRafRef = useRef<number | null>(null);
   const [measureUnit, setMeasureUnit] = useState<DistanceUnit>("kilometers");
   const [measureAreaUnit, setMeasureAreaUnit] = useState<AreaUnit>("sq_kilometers");
-  // Ruler panel's dragged position Ã¢â‚¬â€ null means "use the default centered
+  // Ruler panel's dragged position — null means "use the default centered
   // position". Persists across close/reopen for the life of this component
   // (i.e. this tab session), reset on a full page reload like the rest of
   // the map's in-memory UI state.
@@ -1528,18 +1567,18 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
   const [cursorLngLat, setCursorLngLat] = useState<[number, number] | null>(null);
 
   // Text-only scale label ("200 m", "1 km", ...) shown in a fixed-size box
-  // next to the coordinate readout Ã¢â‚¬â€ replaces MapLibre's built-in
+  // next to the coordinate readout — replaces MapLibre's built-in
   // ScaleControl, whose DOM element resizes its bar width on every zoom
   // (correct for a real proportional scale bar, but causes the visible
   // status chip to grow/shrink, which looked unstable).
   const [mapScaleLabel, setMapScaleLabel] = useState("");
 
-  // Drives the horizontal zoom slider (Google Earth Pro-style) Ã¢â‚¬â€ mirrors
+  // Drives the horizontal zoom slider (Google Earth Pro-style) — mirrors
   // the map's actual zoom so the thumb stays in sync with wheel/pinch/
   // keyboard zoom, not just drags on the slider itself.
   const [mapZoom, setMapZoom] = useState(DAVANGERE_ZOOM);
 
-  // Drives the round compass control Ã¢â‚¬â€ mirrors the map's actual bearing so
+  // Drives the round compass control — mirrors the map's actual bearing so
   // it stays in sync with right-click-drag rotation, not just the compass
   // dial itself.
   const [mapBearing, setMapBearing] = useState(0);
@@ -1549,16 +1588,16 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
 
   // Look Around mode (compass centre button): while active, dragging
   // anywhere on the map changes bearing/pitch instead of panning. Mirrored
-  // into a ref for the same reason streetPickMode/measureActive are Ã¢â‚¬â€
+  // into a ref for the same reason streetPickMode/measureActive are —
   // map event handlers registered once on "load" need the latest value
   // without becoming stale closures.
   const [lookAroundActive, setLookAroundActive] = useState(false);
   const lookAroundActiveRef = useRef(false);
 
-  // Keep a fast lookup: featureId Ã¢â€ â€™ "redundant" | "needed" for tooltip + hover
+  // Keep a fast lookup: featureId → "redundant" | "needed" for tooltip + hover
   const aiStatusRef = useRef<Map<string, "redundant" | "needed">>(new Map());
   const aiCoordinateHighlightsRef = useRef<AiHighlight[]>([]);
-  // Cache of featureId Ã¢â€ â€™ [lon, lat] populated whenever features are loaded
+  // Cache of featureId → [lon, lat] populated whenever features are loaded
   const featureCoordsRef = useRef<Map<string, [number, number]>>(new Map());
 
   /** Push the current aiStatusRef contents into the AI highlight GeoJSON source.
@@ -1594,7 +1633,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     src.setData({ type: "FeatureCollection", features: feats });
   }, []);
 
-  // Sync AI highlights Ã¢â€ â€™ aiStatusRef and then flush to the map source.
+  // Sync AI highlights → aiStatusRef and then flush to the map source.
   // Also fetches missing coordinates directly from the API so the overlay
   // works even before a full viewport fetch has populated featureCoordsRef.
   useEffect(() => {
@@ -1620,7 +1659,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     );
 
     if (missing.length === 0) {
-      // All coords already in cache Ã¢â‚¬â€ paint immediately
+      // All coords already in cache — paint immediately
       flushAiHighlightSource();
       return;
     }
@@ -1976,7 +2015,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
 
   // If a previously-active dataset was deleted (e.g. removed and the same
   // GDB re-uploaded, which mints a brand-new dataset_id), its old id can
-  // otherwise linger forever in activeDatasetIds Ã¢â‚¬â€ it's only ever added/
+  // otherwise linger forever in activeDatasetIds — it's only ever added/
   // removed by explicit toggle clicks, never reconciled against the real
   // dataset list. A stale id here silently poisons "Run Spatial Audit"
   // (it 404s on the deleted dataset) and viewport fetches, so drop
@@ -2013,17 +2052,17 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
   }, []);
 
   // Renders the locked vertices plus, while still placing the shape, a live
-  // preview out to `previewPoint` (the current mouse position) Ã¢â‚¬â€ the same
+  // preview out to `previewPoint` (the current mouse position) — the same
   // "rubber band" behavior as Google Earth Pro's ruler tools. Geometry
   // shape depends on the active tab:
   //  - line/path: open LineString through the locked points (+ preview).
   //  - polygon: closed ring (line) + filled polygon through the locked
   //    points (+ preview), so the shape is visible while still open.
   //  - circle: locked point 0 is the center; the second point (locked or
-  //    live preview) sets the radius Ã¢â‚¬â€ rendered as a geodesic circle ring
+  //    live preview) sets the radius — rendered as a geodesic circle ring
   //    (line) + filled polygon, not the raw two clicked points.
 
-  // Single entry point for updating the authoritative phase Ã¢â‚¬â€ keeps the ref
+  // Single entry point for updating the authoritative phase — keeps the ref
   // (read by map handlers) and the React state (used for rendering/effects)
   // perfectly in sync so they can never contradict each other.
   const setMeasurePhase = useCallback((next: MeasurePhase) => {
@@ -2042,14 +2081,14 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
   }, []);
 
   // Guarded on source existence (map.getSource returning the source), NOT
-  // map.isStyleLoaded() Ã¢â‚¬â€ that flag reflects whether the WHOLE style is
+  // map.isStyleLoaded() — that flag reflects whether the WHOLE style is
   // currently idle (including unrelated basemap/feature tile loading), and
   // flips to false very frequently during ordinary panning/zooming/tile
   // fetch, long after the measurement sources themselves were created once
   // on "load". Gating on it was silently dropping legitimate setData calls
   // (a placed point's marker/line/endpoint intermittently failing to
   // render) purely because some unrelated tile was mid-fetch at that exact
-  // moment Ã¢â‚¬â€ GeoJSONSource.setData() itself has no such requirement, only
+  // moment — GeoJSONSource.setData() itself has no such requirement, only
   // that the source already exists.
   const flushMeasureSources = useCallback((previewPoint?: [number, number] | null) => {
     const map = mapRef.current;
@@ -2074,7 +2113,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
 
     let lineCoords: [number, number][] = [];
     let fillCoords: [number, number][] | null = null;
-    // Dedicated centerÃ¢â€ â€™boundary radius line for the Circle tool. Kept in its own
+    // Dedicated center→boundary radius line for the Circle tool. Kept in its own
     // source so it never gets wiped by a preview reset that clears the outline,
     // and so it sits above the fill but below the point markers. Null unless the
     // active tab is a Circle with a known center + edge (preview or confirmed).
@@ -2127,13 +2166,13 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
 
   // Whether a rubber-band preview should currently be tracking the cursor:
   // true whenever the tool is in the "drawing" phase (at least one vertex
-  // placed and not yet finished) Ã¢â‚¬â€ for every tab, not just Line/Circle.
+  // placed and not yet finished) — for every tab, not just Line/Circle.
   const isAwaitingMeasurePreview = useCallback(() => {
     return measurePhaseRef.current === "drawing";
   }, []);
 
   // Re-derives the preview endpoint from the *current* camera and the last
-  // known cursor pixel Ã¢â‚¬â€ this is what keeps the line synced when the map
+  // known cursor pixel — this is what keeps the line synced when the map
   // pans/zooms under a stationary cursor. Always reads from refs (never
   // captures coordinates in a closure), so a newer scheduled frame can
   // never be overwritten by a stale one.
@@ -2149,7 +2188,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
   }, [flushMeasureSources, isAwaitingMeasurePreview]);
 
   // Coalesces mousemove/render bursts into at most one preview update per
-  // animation frame Ã¢â‚¬â€ only one frame is ever in flight at a time, and it
+  // animation frame — only one frame is ever in flight at a time, and it
   // always consumes the latest ref values when it finally runs. The captured
   // session id makes the frame a no-op if the measurement was reset in the
   // meantime (clear/escape/finalize/tool-switch), so no stale geometry can
@@ -2171,12 +2210,12 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     }
   }, []);
 
-  // Whether a measurement tool currently owns map input Ã¢â‚¬â€ true only while
+  // Whether a measurement tool currently owns map input — true only while
   // the Measure panel is open AND a tool is actually armed/drawing (phase
   // !== "inactive"). Escape deactivates the tool (phase -> "inactive") but
   // deliberately leaves the panel open, so `measureActiveRef.current` alone
   // is NOT enough to decide whether ordinary data-layer hover/click should
-  // stay suspended Ã¢â‚¬â€ after Escape the panel is still open but the tool no
+  // stay suspended — after Escape the panel is still open but the tool no
   // longer owns input, so normal layers must go back to being interactive.
   const isMeasureInputActive = useCallback(() => {
     return measureActiveRef.current && measurePhaseRef.current !== "inactive";
@@ -2193,7 +2232,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
   }, [isMeasureInputActive]);
 
   // Closes any ordinary data-layer hover tooltip that was already open the
-  // instant a measurement tool is activated (or switched) Ã¢â‚¬â€ guarding the
+  // instant a measurement tool is activated (or switched) — guarding the
   // hover/click handlers on measureActiveRef only prevents FUTURE popups;
   // a tooltip already showing needs its state cleared explicitly, or it
   // would keep rendering, stale, until the next real mouse event. Cursor
@@ -2205,7 +2244,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
   // Shared: wipes every in-progress measurement artifact (pending preview
   // frame, cursor pixel, locked vertices, live preview point) and guarantees
   // no stale RAF/closure can repaint old geometry. Does NOT touch the phase
-  // or the panel visibility Ã¢â‚¬â€ callers decide the resulting phase (inactive for
+  // or the panel visibility — callers decide the resulting phase (inactive for
   // Escape, idle for a fresh tab / Clear) and whether the tool stays open.
   const resetMeasureTempState = useCallback(() => {
     cancelScheduledMeasurePreviewUpdate();
@@ -2218,7 +2257,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
 
   // Central cancellation for Escape, panel close, and any future tool-switch
   // with an unfinished shape. Cancels ONLY the unfinished active measurement
-  // and leaves any already-finished shape on the map untouched Ã¢â‚¬â€ Escape must
+  // and leaves any already-finished shape on the map untouched — Escape must
   // never delete a completed measurement. The panel stays open but the tool
   // is marked "inactive", so map clicks / right-click / mousemove can no
   // longer add or rebuild geometry until the user explicitly selects a mode
@@ -2243,7 +2282,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     [flushMeasureSources, cancelScheduledMeasurePreviewUpdate, beginNewSession, setMeasurePhase, syncMeasureCursor]
   );
 
-  // The single real owner of Measure-window visibility Ã¢â‚¬â€ the same
+  // The single real owner of Measure-window visibility — the same
   // `measureActive` state the X button and the toolbar toggle already share.
   // Marks the tool inactive, stops all pending preview work, and hides the
   // panel WITHOUT discarding an already-finished measurement (it stays on the
@@ -2271,7 +2310,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
 
   // "Clear" wipes every measurement (finished and unfinished) per this app's
   // single-shot UX and leaves the tool armed/idle so a new measurement can
-  // start immediately Ã¢â‚¬â€ distinct from Escape, which only cancels the in-progress
+  // start immediately — distinct from Escape, which only cancels the in-progress
   // shape and preserves any already-finished one.
   const clearMeasurement = useCallback(() => {
     resetMeasureTempState();
@@ -2280,7 +2319,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
   }, [resetMeasureTempState, flushMeasureSources, setMeasurePhase]);
 
   // Locks the current Path/Polygon at its already-clicked vertices (right-
-  // click completion). Only the confirmed, left-clicked points are kept Ã¢â‚¬â€
+  // click completion). Only the confirmed, left-clicked points are kept —
   // the cursor's right-click location is never added as a vertex. The shape
   // stays on the map; the phase returns to "idle" so the next left click
   // starts a fresh shape rather than extending the finished one.
@@ -2539,7 +2578,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     syncMeasureCursor();
   }, [resetMeasureTempState, flushMeasureSources, setMeasurePhase, syncMeasureCursor]);
 
-  // Effective vertex list used for the readout Ã¢â‚¬â€ locked points plus the
+  // Effective vertex list used for the readout — locked points plus the
   // live preview point while a shape is still being placed.
   const measureLiveVertices: [number, number][] =
     measurePreviewPoint && isAwaitingMeasurePreview()
@@ -2574,7 +2613,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
 
   // Mouse Navigation is always enabled for every measurement mode: panning
   // and scroll-zoom stay available so the map can be moved while measuring
-  // (the old per-user checkbox has been removed Ã¢â‚¬â€ the enabled behaviour is
+  // (the old per-user checkbox has been removed — the enabled behaviour is
   // now permanent). Restored on unmount so navigation never stays stuck off
   // if the map is torn down mid-measurement.
   //
@@ -2603,7 +2642,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
   }, [mapReady, measureActive, measurePhase]);
 
   // Right-click-drag normally rotates the map's bearing (MapLibre's default
-  // dragRotate handler) Ã¢â‚¬â€ while a Path/Polygon shape has at least one
+  // dragRotate handler) — while a Path/Polygon shape has at least one
   // vertex placed, right-click is instead the "finish this shape" gesture,
   // so rotation is suspended for that window to guarantee a plain
   // right-click always reaches the contextmenu handler above cleanly,
@@ -2661,7 +2700,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
       const dy = e.clientY - lastY;
       lastX = e.clientX;
       lastY = e.clientY;
-      // 0.3 deg/px keeps a full-width drag well under a full turn Ã¢â‚¬â€ tuned
+      // 0.3 deg/px keeps a full-width drag well under a full turn — tuned
       // to feel similar to MapLibre's own dragRotate sensitivity.
       map.setBearing(map.getBearing() + dx * 0.3);
       map.setPitch(Math.min(MAX_MAP_PITCH, Math.max(0, map.getPitch() - dy * 0.3)));
@@ -2678,7 +2717,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     canvas.addEventListener("pointerup", stopDragging);
     canvas.addEventListener("pointercancel", stopDragging);
     // A pointer that leaves the window entirely (e.g. dragged off-screen)
-    // must not leave `dragging` stuck true Ã¢â‚¬â€ matches the blur-safety the
+    // must not leave `dragging` stuck true — matches the blur-safety the
     // task calls out for the press-and-hold rotate buttons. Pointer capture
     // already keeps pointerup/pointermove firing on this canvas even off-
     // element, but window blur (e.g. alt-tab mid-drag) isn't a pointer
@@ -2696,7 +2735,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     };
   }, [mapReady, lookAroundActive]);
 
-  // Escape deactivates the active measurement TOOL only Ã¢â‚¬â€ it cancels any
+  // Escape deactivates the active measurement TOOL only — it cancels any
   // unfinished shape (preserving completed ones), returns the phase to
   // "inactive" so map clicks stop being consumed by measurement, and
   // restores the normal cursor. It deliberately does NOT close the Measure
@@ -2705,7 +2744,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
   // again (changeMeasureTab always re-arms to "idle" even if that tab was
   // already selected). Registered once on window, guarded purely by refs at
   // fire-time, and ignoring key events from real text fields (none in the
-  // panel today) Ã¢â‚¬â€ so it works for every tab, every focus, never
+  // panel today) — so it works for every tab, every focus, never
   // double-registers, and never captures a stale active-tool value.
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -2746,7 +2785,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     if (!src) return;
 
     // OBJ mesh datasets render as a draped 3D mesh (Obj3DMapLayer), so drop
-    // their vertex point features here Ã¢â‚¬â€ otherwise they also paint as flat
+    // their vertex point features here — otherwise they also paint as flat
     // 2D circles on top of the mesh, which the user does not want.
     const objIds = objDatasetIdsRef.current;
     const rawFeatures = objIds.size === 0
@@ -2805,7 +2844,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     if (map.getLayer(LAYER_POINTS)) map.setPaintProperty(LAYER_POINTS, "circle-color", colorExpr);
     if (map.getLayer(LAYER_LINES)) map.setPaintProperty(LAYER_LINES, "line-color", colorExpr);
     // In Drains mode, polygons (buildings) are recolored by their own
-    // encroachment finding instead of by category Ã¢â‚¬â€ read via a ref (not
+    // encroachment finding instead of by category — read via a ref (not
     // component state) so this per-fetch callback always sees the current
     // mode without needing to be re-created on every mode change.
     if (map.getLayer(LAYER_POLY_FILL)) {
@@ -2821,16 +2860,15 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     const entries: LegendEntry[] = Array.from(counts.entries())
       .map(([category, count]) => ({ category, color: colorMap.get(category)!, count }))
       .sort((a, b) => b.count - a.count);
-    setLegend(entries.slice(0, 10));
     setCategoryStats(entries);
   }, [flushAiHighlightSource]);
 
   // Re-applies the hidden-category set to every category-aware layer's
-  // filter. Runs on mount/mapReady and whenever the checklist changes Ã¢â‚¬â€
+  // filter. Runs on mount/mapReady and whenever the checklist changes —
   // client-side only, so toggling a category is instant and never refetches.
   // Deliberately does NOT gate on map.isStyleLoaded(): that flag can be
   // transiently false while tiles are still loading, and this effect only
-  // re-runs when hiddenCategories itself changes Ã¢â‚¬â€ a bail-out here would
+  // re-runs when hiddenCategories itself changes — a bail-out here would
   // silently drop the filter update with no later retry (the same failure
   // mode fixed earlier for the raster-overlay removal path).
   useEffect(() => {
@@ -3096,7 +3134,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     if (map.getSource(sourceId)) map.removeSource(sourceId);
 
     const [west, south, east, north] = overlay.bounds;
-    const rasterSettings = resolveRasterSettings(rasterSettingsRef.current[dataset.id]);
+    const rasterSettings = effectiveRasterSettings(dataset, rasterSettingsRef.current[dataset.id]);
     const url = rasterPreviewUrl(dataset.id, rasterSettings);
     map.addSource(sourceId, {
       type: "image",
@@ -3111,7 +3149,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
   }, []);
 
   // Deliberately does NOT gate on map.isStyleLoaded() the way addRasterOverlay
-  // does Ã¢â‚¬â€ that check can be transiently false while tiles are still loading,
+  // does — that check can be transiently false while tiles are still loading,
   // and skipping a removal then leaves the raster permanently stuck on the
   // map with no user-facing way to clear it (deselecting again is a no-op
   // since app state already considers it removed). getLayer/getSource are
@@ -3205,10 +3243,13 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     datasetId: string,
     patch: Partial<RasterDisplaySettings>
   ) => {
-    const nextSettings = resolveRasterSettings({
-      ...rasterSettingsRef.current[datasetId],
-      ...patch,
-    });
+    const dataset = datasets.find((row) => row.id === datasetId);
+    // DSM/DTM are locked to Enhanced at the rendering layer — any incoming
+    // patch (including stale/incompatible values) is coerced, never stored
+    // as RGB/Grayscale for an elevation raster.
+    const nextSettings = dataset
+      ? effectiveRasterSettings(dataset, { ...rasterSettingsRef.current[datasetId], ...patch })
+      : resolveRasterSettings({ ...rasterSettingsRef.current[datasetId], ...patch });
     const previousSettings = resolveRasterSettings(rasterSettingsRef.current[datasetId]);
     rasterSettingsRef.current = { ...rasterSettingsRef.current, [datasetId]: nextSettings };
     setRasterSettingsById(rasterSettingsRef.current);
@@ -3216,7 +3257,6 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
       previousSettings.colorMode !== nextSettings.colorMode &&
       rasterLayersRef.current.has(datasetId)
     ) {
-      const dataset = datasets.find((row) => row.id === datasetId);
       if (dataset) addRasterOverlay(dataset);
     }
     applyRasterDisplaySettings(datasetId, nextSettings);
@@ -3224,7 +3264,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
 
   // Restores a dataset selection that was persisted by the parent (e.g.
   // the user picked a dataset, switched to the Datasets/Analytics tab,
-  // then came back to Map) ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â re-applies the raster overlay(s) and scopes
+  // then came back to Map) — re-applies the raster overlay(s) and scopes
   // the feature fetch, without flying the camera anywhere, since this is
   // a passive restore, not a fresh click.
   // Also acts as a standing reconciliation pass: any raster layer left on
@@ -3245,13 +3285,13 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     filterRef.current = { datasetIds: activeDatasetIds };
     scheduleFetch();
     // Only re-run when the map/datasets actually become ready or the
-    // persisted id list itself changes ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â not on every addRasterOverlay
+    // persisted id list itself changes — not on every addRasterOverlay
     // identity change, which would fight with toggleDataset's own call.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mapReady, datasets, activeDatasetIds]);
 
   // Load persisted spatial-audit findings for whichever dataset(s) are
-  // active. This is independent of the normal feature fetch Ã¢â‚¬â€ anomalies are
+  // active. This is independent of the normal feature fetch — anomalies are
   // audit-run results, not viewport-scoped features, so no debounce needed.
   useEffect(() => {
     if (activeDatasetIds.length === 0) { setAnomalies([]); return; }
@@ -3409,7 +3449,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
   useEffect(() => { classMapRef.current = classMap; }, [classMap]);
 
   // Primary feature id each anomaly type is "about", for the hover
-  // tooltip's AI-detected lookup Ã¢â‚¬â€ pole rows carry every cluster member in
+  // tooltip's AI-detected lookup — pole rows carry every cluster member in
   // feature_ids, so "this_feature_id" (not feature_ids[0]) is the row's own
   // pole; drain/manhole rows are keyed by their metadata id for the same
   // reason (feature_ids[0] happens to already match those two, but reading
@@ -3456,7 +3496,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
   // only the active mode's finding type (and hidden entirely for Drains,
   // since that mode communicates through polygon fill, not points).
   // No isStyleLoaded() gate, same reasoning as the category-filter effect
-  // above Ã¢â‚¬â€ this only re-runs on mode/anomaly changes, so a transient
+  // above — this only re-runs on mode/anomaly changes, so a transient
   // false here would drop the update with no later retry.
   useEffect(() => {
     const map = mapRef.current;
@@ -3499,7 +3539,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mapReady, detectionMode, anomalies, aiOverlayEnabled]);
 
-  // Manholes mode is only useful alongside the geotagged photo evidence Ã¢â‚¬â€
+  // Manholes mode is only useful alongside the geotagged photo evidence —
   // auto-include the image dataset so its site-photo pins appear without
   // requiring a second manual click, without flying the camera anywhere.
   useEffect(() => {
@@ -3513,7 +3553,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
 
   const toggleDetectionMode = useCallback((mode: Exclude<DetectionMode, null>) => {
     setDetectionMode((current) => (current === mode ? null : mode));
-    // Every fresh mode selection starts with the AI overlay off Ã¢â‚¬â€ isolate
+    // Every fresh mode selection starts with the AI overlay off — isolate
     // the category first, plain colors, then the user explicitly turns AI
     // on as a separate step.
     setAiOverlayEnabled(false);
@@ -3525,7 +3565,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
 
   // The Data Sources panel is explicitly multi-select ("multiple can be
   // shown together"), so the audit must run for every currently-active
-  // dataset, not just the first one Ã¢â‚¬â€ otherwise a second/duplicate dataset
+  // dataset, not just the first one — otherwise a second/duplicate dataset
   // toggled on alongside an already-audited one silently never gets its
   // own spatial_anomalies rows (AI Detection then looks "broken" for it,
   // when really its audit was simply never triggered).
@@ -3535,7 +3575,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     setAuditError(null);
     // One dataset failing (e.g. a stale id left over from a deleted+
     // re-uploaded dataset) must not stop the rest of the batch from being
-    // audited Ã¢â‚¬â€ collect failures and surface them together at the end
+    // audited — collect failures and surface them together at the end
     // instead of aborting on the first one.
     const failures: string[] = [];
     for (const datasetId of datasetIds) {
@@ -3690,7 +3730,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
   }, [datasets, mapReady, onActiveDatasetsChange, onFeatureSelect, onFocusHandled, pendingFocusFeatureId, scheduleFetch]);
 
   // Selecting a dataset toggles it in/out of the active set rather than
-  // replacing it ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â so a raster orthophoto and its companion GDB vector
+  // replacing it — so a raster orthophoto and its companion GDB vector
   // layer over the same area can be viewed together, not just one at a
   // time. Clearing the set (or changing the topbar filter) goes back to
   // the global ward/category/severity view.
@@ -3764,31 +3804,22 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     ref,
     () => ({
       clearDatasets: clearAllDatasets,
-      toggleMeasure: () => toggleMeasureActive(),
-      isMeasureActive: () => measureActiveRef.current,
     }),
-    [clearAllDatasets, toggleMeasureActive]
+    [clearAllDatasets]
   );
-
-  // Mirror the authoritative Measure visibility up to any parent (the top
-  // navigation bar) so its button can reflect the active state without owning
-  // a second copy of the real state.
-  useEffect(() => {
-    onMeasureChange?.(measureActive);
-  }, [measureActive, onMeasureChange]);
 
   useEffect(() => {
     // Only a *real* ward/category/severity constraint should override an
-    // active dataset selection ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â clicking Apply/Reset with everything left
+    // active dataset selection — clicking Apply/Reset with everything left
     // at "all wards"/"all categories"/blank severity is a no-op and must
     // not silently clear the dataset(s) currently shown on the map. A real
     // constraint, though, is an explicit signal to leave dataset isolation
-    // and go back to the global filtered view for the vector FEATURES ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â
+    // and go back to the global filtered view for the vector FEATURES —
     // otherwise a stale dataset selection could silently AND-combine with
     // it into an empty/wrong result.
     //
-    // A raster image overlay is NOT a filterable feature, though ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â it's a
-    // visual backdrop with no ward/category/severity of its own ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â so it
+    // A raster image overlay is NOT a filterable feature, though — it's a
+    // visual backdrop with no ward/category/severity of its own — so it
     // deliberately stays on the map here. It's only removed when its own
     // dataset card is clicked again or "Show all" is pressed explicitly.
     const hasRealFilter = Boolean(
@@ -3802,7 +3833,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     filterRef.current = filter;
     if (mapRef.current) scheduleFetch();
     // activeDatasetIds/scheduleFetch are read for their latest value here
-    // but must not retrigger this effect on their own ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â dataset-selection
+    // but must not retrigger this effect on their own — dataset-selection
     // changes are already handled directly by
     // toggleDataset/clearAllDatasets.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -3818,7 +3849,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
       minZoom: 4,
       // Raster/image overlays (aerial TIFs etc.) have no tile pyramid of
       // their own, so they can be zoomed in far past where basemap tiles
-      // stop looking sharp ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â 20 was capping that closer inspection even
+      // stop looking sharp — 20 was capping that closer inspection even
       // with the basemap turned off. MapLibre's practical ceiling is ~24.
       maxZoom: 24,
       attributionControl: false,
@@ -3834,12 +3865,12 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     map.on("zoom", handleZoom);
 
     // Fixed-size scale label (replaces MapLibre's built-in ScaleControl,
-    // whose bar DOM element resizes on every zoom Ã¢â‚¬â€ correct for a real
+    // whose bar DOM element resizes on every zoom — correct for a real
     // scale bar, but made the bottom-right status chip visibly grow/shrink,
     // which the fixed-width box design below cannot show a proportional
     // line for anyway). Measures the geographic distance spanned by a fixed
     // 100px sample near the map's horizontal center, then rounds it to the
-    // nearest "nice" cartographic value (200 m, 1 km, 2 km, ...) Ã¢â‚¬â€ the same
+    // nearest "nice" cartographic value (200 m, 1 km, 2 km, ...) — the same
     // logic a scale bar uses internally, just rendered as text instead of a
     // proportional-width line.
     const SCALE_SAMPLE_PX = 100;
@@ -3854,7 +3885,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
       setMapScaleLabel(pickNiceScaleLabel(metersPerPixel, SCALE_SAMPLE_PX));
     };
     updateScaleLabel();
-    // zoomend/moveend (not the continuous "zoom"/"move") Ã¢â‚¬â€ a text label
+    // zoomend/moveend (not the continuous "zoom"/"move") — a text label
     // only needs to be accurate once the camera settles, not on every
     // intermediate animation frame, so this avoids the extra render churn
     // a proportional bar's live-resize would otherwise require.
@@ -3873,14 +3904,14 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     const handlePitch = () => setMapPitch(map.getPitch());
     map.on("pitch", handlePitch);
 
-    // Live cursor coordinate readout Ã¢â‚¬â€ map-wide (not tied to feature
+    // Live cursor coordinate readout — map-wide (not tied to feature
     // layers), so it works over empty map area too, not just on features.
     // Also drives the ruler's "rubber band" preview line while the second
     // point of a measurement hasn't been placed yet.
     //
     // The bottom-right lng/lat readout uses event.lngLat directly (correct
     // for a real pointer event). The ruler preview additionally stores the
-    // cursor's *screen* pixel (event.point Ã¢â‚¬â€ map-container-relative, the
+    // cursor's *screen* pixel (event.point — map-container-relative, the
     // same space map.unproject expects) so it can be re-resolved against a
     // *later* camera state from the "render" handler below, without ever
     // reading clientX/clientY, offsetX/offsetY, or a cached bounding rect.
@@ -3899,8 +3930,8 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
       setCursorLngLat(null);
       latestPointerPointRef.current = null;
     };
-    // Fires on every animation frame the camera changes Ã¢â‚¬â€ pan, wheel/
-    // control/pinch zoom, and programmatic flyTo/easeTo/fitBounds Ã¢â‚¬â€ so the
+    // Fires on every animation frame the camera changes — pan, wheel/
+    // control/pinch zoom, and programmatic flyTo/easeTo/fitBounds — so the
     // preview stays synced even though a stationary cursor generates no
     // new "mousemove". Using "render" instead of "moveend"/"zoomend" avoids
     // the lag/snap-at-the-end behavior the task explicitly calls out.
@@ -3923,7 +3954,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
         type: "circle",
         source: FEATURE_SOURCE,
         // raster_pixel features are the raster reader's internal sample
-        // grid (kept for the feature table / severity / AI summary) ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â the
+        // grid (kept for the feature table / severity / AI summary) — the
         // actual image overlay already shows the raster visually, so the
         // grid of dots on top of it would just be redundant clutter.
         // site_photo features get their own camera-icon symbol layer below
@@ -4028,7 +4059,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
       ];
       void runFetch();
 
-      // AI highlight overlay Ã¢â‚¬â€ separate GeoJSON source so it never
+      // AI highlight overlay — separate GeoJSON source so it never
       // interferes with the normal feature source or its colour expressions.
       map.addSource(AI_HIGHLIGHT_SOURCE, {
         type: "geojson",
@@ -4048,7 +4079,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
           "circle-stroke-width": 2,
         },
       });
-      // Redundant poles Ã¢â‚¬â€ red circle on top of normal circle
+      // Redundant poles — red circle on top of normal circle
       map.addLayer({
         id: LAYER_AI_REDUNDANT,
         type: "circle",
@@ -4063,7 +4094,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
         },
       });
 
-      // Spatial Audit Engine overlay Ã¢â‚¬â€ persisted anomaly findings, kept as
+      // Spatial Audit Engine overlay — persisted anomaly findings, kept as
       // its own source/layer so it survives independently of the normal
       // feature fetch/AI-highlight overlay lifecycles.
       map.addSource(ANOMALY_SOURCE, {
@@ -4240,7 +4271,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
       const handleFeatureClick = (e: MapMouseEvent) => {
         // While a measurement tool is actually armed/drawing, clicks drop
         // measurement points instead of selecting a feature/opening its
-        // photo Ã¢â‚¬â€ otherwise the two click handlers would both fire for the
+        // photo — otherwise the two click handlers would both fire for the
         // same click. Once Escape deactivates the tool (panel still open),
         // this must stop applying so ordinary feature clicks work again.
         if (placemarkModeRef.current || streetPickModeRef.current || streetPickConsumedRef.current || isMeasureInputActive()) return;
@@ -4281,7 +4312,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
       };
       const handleFeatureHover = (e: MapMouseEvent) => {
         // While a measurement tool is actually armed/drawing, ordinary
-        // data-layer hover must not open the feature tooltip Ã¢â‚¬â€ otherwise
+        // data-layer hover must not open the feature tooltip — otherwise
         // hovering a feature mid-measurement pops up its info card over the
         // map. The measurement crosshair/rubber-band handlers own the
         // cursor and pointer feedback instead (see handleFeatureMouseEnter/
@@ -4347,7 +4378,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
         setStreetViewTarget({ latitude: event.lngLat.lat, longitude: event.lngLat.lng });
       });
 
-      // Ruler / measurement overlay Ã¢â‚¬â€ own GeoJSON sources so it never
+      // Ruler / measurement overlay — own GeoJSON sources so it never
       // touches the feature/AI sources above. Fill renders below the
       // outline, which renders below the radius line, which renders below
       // the vertex points.
@@ -4390,8 +4421,8 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
       // The single registered click handler dispatches on the authoritative
       // `measurePhaseRef` state machine (never a stale closure, since this
       // listener is registered once here for the lifetime of the map):
-      //   idle    Ã¢â€ â€™ begin a fresh measurement from this vertex
-      //   drawing Ã¢â€ â€™ Line/Circle: this is the final (2nd) vertex; Path/Polygon:
+      //   idle    → begin a fresh measurement from this vertex
+      //   drawing → Line/Circle: this is the final (2nd) vertex; Path/Polygon:
       //             append another vertex.
       map.on("click", (e: MapMouseEvent) => {
         if (placemarkModeRef.current || streetPickModeRef.current || streetPickConsumedRef.current || !measureActiveRef.current) return;
@@ -4405,7 +4436,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
         // zero-length / NaN measurement, so it is ignored and we keep
         // awaiting the real end. A Circle with a small radius is still a
         // perfectly valid (tiny) circle, so its second click must ALWAYS
-        // complete Ã¢â‚¬â€ otherwise the boundary endpoint intermittently never
+        // complete — otherwise the boundary endpoint intermittently never
         // appears. (Only a literally-zero radius, i.e. the second click
         // on the exact center, is degenerate, and that is harmless.)
         if (phase === "drawing" && !isMultiPoint) {
@@ -4421,7 +4452,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
           return;
         }
 
-        // Extra vertex for an in-progress Path / Polygon Ã¢â‚¬â€ stay in "drawing".
+        // Extra vertex for an in-progress Path / Polygon — stay in "drawing".
         if (phase === "drawing" && isMultiPoint) {
           const points: [number, number][] = [...measurePointsRef.current, coord];
           measurePointsRef.current = points;
@@ -4432,7 +4463,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
         }
 
         // Idle: begin a brand-new measurement from this vertex. The previously
-        // completed shape (if any) is replaced Ã¢â‚¬â€ this app's single-shot UX.
+        // completed shape (if any) is replaced — this app's single-shot UX.
         // An immediate preview tick makes the rubber-band line appear even
         // before the cursor next moves.
         if (phase === "idle") {
@@ -4450,7 +4481,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
       // Right-click finishes an in-progress Path/Polygon (Google Earth
       // Pro's Path/Polygon completion gesture). The browser's native
       // context menu must not appear while a multi-point shape is actively
-      // being drawn Ã¢â‚¬â€ MapMouseEvent.preventDefault() only suppresses
+      // being drawn — MapMouseEvent.preventDefault() only suppresses
       // MapLibre's own internal handlers (drag-rotate, box-zoom, etc.), not
       // the browser context menu, so the underlying DOM event needs its
       // own preventDefault() too. Outside active multi-point drawing,
@@ -4464,7 +4495,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
         e.preventDefault();
         e.originalEvent.preventDefault();
         // A single placed vertex isn't a valid path/polygon (needs >= 2 /
-        // >= 3) Ã¢â‚¬â€ right-clicking at that point cancels the incomplete
+        // >= 3) — right-clicking at that point cancels the incomplete
         // shape entirely rather than silently doing nothing.
         if (measurePointsRef.current.length === 1) {
           clearMeasurement();
@@ -5180,7 +5211,6 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
           referenceLayers={referenceLayers}
           onToggleReferenceLayer={handleToggleReferenceLayer}
         />
-        <MapLegend entries={legend} />
         <HoverTooltip hover={hover} />
         {selectedAnomaly && (
           <AnomalyAlertCard
@@ -5192,7 +5222,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
         )}
         {placemarkMode && !placemarkDraft && (
           <div className="placemark-pick-hint" data-testid="placemark-pick-hint">
-            Click the map to place a pin Ã‚Â· right-click or Esc to cancel
+            Click the map to place a pin · right-click or Esc to cancel
           </div>
         )}
         {coordinateSearchOpen && (
@@ -5205,7 +5235,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
         )}
         {placemarkNotice && (
           <div className="placemark-success-toast" role="status" aria-live="polite">
-            <span aria-hidden="true">Ã¢Å“â€œ</span>
+            <span aria-hidden="true">✓</span>
             {placemarkNotice}
           </div>
         )}
@@ -5264,22 +5294,40 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
           maxZoom={24}
           onChange={(next) => mapRef.current?.setZoom(next)}
         />
-        <LookAroundCompass
-          bearing={mapBearing}
-          pitch={mapPitch}
-          lookAroundActive={lookAroundActive}
-          mapReady={mapReady}
-          onRotate={(next) => mapRef.current?.setBearing(next)}
-          onResetNorth={() => mapRef.current?.easeTo({ bearing: 0, duration: 300 })}
-          onStep={(deltaBearing) => mapRef.current?.setBearing(mapRef.current.getBearing() + deltaBearing)}
-          onPitchStep={(deltaPitch) => {
-            const map = mapRef.current;
-            if (!map) return;
-            map.setPitch(Math.min(MAX_MAP_PITCH, Math.max(0, map.getPitch() + deltaPitch)));
-          }}
-          onToggleLookAround={toggleLookAround}
-          onResetCamera={resetLookAroundCamera}
-        />
+        <div className="map-side-controls">
+          <LookAroundCompass
+            bearing={mapBearing}
+            pitch={mapPitch}
+            lookAroundActive={lookAroundActive}
+            mapReady={mapReady}
+            onRotate={(next) => mapRef.current?.setBearing(next)}
+            onResetNorth={() => mapRef.current?.easeTo({ bearing: 0, duration: 300 })}
+            onStep={(deltaBearing) => mapRef.current?.setBearing(mapRef.current.getBearing() + deltaBearing)}
+            onPitchStep={(deltaPitch) => {
+              const map = mapRef.current;
+              if (!map) return;
+              map.setPitch(Math.min(MAX_MAP_PITCH, Math.max(0, map.getPitch() + deltaPitch)));
+            }}
+            onToggleLookAround={toggleLookAround}
+            onResetCamera={resetLookAroundCamera}
+          />
+          <button
+            type="button"
+            className={`map-measure-btn${measureActive ? " map-measure-btn--active" : ""}`}
+            onClick={toggleMeasureActive}
+            title="Measure"
+            aria-label="Open Measure tools"
+            aria-pressed={measureActive}
+            data-testid="topbar-measure"
+          >
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <rect x="2.5" y="8" width="19" height="8" rx="1.5" transform="rotate(-45 12 12)" />
+              <g transform="rotate(-45 12 12)">
+                <path d="M6 8v3M9.5 8v2M13 8v3M16.5 8v2" />
+              </g>
+            </svg>
+          </button>
+        </div>
         {manholeRecommendOpen && (
           <ManholeRecommendCard
             answer={manholeRecommendAnswer}
@@ -5318,7 +5366,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
         )}
         {streetPickMode && (
           <div className="street-pick-hint" data-testid="street-pick-hint">
-            Click a road location to open the nearest 360Ã‚Â° Street View
+            Click a road location to open the nearest 360° Street View
           </div>
         )}
         {activeDatasetIds.length === 0 && !filter.ward && !filter.category && (filter.categories?.length ?? 0) === 0 && filter.severity === undefined && (
@@ -5554,9 +5602,6 @@ function CommandCenter({
             selectedLayerDatasetId={visualizationOpen ? visualization.selectedDatasetId : null}
             onOpenLayer={openVisualizationForDataset}
             flyError={flyError}
-            onRunAudit={onRunAudit}
-            auditRunning={auditRunning}
-            auditError={auditError}
           />
         )}
 
@@ -5582,7 +5627,7 @@ function CommandCenter({
             <div className="floating-map-panel__dragbar" onPointerDown={visualizationDrag.onDragStart}>
               <span>Geometry Styling</span>
               <small>Drag to reposition</small>
-              <button type="button" onClick={() => setVisualizationOpen(false)} aria-label="Close Geometry Styling">Ãƒâ€”</button>
+              <button type="button" onClick={() => setVisualizationOpen(false)} aria-label="Close Geometry Styling">×</button>
             </div>
             <VisualizationPanel {...visualization} />
           </div>,
@@ -5670,7 +5715,7 @@ function CommandCenter({
                   onClick={() => setLayerQuery("")}
                   aria-label="Clear layer search"
                 >
-                  Ãƒâ€”
+                  ×
                 </button>
               )}
             </div>
@@ -5734,6 +5779,9 @@ function CommandCenter({
             </div>
           </div>
         )}
+      </div>
+      <div className="command-center__footer">
+        <SupportingFilesImport />
       </div>
       {layerMenu && createPortal(
         <div
@@ -5883,7 +5931,7 @@ function VisualizationPanel({
         <>
           <div className="visualization-panel__dataset" title={selectedDataset.name}>{selectedDataset.name}</div>
 
-          {loading && <div className="visualization-panel__loading"><span className="visualization-panel__spinner" />Profiling geometry and fieldsÃ¢â‚¬Â¦</div>}
+          {loading && <div className="visualization-panel__loading"><span className="visualization-panel__spinner" />Profiling geometry and fields…</div>}
           {error && !loading && <div className="visualization-panel__error">Could not load visualization profile: {error}</div>}
 
           {manifest && !loading && (
@@ -5918,7 +5966,7 @@ function VisualizationPanel({
                   <button type="button" onClick={onResetStyle}>Reset</button>
                 </div>
 
-                {layerLoading && <div className="visualization-layer-runtime"><span className="visualization-panel__spinner" />Loading visible geometryÃ¢â‚¬Â¦</div>}
+                {layerLoading && <div className="visualization-layer-runtime"><span className="visualization-panel__spinner" />Loading visible geometry…</div>}
                 {layerError && <div className="visualization-panel__error">Geometry load failed: {layerError}</div>}
                 {!layerLoading && !layerError && (
                   <div className="visualization-layer-runtime visualization-layer-runtime--ok">
@@ -5948,7 +5996,7 @@ function VisualizationPanel({
                       {eligibleFields.length === 0 && <option value="">No compatible field</option>}
                       {eligibleFields.map((candidate) => (
                         <option key={candidate.name} value={candidate.name}>
-                          {candidate.name} Ã‚Â· {candidate.populated_count.toLocaleString()} populated
+                          {candidate.name} · {candidate.populated_count.toLocaleString()} populated
                         </option>
                       ))}
                     </select>
@@ -6072,7 +6120,7 @@ function MapControls({
 
   // MapLibre's WebGL canvas can composite on its own GPU layer that paints
   // over positioned overlay siblings regardless of z-index/stacking-context
-  // CSS (confirmed via elementFromPoint Ã¢â‚¬â€ the canvas rendered on top of a
+  // CSS (confirmed via elementFromPoint — the canvas rendered on top of a
   // correctly z-indexed, position:absolute dropdown). Portaling the open
   // dropdown straight to document.body, positioned with fixed coordinates
   // computed from the button's own rect, sidesteps the map's DOM subtree
@@ -6294,7 +6342,7 @@ function MapControls({
               <div className="ai-detection-menu__dragbar" onPointerDown={aiMenuDrag.onDragStart}>
                 <span>AI Detection</span>
                 <small>Drag</small>
-                <button type="button" onClick={() => setMenuOpen(false)} aria-label="Close AI Detection">Ãƒâ€”</button>
+                <button type="button" onClick={() => setMenuOpen(false)} aria-label="Close AI Detection">×</button>
               </div>
               {(["poles", "drains", "manholes"] as const).map((mode) => (
                 <button
@@ -6345,7 +6393,7 @@ function MapControls({
               <path d="M4 5.5A2.5 2.5 0 0 1 6.5 3H18a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6.5A2.5 2.5 0 0 1 4 18.5v-13Z" />
               <path d="M8 3v18M12 8h5M12 12h5" />
             </svg>
-            My Places{placemarkCount > 0 ? ` Ã‚Â· ${placemarkCount}` : ""}
+            My Places{placemarkCount > 0 ? ` · ${placemarkCount}` : ""}
           </button>
           <button
             type="button"
@@ -6402,8 +6450,8 @@ function formatAttrValue(v: unknown): string {
 
 function HoverTooltip({ hover }: { hover: HoverInfo | null }) {
   if (!hover) return null;
-  // Only show attributes that actually have a value ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â most survey rows
-  // leave many condition/status fields blank, and a tooltip full of "ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â"
+  // Only show attributes that actually have a value — most survey rows
+  // leave many condition/status fields blank, and a tooltip full of "—"
   // placeholders is noise, not information.
   const isPhoto = hover.category === "site_photo";
   const isPanorama = isPhoto && hover.attributes.is_360 === true;
@@ -6417,9 +6465,9 @@ function HoverTooltip({ hover }: { hover: HoverInfo | null }) {
   });
 
   const aiBadge = hover.aiStatus === "redundant"
-    ? { text: "Ã¢Å¡Â  AI: Recommended for removal", bg: "#ef4444", color: "#fff" }
+    ? { text: "⚠ AI: Recommended for removal", bg: "#ef4444", color: "#fff" }
     : hover.aiStatus === "needed"
-    ? { text: "Ã¢Å“â€œ AI: Critical Ã¢â‚¬â€ junction / corner / relay", bg: "#22c55e", color: "#fff" }
+    ? { text: "✓ AI: Critical — junction / corner / relay", bg: "#22c55e", color: "#fff" }
     : null;
 
   return (
@@ -6431,9 +6479,9 @@ function HoverTooltip({ hover }: { hover: HoverInfo | null }) {
       <div className="map__tooltip-row">
         <span>{hover.category}</span>
         {isPanorama ? (
-          <span className="map__tooltip-sev">Ã°Å¸Å’Â 360Ã‚Â° Ã¢â‚¬â€ click to view</span>
+          <span className="map__tooltip-sev">🌐 360° — click to view</span>
         ) : isPhoto ? (
-          <span className="map__tooltip-sev">Ã°Å¸â€œÂ· click to view</span>
+          <span className="map__tooltip-sev">📷 click to view</span>
         ) : (
           <span className="map__tooltip-sev">sev {hover.severity.toFixed(2)}</span>
         )}
@@ -6489,12 +6537,12 @@ function formatDms(value: number, positiveSuffix: string, negativeSuffix: string
   const minutesFull = (abs - degrees) * 60;
   const minutes = Math.floor(minutesFull);
   const seconds = (minutesFull - minutes) * 60;
-  return `${degrees}Ã‚Â°${String(minutes).padStart(2, "0")}'${seconds.toFixed(2).padStart(5, "0")}" ${suffix}`;
+  return `${degrees}°${String(minutes).padStart(2, "0")}'${seconds.toFixed(2).padStart(5, "0")}" ${suffix}`;
 }
 
 /** Bottom-right status strip: live cursor coordinates plus a fixed-size
  * scale/distance chip. Both boxes share one positioned wrapper so they can
- * never drift apart or overlap independently Ã¢â‚¬â€ the distance box's width
+ * never drift apart or overlap independently — the distance box's width
  * never changes with its text ("200 m" vs "2 km"), only the coordinate
  * box's content changes size (as the cursor moves over water/edge cases
  * that shorten the DMS string), which is why the distance box sits fixed
@@ -6518,7 +6566,7 @@ function MapStatusBar({
   if (!lngLat && !scaleLabel && !datasetName) return null;
   const surveyLabel = surveyDate
     ? new Intl.DateTimeFormat(undefined, { dateStyle: "medium" }).format(new Date(surveyDate))
-    : "Ã¢â‚¬â€";
+    : "—";
   return (
     <div className="map__status-bar map__status-bar--earth" data-testid="map-status-bar">
       <div className="map__status-box map__dataset-readout" title={datasetName ?? "No active dataset"}>
@@ -6531,7 +6579,7 @@ function MapStatusBar({
         </div>
       )}
       <div className="map__status-box map__elevation-readout">
-        elev&nbsp;{elevation === null ? "Ã¢â‚¬â€" : `${Math.round(elevation)} m`}
+        elev&nbsp;{elevation === null ? "—" : `${Math.round(elevation)} m`}
       </div>
       <div className="map__status-box map__eye-altitude-readout">
         eye alt&nbsp;{formatMetricDistance(eyeAltitudeMeters)}
@@ -6545,8 +6593,8 @@ function MapStatusBar({
   );
 }
 
-/** Google Earth Pro-style zoom control, laid out as a horizontal bar: a "Ã¢Ë†â€™"
- * button, a draggable slider track, and a "+" button. Purely presentational Ã¢â‚¬â€
+/** Google Earth Pro-style zoom control, laid out as a horizontal bar: a "−"
+ * button, a draggable slider track, and a "+" button. Purely presentational —
  * the map's zoom is the single source of truth (passed in via `zoom`), and
  * every interaction (click ends, drag, track click) just calls `onChange`;
  * MapCanvas is the one that actually calls `map.setZoom()`. */
@@ -6598,7 +6646,7 @@ function ZoomSlider({
         aria-label="Zoom out"
         data-testid="map-zoom-out"
       >
-        Ã¢Ë†â€™
+        −
       </button>
       <div
         ref={trackRef}
@@ -6629,24 +6677,6 @@ function ZoomSlider({
   );
 }
 
-function MapLegend({ entries }: { entries: LegendEntry[] }) {
-  if (entries.length === 0) return null;
-  return (
-    <div className="map__legend" data-testid="map-legend">
-      <div className="map__legend-title">Loaded Categories</div>
-      {entries.map((e) => (
-        <div className="map__legend-row" key={e.category}>
-          <span className="map__legend-swatch" style={{ background: e.color }} />
-          <span className="map__legend-label">{e.category}</span>
-          <span className="map__legend-count">{e.count}</span>
-        </div>
-      ))}
-    </div>
-  );
-}
-
-
-
 function RulerPanel({
   tab, onChangeTab,
   lengthMeters, areaSqMeters, radiusMeters, heading,
@@ -6676,7 +6706,7 @@ function RulerPanel({
   const displayRadius = metersToUnit(radiusMeters, unit).toFixed(2);
   const panelRef = useRef<HTMLDivElement | null>(null);
   // Drag offset (pointer position relative to the panel's top-left corner,
-  // in viewport/client coordinates Ã¢â‚¬â€ the same space `position: fixed` and
+  // in viewport/client coordinates — the same space `position: fixed` and
   // clientX/clientY both use) captured on pointerdown so the panel doesn't
   // jump to re-center under the cursor on the first move event.
   const dragOffsetRef = useRef<{ x: number; y: number } | null>(null);
@@ -6696,12 +6726,12 @@ function RulerPanel({
     if ((e.target as HTMLElement).closest(".ruler-panel__close")) return;
     const rect = panelRef.current?.getBoundingClientRect();
     if (!rect) return;
-    // Grab offset in client (viewport) coordinates Ã¢â‚¬â€ matches the `position:
+    // Grab offset in client (viewport) coordinates — matches the `position:
     // fixed` + clientX/clientY space used below, so no other coordinate
     // system (page, offset, container-relative) is mixed in.
     dragOffsetRef.current = { x: e.clientX - rect.left, y: e.clientY - rect.top };
     // Pointer capture routes subsequent move/up events to this element even
-    // if the cursor leaves it Ã¢â‚¬â€ no window-level listeners to add/clean up.
+    // if the cursor leaves it — no window-level listeners to add/clean up.
     e.currentTarget.setPointerCapture(e.pointerId);
     dragPointerIdRef.current = e.pointerId;
     e.preventDefault();
@@ -6752,7 +6782,7 @@ function RulerPanel({
 
   // The base CSS already sets `position: fixed` (see .ruler-panel) so the
   // element's containing block is the viewport both before and during a
-  // drag Ã¢â‚¬â€ only left/top/transform are overridden here once the user has
+  // drag — only left/top/transform are overridden here once the user has
   // actually moved it, using the same client-coordinate space throughout.
   const style: React.CSSProperties | undefined = position
     ? { top: position.y, left: position.x, transform: "none" }
@@ -6775,7 +6805,7 @@ function RulerPanel({
           aria-label="Close measure"
           data-testid="ruler-panel-close"
         >
-          Ã¢Å“â€¢
+          ✕
         </button>
       </div>
       <div className="ruler-panel__body">
