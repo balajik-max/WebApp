@@ -1,11 +1,11 @@
 """
-One-shot schema bootstrap + idempotent seed for the two v1 users.
+One-shot schema bootstrap + idempotent seed for the seeded users.
 
 * Creates every ORM table declared under `app.models`.
 * Ensures the GIST spatial index on `features.geom` exists with the exact
   name required by the spec (`idx_features_geom`).
-* Seeds an admin and an architect user, updating their password hash if
-  the value in the environment has changed.
+* Seeds the admin, architect and commissioner users, updating their password
+  hash if the value in the environment has changed.
 """
 from __future__ import annotations
 
@@ -162,7 +162,7 @@ async def init_database() -> None:
     # 2. Ensure named spatial index exists (spec requirement).
     await _ensure_spatial_index()
 
-    # 3. Seed v1 users.
+    # 3. Seed application users.
     async with SessionLocal() as session:
         await _seed_user(
             session,
@@ -173,10 +173,24 @@ async def init_database() -> None:
         )
         await _seed_user(
             session,
-            email=settings.architect_email,
-            password=settings.architect_password,
-            name=settings.architect_name,
-            role=UserRole.ARCHITECT,
+            email=settings.commissioner_email,
+            password=settings.commissioner_password,
+            name=settings.commissioner_name,
+            role=UserRole.COMMISSIONER,
+        )
+        await _seed_user(
+            session,
+            email=settings.aee_email,
+            password=settings.aee_password,
+            name=settings.aee_name,
+            role=UserRole.AEE,
+        )
+        await _seed_user(
+            session,
+            email=settings.ae_email,
+            password=settings.ae_password,
+            name=settings.ae_name,
+            role=UserRole.AE,
         )
         await session.commit()
 

@@ -3,8 +3,10 @@ import { useAuth } from "../context/AuthContext";
 import { useTheme } from "../context/ThemeContext";
 
 const ROLE_LABELS: Record<string, string> = {
+  commissioner: "Commissioner",
+  aee: "AEE",
+  ae: "AE",
   admin: "Administrator",
-  architect: "City Architect",
 };
 
 function formatDate(iso: string | undefined): string {

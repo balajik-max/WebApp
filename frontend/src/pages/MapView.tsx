@@ -17,12 +17,18 @@ interface LayoutCtx {
   filter: FeatureFilter;
   selectedDatasets: DatasetRow[];
   setSelectedDatasets: (rows: DatasetRow[]) => void;
+  commandCenterMobileOpen: boolean;
+  setCommandCenterMobileOpen: (open: boolean) => void;
 }
 
 export function MapView() {
-  const { filter, selectedDatasets, setSelectedDatasets } =
-    useOutletContext<LayoutCtx>();
-
+  const {
+    filter,
+    selectedDatasets,
+    setSelectedDatasets,
+    commandCenterMobileOpen,
+    setCommandCenterMobileOpen,
+  } = useOutletContext<LayoutCtx>();
   const [selected, setSelected] = useState<UrbanFeature | null>(null);
   const [verificationTarget, setVerificationTarget] = useState<{
     feature: UrbanFeature;
@@ -83,6 +89,8 @@ export function MapView() {
         focusFeatureId={locateFeatureId}
         onFocusHandled={handleFeatureLocated}
         refreshToken={pointVerificationRefresh}
+        commandCenterMobileOpen={commandCenterMobileOpen}
+        onCommandCenterMobileOpenChange={setCommandCenterMobileOpen}
       />
 
       <ReportGenerator datasets={selectedDatasets} />
