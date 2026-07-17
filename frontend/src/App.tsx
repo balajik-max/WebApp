@@ -9,6 +9,7 @@ import { DatasetsView } from "./pages/DatasetsView";
 import { AnalyticsView } from "./pages/AnalyticsView";
 import { ProfileView } from "./pages/ProfileView";
 import { ActivityView } from "./pages/ActivityView";
+import { TasksView } from "./pages/TasksView";
 
 export default function App() {
   return (
@@ -30,6 +31,7 @@ export default function App() {
               <Route path="/datasets" element={<DatasetsView />} />
               <Route path="/analytics" element={<AnalyticsView />} />
               <Route path="/activity" element={<ActivityView />} />
+              <Route path="/tasks" element={<TasksView />} />
               <Route path="/profile" element={<ProfileView />} />
             </Route>
 
