@@ -3,10 +3,8 @@ import ReactMarkdown from "react-markdown";
 import { aiReport, type AiAnswer } from "../lib/ai";
 import type { DatasetRow } from "../lib/workflow";
 
-interface Props {
+interface ReportGeneratorProps {
   datasets: DatasetRow[];
-  collapsed?: boolean;
-  onToggleCollapsed?: () => void;
 }
 
 /** Picks the scope for the report: prefer the ward of the first selected
@@ -20,27 +18,18 @@ function reportScope(datasets: DatasetRow[]): { ward?: string; dataset_id?: stri
   return { dataset_id: first.id, label: first.name };
 }
 
-const SUPPORTING_FILE_ACCEPT = ".pdf,.txt,.csv";
-
-export function WardReportPanel({ datasets, collapsed = false, onToggleCollapsed }: Props) {
+/** Floating "Generate Report" trigger + popup, mirroring the AiAssistant
+ * fab/panel pattern (button bottom-right, panel opens above it) — kept as
+ * a corner control rather than a fixed side panel now that the map no
+ * longer reserves a right-hand column for it. */
+export function ReportGenerator({ datasets }: ReportGeneratorProps) {
+  const [open, setOpen] = useState(false);
   const [report, setReport] = useState<AiAnswer | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [elapsed, setElapsed] = useState(0);
   const timerRef = useRef<number | null>(null);
-  const [supportingFiles, setSupportingFiles] = useState<File[]>([]);
-  const supportingFileInputRef = useRef<HTMLInputElement | null>(null);
   const scope = reportScope(datasets);
-
-  function addSupportingFiles(files: FileList | null) {
-    if (!files || files.length === 0) return;
-    setSupportingFiles((prev) => [...prev, ...Array.from(files)]);
-    if (supportingFileInputRef.current) supportingFileInputRef.current.value = "";
-  }
-
-  function removeSupportingFile(index: number) {
-    setSupportingFiles((prev) => prev.filter((_, i) => i !== index));
-  }
 
   const run = useCallback(async () => {
     if (!scope || loading) return;
@@ -70,169 +59,189 @@ export function WardReportPanel({ datasets, collapsed = false, onToggleCollapsed
   useEffect(() => () => { if (timerRef.current) clearInterval(timerRef.current); }, []);
 
   return (
-    <aside
-      className={`workspace-panel${collapsed ? " workspace-panel--collapsed" : ""}`}
-      data-testid="ward-report-panel"
-    >
-      <div className="workspace-panel__welcome" data-testid="ward-report-welcome">
-        <button
-          type="button"
-          className={`workspace-panel__collapse-btn${collapsed ? " workspace-panel__collapse-btn--collapsed" : ""}`}
-          onClick={onToggleCollapsed}
-          aria-label={collapsed ? "Expand AI planning panel" : "Collapse AI planning panel"}
-          aria-expanded={!collapsed}
-          data-testid="ward-report-collapse-toggle"
-        >
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-            <polyline points="9 6 15 12 9 18" />
+    <>
+      <button
+        type="button"
+        className={`report-fab${open ? " report-fab--open" : ""}`}
+        onClick={() => setOpen((v) => !v)}
+        data-testid="report-fab"
+        aria-label="Toggle neighbourhood report"
+      >
+        {open ? "×" : (
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <path d="M7 3h8l4 4v14a1 1 0 01-1 1H7a1 1 0 01-1-1V4a1 1 0 011-1z" />
+            <path d="M9 12h6M9 16h6M9 8h2" />
           </svg>
-        </button>
-        <span className="workspace-panel__welcome-text">Smart Urban Planning with AI</span>
-      </div>
+        )}
+      </button>
 
-      {!collapsed && (
-        <div className="workspace-panel__import" data-testid="ward-report-import">
-          <input
-            ref={supportingFileInputRef}
-            type="file"
-            accept={SUPPORTING_FILE_ACCEPT}
-            multiple
-            onChange={(e) => addSupportingFiles(e.target.files)}
-            data-testid="ward-report-import-input"
-            style={{ display: "none" }}
-          />
-          <button
-            type="button"
-            className="workspace-panel__import-btn"
-            onClick={() => supportingFileInputRef.current?.click()}
-            data-testid="ward-report-import-btn"
-          >
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" />
-            </svg>
-            Import supporting files
-          </button>
-          <div className="workspace-panel__import-hint">PDF, TXT, or CSV to support AI analysis</div>
+      {open && (
+        <section className="report-panel" data-testid="report-panel">
+          <header className="ai-panel__head">
+            <div>
+              <div className="ai-panel__eyebrow">Neighbourhood Report</div>
+              {scope?.wardName && (
+                <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: "0.06em", textTransform: "uppercase", color: "var(--accent)", marginBottom: 2 }}>
+                  Ward {scope.wardName}
+                </div>
+              )}
+              <h3 className="ai-panel__title" data-testid="ward-report-title">{scope?.label ?? "No dataset selected"}</h3>
+              {scope && (
+                <div className="ai-panel__sub">
+                  {datasets.length} dataset{datasets.length === 1 ? "" : "s"} selected · grounded in real survey data
+                </div>
+              )}
+            </div>
+          </header>
 
-          {supportingFiles.length > 0 && (
-            <ul className="workspace-panel__import-list">
-              {supportingFiles.map((file, i) => (
-                <li key={`${file.name}-${i}`} className="workspace-panel__import-item">
-                  <span className="workspace-panel__import-item-name" title={file.name}>{file.name}</span>
-                  <button
-                    type="button"
-                    className="workspace-panel__import-item-remove"
-                    onClick={() => removeSupportingFile(i)}
-                    aria-label={`Remove ${file.name}`}
-                  >
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                      <path d="M6 18L18 6M6 6l12 12" />
-                    </svg>
-                  </button>
-                </li>
-              ))}
-            </ul>
-          )}
-        </div>
-      )}
-
-      {!collapsed && scope && (
-        <header className="workspace-panel__head">
-          <div>
-            <div className="workspace-panel__eyebrow">Neighbourhood Report</div>
-            {scope.wardName && (
-              <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: "0.06em", textTransform: "uppercase", color: "var(--accent)", marginBottom: 2 }}>
-                Ward {scope.wardName}
+          <div style={{ flex: 1, overflowY: "auto", padding: 16 }}>
+            {!scope && (
+              <div style={{ color: "var(--ink-mute)", fontSize: 12 }}>
+                Select a dataset to generate a neighbourhood report.
               </div>
             )}
-            <h2 className="workspace-panel__title" data-testid="ward-report-title">{scope.label}</h2>
-            <div className="workspace-panel__sub">
-              {datasets.length} dataset{datasets.length === 1 ? "" : "s"} selected · grounded in real survey data
-            </div>
+
+            {scope && !report && !loading && !error && (
+              <button
+                type="button"
+                onClick={() => void run()}
+                style={{
+                  width: "100%", padding: "12px 16px", background: "var(--accent-muted)", border: "1px solid var(--accent)",
+                  borderRadius: "var(--radius-sm)", color: "var(--accent)", fontSize: 12, fontWeight: 600, cursor: "pointer",
+                }}
+                data-testid="ward-report-generate"
+              >
+                Generate Report
+              </button>
+            )}
+
+            {loading && (
+              <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 10, padding: 24, color: "var(--ink-mute)", fontSize: 12 }}>
+                <div style={{ display: "flex", gap: 4 }}>
+                  <div className="ai-turn__dot" />
+                  <div className="ai-turn__dot" />
+                  <div className="ai-turn__dot" />
+                </div>
+                <span>Generating full report from local AI — this covers Executive Summary, Findings, Strategy, and Outcomes in three passes, so it can take a few minutes ({elapsed}s so far)…</span>
+              </div>
+            )}
+
+            {error && (
+              <div style={{ padding: 12, background: "var(--danger-muted)", border: "1px solid var(--danger)", borderRadius: "var(--radius-sm)", color: "var(--danger)", fontSize: 11, marginBottom: 12 }}>
+                {error}
+              </div>
+            )}
+
+            {report && (
+              <div>
+                <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 12, fontSize: 10, color: "var(--ink-mute)" }}>
+                  <span style={{ padding: "3px 8px", background: "var(--surface-2)", borderRadius: "var(--radius-full)" }}>
+                    Model: <b style={{ color: "var(--ink-dim)" }}>{report.model}</b>
+                  </span>
+                  <span style={{ padding: "3px 8px", background: "var(--surface-2)", borderRadius: "var(--radius-full)" }}>
+                    Context: <b style={{ color: "var(--ink-dim)" }}>{report.context_rows} rows</b>
+                  </span>
+                  <span style={{
+                    padding: "3px 8px", borderRadius: "var(--radius-full)",
+                    background: report.grounded ? "var(--ok-muted)" : "var(--warn-muted)",
+                    color: report.grounded ? "var(--ok)" : "var(--warn)", fontWeight: 600,
+                  }}>
+                    {report.grounded ? "✓ Grounded" : "⚠ Insufficient data"}
+                  </span>
+                </div>
+
+                <div style={{
+                  padding: 16, background: "var(--surface-2)", border: "1px solid var(--edge)",
+                  borderRadius: "var(--radius-md)", fontSize: 12, lineHeight: 1.6, color: "var(--ink)",
+                }}>
+                  <ReactMarkdown>{report.answer_markdown}</ReactMarkdown>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => void run()}
+                  style={{
+                    marginTop: 12, width: "100%", padding: "8px 12px", background: "var(--surface-3)",
+                    border: "1px solid var(--edge)", borderRadius: "var(--radius-sm)", color: "var(--ink-dim)",
+                    fontSize: 11, fontWeight: 600, cursor: "pointer",
+                  }}
+                  data-testid="ward-report-refresh"
+                >
+                  Regenerate Report
+                </button>
+              </div>
+            )}
           </div>
-        </header>
+        </section>
       )}
+    </>
+  );
+}
 
-      {!collapsed && !scope && (
-        <div style={{ padding: 16, color: "var(--ink-mute)", fontSize: 12 }}>
-          Select a dataset to generate a neighbourhood report.
-        </div>
+const SUPPORTING_FILE_ACCEPT = ".pdf,.txt,.csv";
+
+/** Self-contained staging list for files the user wants to attach for AI
+ * analysis — never uploaded anywhere by this component (no report/analysis
+ * call reads it), just a local add/remove list, so it doesn't need to be
+ * wired to `datasets` or the report scope like ReportGenerator above. Lives
+ * in the Command Center's footer now that the right-hand panel is gone. */
+export function SupportingFilesImport() {
+  const [supportingFiles, setSupportingFiles] = useState<File[]>([]);
+  const supportingFileInputRef = useRef<HTMLInputElement | null>(null);
+
+  function addSupportingFiles(files: FileList | null) {
+    if (!files || files.length === 0) return;
+    setSupportingFiles((prev) => [...prev, ...Array.from(files)]);
+    if (supportingFileInputRef.current) supportingFileInputRef.current.value = "";
+  }
+
+  function removeSupportingFile(index: number) {
+    setSupportingFiles((prev) => prev.filter((_, i) => i !== index));
+  }
+
+  return (
+    <div className="command-center__import" data-testid="ward-report-import">
+      <input
+        ref={supportingFileInputRef}
+        type="file"
+        accept={SUPPORTING_FILE_ACCEPT}
+        multiple
+        onChange={(e) => addSupportingFiles(e.target.files)}
+        data-testid="ward-report-import-input"
+        style={{ display: "none" }}
+      />
+      <button
+        type="button"
+        className="command-center__import-btn"
+        onClick={() => supportingFileInputRef.current?.click()}
+        data-testid="ward-report-import-btn"
+      >
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+          <path d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" />
+        </svg>
+        Import supporting files
+      </button>
+      <div className="command-center__import-hint">PDF, TXT, or CSV to support AI analysis</div>
+
+      {supportingFiles.length > 0 && (
+        <ul className="command-center__import-list">
+          {supportingFiles.map((file, i) => (
+            <li key={`${file.name}-${i}`} className="command-center__import-item">
+              <span className="command-center__import-item-name" title={file.name}>{file.name}</span>
+              <button
+                type="button"
+                className="command-center__import-item-remove"
+                onClick={() => removeSupportingFile(i)}
+                aria-label={`Remove ${file.name}`}
+              >
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </li>
+          ))}
+        </ul>
       )}
-
-      {!collapsed && scope && (
-      <div style={{ flex: 1, overflowY: "auto", padding: 16 }}>
-        {!report && !loading && !error && (
-          <button
-            type="button"
-            onClick={() => void run()}
-            style={{
-              width: "100%", padding: "12px 16px", background: "var(--accent-muted)", border: "1px solid var(--accent)",
-              borderRadius: "var(--radius-sm)", color: "var(--accent)", fontSize: 12, fontWeight: 600, cursor: "pointer",
-            }}
-            data-testid="ward-report-generate"
-          >
-            Generate Report
-          </button>
-        )}
-
-        {loading && (
-          <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 10, padding: 24, color: "var(--ink-mute)", fontSize: 12 }}>
-            <div style={{ display: "flex", gap: 4 }}>
-              <div className="ai-turn__dot" />
-              <div className="ai-turn__dot" />
-              <div className="ai-turn__dot" />
-            </div>
-            <span>Generating full report from local AI — this covers Executive Summary, Findings, Strategy, and Outcomes in three passes, so it can take a few minutes ({elapsed}s so far)…</span>
-          </div>
-        )}
-
-        {error && (
-          <div style={{ padding: 12, background: "var(--danger-muted)", border: "1px solid var(--danger)", borderRadius: "var(--radius-sm)", color: "var(--danger)", fontSize: 11, marginBottom: 12 }}>
-            {error}
-          </div>
-        )}
-
-        {report && (
-          <div>
-            <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 12, fontSize: 10, color: "var(--ink-mute)" }}>
-              <span style={{ padding: "3px 8px", background: "var(--surface-2)", borderRadius: "var(--radius-full)" }}>
-                Model: <b style={{ color: "var(--ink-dim)" }}>{report.model}</b>
-              </span>
-              <span style={{ padding: "3px 8px", background: "var(--surface-2)", borderRadius: "var(--radius-full)" }}>
-                Context: <b style={{ color: "var(--ink-dim)" }}>{report.context_rows} rows</b>
-              </span>
-              <span style={{
-                padding: "3px 8px", borderRadius: "var(--radius-full)",
-                background: report.grounded ? "var(--ok-muted)" : "var(--warn-muted)",
-                color: report.grounded ? "var(--ok)" : "var(--warn)", fontWeight: 600,
-              }}>
-                {report.grounded ? "✓ Grounded" : "⚠ Insufficient data"}
-              </span>
-            </div>
-
-            <div style={{
-              padding: 16, background: "var(--surface-2)", border: "1px solid var(--edge)",
-              borderRadius: "var(--radius-md)", fontSize: 12, lineHeight: 1.6, color: "var(--ink)",
-            }}>
-              <ReactMarkdown>{report.answer_markdown}</ReactMarkdown>
-            </div>
-
-            <button
-              type="button"
-              onClick={() => void run()}
-              style={{
-                marginTop: 12, width: "100%", padding: "8px 12px", background: "var(--surface-3)",
-                border: "1px solid var(--edge)", borderRadius: "var(--radius-sm)", color: "var(--ink-dim)",
-                fontSize: 11, fontWeight: 600, cursor: "pointer",
-              }}
-              data-testid="ward-report-refresh"
-            >
-              Regenerate Report
-            </button>
-          </div>
-        )}
-      </div>
-      )}
-    </aside>
+    </div>
   );
 }

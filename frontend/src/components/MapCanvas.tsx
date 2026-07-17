@@ -21,6 +21,7 @@ import { CylinderPanoramaViewer } from "./CylinderPanoramaViewer";
 import { GoogleStreetView } from "./GoogleStreetView";
 import { LookAroundCompass, DEFAULT_MAP_PITCH, MAX_MAP_PITCH } from "./LookAroundCompass";
 import { DataSourceSelector } from "./DataSourceSelector";
+import { SupportingFilesImport } from "./WardReportPanel";
 import { AnomalyAlertCard } from "./AnomalyAlertCard";
 import { PlacemarkEditor } from "./map/PlacemarkEditor";
 import { MyPlacesPanel } from "./map/MyPlacesPanel";
@@ -70,10 +71,6 @@ interface Props {
   focusFeatureId?: string;
   /** Clears the one-shot route request after the feature has been handled. */
   onFocusHandled?: () => void;
-  /** Notifies a parent (the top navigation bar) whenever the authoritative
-   * Measure visibility changes, so a mirrored top-bar button can stay in sync
-   * without duplicating the real Measure state owned here. */
-  onMeasureChange?: (active: boolean) => void;
 }
 
 const DAVANGERE_CENTER: [number, number] = [75.9218, 14.4644];
@@ -132,6 +129,51 @@ export function resolveRasterSettings(settings?: Partial<RasterDisplaySettings>)
     colorMode: settings?.colorMode ?? DEFAULT_RASTER_SETTINGS.colorMode,
     clarity: clamp(settings?.clarity ?? DEFAULT_RASTER_SETTINGS.clarity, 0, 2),
   };
+}
+
+// Every raster overlay in this project is stored with file_type "geotiff"
+// (uploaded .tif/.tiff/.geotiff all normalise to this — see DatasetsView),
+// so this is the reliable, project-standard way to identify TIFF/GeoTIFF
+// rasters. NOTE: DSM/DTM are a name-matched *subset* of these geotiffs and
+// are handled separately (Enhanced) by isElevationRasterDataset below.
+export function isGeoTiffDataset(dataset: Pick<DatasetRow, "file_type">): boolean {
+  return dataset.file_type === "geotiff";
+}
+
+// Digital Surface / Terrain Model rasters. There is no dedicated dataset
+// "type" field for these — they are single-band elevation GeoTIFFs
+// distinguished by name, matching the backend's own established heuristic
+// (see manhole_recommend.py: `name ILIKE '%dtm%'` / `%dsm%`). DSM/DTM must
+// always render in Enhanced mode and expose no per-dataset display settings.
+export function isElevationRasterDataset(dataset: Pick<DatasetRow, "file_type" | "name">): boolean {
+  if (dataset.file_type !== "geotiff") return false;
+  // Match "dsm"/"dtm" as a distinct token in the name (case-insensitive),
+  // allowing the usual separators used in dataset names — e.g.
+  // "Davangere_DSM", "DTM ward 5", "dsm-2024", "ward.dtm" — without matching
+  // it as an incidental substring inside an unrelated word.
+  return /(^|[^a-z0-9])(dsm|dtm)([^a-z0-9]|$)/i.test(dataset.name);
+}
+
+// Fixed, non-configurable render modes per raster kind, applied at the
+// rendering layer (not just the UI) so they hold across load, selection,
+// style updates, layer refresh, and page refresh:
+//   • DSM/DTM elevation GeoTIFFs  -> Enhanced (rainbow + hillshade)
+//   • all other TIFF/GeoTIFF      -> RGB
+// Any previously-chosen (in-memory) colorMode is overridden, so a stale
+// Grayscale/Enhanced selection can never persist for an ordinary GeoTIFF.
+// Non-raster datasets fall through to the resolved user/default settings.
+export function effectiveRasterSettings(
+  dataset: Pick<DatasetRow, "file_type" | "name">,
+  settings?: Partial<RasterDisplaySettings>
+): RasterDisplaySettings {
+  const resolved = resolveRasterSettings(settings);
+  if (isElevationRasterDataset(dataset)) {
+    return { ...resolved, colorMode: "enhanced" };
+  }
+  if (isGeoTiffDataset(dataset)) {
+    return { ...resolved, colorMode: "rgb" };
+  }
+  return resolved;
 }
 
 function rasterPaintForSettings(settings: RasterDisplaySettings): Record<string, number> {
@@ -1195,12 +1237,10 @@ interface LayerAttributeTableState extends LayerFeatureTableFilter {
 }
 export interface MapCanvasHandle {
   clearDatasets: () => void;
-  toggleMeasure: () => void;
-  isMeasureActive: () => boolean;
 }
 
 export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
-  { filter, onFeatureSelect, onActiveDatasetsChange, initialActiveDatasets, aiHighlights, focusFeatureId, onFocusHandled, onMeasureChange },
+  { filter, onFeatureSelect, onActiveDatasetsChange, initialActiveDatasets, aiHighlights, focusFeatureId, onFocusHandled },
   ref
 ) {
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -1214,10 +1254,8 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
   const filterRef = useRef<FeatureFilter>(filter);
 
   const [status, setStatus] = useState<ViewportStatus>({ loading: false, count: 0, truncated: false, error: null, bbox: null });
-  const [legend, setLegend] = useState<LegendEntry[]>([]);
   // Full (unsliced) per-category breakdown of the currently loaded features,
-  // for the QGIS-style layer-visibility checklist in the Command Center —
-  // `legend` above stays capped at 10 entries for the compact map overlay.
+  // for the QGIS-style layer-visibility checklist in the Command Center.
   const [categoryStats, setCategoryStats] = useState<LegendEntry[]>([]);
   // Categories unchecked in that checklist — purely a client-side paint/
   // filter toggle on already-fetched features, so it applies instantly and
@@ -2764,7 +2802,6 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     const entries: LegendEntry[] = Array.from(counts.entries())
       .map(([category, count]) => ({ category, color: colorMap.get(category)!, count }))
       .sort((a, b) => b.count - a.count);
-    setLegend(entries.slice(0, 10));
     setCategoryStats(entries);
   }, [flushAiHighlightSource]);
 
@@ -3030,7 +3067,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     if (map.getSource(sourceId)) map.removeSource(sourceId);
 
     const [west, south, east, north] = overlay.bounds;
-    const rasterSettings = resolveRasterSettings(rasterSettingsRef.current[dataset.id]);
+    const rasterSettings = effectiveRasterSettings(dataset, rasterSettingsRef.current[dataset.id]);
     const url = rasterPreviewUrl(dataset.id, rasterSettings);
     map.addSource(sourceId, {
       type: "image",
@@ -3139,10 +3176,13 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     datasetId: string,
     patch: Partial<RasterDisplaySettings>
   ) => {
-    const nextSettings = resolveRasterSettings({
-      ...rasterSettingsRef.current[datasetId],
-      ...patch,
-    });
+    const dataset = datasets.find((row) => row.id === datasetId);
+    // DSM/DTM are locked to Enhanced at the rendering layer — any incoming
+    // patch (including stale/incompatible values) is coerced, never stored
+    // as RGB/Grayscale for an elevation raster.
+    const nextSettings = dataset
+      ? effectiveRasterSettings(dataset, { ...rasterSettingsRef.current[datasetId], ...patch })
+      : resolveRasterSettings({ ...rasterSettingsRef.current[datasetId], ...patch });
     const previousSettings = resolveRasterSettings(rasterSettingsRef.current[datasetId]);
     rasterSettingsRef.current = { ...rasterSettingsRef.current, [datasetId]: nextSettings };
     setRasterSettingsById(rasterSettingsRef.current);
@@ -3150,7 +3190,6 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
       previousSettings.colorMode !== nextSettings.colorMode &&
       rasterLayersRef.current.has(datasetId)
     ) {
-      const dataset = datasets.find((row) => row.id === datasetId);
       if (dataset) addRasterOverlay(dataset);
     }
     applyRasterDisplaySettings(datasetId, nextSettings);
@@ -3698,18 +3737,9 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     ref,
     () => ({
       clearDatasets: clearAllDatasets,
-      toggleMeasure: () => toggleMeasureActive(),
-      isMeasureActive: () => measureActiveRef.current,
     }),
-    [clearAllDatasets, toggleMeasureActive]
+    [clearAllDatasets]
   );
-
-  // Mirror the authoritative Measure visibility up to any parent (the top
-  // navigation bar) so its button can reflect the active state without owning
-  // a second copy of the real state.
-  useEffect(() => {
-    onMeasureChange?.(measureActive);
-  }, [measureActive, onMeasureChange]);
 
   useEffect(() => {
     // Only a *real* ward/category/severity constraint should override an
@@ -5111,7 +5141,6 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
           referenceLayers={referenceLayers}
           onToggleReferenceLayer={handleToggleReferenceLayer}
         />
-        <MapLegend entries={legend} />
         <HoverTooltip hover={hover} />
         {selectedAnomaly && (
           <AnomalyAlertCard
@@ -5187,22 +5216,40 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
           maxZoom={24}
           onChange={(next) => mapRef.current?.setZoom(next)}
         />
-        <LookAroundCompass
-          bearing={mapBearing}
-          pitch={mapPitch}
-          lookAroundActive={lookAroundActive}
-          mapReady={mapReady}
-          onRotate={(next) => mapRef.current?.setBearing(next)}
-          onResetNorth={() => mapRef.current?.easeTo({ bearing: 0, duration: 300 })}
-          onStep={(deltaBearing) => mapRef.current?.setBearing(mapRef.current.getBearing() + deltaBearing)}
-          onPitchStep={(deltaPitch) => {
-            const map = mapRef.current;
-            if (!map) return;
-            map.setPitch(Math.min(MAX_MAP_PITCH, Math.max(0, map.getPitch() + deltaPitch)));
-          }}
-          onToggleLookAround={toggleLookAround}
-          onResetCamera={resetLookAroundCamera}
-        />
+        <div className="map-side-controls">
+          <LookAroundCompass
+            bearing={mapBearing}
+            pitch={mapPitch}
+            lookAroundActive={lookAroundActive}
+            mapReady={mapReady}
+            onRotate={(next) => mapRef.current?.setBearing(next)}
+            onResetNorth={() => mapRef.current?.easeTo({ bearing: 0, duration: 300 })}
+            onStep={(deltaBearing) => mapRef.current?.setBearing(mapRef.current.getBearing() + deltaBearing)}
+            onPitchStep={(deltaPitch) => {
+              const map = mapRef.current;
+              if (!map) return;
+              map.setPitch(Math.min(MAX_MAP_PITCH, Math.max(0, map.getPitch() + deltaPitch)));
+            }}
+            onToggleLookAround={toggleLookAround}
+            onResetCamera={resetLookAroundCamera}
+          />
+          <button
+            type="button"
+            className={`map-measure-btn${measureActive ? " map-measure-btn--active" : ""}`}
+            onClick={toggleMeasureActive}
+            title="Measure"
+            aria-label="Open Measure tools"
+            aria-pressed={measureActive}
+            data-testid="topbar-measure"
+          >
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <rect x="2.5" y="8" width="19" height="8" rx="1.5" transform="rotate(-45 12 12)" />
+              <g transform="rotate(-45 12 12)">
+                <path d="M6 8v3M9.5 8v2M13 8v3M16.5 8v2" />
+              </g>
+            </svg>
+          </button>
+        </div>
         {manholeRecommendOpen && (
           <ManholeRecommendCard
             answer={manholeRecommendAnswer}
@@ -5455,9 +5502,6 @@ function CommandCenter({
             rasterSettingsById={rasterSettingsById}
             onChangeRasterSettings={onChangeRasterSettings}
             flyError={flyError}
-            onRunAudit={onRunAudit}
-            auditRunning={auditRunning}
-            auditError={auditError}
           />
         )}
 
@@ -5671,6 +5715,9 @@ function CommandCenter({
             </div>
           </div>
         )}
+      </div>
+      <div className="command-center__footer">
+        <SupportingFilesImport />
       </div>
       {layerMenu && createPortal(
         <div
@@ -6408,24 +6455,6 @@ function ZoomSlider({
     </div>
   );
 }
-
-function MapLegend({ entries }: { entries: LegendEntry[] }) {
-  if (entries.length === 0) return null;
-  return (
-    <div className="map__legend" data-testid="map-legend">
-      <div className="map__legend-title">Loaded Categories</div>
-      {entries.map((e) => (
-        <div className="map__legend-row" key={e.category}>
-          <span className="map__legend-swatch" style={{ background: e.color }} />
-          <span className="map__legend-label">{e.category}</span>
-          <span className="map__legend-count">{e.count}</span>
-        </div>
-      ))}
-    </div>
-  );
-}
-
-
 
 function RulerPanel({
   tab, onChangeTab,
