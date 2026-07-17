@@ -1,9 +1,9 @@
 /* =========================================================================
-   Davangere Urban Survey — Premium Dark Dashboard
+   Davangere Urban Survey â€” Premium Dark Dashboard
    Professional municipal operations interface
    ========================================================================= */
 
-/* ── DARK THEME (default) ─────────────────────────────────────────────── */
+/* â”€â”€ DARK THEME (default) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 :root,
 [data-theme="dark"] {
   --bg: #0a0e1a;
@@ -71,7 +71,7 @@
   color-scheme: dark;
 }
 
-/* ── LIGHT THEME ──────────────────────────────────────────────────────── */
+/* â”€â”€ LIGHT THEME â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 [data-theme="light"] {
   --bg: #f8fafc;
   --bg-subtle: #f1f5f9;
@@ -123,7 +123,7 @@
   color-scheme: light;
 }
 
-/* ── RESET & BASE ─────────────────────────────────────────────────────── */
+/* â”€â”€ RESET & BASE â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 html, body, #root { height: 100%; }
 body {
@@ -138,7 +138,7 @@ body {
   transition: background var(--transition-slow), color var(--transition-slow);
 }
 
-/* ── SCROLLBAR ────────────────────────────────────────────────────────── */
+/* â”€â”€ SCROLLBAR â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 ::-webkit-scrollbar { width: 5px; height: 5px; }
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb {
@@ -147,7 +147,7 @@ body {
 }
 ::-webkit-scrollbar-thumb:hover { background: var(--ink-mute); }
 
-/* ── WORKSPACE SHELL ──────────────────────────────────────────────────── */
+/* â”€â”€ WORKSPACE SHELL â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 .workspace {
   height: 100vh;
   display: grid;
@@ -265,7 +265,7 @@ body {
   overflow: hidden;
 }
 
-/* ── TABS ─────────────────────────────────────────────────────────────── */
+/* â”€â”€ TABS â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 .tabs {
   display: flex;
   justify-content: center;
@@ -278,7 +278,7 @@ body {
   gap: 32px;
 }
 
-/* The single shared active-tab background — positioned/sized via inline
+/* The single shared active-tab background â€” positioned/sized via inline
    style (measured from the real active tab's DOM rect) and moved with a
    transform so switching tabs animates one element sliding, instead of one
    background disappearing on the old tab while a separate one appears on
@@ -296,7 +296,7 @@ body {
   box-shadow: var(--shadow-sm);
   will-change: transform, width;
   /* No transition until is-animation-ready is added (next animation frame
-     after first measurement) — prevents a fly-in from the left/MAP position
+     after first measurement) â€” prevents a fly-in from the left/MAP position
      when a route other than /map is opened directly. */
   transition: none;
 }
@@ -322,7 +322,7 @@ body {
   transition: color 180ms ease;
 }
 
-/* Subtle only — must not read as a second competing pill behind the
+/* Subtle only â€” must not read as a second competing pill behind the
    sliding green indicator. */
 .tabs a:hover {
   color: var(--ink);
@@ -343,7 +343,7 @@ body {
   }
 }
 
-/* ── BUTTONS ──────────────────────────────────────────────────────────── */
+/* â”€â”€ BUTTONS â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 .icon-btn {
   width: 32px;
   height: 32px;
@@ -442,7 +442,7 @@ body {
   background: var(--surface-3);
 }
 
-/* ── FILTERS ──────────────────────────────────────────────────────────── */
+/* â”€â”€ FILTERS â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 .filters {
   display: flex;
   flex: 1;
@@ -492,7 +492,7 @@ body {
 .filters button.ghost { background: transparent; color: var(--ink-dim); border: 1px solid var(--edge); }
 .filters button.ghost:hover { background: var(--surface-3); color: var(--ink); }
 
-/* Top-bar Measure button — mirrors the Reset/Apply controls in the filter
+/* Top-bar Measure button â€” mirrors the Reset/Apply controls in the filter
    row, pushed to the extreme right of the subbar via margin-left: auto. */
 .filters button.topbar-measure-btn {
   width: 32px;
@@ -775,7 +775,7 @@ body {
   text-align: center;
 }
 
-/* ── LOGIN PAGE ───────────────────────────────────────────────────────── */
+/* â”€â”€ LOGIN PAGE â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 .login {
   display: flex;
   height: 100vh;
@@ -1286,7 +1286,7 @@ body {
   color: var(--purple);
 }
 
-/* ── MAP PAGE ─────────────────────────────────────────────────────────── */
+/* â”€â”€ MAP PAGE â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 .map-page {
   display: grid;
   height: 100%;
@@ -1308,7 +1308,7 @@ body {
   grid-template-columns: 290px 1fr 30px;
 }
 
-/* ── MAP CANVAS ───────────────────────────────────────────────────────── */
+/* â”€â”€ MAP CANVAS â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 .map-canvas {
   position: relative;
   min-height: 0;
@@ -1329,7 +1329,7 @@ body {
   z-index: 0;
 }
 
-/* ── COMMAND CENTER (Left Panel) ──────────────────────────────────────── */
+/* â”€â”€ COMMAND CENTER (Left Panel) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 .command-center {
   display: flex;
   flex-direction: column;
@@ -1418,7 +1418,7 @@ body {
   box-shadow: none;
 }
 
-/* ── AI DETECTION FOCUS MODES ─────────────────────────────────────────── */
+/* â”€â”€ AI DETECTION FOCUS MODES â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 .ai-detection-modes {
   display: flex;
   flex-direction: column;
@@ -1464,7 +1464,7 @@ body {
 .ai-detection-mode__dot--drains { background: #b45309; }
 .ai-detection-mode__dot--manholes { background: #15803d; }
 
-/* ── LAYER VISIBILITY LIST (QGIS-style category checklist) ───────────── */
+/* â”€â”€ LAYER VISIBILITY LIST (QGIS-style category checklist) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 .layer-search {
   position: relative;
   margin-bottom: 8px;
@@ -1629,7 +1629,7 @@ body {
   flex-shrink: 0;
 }
 
-/* ── DATASET CARD ─────────────────────────────────────────────────────── */
+/* â”€â”€ DATASET CARD â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 .layer-context-menu {
   position: fixed;
   z-index: 1000;
@@ -1742,7 +1742,7 @@ body {
   border-bottom-right-radius: 0;
 }
 
-/* ── PREMIUM CHECKBOX ─────────────────────────────────────────────────── */
+/* â”€â”€ PREMIUM CHECKBOX â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 .dataset-card__checkbox {
   width: 20px;
   height: 20px;
@@ -1850,6 +1850,34 @@ body {
 
 .dataset-card__gear--active svg {
   transform: rotate(90deg);
+}
+
+.dataset-card__layer-btn {
+  flex: 0 0 auto;
+  min-width: 48px;
+  padding: 5px 9px;
+  border: 1px solid var(--edge-strong);
+  border-radius: var(--radius-sm);
+  background: var(--surface-3);
+  color: var(--ink-mute);
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: border-color var(--transition-fast), background var(--transition-fast), color var(--transition-fast);
+}
+
+.dataset-card__layer-btn:hover:not(:disabled),
+.dataset-card__layer-btn--active {
+  border-color: var(--accent);
+  background: var(--accent-muted);
+  color: var(--accent);
+}
+
+.dataset-card__layer-btn:disabled {
+  opacity: 0.38;
+  cursor: default;
 }
 
 .dataset-card__status {
@@ -1987,7 +2015,7 @@ body {
   accent-color: var(--accent);
 }
 
-/* ── DATA SOURCE SELECTOR (compact trigger + popover) ─────────────────── */
+/* â”€â”€ DATA SOURCE SELECTOR (compact trigger + popover) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 @keyframes dss-pop {
   from { opacity: 0; transform: translateY(-4px); }
   to { opacity: 1; transform: translateY(0); }
@@ -2149,7 +2177,7 @@ body {
 }
 
 /* Row height (53px, measured from the rendered .dss-row) x 4 visible rows,
-   plus the 3 inter-row gaps (flex `gap: 4px`) between them — the list stays
+   plus the 3 inter-row gaps (flex `gap: 4px`) between them â€” the list stays
    fixed at this height so a 5th+ source only appears on scroll instead of
    growing the panel. */
 .dss-panel__list {
@@ -2404,7 +2432,7 @@ body {
   }
 }
 
-/* ── SEVERITY LIST ────────────────────────────────────────────────────── */
+/* â”€â”€ SEVERITY LIST â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 .severity-item {
   display: flex;
   align-items: center;
@@ -2468,7 +2496,7 @@ body {
 .severity-item__value--medium { background: var(--warn-muted); color: var(--warn); }
 .severity-item__value--low { background: var(--blue-muted); color: var(--blue); }
 
-/* ── CATEGORY LEGEND ──────────────────────────────────────────────────── */
+/* â”€â”€ CATEGORY LEGEND â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 .category-legend {
   padding: 12px;
   background: var(--surface);
@@ -2513,7 +2541,7 @@ body {
   color: var(--ink-mute);
 }
 
-/* ── WORKSPACE PANEL (Right) ──────────────────────────────────────────── */
+/* â”€â”€ WORKSPACE PANEL (Right) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 .workspace-panel {
   display: flex;
   flex-direction: column;
@@ -2521,7 +2549,7 @@ body {
   border-left: 1px solid var(--edge);
   overflow: hidden;
   /* Pinned to the viewport so it visually extends up alongside the second
-     nav bar (.workspace__subbar) instead of only starting below it — its
+     nav bar (.workspace__subbar) instead of only starting below it â€” its
      top edge lines up with the bottom of the first nav bar (.workspace__
      topbar, 52px) same as the left Command Center panel already does. Its
      grid column in .map-page--triple is left empty as a same-width spacer
@@ -2538,7 +2566,7 @@ body {
 }
 
 /* Collapsed: shrinks to a thin strip exactly half the width of the AI
-   assistant FAB below it (60px wide → 30px). */
+   assistant FAB below it (60px wide â†’ 30px). */
 .workspace-panel--collapsed {
   width: 30px;
 }
@@ -2556,7 +2584,7 @@ body {
   transition: padding var(--transition-base);
 }
 
-/* At 30px the panel is narrower than the welcome bar's normal padding —
+/* At 30px the panel is narrower than the welcome bar's normal padding â€”
    drop to a minimal pad so the collapse button stays centered without
    clipping against the panel edge. */
 .workspace-panel--collapsed .workspace-panel__welcome {
@@ -2662,7 +2690,7 @@ body {
   font-weight: 600;
 }
 
-/* ── SUPPORTING FILES IMPORT ─────────────────────────────────────────── */
+/* â”€â”€ SUPPORTING FILES IMPORT â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 .workspace-panel__import {
   padding: 12px 16px;
   border-bottom: 1px solid var(--edge);
@@ -2812,7 +2840,7 @@ body {
   font-style: italic;
 }
 
-/* ── REVIEW LIST ──────────────────────────────────────────────────────── */
+/* â”€â”€ REVIEW LIST â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 .review-list {
   list-style: none;
   max-height: 160px;
@@ -2843,7 +2871,7 @@ body {
   text-overflow: ellipsis;
 }
 
-/* ── BADGES ───────────────────────────────────────────────────────────── */
+/* â”€â”€ BADGES â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 .badge {
   display: inline-flex;
   align-items: center;
@@ -2866,7 +2894,7 @@ body {
 .badge--processing { background: var(--warn-muted); color: var(--warn); }
 .badge--failed { background: var(--danger-muted); color: var(--danger); }
 
-/* ── REVIEW ACTIONS ───────────────────────────────────────────────────── */
+/* â”€â”€ REVIEW ACTIONS â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 .review-actions {
   margin-top: 10px;
 }
@@ -2888,7 +2916,7 @@ body {
 .review-actions button:hover:not(:disabled) { background: var(--accent-hover); }
 .review-actions button:disabled { background: var(--surface-3); color: var(--ink-mute); cursor: not-allowed; }
 
-/* ── NEW REVIEW FORM ──────────────────────────────────────────────────── */
+/* â”€â”€ NEW REVIEW FORM â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 .new-review {
   margin-top: 12px;
   display: flex;
@@ -2934,7 +2962,7 @@ body {
 .new-review button:hover:not(:disabled) { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
 .new-review button:disabled { opacity: 0.5; cursor: not-allowed; }
 
-/* ── VERSIONS LIST ────────────────────────────────────────────────────── */
+/* â”€â”€ VERSIONS LIST â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 .versions {
   list-style: none;
 }
@@ -2988,7 +3016,7 @@ body {
   font-family: var(--font-mono);
 }
 
-/* ── VERSION UPLOAD FORM ──────────────────────────────────────────────── */
+/* â”€â”€ VERSION UPLOAD FORM â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 .version-upload {
   margin-top: 12px;
   display: flex;
@@ -3035,7 +3063,7 @@ body {
 .version-upload button:hover:not(:disabled) { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
 .version-upload button:disabled { opacity: 0.5; cursor: not-allowed; }
 
-/* ── MAP CONTROLS ─────────────────────────────────────────────────────── */
+/* â”€â”€ MAP CONTROLS â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 .map-controls {
   position: absolute;
   top: 12px;
@@ -3073,7 +3101,7 @@ body {
 .map-controls__btn:hover { background: var(--surface-3); color: var(--ink); }
 .map-controls__btn--active { background: var(--accent); color: var(--accent-ink); }
 
-/* One seamless pill, same as the MAP/SATELLITE/OFF basemap group — the
+/* One seamless pill, same as the MAP/SATELLITE/OFF basemap group â€” the
    toggle sits inline beside the "AI Detection" button, not stacked below
    it. overflow must be visible here (unlike the base group) so the
    dropdown menu isn't clipped, so corner-rounding is set explicitly on the
@@ -3095,7 +3123,7 @@ body {
 
 .ai-detection-menu {
   /* position: fixed + top/left are set inline (computed from the button's
-     own rect) since this is portaled to document.body — see MapControls. */
+     own rect) since this is portaled to document.body â€” see MapControls. */
   min-width: 150px;
   background: var(--glass-strong);
   backdrop-filter: blur(16px) saturate(1.4);
@@ -3162,7 +3190,7 @@ body {
 }
 
 .ai-overlay-toggle--on .ai-overlay-toggle__track {
-  /* The button itself is already accent-filled when on — a same-color
+  /* The button itself is already accent-filled when on â€” a same-color
      track would disappear into it, so use a translucent overlay instead
      of --accent so the switch still reads as a distinct control. */
   background: rgba(255, 255, 255, 0.35);
@@ -3239,7 +3267,7 @@ body {
 
 .map-compass:hover { background: var(--surface-3); color: var(--ink); }
 
-/* ── ZOOM SLIDER (Google Earth Pro-style, horizontal) ───────────────────── */
+/* â”€â”€ ZOOM SLIDER (Google Earth Pro-style, horizontal) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 .map-zoom-slider {
   position: absolute;
   top: 12px;
@@ -3310,7 +3338,7 @@ body {
   pointer-events: none;
 }
 
-/* ── LOOK AROUND COMPASS (Google Earth Pro-style, original design) ─────── */
+/* â”€â”€ LOOK AROUND COMPASS (Google Earth Pro-style, original design) â”€â”€â”€â”€â”€â”€â”€ */
 .look-around-compass {
   position: absolute;
   top: 60px;
@@ -3532,7 +3560,7 @@ body {
   .look-around-compass__dir { width: 24px; height: 24px; }
 }
 
-/* ── FEATURE COUNT ────────────────────────────────────────────────────── */
+/* â”€â”€ FEATURE COUNT â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 .feature-count {
   position: absolute;
   top: 12px;
@@ -3550,7 +3578,7 @@ body {
   box-shadow: var(--shadow-md);
 }
 
-/* ── TOAST ────────────────────────────────────────────────────────────── */
+/* â”€â”€ TOAST â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 .toast {
   position: fixed;
   top: 16px;
@@ -3578,7 +3606,7 @@ body {
   to { opacity: 0; transform: translateY(-10px); }
 }
 
-/* ── AI FAB ───────────────────────────────────────────────────────────── */
+/* â”€â”€ AI FAB â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 .ai-fab {
   position: fixed;
   bottom: 24px;
@@ -3634,7 +3662,7 @@ body {
 }
 .ai-fab--open::before { animation: none; opacity: 0; }
 
-/* ── AI PANEL ─────────────────────────────────────────────────────────── */
+/* â”€â”€ AI PANEL â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 .ai-panel {
   position: fixed;
   bottom: 96px;
@@ -3900,7 +3928,7 @@ body {
   margin-top: 1px;
 }
 
-/* ── AI TURN ──────────────────────────────────────────────────────────── */
+/* â”€â”€ AI TURN â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 .ai-turn {
   margin-bottom: 14px;
   padding: 14px;
@@ -4163,7 +4191,7 @@ body {
   font-size: 11px;
 }
 
-/* ── DATASETS PAGE ────────────────────────────────────────────────────── */
+/* â”€â”€ DATASETS PAGE â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 .datasets-page {
   padding: 20px;
   height: 100%;
@@ -4265,7 +4293,7 @@ body {
   justify-content: center;
 }
 
-/* ── FIELD ────────────────────────────────────────────────────────────── */
+/* â”€â”€ FIELD â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 .field {
   display: flex;
   flex-direction: column;
@@ -4304,7 +4332,7 @@ body {
 
 .field__input::placeholder { color: var(--ink-ghost); }
 
-/* ── GRID (Datasets Table) ────────────────────────────────────────────── */
+/* â”€â”€ GRID (Datasets Table) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 .grid-wrap {
   background: var(--surface);
   border: 1px solid var(--edge);
@@ -4435,7 +4463,7 @@ body {
   font-size: 12px;
 }
 
-/* ── DATASETS PAGE ────────────────────────────────────────────────────── */
+/* â”€â”€ DATASETS PAGE â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 .datasets-page {
   padding: 24px;
   height: 100%;
@@ -4509,7 +4537,7 @@ body {
 .ds-stat--danger { border-color: var(--danger); background: var(--danger-muted); }
 .ds-stat--danger .ds-stat__value { color: var(--danger); }
 
-/* Main Grid: 2 rows, each its own independent upload/formats width split —
+/* Main Grid: 2 rows, each its own independent upload/formats width split â€”
    upload (75%) | formats (25%)
    tips   (25%) | uploaded (75%)
    A single CSS Grid can't give each row its own column ratio (columns are
@@ -4912,14 +4940,14 @@ body {
 .ds-tips-list li:nth-child(4) { animation-delay: 0.25s; }
 .ds-tips-list li:nth-child(5) { animation-delay: 0.3s; }
 .ds-tips-list li::before {
-  content: "→";
+  content: "â†’";
   position: absolute;
   left: 0;
   color: var(--accent);
   font-weight: 700;
 }
 
-/* ── TABLE SECTION ──────────────────────────────────────────────────── */
+/* â”€â”€ TABLE SECTION â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 .ds-table-section {
   background: var(--surface);
   border: 1px solid var(--edge);
@@ -5286,7 +5314,7 @@ body {
   animation: spin 0.8s linear infinite;
 }
 
-/* ── UNCLASSIFIED CATEGORIES (spatial audit classifier review) ────────── */
+/* â”€â”€ UNCLASSIFIED CATEGORIES (spatial audit classifier review) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 .classify-panel {
   margin-top: 20px;
   padding: 18px 20px;
@@ -5365,7 +5393,7 @@ body {
   cursor: pointer;
 }
 
-/* ── ATTRIBUTE TABLE ──────────────────────────────────────────────────── */
+/* â”€â”€ ATTRIBUTE TABLE â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 .attr-table-wrap {
   position: fixed;
   inset: 0;
@@ -5919,7 +5947,7 @@ body {
   min-width: 80px;
 }
 
-/* ── ANALYTICS PAGE ───────────────────────────────────────────────────── */
+/* â”€â”€ ANALYTICS PAGE â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 .analytics-page {
   padding: 20px;
   height: 100%;
@@ -5959,7 +5987,7 @@ body {
   font-size: 12px;
 }
 
-/* ── KPI GRID ─────────────────────────────────────────────────────────── */
+/* â”€â”€ KPI GRID â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 .kpi-grid {
   display: grid;
   grid-template-columns: repeat(6, 1fr);
@@ -6024,7 +6052,7 @@ body {
   margin-top: 4px;
 }
 
-/* ── STATS ROW ────────────────────────────────────────────────────────── */
+/* â”€â”€ STATS ROW â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 .stats-row {
   display: flex;
   gap: 12px;
@@ -6063,7 +6091,7 @@ body {
   font-family: var(--font-mono);
 }
 
-/* ── CHART CARD ───────────────────────────────────────────────────────── */
+/* â”€â”€ CHART CARD â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 .chart-card {
   background: var(--surface);
   border: 1px solid var(--edge);
@@ -6103,7 +6131,7 @@ body {
   min-height: 360px;
 }
 
-/* ── CHART GRID ───────────────────────────────────────────────────────── */
+/* â”€â”€ CHART GRID â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 .chart-grid {
   display: grid;
   gap: 16px;
@@ -6118,7 +6146,7 @@ body {
   grid-template-columns: repeat(2, 1fr);
 }
 
-/* ── CATEGORY PIE LAYOUT ──────────────────────────────────────────────── */
+/* â”€â”€ CATEGORY PIE LAYOUT â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 .category-pie-layout {
   display: grid;
   grid-template-columns: 1fr 200px;
@@ -6196,7 +6224,7 @@ body {
   text-align: right;
 }
 
-/* ── LEADERBOARD ──────────────────────────────────────────────────────── */
+/* â”€â”€ LEADERBOARD â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 .leaderboard {
   display: flex;
   flex-direction: column;
@@ -6271,7 +6299,7 @@ body {
   color: var(--ink-mute);
 }
 
-/* ── HEATMAP ──────────────────────────────────────────────────────────── */
+/* â”€â”€ HEATMAP â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 .heatmap {
   display: flex;
   flex-direction: column;
@@ -6308,7 +6336,7 @@ body {
   font-family: var(--font-mono);
 }
 
-/* ── SEVERITY DONUT ───────────────────────────────────────────────────── */
+/* â”€â”€ SEVERITY DONUT â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 .severity-donut-wrap {
   position: relative;
 }
@@ -6371,7 +6399,7 @@ body {
   color: var(--ink);
 }
 
-/* ── MINI BARS ────────────────────────────────────────────────────────── */
+/* â”€â”€ MINI BARS â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 .mini-bars {
   display: flex;
   flex-direction: column;
@@ -6420,7 +6448,7 @@ body {
   text-align: right;
 }
 
-/* ── SEVERITY BAR (Table) ─────────────────────────────────────────────── */
+/* â”€â”€ SEVERITY BAR (Table) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 .sev-bar-wrap {
   display: flex;
   align-items: center;
@@ -6448,7 +6476,7 @@ body {
   width: 36px;
 }
 
-/* ── CATEGORY TABLE ───────────────────────────────────────────────────── */
+/* â”€â”€ CATEGORY TABLE â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 .cat-table {
   width: 100%;
   border-collapse: collapse;
@@ -6485,7 +6513,7 @@ body {
 .cat-count { font-family: var(--font-mono); font-weight: 600; color: var(--ink); }
 .cat-pct { font-family: var(--font-mono); color: var(--ink-dim); }
 
-/* ── CHART EMPTY ──────────────────────────────────────────────────────── */
+/* â”€â”€ CHART EMPTY â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 .chart-empty {
   display: flex;
   flex-direction: column;
@@ -6523,7 +6551,7 @@ body {
 
 .chart-empty__cta:hover { background: var(--accent-hover); }
 
-/* ── COMMENTS THREAD ──────────────────────────────────────────────────── */
+/* â”€â”€ COMMENTS THREAD â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 .comments-thread {
   max-height: 200px;
   overflow-y: auto;
@@ -6573,7 +6601,7 @@ body {
   line-height: 1.5;
 }
 
-/* ── ACTIVITY TIMELINE ────────────────────────────────────────────────── */
+/* â”€â”€ ACTIVITY TIMELINE â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 .activity-timeline {
   max-height: 200px;
   overflow-y: auto;
@@ -6610,7 +6638,7 @@ body {
   margin-top: 2px;
 }
 
-/* ── COMMENTS THREAD ──────────────────────────────────────────────────── */
+/* â”€â”€ COMMENTS THREAD â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 .thread {
   display: flex;
   flex-direction: column;
@@ -6719,7 +6747,7 @@ body {
   font-weight: 600;
 }
 
-/* ── ACTIVITY TIMELINE ────────────────────────────────────────────────── */
+/* â”€â”€ ACTIVITY TIMELINE â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 .timeline {
   list-style: none;
   max-height: 200px;
@@ -6772,7 +6800,7 @@ body {
   display: block;
 }
 
-/* ── MAP LEGEND (Overlay on map) ──────────────────────────────────────── */
+/* â”€â”€ MAP LEGEND (Overlay on map) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 .map__legend {
   position: absolute;
   bottom: 16px;
@@ -6825,9 +6853,9 @@ body {
   color: var(--ink-mute);
 }
 
-/* ── MAP BOTTOM-RIGHT STATUS BAR (coordinates + fixed-size scale chip) ─── */
+/* â”€â”€ MAP BOTTOM-RIGHT STATUS BAR (coordinates + fixed-size scale chip) â”€â”€â”€ */
 /* Single positioned wrapper for both boxes so they can never drift apart
-   or independently overlap something else — matches the existing
+   or independently overlap something else â€” matches the existing
    bottom-right spacing (8px) previously used by the coordinate box alone.
    Not pointer-events: none at this level because MapLibre's own controls
    sit in the same corner of the map; the boxes themselves stay
@@ -6841,7 +6869,7 @@ body {
   z-index: 20;
   pointer-events: none;
 }
-/* ── AI SPATIAL AUDIT — ANOMALY ALERT CARD ───────────────────────────── */
+/* â”€â”€ AI SPATIAL AUDIT â€” ANOMALY ALERT CARD â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 .anomaly-card {
   position: absolute;
   top: 16px;
@@ -7024,7 +7052,7 @@ body {
   font-size: 10px;
   font-weight: 700;
 }
-/* ── MAP CURSOR COORDINATE READOUT ───────────────────────────────────── */
+/* â”€â”€ MAP CURSOR COORDINATE READOUT â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 .map__coord-readout {
   position: absolute;
   bottom: 8px;
@@ -7056,7 +7084,7 @@ body {
   flex: 0 0 auto;
 }
 
-/* Fixed-size scale/distance chip — width never changes with its text
+/* Fixed-size scale/distance chip â€” width never changes with its text
    ("200 m" vs "2 km" vs "10 km"), only the label inside updates. Sized to
    fit the widest realistic value ("10 km") with the same padding/border/
    radius as the coordinate box. */
@@ -7069,10 +7097,10 @@ body {
   overflow: hidden;
 }
 
-/* ── RULER PANEL (Google Earth Pro-style measurement dialog) ─────────── */
+/* â”€â”€ RULER PANEL (Google Earth Pro-style measurement dialog) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 /* position: fixed so the panel floats over the full viewport (not clipped
    by .map-canvas's overflow: hidden) and so left/top live in the same
-   coordinate space as clientX/clientY used for dragging — fixed from the
+   coordinate space as clientX/clientY used for dragging â€” fixed from the
    very first render (not just once a drag starts) so switching into drag
    mode never changes the element's containing block out from under it. */
 .ruler-panel {
@@ -7082,8 +7110,8 @@ body {
   top: 108px;
   left: 50%;
   transform: translateX(-50%);
-  /* Above the topbar and other floating chrome so the whole panel —
-     titlebar included — is always visible and draggable, never stacked
+  /* Above the topbar and other floating chrome so the whole panel â€”
+     titlebar included â€” is always visible and draggable, never stacked
      underneath the header. */
   z-index: 210;
   width: 300px;
@@ -7376,7 +7404,7 @@ body {
   white-space: nowrap;
 }
 
-/* ── MAP CANVAS ───────────────────────────────────────────────────────── */
+/* â”€â”€ MAP CANVAS â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 .map-canvas {
   position: relative;
   min-height: 0;
@@ -7398,7 +7426,7 @@ body {
   z-index: 0;
 }
 
-/* ── MAP CONTROLS ─────────────────────────────────────────────────────── */
+/* â”€â”€ MAP CONTROLS â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 .map-controls {
   position: absolute;
   top: 12px;
@@ -7438,7 +7466,7 @@ body {
 .map-controls__btn:hover { background: var(--surface-3); color: var(--ink); }
 .map-controls__btn--active { background: var(--accent); color: var(--accent-ink); }
 
-/* ── FEATURE COUNT ────────────────────────────────────────────────────── */
+/* â”€â”€ FEATURE COUNT â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 .feature-count {
   position: absolute;
   top: 12px;
@@ -7456,7 +7484,7 @@ body {
   box-shadow: var(--shadow-md);
 }
 
-/* ── RESPONSIVE ───────────────────────────────────────────────────────── */
+/* â”€â”€ RESPONSIVE â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 @media (max-width: 1260px) {
   .login__left {
     display: none;
@@ -7571,7 +7599,7 @@ body {
   }
 }
 
-/* ── AI HIGHLIGHT LEGEND (shown in AI panel after spacing check) ─────── */
+/* â”€â”€ AI HIGHLIGHT LEGEND (shown in AI panel after spacing check) â”€â”€â”€â”€â”€â”€â”€ */
 .ai-highlight-legend {
   display: flex;
   flex-direction: column;
@@ -7630,7 +7658,7 @@ body {
   color: var(--danger);
 }
 
-/* ── PROFILE PAGE ─────────────────────────────────────────────────────── */
+/* â”€â”€ PROFILE PAGE â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 .profile-page {
   height: 100%;
   overflow-y: auto;
@@ -7811,7 +7839,7 @@ body {
   background: var(--danger);
   color: white;
 }
-/* ── DATASET/CATEGORY ANALYTICS WORKBENCH ───────────────────────────── */
+/* â”€â”€ DATASET/CATEGORY ANALYTICS WORKBENCH â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 .analytics-page__eyebrow,
 .analytics-card-eyebrow,
 .analytics-scope__eyebrow {
@@ -9324,7 +9352,7 @@ button.analytics-readiness-count--missing.is-active { box-shadow: inset 0 0 0 1p
   .analytics-severity-treemap button { padding: 8px; }
 }
 
-/* ── UNIVERSAL VISUALIZATION LAYER STUDIO ─────────────────────────────── */
+/* â”€â”€ UNIVERSAL VISUALIZATION LAYER STUDIO â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 .visualization-panel {
   margin-bottom: 16px;
   padding: 12px;
@@ -10126,7 +10154,7 @@ button.analytics-readiness-count--missing.is-active { box-shadow: inset 0 0 0 1p
 
 .visualization-target-grid {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 7px;
   width: 100%;
   min-width: 0;
@@ -11971,3 +11999,790 @@ body.is-dragging-map-panel * {
   .point-verification-dialog__downloads { display: grid; }
   .remediation-updates { right: 10px; top: 122px; }
 }
+
+/* Coordinate Search -------------------------------------------------------
+ * Isolated map-navigation UI. It owns only its floating panel and temporary
+ * DOM marker, so uploaded datasets, measurements, placemarks, styling and
+ * future map tools keep their existing sources, layers and interaction state.
+ */
+.coordinate-search-panel {
+  position: absolute;
+  z-index: 48;
+  width: min(360px, calc(100% - 24px));
+  max-height: calc(100% - 24px);
+  overflow: auto;
+  border: 1px solid color-mix(in srgb, var(--edge) 82%, #38bdf8 18%);
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--panel) 96%, #06131c 4%);
+  box-shadow: 0 18px 55px rgba(0, 0, 0, .42), 0 0 0 1px rgba(56, 189, 248, .06) inset;
+  color: var(--ink);
+  backdrop-filter: blur(16px);
+}
+
+.coordinate-search-panel__head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px 14px 12px;
+  border-bottom: 1px solid var(--edge);
+  cursor: grab;
+  user-select: none;
+  touch-action: none;
+}
+
+.coordinate-search-panel__head:active { cursor: grabbing; }
+.coordinate-search-panel__head > div { min-width: 0; display: grid; gap: 2px; }
+.coordinate-search-panel__head span {
+  color: #38bdf8;
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: .1em;
+  text-transform: uppercase;
+}
+.coordinate-search-panel__head strong { color: var(--ink); font-size: 16px; line-height: 1.2; }
+.coordinate-search-panel__head small { color: var(--ink-mute); font-size: 9px; }
+.coordinate-search-panel__head button {
+  flex: 0 0 auto;
+  width: 28px;
+  height: 28px;
+  border: 1px solid var(--edge);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--panel-2) 90%, transparent);
+  color: var(--ink-mute);
+  font-size: 20px;
+  line-height: 1;
+  cursor: pointer;
+}
+.coordinate-search-panel__head button:hover { color: var(--ink); border-color: #38bdf8; }
+
+.coordinate-search-panel__body { display: grid; gap: 12px; padding: 14px; }
+.coordinate-search-panel__grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.coordinate-search-panel__field { display: grid; gap: 6px; min-width: 0; }
+.coordinate-search-panel__field > span {
+  color: var(--ink-mute);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+}
+.coordinate-search-panel__field input,
+.coordinate-search-panel__field select {
+  width: 100%;
+  height: 38px;
+  min-width: 0;
+  padding: 0 10px;
+  border: 1px solid var(--edge);
+  border-radius: 9px;
+  outline: none;
+  background: var(--panel-2);
+  color: var(--ink);
+  font: inherit;
+  font-size: 12px;
+}
+.coordinate-search-panel__field input:focus,
+.coordinate-search-panel__field select:focus {
+  border-color: #38bdf8;
+  box-shadow: 0 0 0 3px rgba(56, 189, 248, .13);
+}
+
+.coordinate-search-panel__hint {
+  color: var(--ink-mute);
+  font-size: 9px;
+  line-height: 1.45;
+}
+.coordinate-search-panel__result {
+  display: grid;
+  gap: 3px;
+  padding: 10px 11px;
+  border: 1px solid rgba(56, 189, 248, .28);
+  border-radius: 9px;
+  background: rgba(56, 189, 248, .08);
+}
+.coordinate-search-panel__result span { color: var(--ink-mute); font-size: 9px; text-transform: uppercase; letter-spacing: .06em; }
+.coordinate-search-panel__result strong { color: #bae6fd; font-size: 12px; font-variant-numeric: tabular-nums; }
+.coordinate-search-panel__error,
+.coordinate-search-panel__copy-status {
+  padding: 8px 10px;
+  border-radius: 8px;
+  font-size: 10px;
+  font-weight: 650;
+}
+.coordinate-search-panel__error,
+.coordinate-search-panel__copy-status.is-error {
+  border: 1px solid rgba(248, 113, 113, .38);
+  background: rgba(127, 29, 29, .22);
+  color: #fecaca;
+}
+.coordinate-search-panel__copy-status:not(.is-error) {
+  border: 1px solid rgba(52, 211, 153, .34);
+  background: rgba(6, 78, 59, .2);
+  color: #a7f3d0;
+}
+.coordinate-search-panel__actions { display: flex; justify-content: flex-end; gap: 8px; }
+.coordinate-search-panel__actions button {
+  min-height: 36px;
+  padding: 0 12px;
+  border-radius: 9px;
+  font-size: 10px;
+  font-weight: 750;
+  cursor: pointer;
+}
+.coordinate-search-panel__secondary {
+  border: 1px solid var(--edge);
+  background: var(--panel-2);
+  color: var(--ink-mute);
+}
+.coordinate-search-panel__secondary:hover { color: var(--ink); border-color: color-mix(in srgb, var(--edge) 45%, #38bdf8 55%); }
+.coordinate-search-panel__primary {
+  flex: 1;
+  border: 1px solid #0284c7;
+  background: linear-gradient(135deg, #0284c7, #0369a1);
+  color: #fff;
+  box-shadow: 0 8px 22px rgba(2, 132, 199, .22);
+}
+.coordinate-search-panel__primary:hover { filter: brightness(1.08); }
+
+.coordinate-search-marker {
+  position: relative;
+  width: 42px;
+  height: 42px;
+  pointer-events: none;
+  filter: drop-shadow(0 3px 8px rgba(0, 0, 0, .55));
+}
+.coordinate-search-marker__ring {
+  position: absolute;
+  inset: 7px;
+  border: 3px solid #38bdf8;
+  border-radius: 50%;
+  background: rgba(2, 132, 199, .12);
+  box-shadow: 0 0 0 4px rgba(56, 189, 248, .16), 0 0 20px rgba(56, 189, 248, .9);
+  animation: coordinate-search-pulse 1.65s ease-out infinite;
+}
+.coordinate-search-marker__dot {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 7px;
+  height: 7px;
+  transform: translate(-50%, -50%);
+  border: 2px solid #fff;
+  border-radius: 50%;
+  background: #0284c7;
+}
+.coordinate-search-marker__cross { position: absolute; background: #e0f2fe; border-radius: 2px; }
+.coordinate-search-marker__cross--horizontal { left: 0; right: 0; top: 20px; height: 2px; }
+.coordinate-search-marker__cross--vertical { top: 0; bottom: 0; left: 20px; width: 2px; }
+
+@keyframes coordinate-search-pulse {
+  0% { transform: scale(.82); opacity: .95; }
+  70%, 100% { transform: scale(1.25); opacity: .15; }
+}
+
+@media (max-width: 720px) {
+  .coordinate-search-panel { width: calc(100% - 20px); }
+  .coordinate-search-panel__grid { grid-template-columns: 1fr; }
+  .coordinate-search-panel__actions { flex-wrap: wrap; }
+  .coordinate-search-panel__primary { flex-basis: 100%; order: -1; }
+}
+
+/* COORDINATE SEARCH THEME FIX V3 BEGIN
+ * Scoped only to the Coordinate Search UI.
+ * Uses the application's existing theme variables and teal accent palette.
+ */
+.coordinate-search-panel {
+  box-sizing: border-box;
+  border-color: var(--edge-strong);
+  background: var(--surface-elev);
+  color: var(--ink);
+  box-shadow: var(--shadow-xl), inset 0 1px 0 rgba(255, 255, 255, .035);
+  backdrop-filter: blur(18px) saturate(1.2);
+}
+
+[data-theme="dark"] .coordinate-search-panel {
+  border-color: rgba(72, 101, 128, .72);
+  background: rgba(15, 31, 47, .98);
+  color-scheme: dark;
+}
+
+[data-theme="light"] .coordinate-search-panel {
+  border-color: var(--edge-strong);
+  background: rgba(255, 255, 255, .98);
+  color-scheme: light;
+}
+
+.coordinate-search-panel__head {
+  border-bottom-color: var(--edge);
+  background: linear-gradient(135deg, var(--accent-muted), transparent 62%);
+}
+
+.coordinate-search-panel__head span { color: var(--accent-hover); }
+.coordinate-search-panel__head strong { color: var(--ink); }
+.coordinate-search-panel__head small { color: var(--ink-dim); }
+
+.coordinate-search-panel__head button {
+  border-color: var(--edge-strong);
+  background: var(--surface-2);
+  color: var(--ink-dim);
+}
+
+.coordinate-search-panel__head button:hover {
+  border-color: color-mix(in srgb, var(--accent) 58%, var(--edge-strong));
+  background: var(--accent-muted);
+  color: var(--accent-hover);
+}
+
+.coordinate-search-panel__field > span,
+.coordinate-search-panel__hint { color: var(--ink-dim); }
+
+.coordinate-search-panel__field input,
+.coordinate-search-panel__field select {
+  box-sizing: border-box;
+  border-color: var(--edge-strong);
+  background: var(--bg-subtle);
+  color: var(--ink);
+  caret-color: var(--accent-hover);
+  font-weight: 600;
+  opacity: 1;
+}
+
+.coordinate-search-panel__field input::placeholder {
+  color: var(--ink-mute);
+  opacity: 1;
+}
+
+.coordinate-search-panel__field select option {
+  background: var(--surface);
+  color: var(--ink);
+}
+
+.coordinate-search-panel__field input:hover,
+.coordinate-search-panel__field select:hover { border-color: var(--edge-focus); }
+
+.coordinate-search-panel__field input:focus,
+.coordinate-search-panel__field select:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-muted);
+}
+
+.coordinate-search-panel__result {
+  border-color: color-mix(in srgb, var(--accent) 38%, transparent);
+  background: var(--accent-muted);
+}
+.coordinate-search-panel__result span { color: var(--ink-dim); }
+.coordinate-search-panel__result strong { color: var(--ink); }
+
+.coordinate-search-panel__error,
+.coordinate-search-panel__copy-status.is-error {
+  border-color: rgba(248, 113, 113, .48);
+  background: var(--danger-muted);
+  color: #fca5a5;
+}
+[data-theme="light"] .coordinate-search-panel__error,
+[data-theme="light"] .coordinate-search-panel__copy-status.is-error { color: #b91c1c; }
+
+.coordinate-search-panel__copy-status:not(.is-error) {
+  background: var(--ok-muted);
+  color: #a7f3d0;
+}
+[data-theme="light"] .coordinate-search-panel__copy-status:not(.is-error) { color: #047857; }
+
+.coordinate-search-panel__secondary {
+  border-color: var(--edge-strong);
+  background: var(--surface-2);
+  color: var(--ink-dim);
+}
+.coordinate-search-panel__secondary:hover {
+  border-color: color-mix(in srgb, var(--accent) 48%, var(--edge-strong));
+  background: var(--surface-3);
+  color: var(--ink);
+}
+
+.coordinate-search-panel__primary {
+  border-color: var(--accent-hover);
+  background: var(--accent);
+  color: var(--accent-ink);
+  box-shadow: var(--shadow-glow);
+}
+.coordinate-search-panel__primary:hover {
+  background: var(--accent-hover);
+  filter: brightness(1.03);
+}
+/* COORDINATE SEARCH THEME FIX V3 END */
+.coordinate-search-panel__actions button:disabled,
+.coordinate-search-panel__field select:disabled {
+  cursor: not-allowed;
+  opacity: .58;
+  box-shadow: none;
+}
+
+.coordinate-search-panel__swap {
+  align-self: flex-start;
+  border: 1px solid rgba(56, 189, 248, .48);
+  border-radius: 8px;
+  background: rgba(56, 189, 248, .10);
+  color: #38bdf8;
+  padding: 6px 10px;
+  font-size: 11px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.coordinate-search-panel__swap:hover {
+  background: rgba(56, 189, 248, .18);
+}
+
+.coordinate-search-panel__notice {
+  border: 1px solid rgba(56, 189, 248, .42);
+  border-radius: 9px;
+  background: rgba(56, 189, 248, .10);
+  color: var(--ink);
+  padding: 9px 10px;
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+/* ======================================================================
+   THREE FLOATING TOOLS PANELS V3
+   UI-only wrapper: existing tool buttons and handlers are unchanged.
+   ====================================================================== */
+.map-tools {
+  position: absolute;
+  top: 12px;
+  left: 12px;
+  z-index: 32;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+  max-width: calc(100% - 24px);
+  isolation: isolate;
+}
+
+.map-tools__toggle {
+  position: relative;
+  min-height: 40px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 9px 13px;
+  border: 1px solid var(--edge);
+  border-radius: var(--radius-md);
+  background: var(--glass-strong);
+  backdrop-filter: blur(16px) saturate(1.4);
+  box-shadow: var(--shadow-md);
+  color: var(--ink);
+  font-family: var(--font);
+  font-size: 10px;
+  font-weight: 750;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: transform var(--transition-fast), border-color var(--transition-fast), background var(--transition-fast), color var(--transition-fast);
+}
+
+.map-tools__toggle:hover {
+  transform: translateY(-1px);
+  border-color: color-mix(in srgb, var(--accent) 58%, var(--edge));
+  background: var(--surface-3);
+}
+
+.map-tools__toggle--open {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: var(--accent-ink);
+}
+
+.map-tools__toggle--has-active:not(.map-tools__toggle--open) {
+  border-color: color-mix(in srgb, var(--accent) 52%, var(--edge));
+}
+
+.map-tools__active-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  background: currentColor;
+  box-shadow: 0 0 0 3px color-mix(in srgb, currentColor 18%, transparent);
+}
+
+.map-tools__panels {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+  max-width: min(640px, calc(100vw - 24px));
+  max-height: calc(100vh - 68px);
+  overflow: auto;
+  padding: 1px;
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transform: translateY(-8px);
+  transform-origin: top left;
+  transition: opacity 150ms ease, transform 150ms ease, visibility 0s linear 150ms;
+}
+
+.map-tools__panels--open {
+  opacity: 1;
+  visibility: visible;
+  pointer-events: auto;
+  transform: translateY(0);
+  transition-delay: 0s;
+}
+
+.map-tools__floating-panel {
+  width: max-content;
+  max-width: 100%;
+  padding: 5px;
+  border: 1px solid var(--edge);
+  border-radius: calc(var(--radius-md) + 1px);
+  background: var(--glass-strong);
+  backdrop-filter: blur(18px) saturate(1.4);
+  box-shadow: var(--shadow-md);
+}
+
+.map-tools__floating-panel--location {
+  width: min(630px, calc(100vw - 26px));
+}
+
+.map-controls.map-controls--floating-panel {
+  position: static;
+  z-index: auto;
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  max-width: none;
+  isolation: auto;
+}
+
+.map-controls.map-controls--location-panel {
+  flex-wrap: wrap;
+}
+
+.map-tools__floating-panel .map-controls__group {
+  max-width: 100%;
+  flex-wrap: wrap;
+  box-shadow: none;
+}
+
+.map-tools__floating-panel .map-controls__btn {
+  min-height: 36px;
+  justify-content: center;
+  padding: 8px 11px;
+  white-space: nowrap;
+}
+
+.map-tools__floating-panel--ai .ai-detection-control {
+  width: auto;
+}
+
+.map-tools__floating-panel--ai .ai-overlay-toggle {
+  flex: 0 0 auto;
+}
+
+.map-tools__floating-panel--location .map-controls__group--annotations {
+  flex: 1 1 430px;
+}
+
+.map-tools__floating-panel--location .map-controls__group--street-view {
+  flex: 0 0 auto;
+  width: max-content;
+}
+
+@media (max-width: 700px) {
+  .map-tools {
+    top: 8px;
+    left: 8px;
+    max-width: calc(100% - 16px);
+  }
+
+  .map-tools__toggle {
+    width: 40px;
+    min-width: 40px;
+    padding: 9px;
+  }
+
+  .map-tools__toggle > span:not(.map-tools__active-dot) {
+    display: none;
+  }
+
+  .map-tools__panels {
+    max-width: calc(100vw - 16px);
+    max-height: calc(100vh - 58px);
+  }
+
+  .map-tools__floating-panel,
+  .map-tools__floating-panel--location {
+    width: calc(100vw - 18px);
+  }
+
+  .map-controls.map-controls--floating-panel {
+    flex-wrap: wrap;
+  }
+
+  .map-tools__floating-panel .map-controls__group {
+    width: 100%;
+  }
+
+  .map-tools__floating-panel .map-controls__btn {
+    flex: 1 1 auto;
+    font-size: 9px;
+  }
+}
+
+/* ======================================================================
+   THREE FLOATING TOOLS PANELS V4 COMPACT LOCATION FIX
+   Fixes only Panel 3 sizing. Existing tool handlers remain unchanged.
+   ====================================================================== */
+.map-tools__floating-panel--location {
+  width: max-content;
+  max-width: min(100%, calc(100vw - 26px));
+}
+
+.map-controls.map-controls--location-panel {
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: stretch;
+  width: max-content;
+  max-width: 100%;
+}
+
+.map-tools__floating-panel--location .map-controls__group--annotations {
+  flex: 0 1 auto;
+  width: max-content;
+  max-width: 100%;
+}
+
+.map-tools__floating-panel--location .map-controls__group--street-view {
+  flex: 0 0 auto;
+  width: max-content;
+}
+
+@media (max-width: 700px) {
+  .map-tools__floating-panel--location {
+    width: calc(100vw - 18px);
+    max-width: calc(100vw - 18px);
+  }
+
+  .map-controls.map-controls--location-panel {
+    width: 100%;
+  }
+
+  .map-tools__floating-panel--location .map-controls__group--annotations {
+    flex: 1 1 100%;
+    width: 100%;
+  }
+}
+
+/* ======================================================================
+   ICON CATEGORY TOOLS MENU V5
+   UI-only navigation: main icon -> three icon categories -> one tool panel.
+   Existing tool buttons and handlers remain unchanged.
+   ====================================================================== */
+.map-tools {
+  top: 12px;
+  left: 12px;
+  gap: 8px;
+  overflow: visible;
+}
+
+.map-tools__toggle {
+  width: 42px;
+  min-width: 42px;
+  height: 42px;
+  min-height: 42px;
+  padding: 0;
+  border-radius: 12px;
+}
+
+.map-tools__toggle svg {
+  margin: 0;
+}
+
+.map-tools__active-dot {
+  position: absolute;
+  top: 5px;
+  right: 5px;
+  width: 6px;
+  height: 6px;
+}
+
+.map-tools__panels {
+  display: grid;
+  grid-template-columns: 42px minmax(0, auto);
+  align-items: start;
+  gap: 8px;
+  max-width: calc(100vw - 24px);
+  max-height: calc(100vh - 68px);
+  overflow: visible;
+}
+
+.map-tools__category-rail {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.map-tools__category-btn {
+  position: relative;
+  width: 42px;
+  min-width: 42px;
+  height: 42px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--edge);
+  border-radius: 12px;
+  background: var(--glass-strong);
+  backdrop-filter: blur(16px) saturate(1.4);
+  box-shadow: var(--shadow-md);
+  color: var(--ink-muted);
+  cursor: pointer;
+  transition: transform var(--transition-fast), border-color var(--transition-fast), background var(--transition-fast), color var(--transition-fast);
+}
+
+.map-tools__category-btn:hover {
+  transform: translateY(-1px);
+  border-color: color-mix(in srgb, var(--accent) 58%, var(--edge));
+  background: var(--surface-3);
+  color: var(--ink);
+}
+
+.map-tools__category-btn--active {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: var(--accent-ink);
+}
+
+.map-tools__category-btn--has-active:not(.map-tools__category-btn--active) {
+  border-color: color-mix(in srgb, var(--accent) 58%, var(--edge));
+  color: var(--accent);
+}
+
+.map-tools__category-dot {
+  position: absolute;
+  top: 5px;
+  right: 5px;
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: currentColor;
+  box-shadow: 0 0 0 2px color-mix(in srgb, currentColor 18%, transparent);
+}
+
+.map-tools__content {
+  min-width: 0;
+  max-width: calc(100vw - 82px);
+}
+
+.map-tools__floating-panel {
+  width: max-content;
+  max-width: calc(100vw - 82px);
+  padding: 5px;
+  animation: map-tools-panel-in 140ms ease-out;
+}
+
+@keyframes map-tools-panel-in {
+  from { opacity: 0; transform: translateX(-6px) scale(.985); }
+  to { opacity: 1; transform: translateX(0) scale(1); }
+}
+
+.map-controls.map-controls--floating-panel {
+  position: static;
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  max-width: none;
+}
+
+.map-tools__floating-panel .map-controls__group {
+  width: max-content;
+  max-width: 100%;
+  flex: 0 1 auto;
+  flex-wrap: wrap;
+  box-shadow: none;
+}
+
+.map-tools__floating-panel--location {
+  width: max-content;
+  max-width: min(560px, calc(100vw - 82px));
+}
+
+.map-controls.map-controls--location-panel {
+  width: max-content;
+  max-width: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 7px;
+}
+
+.map-tools__floating-panel--location .map-controls__group--annotations {
+  width: auto;
+  max-width: min(535px, calc(100vw - 94px));
+  flex: 0 1 auto;
+  flex-wrap: wrap;
+}
+
+.map-tools__floating-panel--location .map-controls__group--street-view {
+  width: max-content;
+  flex: 0 0 auto;
+}
+
+.map-tools__floating-panel .map-controls__btn {
+  min-height: 36px;
+  padding: 8px 11px;
+  white-space: nowrap;
+}
+
+@media (max-width: 700px) {
+  .map-tools {
+    top: 8px;
+    left: 8px;
+  }
+
+  .map-tools__panels {
+    grid-template-columns: 40px minmax(0, 1fr);
+    gap: 6px;
+    max-width: calc(100vw - 16px);
+  }
+
+  .map-tools__toggle,
+  .map-tools__category-btn {
+    width: 40px;
+    min-width: 40px;
+    height: 40px;
+    min-height: 40px;
+  }
+
+  .map-tools__content {
+    max-width: calc(100vw - 62px);
+  }
+
+  .map-tools__floating-panel,
+  .map-tools__floating-panel--location {
+    width: auto;
+    max-width: calc(100vw - 62px);
+  }
+
+  .map-controls.map-controls--floating-panel,
+  .map-controls.map-controls--location-panel {
+    width: 100%;
+    max-width: 100%;
+  }
+
+  .map-tools__floating-panel .map-controls__group,
+  .map-tools__floating-panel--location .map-controls__group--annotations {
+    width: 100%;
+    max-width: 100%;
+  }
+
+  .map-tools__floating-panel .map-controls__btn {
+    flex: 1 1 auto;
+    font-size: 9px;
+  }
+}
+
