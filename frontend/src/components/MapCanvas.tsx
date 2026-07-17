@@ -53,9 +53,20 @@ function isVectorVisualizationDataset(d: DatasetRow): boolean {
   return true;
 }
 
+export interface AiVerificationContext {
+  anomalyId: string;
+  detectionMode: Exclude<DetectionMode, null>;
+  anomalyType: SpatialAnomaly["anomaly_type"];
+  aiColor: "red" | "yellow";
+  severityScore: number;
+  detectedAt: string;
+  longitude: number;
+  latitude: number;
+}
+
 interface Props {
   filter: FeatureFilter;
-  onFeatureSelect: (feature: UrbanFeature | null) => void;
+  onFeatureSelect: (feature: UrbanFeature | null, aiVerification?: AiVerificationContext | null) => void;
   /** Fires whenever the set of datasets selected in the Command Center
    * changes Ã¢â‚¬â€ used to drive the ward/dataset-level report panel. */
   onActiveDatasetsChange?: (rows: DatasetRow[]) => void;
@@ -74,6 +85,8 @@ interface Props {
    * Measure visibility changes, so a mirrored top-bar button can stay in sync
    * without duplicating the real Measure state owned here. */
   onMeasureChange?: (active: boolean) => void;
+  /** ADMIN POINT VERIFICATION V1: refetch after an Admin updates a point. */
+  refreshToken?: number;
 }
 
 const DAVANGERE_CENTER: [number, number] = [75.9218, 14.4644];
@@ -619,11 +632,15 @@ const LAYER_MANHOLE_UNCONNECTED = "manhole-recommend-unconnected-circle";
 const MANHOLE_ROUTE_COLOR = "#3aa1ff";
 const MANHOLE_UNCONNECTED_COLOR = "#9b59b6";
 const ANOMALY_COLOR_EXPR: maplibregl.ExpressionSpecification = [
-  "match", ["get", "color"],
-  "red", "#ef4444",
-  "yellow", "#f59e0b",
-  "green", "#22c55e",
-  "#94a3b8",
+  "case",
+  ["==", ["get", "status"], "resolved"], "#2563eb",
+  [
+    "match", ["get", "color"],
+    "red", "#ef4444",
+    "yellow", "#f59e0b",
+    "green", "#22c55e",
+    "#94a3b8",
+  ],
 ];
 
 // Measurement (ruler) tool — separate GeoJSON sources for the vertex
@@ -967,6 +984,16 @@ function featureFocusGeometry(feature: UrbanFeature): {
   };
 }
 
+
+// Blue is an AI-workflow color only. Normal map/category rendering always
+// keeps its original category color, even after Admin approval.
+const POINT_ISSUE_RESOLVED_COLOR = "#2563eb";
+function withPointVerificationColor(
+  fallback: maplibregl.ExpressionSpecification | string,
+): maplibregl.ExpressionSpecification | string {
+  return fallback;
+}
+
 function buildCategoryColorExpression(
   colorByCategory: Map<string, string>
 ): maplibregl.ExpressionSpecification | string {
@@ -1016,19 +1043,24 @@ const DEFAULT_FILL_OPACITY = 0.35;
  * encroached building is highlighted red/yellow, everything else defaults
  * to green ("confirmed OK"), matching a real choropleth rather than pins. */
 function buildBuildingColorExpression(
-  buildingColor: Record<string, "red" | "yellow">
+  buildingColor: Record<string, "red" | "yellow" | "blue">
 ): maplibregl.ExpressionSpecification | string {
   const entries = Object.entries(buildingColor);
   if (entries.length === 0) return BUILDING_DEFAULT_COLOR;
   const pairs: (string | maplibregl.ExpressionSpecification)[] = [];
-  for (const [id, color] of entries) pairs.push(id, color === "red" ? BUILDING_RED_COLOR : BUILDING_YELLOW_COLOR);
+  for (const [id, color] of entries) {
+    pairs.push(id, color === "blue" ? POINT_ISSUE_RESOLVED_COLOR : color === "red" ? BUILDING_RED_COLOR : BUILDING_YELLOW_COLOR);
+  }
   return ["match", ["get", "id"], ...pairs, BUILDING_DEFAULT_COLOR] as unknown as maplibregl.ExpressionSpecification;
 }
 
-const ANOMALY_BADGE_COLOR: Record<SpatialAnomaly["color"], string> = {
+type AnomalyDisplayColor = SpatialAnomaly["color"] | "blue";
+
+const ANOMALY_BADGE_COLOR: Record<AnomalyDisplayColor, string> = {
   red: BUILDING_RED_COLOR,
   yellow: BUILDING_YELLOW_COLOR,
   green: BUILDING_DEFAULT_COLOR,
+  blue: POINT_ISSUE_RESOLVED_COLOR,
 };
 
 const ANOMALY_TYPE_LABEL: Record<SpatialAnomaly["anomaly_type"], string> = {
@@ -1040,7 +1072,7 @@ const ANOMALY_TYPE_LABEL: Record<SpatialAnomaly["anomaly_type"], string> = {
 /** One-line, numbers-first summary for the hover tooltip's AI Detected
  * badge — same underlying facts as the click-through AI Alert card, just
  * condensed so it's readable at a glance without opening anything. */
-function summarizeAnomalyForTooltip(a: SpatialAnomaly): { color: SpatialAnomaly["color"]; typeLabel: string; metric: string } {
+function summarizeAnomalyForTooltip(a: SpatialAnomaly): { color: AnomalyDisplayColor; typeLabel: string; metric: string; resolved: boolean; longitude: number; latitude: number } {
   const m = a.anomaly_metadata;
   let metric = "";
   if (a.anomaly_type === "pole_redundancy") {
@@ -1062,7 +1094,69 @@ function summarizeAnomalyForTooltip(a: SpatialAnomaly): { color: SpatialAnomaly[
         : "No nearby drain found"
     );
   }
-  return { color: a.color, typeLabel: ANOMALY_TYPE_LABEL[a.anomaly_type], metric };
+  const resolved = a.status === "resolved";
+  return {
+    color: resolved ? "blue" : a.color,
+    typeLabel: ANOMALY_TYPE_LABEL[a.anomaly_type],
+    metric: resolved ? `Resolved and Admin approved · ${metric}` : metric,
+    resolved,
+    longitude: a.lon,
+    latitude: a.lat,
+  };
+}
+
+function primaryFeatureIdForAnomaly(anomaly: SpatialAnomaly): string | null {
+  return (
+    (anomaly.anomaly_metadata.this_feature_id as string | undefined) ??
+    (anomaly.anomaly_metadata.building_id as string | undefined) ??
+    (anomaly.anomaly_metadata.manhole_id as string | undefined) ??
+    anomaly.feature_ids[0] ??
+    null
+  );
+}
+
+function aiVerificationContextForAnomaly(
+  anomaly: SpatialAnomaly | undefined,
+  mode: DetectionMode,
+): AiVerificationContext | null {
+  if (!anomaly || !mode || (anomaly.color !== "red" && anomaly.color !== "yellow")) return null;
+  if (anomaly.anomaly_type !== DETECTION_MODE_ANOMALY_TYPE[mode]) return null;
+  return {
+    anomalyId: anomaly.id,
+    detectionMode: mode,
+    anomalyType: anomaly.anomaly_type,
+    aiColor: anomaly.color,
+    severityScore: anomaly.severity_score,
+    detectedAt: anomaly.created_at,
+    longitude: anomaly.lon,
+    latitude: anomaly.lat,
+  };
+}
+
+function verificationSummaryFromAttributes(attributes: Record<string, unknown>): HoverInfo["verification"] {
+  const status = typeof attributes._verification_status === "string" ? attributes._verification_status : null;
+  const originalCondition = typeof attributes._verification_original_condition === "string"
+    ? attributes._verification_original_condition
+    : typeof attributes.Condition === "string"
+      ? attributes.Condition
+      : typeof attributes.condition === "string"
+        ? attributes.condition
+        : null;
+  const verified = typeof attributes._verification_current_condition === "string"
+    ? attributes._verification_current_condition
+    : typeof attributes._verification_verified_condition === "string"
+      ? attributes._verification_verified_condition
+      : null;
+  if (!status && !verified) return undefined;
+  return {
+    originalCondition,
+    currentCondition: status === "resolved" && verified ? verified : originalCondition,
+    status,
+    architect: typeof attributes._verification_architect === "string" ? attributes._verification_architect : null,
+    admin: typeof attributes._verification_verified_by === "string" ? attributes._verification_verified_by : null,
+    approvedAt: typeof attributes._verification_resolved_at === "string" ? attributes._verification_resolved_at : null,
+    remarks: typeof attributes._verification_remarks === "string" ? attributes._verification_remarks : null,
+  };
 }
 
 const EMPTY_FC: FeatureCollectionResponse = { type: "FeatureCollection", features: [], bbox: [0, 0, 0, 0], count: 0, limit: 0, truncated: false };
@@ -1188,7 +1282,16 @@ interface HoverInfo {
   /** Populated only while the AI Detection overlay is on and this feature
    * has a finding of its own — a quick "AI Detected" badge at a glance,
    * without needing to click. */
-  aiDetection?: { color: SpatialAnomaly["color"]; typeLabel: string; metric: string };
+  aiDetection?: { color: AnomalyDisplayColor; typeLabel: string; metric: string; resolved: boolean; longitude: number; latitude: number };
+  verification?: {
+    originalCondition: string | null;
+    currentCondition: string | null;
+    status: string | null;
+    architect: string | null;
+    admin: string | null;
+    approvedAt: string | null;
+    remarks: string | null;
+  };
 }
 interface LayerAttributeTableState extends LayerFeatureTableFilter {
   sourceLabel: string;
@@ -1200,7 +1303,7 @@ export interface MapCanvasHandle {
 }
 
 export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
-  { filter, onFeatureSelect, onActiveDatasetsChange, initialActiveDatasets, aiHighlights, focusFeatureId, onFocusHandled, onMeasureChange },
+  {filter, onFeatureSelect, onActiveDatasetsChange, initialActiveDatasets, aiHighlights, focusFeatureId, onFocusHandled, onMeasureChange, refreshToken = 0 },
   ref
 ) {
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -1309,11 +1412,13 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
   // this off until the user turns it on.
   const [aiOverlayEnabled, setAiOverlayEnabled] = useState(false);
   const aiOverlayEnabledRef = useRef(false);
-  const buildingColorMapRef = useRef<Record<string, "red" | "yellow">>({});
+  const buildingColorMapRef = useRef<Record<string, "red" | "yellow" | "blue">>({});
   // feature id -> its own anomaly, for the hover tooltip's "AI Detected"
   // badge — populated whenever anomalies changes, read via ref from the
   // hover handler (registered once at map load).
   const anomalyByFeatureIdRef = useRef<Record<string, SpatialAnomaly>>({});
+  const anomalyByIdRef = useRef<Record<string, SpatialAnomaly>>({});
+  const aiAnomalyClickConsumedRef = useRef(false);
   // building feature id -> its drain_encroachment SpatialAnomaly id, so a
   // click on a recolored building in Drains mode can open the AI Alert card
   // for that specific finding (read via ref from the click handler, which
@@ -2745,7 +2850,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     }
 
     const colorExpr = buildCategoryColorExpression(colorMap);
-    if (map.getLayer(LAYER_POINTS)) map.setPaintProperty(LAYER_POINTS, "circle-color", colorExpr);
+    if (map.getLayer(LAYER_POINTS)) map.setPaintProperty(LAYER_POINTS, "circle-color", withPointVerificationColor(colorExpr));
     if (map.getLayer(LAYER_LINES)) map.setPaintProperty(LAYER_LINES, "line-color", colorExpr);
     // In Drains mode, polygons (buildings) are recolored by their own
     // encroachment finding instead of by category — read via a ref (not
@@ -2874,7 +2979,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     // Restore the normal shared layers. The selected source layer is removed
     // from these layers by the filter effect and rendered only by the overlay.
     if (map.getLayer(LAYER_POINTS)) {
-      map.setPaintProperty(LAYER_POINTS, "circle-color", baseColor);
+      map.setPaintProperty(LAYER_POINTS, "circle-color", withPointVerificationColor(baseColor));
       map.setPaintProperty(LAYER_POINTS, "circle-radius", 3.5);
       map.setPaintProperty(LAYER_POINTS, "circle-opacity", 0.9);
     }
@@ -2894,7 +2999,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     }
 
     if (map.getLayer(VIZ_SELECTED_POINTS)) {
-      map.setPaintProperty(VIZ_SELECTED_POINTS, "circle-color", selectedColor);
+      map.setPaintProperty(VIZ_SELECTED_POINTS, "circle-color", withPointVerificationColor(selectedColor));
       map.setPaintProperty(VIZ_SELECTED_POINTS, "circle-radius", selectedPointRadius);
       map.setPaintProperty(VIZ_SELECTED_POINTS, "circle-opacity", visualizationOpacity);
     }
@@ -3194,7 +3299,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
       .then((lists) => setAnomalies(lists.flat()))
       .catch(() => {});
     return () => ctrl.abort();
-  }, [activeDatasetIds]);
+  }, [activeDatasetIds, refreshToken]);
 
   // Push the fetched anomalies into the map source whenever they change.
   useEffect(() => {
@@ -3208,7 +3313,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
         type: "Feature",
         id: a.id,
         geometry: { type: "Point", coordinates: [a.lon, a.lat] },
-        properties: { id: a.id, color: a.color, anomaly_type: a.anomaly_type },
+        properties: { id: a.id, color: a.color, anomaly_type: a.anomaly_type, status: a.status },
       })),
     });
   }, [mapReady, anomalies]);
@@ -3349,16 +3454,15 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
   // reason (feature_ids[0] happens to already match those two, but reading
   // the explicit metadata field is the correct contract, not a coincidence).
   useEffect(() => {
-    const map: Record<string, SpatialAnomaly> = {};
-    for (const a of anomalies) {
-      const primaryId =
-        (a.anomaly_metadata.this_feature_id as string | undefined) ??
-        (a.anomaly_metadata.building_id as string | undefined) ??
-        (a.anomaly_metadata.manhole_id as string | undefined) ??
-        a.feature_ids[0];
-      if (primaryId) map[primaryId] = a;
+    const byFeature: Record<string, SpatialAnomaly> = {};
+    const byId: Record<string, SpatialAnomaly> = {};
+    for (const anomaly of anomalies) {
+      byId[anomaly.id] = anomaly;
+      const primaryId = primaryFeatureIdForAnomaly(anomaly);
+      if (primaryId) byFeature[primaryId] = anomaly;
     }
-    anomalyByFeatureIdRef.current = map;
+    anomalyByFeatureIdRef.current = byFeature;
+    anomalyByIdRef.current = byId;
   }, [anomalies]);
 
   // Entering/leaving a detection mode drives which asset family is visible —
@@ -3396,13 +3500,13 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     const map = mapRef.current;
     if (!mapReady || !map) return;
 
-    const buildingColors: Record<string, "red" | "yellow"> = {};
+    const buildingColors: Record<string, "red" | "yellow" | "blue"> = {};
     const buildingAnomalyIds: Record<string, string> = {};
     for (const a of anomalies) {
       if (a.anomaly_type !== "drain_encroachment") continue;
       const buildingId = a.feature_ids[0];
       if (buildingId) {
-        buildingColors[buildingId] = a.color === "red" ? "red" : "yellow";
+        buildingColors[buildingId] = a.status === "resolved" ? "blue" : a.color === "red" ? "red" : "yellow";
         buildingAnomalyIds[buildingId] = a.id;
       }
     }
@@ -3742,6 +3846,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [filter]);
 
+  useEffect(() => { if (!mapReady || refreshToken === 0) return; scheduleFetch(); }, [mapReady, refreshToken, scheduleFetch]);
   useEffect(() => {
     if (!containerRef.current || mapRef.current) return;
     const map = new maplibregl.Map({
@@ -4117,17 +4222,34 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
       });
 
       map.on("click", LAYER_ANOMALIES, (e: MapMouseEvent) => {
-        // In Manholes AI mode, the underlying base point layer sits at the
-        // exact same coordinate and its own click handler (in
-        // handleFeatureClick below) already opens the richer manhole-
-        // recommend card for this click — without this guard, MapLibre
-        // fires both layer-specific handlers for one click and both cards
-        // would open stacked on top of each other.
-        if (detectionModeRef.current === "manholes") return;
         const hit = map.queryRenderedFeatures(e.point, { layers: [LAYER_ANOMALIES] });
         if (!hit.length) return;
         const id = hit[0].properties?.id as string | undefined;
-        if (id) setSelectedAnomalyId(id);
+        if (!id) return;
+
+        const anomaly = anomalyByIdRef.current[id];
+        const activeMode = detectionModeRef.current;
+        const context = aiOverlayEnabledRef.current
+          ? aiVerificationContextForAnomaly(anomaly, activeMode)
+          : null;
+        const primaryFeatureId = anomaly ? primaryFeatureIdForAnomaly(anomaly) : null;
+
+        // Preserve the previous AI UI: Poles/Drains still open the AI Alert
+        // card; Manholes still use their richer recommendation card.
+        if (activeMode !== "manholes") setSelectedAnomalyId(id);
+        if (!context || !primaryFeatureId) return;
+
+        aiAnomalyClickConsumedRef.current = true;
+        window.requestAnimationFrame(() => { aiAnomalyClickConsumedRef.current = false; });
+        void fetchFeatureById(primaryFeatureId)
+          .then((feature) => {
+            onFeatureSelect(feature, context);
+            if (context.detectionMode === "manholes" && feature.properties.dataset_id) {
+              setManholeRecommendOpen(false);
+              void runManholeFeatureRecommend(feature.properties.dataset_id, feature.properties.id);
+            }
+          })
+          .catch(() => {});
       });
       map.on("mouseenter", LAYER_ANOMALIES, () => (map.getCanvas().style.cursor = "pointer"));
       map.on("mouseleave", LAYER_ANOMALIES, () => (map.getCanvas().style.cursor = ""));
@@ -4177,15 +4299,26 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
         // photo — otherwise the two click handlers would both fire for the
         // same click. Once Escape deactivates the tool (panel still open),
         // this must stop applying so ordinary feature clicks work again.
-        if (placemarkModeRef.current || streetPickModeRef.current || streetPickConsumedRef.current || isMeasureInputActive()) return;
+        if (placemarkModeRef.current || streetPickModeRef.current || streetPickConsumedRef.current || aiAnomalyClickConsumedRef.current || isMeasureInputActive()) return;
         const hit = map.queryRenderedFeatures(e.point, { layers: ALL_CLICKABLE });
         if (!hit.length) return;
         const isAi = AI_CLICKABLE.includes(hit[0].layer?.id as string);
         const base = isAi ? hit.find((f) => BASE_CLICKABLE.includes(f.layer?.id as string)) : hit[0];
         const selected = decodeFeature(base ?? hit[0]);
-        if (aiOverlayEnabledRef.current && detectionModeRef.current === "drains") {
+        const activeMode = detectionModeRef.current;
+        const selectedAnomaly = aiOverlayEnabledRef.current && activeMode
+          ? anomalyByFeatureIdRef.current[selected.properties.id]
+          : undefined;
+        const verificationContext = aiOverlayEnabledRef.current
+          ? aiVerificationContextForAnomaly(selectedAnomaly, activeMode)
+          : null;
+        if (aiOverlayEnabledRef.current && activeMode === "drains") {
           const anomalyId = buildingAnomalyIdMapRef.current[selected.properties.id];
-          if (anomalyId) { setSelectedAnomalyId(anomalyId); return; }
+          if (anomalyId) {
+            setSelectedAnomalyId(anomalyId);
+            if (verificationContext) onFeatureSelect(selected, verificationContext);
+            return;
+          }
         }
         if (
           aiOverlayEnabledRef.current &&
@@ -4200,6 +4333,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
           // Poles/Drains: only hide the network SUMMARY PANEL (not its
           // data) so the two cards don't visually stack in the same corner.
           setManholeRecommendOpen(false);
+          if (verificationContext) onFeatureSelect(selected, verificationContext);
           void runManholeFeatureRecommend(selected.properties.dataset_id, selected.properties.id);
           return;
         }
@@ -4211,7 +4345,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
           });
           return;
         }
-        onFeatureSelect(selected);
+        onFeatureSelect(selected, verificationContext);
       };
       const handleFeatureHover = (e: MapMouseEvent) => {
         // While a measurement tool is actually armed/drawing, ordinary
@@ -4236,16 +4370,18 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
         const anomalyForFeature = aiOverlayEnabledRef.current
           ? anomalyByFeatureIdRef.current[decoded.properties.id]
           : undefined;
+        const aiSummary = anomalyForFeature ? summarizeAnomalyForTooltip(anomalyForFeature) : undefined;
         setHover({
           x: e.point.x,
           y: e.point.y,
           label: decoded.properties.label || "-",
           category,
           severity: decoded.properties.severity,
-          color: colorForCategory(category),
+          color: aiSummary ? ANOMALY_BADGE_COLOR[aiSummary.color] : colorForCategory(category),
           attributes: decoded.properties.attributes,
           aiStatus,
-          aiDetection: anomalyForFeature ? summarizeAnomalyForTooltip(anomalyForFeature) : undefined,
+          aiDetection: aiSummary,
+          verification: verificationSummaryFromAttributes(decoded.properties.attributes),
         });
       };
       // Named (not inline-anonymous) so the cursor is never fought: while
@@ -6246,6 +6382,19 @@ function HoverTooltip({ hover }: { hover: HoverInfo | null }) {
             AI Detected: {hover.aiDetection.typeLabel}
           </div>
           <div style={{ fontWeight: 600, opacity: 0.92 }}>{hover.aiDetection.metric}</div>
+          <div style={{ marginTop: 4, display: "grid", gridTemplateColumns: "auto 1fr", columnGap: 8, rowGap: 2, fontFamily: "var(--font-mono)", fontSize: 9, opacity: 0.96 }}>
+            <span>Latitude</span><strong style={{ textAlign: "right" }}>{hover.aiDetection.latitude.toFixed(7)}</strong>
+            <span>Longitude</span><strong style={{ textAlign: "right" }}>{hover.aiDetection.longitude.toFixed(7)}</strong>
+          </div>
+        </div>
+      )}
+      {hover.verification && (
+        <div className="map__tooltip-verification">
+          <div><span>Original GDB Condition</span><strong>{hover.verification.originalCondition ?? "—"}</strong></div>
+          <div><span>Current Condition</span><strong>{hover.verification.currentCondition ?? "—"}</strong></div>
+          <div><span>Resolution Status</span><strong>{hover.verification.status?.replaceAll("_", " ") ?? "—"}</strong></div>
+          {hover.verification.admin && <div><span>Approved By</span><strong>{hover.verification.admin}</strong></div>}
+          {hover.verification.approvedAt && <div><span>Approved Date</span><strong>{new Date(hover.verification.approvedAt).toLocaleString()}</strong></div>}
         </div>
       )}
       {attrEntries.length > 0 && (

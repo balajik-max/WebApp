@@ -10,6 +10,7 @@ from app.models.feature import Feature  # noqa: F401
 from app.models.feature_version import FeatureVersion  # noqa: F401
 from app.models.notification import Notification, NotificationSource  # noqa: F401
 from app.models.placemark import Placemark  # noqa: F401
+from app.models.point_verification import PointVerification, PointVerificationStatus, VerifiedCondition  # noqa: F401
 from app.models.review_item import ReviewItem, ReviewPriority, ReviewStatus  # noqa: F401
 from app.models.spatial_anomaly import (  # noqa: F401
     AnomalyColor,
