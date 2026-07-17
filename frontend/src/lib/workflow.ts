@@ -435,8 +435,12 @@ export interface WardSupplyComparison {
   city_total_population: number;
   deficit_mld: number;
   surplus_mld: number;
+  gap_mld: number;
   demand_vs_expected_supply_pct: number;
+  ward_lpcd: number | null;
+  expected_lpcd: number | null;
   is_deficit: boolean;
+  severity: "surplus" | "mild_deficit" | "moderate_deficit" | "severe_deficit";
   note: string;
 }
 
@@ -673,7 +677,7 @@ export const createSurveyRequest = (body: {
 }) => apiPost<SurveyRequestRow>("/api/v1/survey-requests", body);
 
 // ---------------------- AI spatial audit engine ----------------------------
-export type AnomalyType = "pole_redundancy" | "drain_encroachment" | "manhole_status";
+export type AnomalyType = "pole_redundancy" | "drain_encroachment" | "manhole_status" | "road_width_narrowing";
 export type AnomalyColor = "red" | "yellow" | "green";
 export type AnomalyStatus = "open" | "reviewing" | "resolved" | "dismissed";
 
@@ -683,6 +687,7 @@ export interface AuditRunResult {
   pole_redundancy: Record<string, number>;
   drain_encroachment: Record<string, number>;
   manhole_status: Record<string, number>;
+  road_width_narrowing: Record<string, number>;
 }
 
 export interface SpatialAnomaly {

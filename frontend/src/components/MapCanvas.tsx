@@ -660,6 +660,12 @@ const AI_NEEDED_COLOR = "#22c55e";    // green
 // decided server-side, no client bucket math needed).
 const ANOMALY_SOURCE = "spatial-anomalies";
 const LAYER_ANOMALIES = "spatial-anomalies-points";
+// Road-width narrowing is drawn as a coloured LINE (the affected carriageway
+// stretch, like a traffic segment) rather than vertex dots — see
+// ANOMALY_ROAD_LINE_SOURCE below, populated from each finding's
+// `affected_line_wkt` metadata. The point layer explicitly excludes this type.
+const ANOMALY_ROAD_LINE_SOURCE = "spatial-anomalies-road-lines";
+const LAYER_ANOMALIES_ROAD = "spatial-anomalies-road-lines";
 
 // AI Manhole Recommendation Engine — proposed/rehab pipe routes, its own
 // source/layer so it never touches the anomaly/highlight layers above.
@@ -1037,18 +1043,20 @@ function buildCategoryColorExpression(
 
 /** AI Detection focus modes — each isolates the map to one asset family and
  * one anomaly type, instead of showing every layer/finding at once. */
-export type DetectionMode = "poles" | "drains" | "manholes" | null;
+export type DetectionMode = "poles" | "drains" | "manholes" | "roads" | null;
 
 const DETECTION_MODE_TARGET_CLASSES: Record<Exclude<DetectionMode, null>, string[]> = {
   poles: ["Illumination_Asset"],
   drains: ["Building", "Drainage_Asset"],
   manholes: ["Access_Point"],
+  roads: ["Road_Centerline", "Road_Surface"],
 };
 
 const DETECTION_MODE_ANOMALY_TYPE: Record<Exclude<DetectionMode, null>, string> = {
   poles: "pole_redundancy",
   drains: "drain_encroachment",
   manholes: "manhole_status",
+  roads: "road_width_narrowing",
 };
 
 // Deliberately darker/more saturated than the category-color palette used
@@ -1090,6 +1098,7 @@ const ANOMALY_TYPE_LABEL: Record<SpatialAnomaly["anomaly_type"], string> = {
   pole_redundancy: "Pole Redundancy",
   drain_encroachment: "Drain Encroachment",
   manhole_status: "Manhole Status",
+  road_width_narrowing: "Road Width Narrowing",
 };
 
 /** One-line, numbers-first summary for the hover tooltip's AI Detected
@@ -1116,6 +1125,8 @@ function summarizeAnomalyForTooltip(a: SpatialAnomaly): { color: SpatialAnomaly[
         ? `Nearest drain: ${m.nearest_drain_category} (${m.nearest_drain_distance_m ?? "?"}m)`
         : "No nearby drain found"
     );
+  } else if (a.anomaly_type === "road_width_narrowing") {
+    metric = `Width ${m.width_m ?? "?"}m — down ${m.drop_pct ?? "?"}% from ~${m.rolling_avg_m ?? "?"}m avg`;
   }
   return { color: a.color, typeLabel: ANOMALY_TYPE_LABEL[a.anomaly_type], metric };
 }
@@ -3302,6 +3313,21 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     return () => ctrl.abort();
   }, [activeDatasetIds]);
 
+  // Parse a "LINESTRING(lon lat, ...)" / "SRID=4326;LINESTRING(...)" WKT into
+  // GeoJSON [lon, lat] coordinates. Returns null if not a line.
+  const wktLineCoords = (wkt: string | undefined): [number, number][] | null => {
+    if (!wkt) return null;
+    const m = wkt.match(/LINESTRING\s*\(([^)]+)\)/i);
+    if (!m) return null;
+    return m[1]
+      .trim()
+      .split(",")
+      .map((pair) => {
+        const [lon, lat] = pair.trim().split(/\s+/).map(Number);
+        return [lon, lat] as [number, number];
+      });
+  };
+
   // Push the fetched anomalies into the map source whenever they change.
   useEffect(() => {
     const map = mapRef.current;
@@ -3317,6 +3343,28 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
         properties: { id: a.id, color: a.color, anomaly_type: a.anomaly_type },
       })),
     });
+    // Road-width narrowing is rendered as a line (the affected carriageway
+    // stretch), not a point — feed its WKT geometry into a separate source.
+    const roadSrc = map.getSource(ANOMALY_ROAD_LINE_SOURCE) as GeoJSONSource | undefined;
+    if (roadSrc) {
+      roadSrc.setData({
+        type: "FeatureCollection",
+        features: anomalies
+          .filter((a) => a.anomaly_type === "road_width_narrowing")
+          .map((a) => {
+            const coords = wktLineCoords(a.anomaly_metadata?.affected_line_wkt as string | undefined);
+            return coords
+              ? {
+                  type: "Feature" as const,
+                  id: a.id,
+                  geometry: { type: "LineString" as const, coordinates: coords },
+                  properties: { id: a.id, color: a.color, anomaly_type: a.anomaly_type },
+                }
+              : null;
+          })
+          .filter((f): f is NonNullable<typeof f> => f !== null),
+      });
+    }
   }, [mapReady, anomalies]);
 
   // Push the current manhole-recommend answer's routes into their own map
@@ -3529,8 +3577,39 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
       );
     }
     if (map.getLayer(LAYER_ANOMALIES)) {
-      const anomalyType = aiOn && detectionMode !== "drains" ? DETECTION_MODE_ANOMALY_TYPE[detectionMode] : null;
-      map.setFilter(LAYER_ANOMALIES, anomalyType ? ["==", ["get", "anomaly_type"], anomalyType] : ["==", ["get", "anomaly_type"], "__none__"]);
+      // Each detection mode isolates its own finding type as dots. Road-width
+      // narrowing is drawn as a LINE (LAYER_ANOMALIES_ROAD), so in Road Width
+      // mode the point layer shows nothing; in other modes it shows that
+      // mode's type (never road_width_narrowing). With no mode but the overlay
+      // on (e.g. after "Run Spatial Audit") it shows every type except
+      // road_width_narrowing. Drains mode suppresses points entirely — it
+      // communicates through polygon fill instead.
+      const anomalyType =
+        aiOn && detectionMode !== null && detectionMode !== "drains" && detectionMode !== "roads"
+          ? DETECTION_MODE_ANOMALY_TYPE[detectionMode]
+          : null;
+      let pointFilter: maplibregl.FilterSpecification;
+      if (anomalyType) {
+        pointFilter = ["==", ["get", "anomaly_type"], anomalyType];
+      } else if (aiOn && detectionMode === null) {
+        pointFilter = ["!=", ["get", "anomaly_type"], "road_width_narrowing"];
+      } else {
+        // roads or drains mode, or overlay off => no dots
+        pointFilter = ["==", ["get", "anomaly_type"], "__none__"];
+      }
+      map.setFilter(LAYER_ANOMALIES, pointFilter);
+    }
+    if (map.getLayer(LAYER_ANOMALIES_ROAD)) {
+      // The road-line layer mirrors the same visibility logic, but it ONLY
+      // ever carries road_width_narrowing — so it shows whenever that type is
+      // in scope: Road Width mode, or "show everything" (overlay on, no
+      // specific mode). Drains mode communicates via polygon fill, so it
+      // hides the road lines too.
+      const roadInScope = aiOn && detectionMode !== "drains" && (detectionMode === "roads" || detectionMode === null);
+      const roadFilter: maplibregl.FilterSpecification = roadInScope
+        ? ["==", ["get", "anomaly_type"], "road_width_narrowing"]
+        : ["==", ["get", "anomaly_type"], "__none__"];
+      map.setFilter(LAYER_ANOMALIES_ROAD, roadFilter);
     }
 
     function colorByCategoryExpr() {
@@ -3553,10 +3632,12 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
 
   const toggleDetectionMode = useCallback((mode: Exclude<DetectionMode, null>) => {
     setDetectionMode((current) => (current === mode ? null : mode));
-    // Every fresh mode selection starts with the AI overlay off — isolate
-    // the category first, plain colors, then the user explicitly turns AI
-    // on as a separate step.
-    setAiOverlayEnabled(false);
+    // A detection mode's whole purpose is the AI red/yellow/green highlight,
+    // so selecting one turns the overlay on immediately (the mode already
+    // filters the anomaly layer down to its own finding type — e.g. Road
+    // Width shows only road_width_narrowing). Toggling a mode off leaves the
+    // overlay as-is so other findings stay visible.
+    if (detectionModeRef.current !== mode) setAiOverlayEnabled(true);
   }, []);
 
   const toggleAiOverlay = useCallback(() => {
@@ -3588,6 +3669,11 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
       }
     }
     if (failures.length > 0) setAuditError(failures.join("; "));
+    // Auto-turn on the AI overlay so the freshly-computed audit findings are
+    // visible on the map immediately, without the user having to also toggle
+    // "AI Detection" on. With no detection mode active this shows ALL audit
+    // anomaly types (including the new road_width_narrowing), not one mode.
+    setAiOverlayEnabled(true);
     setAuditRunning(false);
   }, []);
 
@@ -3857,6 +3943,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
         API_BASE && url.startsWith(API_BASE) ? { url, credentials: "include" } : { url },
     });
     mapRef.current = map;
+    if (typeof window !== "undefined") (window as unknown as { __mapCanvas?: unknown }).__mapCanvas = map;
 
     // Keeps the custom horizontal zoom slider's thumb synced to the map's
     // actual zoom regardless of how it changed (wheel, pinch, double-click,
@@ -4106,12 +4193,34 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
         id: LAYER_ANOMALIES,
         type: "circle",
         source: ANOMALY_SOURCE,
+        // Road-width narrowing is drawn as a line elsewhere, never as dots.
+        filter: ["!=", ["get", "anomaly_type"], "road_width_narrowing"],
         paint: {
           "circle-radius": ["interpolate", ["linear"], ["zoom"], 8, 6, 12, 10, 16, 15],
           "circle-color": ANOMALY_COLOR_EXPR,
           "circle-opacity": 0.95,
           "circle-stroke-color": "#0b1013",
           "circle-stroke-width": 2,
+        },
+      });
+
+      // Road-width narrowing rendered as a coloured LINE (the affected
+      // carriageway stretch) — like a traffic segment, not vertex markers.
+      map.addSource(ANOMALY_ROAD_LINE_SOURCE, {
+        type: "geojson",
+        data: { type: "FeatureCollection", features: [] },
+        promoteId: "id",
+      });
+      map.addLayer({
+        id: LAYER_ANOMALIES_ROAD,
+        type: "line",
+        source: ANOMALY_ROAD_LINE_SOURCE,
+        layout: { "line-cap": "round", "line-join": "round" },
+        paint: {
+          "line-color": ANOMALY_COLOR_EXPR,
+          "line-width": ["interpolate", ["linear"], ["zoom"], 12, 4, 16, 8, 19, 14],
+          "line-opacity": 0.85,
+          "line-blur": 0.5,
         },
       });
 
@@ -4228,6 +4337,16 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
       });
       map.on("mouseenter", LAYER_ANOMALIES, () => (map.getCanvas().style.cursor = "pointer"));
       map.on("mouseleave", LAYER_ANOMALIES, () => (map.getCanvas().style.cursor = ""));
+
+      // Road-width narrowing lines open the same anomaly card on click/hover.
+      map.on("click", LAYER_ANOMALIES_ROAD, (e: MapMouseEvent) => {
+        const hit = map.queryRenderedFeatures(e.point, { layers: [LAYER_ANOMALIES_ROAD] });
+        if (!hit.length) return;
+        const id = hit[0].properties?.id as string | undefined;
+        if (id) setSelectedAnomalyId(id);
+      });
+      map.on("mouseenter", LAYER_ANOMALIES_ROAD, () => (map.getCanvas().style.cursor = "pointer"));
+      map.on("mouseleave", LAYER_ANOMALIES_ROAD, () => (map.getCanvas().style.cursor = ""));
 
       // A separate, top-most source keeps an attribute-table selection
       // visible even while the regular dataset source is being refreshed.
@@ -6041,6 +6160,7 @@ const DETECTION_MODE_LABEL: Record<Exclude<DetectionMode, null>, string> = {
   poles: "Poles",
   drains: "Drains",
   manholes: "Manholes",
+  roads: "Road Width",
 };
 
 function MapControls({
@@ -6344,7 +6464,7 @@ function MapControls({
                 <small>Drag</small>
                 <button type="button" onClick={() => setMenuOpen(false)} aria-label="Close AI Detection">×</button>
               </div>
-              {(["poles", "drains", "manholes"] as const).map((mode) => (
+              {(["poles", "drains", "manholes", "roads"] as const).map((mode) => (
                 <button
                   type="button"
                   key={mode}

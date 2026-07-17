@@ -171,6 +171,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 ROAD_SNAP_TOL_DEG = 4e-5  # ~4.4 m at this latitude
 MANHOLE_CONNECT_MAX_M = 50.0  # matches spatial_audit.MANHOLE_DRAIN_MAX_M
 BUILDING_CLEARANCE_M = 2.0  # a proposed point/route must stay this far from any Building
+# Any canonical class that represents a diggable road right-of-way for pipe
+# routing purposes — Road_Segment is the generic/ambiguous umbrella,
+# Road_Centerline/Road_Surface are the finer split added for road-width
+# analysis (see app.services.road_width) but are equally valid right-of-way
+# for THIS module's routing graph, so all three must stay included here or
+# routing silently loses real carriageway data after the taxonomy split.
+ROAD_LIKE_CLASSES = ("Road_Segment", "Road_Centerline", "Road_Surface")
 
 
 def _snap_key(x: float, y: float) -> tuple[float, float]:
@@ -199,9 +206,9 @@ async def build_road_graph(dataset_id: uuid.UUID, db: AsyncSession) -> RoadGraph
                 "       ST_X((dp).geom) AS x, ST_Y((dp).geom) AS y "
                 "FROM features f, LATERAL ST_DumpPoints(f.geom) AS dp "
                 "WHERE f.dataset_id = :dataset_id "
-                "  AND f.attributes->>'_canonical_class' = 'Road_Segment'"
+                "  AND f.attributes->>'_canonical_class' = ANY(:road_classes)"
             ),
-            {"dataset_id": str(dataset_id)},
+            {"dataset_id": str(dataset_id), "road_classes": list(ROAD_LIKE_CLASSES)},
         )
     ).mappings().all()
 
@@ -523,7 +530,7 @@ async def find_coverage_gaps(
                 "  ) "
                 "  AND EXISTS ( "
                 "    SELECT 1 FROM features rd WHERE rd.dataset_id = :dataset_id "
-                "      AND rd.attributes->>'_canonical_class' = 'Road_Segment' "
+                "      AND rd.attributes->>'_canonical_class' = ANY(:road_classes) "
                 "      AND ST_DWithin(rd.geom::geography, g.geom::geography, 15) "
                 "  ) "
                 "ORDER BY COALESCE(g.nearest_manhole_m, 9999) DESC "
@@ -532,6 +539,7 @@ async def find_coverage_gaps(
             {
                 "dataset_id": str(dataset_id),
                 "clearance_m": BUILDING_CLEARANCE_M,
+                "road_classes": list(ROAD_LIKE_CLASSES),
                 "limit": max_results * 3,
             },
         )

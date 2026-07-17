@@ -8754,7 +8754,7 @@ button.analytics-readiness-count--missing:disabled {
 
 .analytics-water-demand-supply-grid {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
   gap: 10px;
   margin-bottom: 12px;
 }
@@ -8828,6 +8828,62 @@ button.analytics-readiness-count--missing:disabled {
   color: var(--ink-mute);
   line-height: 1.5;
   font-style: italic;
+}
+
+.analytics-water-demand-charts {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 14px;
+  margin-bottom: 12px;
+}
+
+.analytics-water-demand-chart {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 12px;
+  border: 1px solid var(--edge);
+  border-radius: var(--radius-md);
+  background: var(--surface-2);
+}
+
+.analytics-water-demand-chart-title {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--ink-mute);
+}
+
+@media (max-width: 720px) {
+  .analytics-water-demand-charts {
+    grid-template-columns: 1fr;
+  }
+}
+
+.analytics-chart-tooltip {
+  background: var(--surface-2);
+  border: 1px solid var(--edge);
+  border-radius: var(--radius-md);
+  padding: 8px 10px;
+  font-size: 11px;
+  color: var(--ink);
+  box-shadow: 0 4px 12px rgba(0,0,0,0.4);
+  pointer-events: none;
+}
+
+.analytics-chart-tooltip__label {
+  font-weight: 600;
+  margin-bottom: 3px;
+  color: var(--ink);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.analytics-chart-tooltip__row {
+  color: var(--ink-dim);
+  font-size: 11px;
+  line-height: 1.5;
 }
 
 .analytics-water-demand-header-actions {

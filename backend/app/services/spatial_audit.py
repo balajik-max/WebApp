@@ -75,6 +75,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.dataset import Dataset
 from app.models.spatial_anomaly import AnomalyColor, AnomalyStatus, AnomalyType, SpatialAnomaly
 from app.services.manhole_recommend import is_bad_condition, is_good_condition, parse_level_m
+from app.services.road_width import detect_road_width_narrowing
 
 # Per-class DBSCAN epsilon (meters). Only Illumination_Asset is clustered in
 # Phase 1; other classes can get their own entry here later without touching
@@ -120,6 +121,7 @@ class AuditSummary:
     pole_redundancy: dict[str, int] = field(default_factory=dict)
     drain_encroachment: dict[str, int] = field(default_factory=dict)
     manhole_status: dict[str, int] = field(default_factory=dict)
+    road_width_narrowing: dict[str, int] = field(default_factory=dict)
 
 
 def _pick_keep_pole(members: list[dict]) -> dict:
@@ -461,6 +463,7 @@ async def run_spatial_audit(dataset_id: uuid.UUID, db: AsyncSession) -> AuditSum
         pole_redundancy=await _detect_pole_redundancy(dataset_id, ward, db),
         drain_encroachment=await _detect_drain_encroachment(dataset_id, ward, db),
         manhole_status=await _detect_manhole_status(dataset_id, ward, db),
+        road_width_narrowing=await detect_road_width_narrowing(dataset_id, ward, db),
     )
     await db.commit()
     return summary

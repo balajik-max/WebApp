@@ -27,6 +27,7 @@ class AnomalyType(str, enum.Enum):
     POLE_REDUNDANCY = "pole_redundancy"
     DRAIN_ENCROACHMENT = "drain_encroachment"
     MANHOLE_STATUS = "manhole_status"
+    ROAD_WIDTH_NARROWING = "road_width_narrowing"
 
 
 class AnomalyColor(str, enum.Enum):
