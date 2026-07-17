@@ -252,6 +252,18 @@ const TABS: TabDef[] = [
     ),
   },
   {
+    to: "/tasks",
+    label: "Tasks",
+    testId: "tab-tasks",
+    roles: ["ae"],
+    icon: (
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+        <path d="M9 11.5l2 2 4-4.5" />
+        <rect x="3" y="3" width="18" height="18" rx="2.2" />
+      </svg>
+    ),
+  },
+  {
     to: "/activity",
     label: "Activity",
     testId: "tab-activity",
@@ -265,8 +277,9 @@ const TABS: TabDef[] = [
 ];
 
 /**
- * MAP / DATASETS / ANALYTICS (+ ACTIVITY for AEE) tabs with one shared green
- * sliding indicator (Google-Earth-Pro-nav-style, not per-tab backgrounds).
+ * MAP / DATASETS / ANALYTICS (+ TASKS for AE, + ACTIVITY for AEE) tabs with
+ * one shared green sliding indicator (Google-Earth-Pro-nav-style, not
+ * per-tab backgrounds).
  * The indicator is a single absolutely-positioned element measured against
  * whichever tab is active and moved with a CSS transform — nothing is ever
  * removed/recreated on route change, so it can never flash grey or
@@ -506,11 +519,13 @@ export function useTabTitle(base = "Davangere Urban Survey") {
           ? "Datasets"
             : location.pathname.startsWith("/analytics")
             ? "Analytics"
-            : location.pathname.startsWith("/activity")
-              ? "Activity"
-              : location.pathname.startsWith("/profile")
-                ? "Profile"
-                : "";
+            : location.pathname.startsWith("/tasks")
+              ? "Tasks"
+              : location.pathname.startsWith("/activity")
+                ? "Activity"
+                : location.pathname.startsWith("/profile")
+                  ? "Profile"
+                  : "";
     document.title = label ? `${label} · ${base}` : base;
   }, [location.pathname, base]);
 }

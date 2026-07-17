@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, useCallback, useImperativeHandle, useMemo, forwardRef } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, useCallback, useImperativeHandle, useMemo, forwardRef } from "react";
 import { createPortal } from "react-dom";
 import maplibregl, { Map as MLMap, MapMouseEvent, GeoJSONSource } from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
@@ -6297,12 +6297,25 @@ function MapControls({
   referenceLayers: ReferenceLayerVisibility;
   onToggleReferenceLayer: (key: keyof ReferenceLayerVisibility, visible: boolean) => void;
 }) {
-  const [menuOpen, setMenuOpen] = useState(false);
   const [toolsMenuOpen, setToolsMenuOpen] = useState(false);
-  const [activeToolsSection, setActiveToolsSection] = useState<"map" | "ai" | "location" | null>(null);
+  const [activeToolsSection, setActiveToolsSection] = useState<"map" | "location" | null>(null);
   const [menuPos, setMenuPos] = useState<{ top: number; left: number } | null>(null);
+  // AI Detection is an independent floating control, not a tools-menu
+  // category — its own open state, own outside-click handling, own anchor.
+  // Three explicit, independent states (not derived from one another):
+  // showDetectionList (the Poles/Drains/Manholes picker), showDetectionStatus
+  // (the "AI Detection : X  ON/OFF" card), and detectionMode/aiOverlayEnabled
+  // (props — the actual selection/activation, untouched by this UI layer).
+  // Keeping list-visibility and status-visibility as separate booleans
+  // (rather than deriving one from "not the other") is what lets a single
+  // icon click close the status card without also opening the list.
+  const [showDetectionList, setShowDetectionList] = useState(false);
+  const [showDetectionStatus, setShowDetectionStatus] = useState(false);
+  const [aiOffsetY, setAiOffsetY] = useState(0);
   const toolsControlRef = useRef<HTMLDivElement | null>(null);
-  const menuRef = useRef<HTMLDivElement | null>(null);
+  const toolsToggleRef = useRef<HTMLButtonElement | null>(null);
+  const toolsPanelsRef = useRef<HTMLDivElement | null>(null);
+  const aiWrapRef = useRef<HTMLDivElement | null>(null);
   const portalMenuRef = useRef<HTMLDivElement | null>(null);
   const isMobile = useIsMobile();
   const aiMenuDrag = useDraggableMapPanel<HTMLDivElement>({
@@ -6313,44 +6326,22 @@ function MapControls({
     disabled: isMobile,
   });
 
-  useEffect(() => {
-    if (!menuOpen) return;
-    const onClickOutside = (e: MouseEvent) => {
-      const target = e.target as Node;
-      if (
-        menuRef.current && !menuRef.current.contains(target) &&
-        portalMenuRef.current && !portalMenuRef.current.contains(target)
-      ) {
-        setMenuOpen(false);
-      }
-    };
-    const onEscape = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setMenuOpen(false);
-    };
-    document.addEventListener("mousedown", onClickOutside);
-    document.addEventListener("keydown", onEscape);
-    return () => {
-      document.removeEventListener("mousedown", onClickOutside);
-      document.removeEventListener("keydown", onEscape);
-    };
-  }, [menuOpen]);
-
   // MapLibre's WebGL canvas can composite on its own GPU layer that paints
   // over positioned overlay siblings regardless of z-index/stacking-context
   // CSS (confirmed via elementFromPoint — the canvas rendered on top of a
   // correctly z-indexed, position:absolute dropdown). Portaling the open
   // dropdown straight to document.body, positioned with fixed coordinates
-  // computed from the button's own rect, sidesteps the map's DOM subtree
-  // entirely instead of fighting that stacking behavior.
+  // computed from the AI icon's own rect, sidesteps the map's DOM subtree
+  // entirely instead of fighting that stacking behavior. Opens beside the
+  // icon (right edge + spacing), not below it.
   useEffect(() => {
-    if (!menuOpen || !menuRef.current) return;
-    const rect = menuRef.current.getBoundingClientRect();
-    setMenuPos({ top: rect.bottom + 6, left: rect.left });
-  }, [menuOpen]);
+    if (!showDetectionList || !aiWrapRef.current) return;
+    const rect = aiWrapRef.current.getBoundingClientRect();
+    setMenuPos({ top: rect.top, left: rect.right + 8 });
+  }, [showDetectionList]);
 
   useEffect(() => {
     if (!toolsMenuOpen) {
-      setMenuOpen(false);
       setActiveToolsSection(null);
       return;
     }
@@ -6358,18 +6349,19 @@ function MapControls({
     const onToolsOutside = (event: MouseEvent) => {
       const target = event.target as Node;
       if (toolsControlRef.current?.contains(target)) return;
+      // The AI mode-picker dropdown is portaled to document.body (outside
+      // toolsControlRef) — a click inside it is unrelated to this menu and
+      // must not close it, since AI Detection is now fully independent.
       if (portalMenuRef.current?.contains(target)) return;
       if (target instanceof Element && target.closest(".reference-layers-menu")) return;
       setToolsMenuOpen(false);
       setActiveToolsSection(null);
-      setMenuOpen(false);
     };
 
     const onToolsEscape = (event: KeyboardEvent) => {
       if (event.key !== "Escape") return;
       setToolsMenuOpen(false);
       setActiveToolsSection(null);
-      setMenuOpen(false);
     };
 
     document.addEventListener("mousedown", onToolsOutside);
@@ -6379,6 +6371,84 @@ function MapControls({
       document.removeEventListener("keydown", onToolsEscape);
     };
   }, [toolsMenuOpen]);
+
+  // AI Detection's own outside-click/escape handling — fully independent of
+  // the tools menu's. The dropdown is portaled to document.body, so it's
+  // exempted the same way the tools menu exempts it above. Dismissing the
+  // list this way (without picking anything) returns to whatever was
+  // showing before it opened — the status card reappears if a mode is
+  // already active, same as before the list was split into its own state.
+  // The AI icon's own click handler is deliberately different (see
+  // handleAiIconClick) and does not restore the status card this way.
+  useEffect(() => {
+    if (!showDetectionList) return;
+    const onAiOutside = (event: MouseEvent) => {
+      const target = event.target as Node;
+      if (aiWrapRef.current?.contains(target)) return;
+      if (portalMenuRef.current?.contains(target)) return;
+      setShowDetectionList(false);
+      setShowDetectionStatus(Boolean(detectionMode));
+    };
+    const onAiEscape = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      setShowDetectionList(false);
+      setShowDetectionStatus(Boolean(detectionMode));
+    };
+    document.addEventListener("mousedown", onAiOutside);
+    document.addEventListener("keydown", onAiEscape);
+    return () => {
+      document.removeEventListener("mousedown", onAiOutside);
+      document.removeEventListener("keydown", onAiEscape);
+    };
+  }, [showDetectionList, detectionMode]);
+
+  // Strict 3-state controller for the AI icon. The two surfaces (list,
+  // status card) must never flip together in one click — closing the status
+  // card must NOT also open the list (that only happens on the next click).
+  // The priority is exactly: (1) close status card if visible, (2) close
+  // list if visible, (3) otherwise open the list.
+  const handleAiIconClick = () => {
+    if (showDetectionStatus) {
+      setShowDetectionStatus(false);
+      return;
+    }
+    if (showDetectionList) {
+      setShowDetectionList(false);
+      return;
+    }
+    setShowDetectionList(true);
+  };
+
+  // Keeps the AI icon flush under the toggle when the tools menu is closed,
+  // and dynamically pushes it below the expanded panel's real rendered
+  // height when the menu opens — measured from actual DOM rects and the
+  // container's own CSS gap (not a hardcoded offset), so it stays correct
+  // regardless of which tool category's content is showing.
+  const measureAiOffset = useCallback(() => {
+    const container = toolsControlRef.current;
+    const toggleEl = toolsToggleRef.current;
+    if (!container || !toggleEl) return;
+    const gap = parseFloat(getComputedStyle(container).rowGap || getComputedStyle(container).gap || "0") || 0;
+    const containerTop = container.getBoundingClientRect().top;
+    let referenceBottom = toggleEl.getBoundingClientRect().bottom;
+    if (toolsMenuOpen && toolsPanelsRef.current) {
+      const panelsBottom = toolsPanelsRef.current.getBoundingClientRect().bottom;
+      if (panelsBottom > referenceBottom) referenceBottom = panelsBottom;
+    }
+    setAiOffsetY(referenceBottom - containerTop + gap);
+  }, [toolsMenuOpen]);
+
+  useLayoutEffect(() => {
+    measureAiOffset();
+  }, [measureAiOffset, activeToolsSection]);
+
+  useEffect(() => {
+    const panelsEl = toolsPanelsRef.current;
+    if (!panelsEl || typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(() => measureAiOffset());
+    observer.observe(panelsEl);
+    return () => observer.disconnect();
+  }, [measureAiOffset]);
 
   const hasActiveTool = Boolean(
     detectionMode ||
@@ -6397,13 +6467,13 @@ function MapControls({
       <div className="map-tools" ref={toolsControlRef}>
         <button
           type="button"
+          ref={toolsToggleRef}
           className={`map-tools__toggle${toolsMenuOpen ? " map-tools__toggle--open" : ""}${hasActiveTool ? " map-tools__toggle--has-active" : ""}`}
           onClick={() => {
             const nextOpen = !toolsMenuOpen;
             setToolsMenuOpen(nextOpen);
             if (!nextOpen) {
               setActiveToolsSection(null);
-              setMenuOpen(false);
             }
           }}
           aria-expanded={toolsMenuOpen}
@@ -6420,6 +6490,7 @@ function MapControls({
 
         <div
           id="map-tools-panels"
+          ref={toolsPanelsRef}
           className={`map-tools__panels${toolsMenuOpen ? " map-tools__panels--open" : ""}`}
           aria-label="Map tools"
           aria-hidden={!toolsMenuOpen}
@@ -6429,7 +6500,6 @@ function MapControls({
               type="button"
               className={`map-tools__category-btn${activeToolsSection === "map" ? " map-tools__category-btn--active" : ""}`}
               onClick={() => {
-                setMenuOpen(false);
                 setActiveToolsSection((current) => current === "map" ? null : "map");
               }}
               aria-label="Map view tools"
@@ -6445,28 +6515,8 @@ function MapControls({
 
             <button
               type="button"
-              className={`map-tools__category-btn${activeToolsSection === "ai" ? " map-tools__category-btn--active" : ""}${detectionMode ? " map-tools__category-btn--has-active" : ""}`}
-              onClick={() => {
-                setMenuOpen(false);
-                setActiveToolsSection((current) => current === "ai" ? null : "ai");
-              }}
-              aria-label="AI detection tools"
-              aria-expanded={activeToolsSection === "ai"}
-              title="AI detection"
-              data-testid="map-tools-category-ai"
-            >
-              <svg viewBox="0 0 24 24" fill="currentColor" width="19" height="19" aria-hidden="true">
-                <path d="M12 2l1.8 5.2L19 9l-5.2 1.8L12 16l-1.8-5.2L5 9l5.2-1.8L12 2Z" />
-                <path d="m19 13 .9 2.1L22 16l-2.1.9L19 19l-.9-2.1L16 16l2.1-.9L19 13Z" />
-              </svg>
-              {detectionMode && <span className="map-tools__category-dot" aria-hidden="true" />}
-            </button>
-
-            <button
-              type="button"
               className={`map-tools__category-btn${activeToolsSection === "location" ? " map-tools__category-btn--active" : ""}${(streetPickMode || placemarkMode || myPlacesOpen || coordinateSearchOpen || Object.values(referenceLayers).some(Boolean)) ? " map-tools__category-btn--has-active" : ""}`}
               onClick={() => {
-                setMenuOpen(false);
                 setActiveToolsSection((current) => current === "location" ? null : "location");
               }}
               aria-label="Location and map tools"
@@ -6511,70 +6561,6 @@ function MapControls({
             </svg>
             <span className="map-controls__btn-label">Off</span>
           </button>
-              </div>
-            </div>
-          </div>
-          )}
-
-          {activeToolsSection === "ai" && (
-          <div className="map-tools__floating-panel map-tools__floating-panel--ai" data-testid="ai-tools-panel">
-            <div className="map-controls map-controls--floating-panel">
-              <div className="map-controls__group ai-detection-control" data-testid="ai-detection-control" ref={menuRef}>
-          <button
-            type="button"
-            className={`map-controls__btn${detectionMode ? " map-controls__btn--active" : ""}`}
-            onClick={() => setMenuOpen((v) => !v)}
-            data-testid="ai-detection-toggle"
-          >
-            <svg viewBox="0 0 24 24" fill="currentColor" width="14" height="14" style={{ marginRight: 4, verticalAlign: -2 }}>
-              <path d="M12 2l1.8 5.2L19 9l-5.2 1.8L12 16l-1.8-5.2L5 9l5.2-1.8L12 2z" />
-              <path d="M19 13l.9 2.1L22 16l-2.1.9L19 19l-.9-2.1L16 16l2.1-.9L19 13z" />
-            </svg>
-            <span className="map-controls__btn-label">AI Detection{detectionMode ? `: ${DETECTION_MODE_LABEL[detectionMode]}` : ""}</span>
-          </button>
-          {detectionMode && (
-            <button
-              type="button"
-              className={`ai-overlay-toggle${aiOverlayEnabled ? " ai-overlay-toggle--on" : ""}`}
-              onClick={onToggleAiOverlay}
-              data-testid="ai-overlay-toggle"
-              title={aiOverlayEnabled ? "Turn off the AI red/yellow/green overlay" : "Turn on the AI red/yellow/green overlay"}
-            >
-              <span className="ai-overlay-toggle__track">
-                <span className="ai-overlay-toggle__knob" />
-              </span>
-              <span className="map-controls__btn-label">AI {aiOverlayEnabled ? "ON" : "OFF"}</span>
-            </button>
-          )}
-          {menuOpen && menuPos && createPortal(
-            <div
-              className="ai-detection-menu"
-              data-testid="ai-detection-menu"
-              ref={(node) => {
-                portalMenuRef.current = node;
-                aiMenuDrag.panelRef.current = node;
-              }}
-              style={{ position: "fixed", top: menuPos.top, left: menuPos.left, ...aiMenuDrag.style }}
-            >
-              <div className="ai-detection-menu__dragbar" onPointerDown={aiMenuDrag.onDragStart}>
-                <span>AI Detection</span>
-                <small>Drag</small>
-                <button type="button" onClick={() => setMenuOpen(false)} aria-label="Close AI Detection">×</button>
-              </div>
-              {(["poles", "drains", "manholes"] as const).map((mode) => (
-                <button
-                  type="button"
-                  key={mode}
-                  className={`ai-detection-menu__item${detectionMode === mode ? " ai-detection-menu__item--active" : ""}`}
-                  onClick={() => { onToggleDetectionMode(mode); setMenuOpen(false); }}
-                  data-testid={`detection-mode-${mode}`}
-                >
-                  {DETECTION_MODE_LABEL[mode]}
-                </button>
-              ))}
-            </div>,
-            document.body
-          )}
               </div>
             </div>
           </div>
@@ -6648,6 +6634,97 @@ function MapControls({
           </div>
           )}
           </div>
+        </div>
+        {/* AI Detection: an independent floating control, not a tools-menu
+            category. It sits directly below the toggle and dynamically
+            slides down (via aiOffsetY, see measureAiOffset) when the tools
+            menu expands, but its own panel opens to the right and is never
+            gated by toolsMenuOpen/activeToolsSection. */}
+        <div
+          className="map-tools__ai-wrap"
+          ref={aiWrapRef}
+          style={{ transform: `translateY(${aiOffsetY}px)` }}
+        >
+          <button
+            type="button"
+            className={`map-tools__ai-standalone${(showDetectionList || showDetectionStatus) ? " map-tools__ai-standalone--active" : ""}${detectionMode ? " map-tools__ai-standalone--has-active" : ""}`}
+            onClick={handleAiIconClick}
+            aria-label="AI detection tools"
+            aria-haspopup="true"
+            aria-expanded={showDetectionList}
+            title="AI detection"
+            data-testid="map-tools-category-ai"
+          >
+            <svg viewBox="0 0 24 24" fill="currentColor" width="19" height="19" aria-hidden="true">
+              <path d="M12 2l1.8 5.2L19 9l-5.2 1.8L12 16l-1.8-5.2L5 9l5.2-1.8L12 2Z" />
+              <path d="m19 13 .9 2.1L22 16l-2.1.9L19 19l-.9-2.1L16 16l2.1-.9L19 13Z" />
+            </svg>
+            {detectionMode && <span className="map-tools__category-dot" aria-hidden="true" />}
+          </button>
+
+          {showDetectionList && menuPos && createPortal(
+            <div
+              className="ai-detection-menu"
+              data-testid="ai-detection-menu"
+              ref={(node) => {
+                portalMenuRef.current = node;
+                aiMenuDrag.panelRef.current = node;
+              }}
+              style={{ position: "fixed", top: menuPos.top, left: menuPos.left, ...aiMenuDrag.style }}
+              onPointerDown={aiMenuDrag.onDragStart}
+            >
+              {(["poles", "drains", "manholes"] as const).map((mode) => (
+                <button
+                  type="button"
+                  key={mode}
+                  className={`ai-detection-menu__item${detectionMode === mode ? " ai-detection-menu__item--active" : ""}`}
+                  onClick={() => {
+                    // Always activate the chosen mode — never toggle it off.
+                    // onToggleDetectionMode is a toggle, so re-picking the
+                    // already-active mode would clear detectionMode and hide
+                    // the status card; guard against that so selection is a
+                    // pure "set" (matching the spec).
+                    if (detectionMode !== mode) {
+                      onToggleDetectionMode(mode);
+                    }
+                    setShowDetectionList(false);
+                    setShowDetectionStatus(true);
+                  }}
+                  data-testid={`detection-mode-${mode}`}
+                >
+                  {DETECTION_MODE_LABEL[mode]}
+                </button>
+              ))}
+            </div>,
+            document.body
+          )}
+
+          {/* Persistent status card — its visibility (showDetectionStatus)
+              is a fully independent boolean from the list's, not derived
+              from "list closed". That decoupling is what lets the AI icon's
+              first click close just this card without also opening the
+              list (see handleAiIconClick above). Reuses the same
+              aiOverlayEnabled/onToggleAiOverlay state as everything else;
+              no new or duplicate detection state. */}
+          {showDetectionStatus && detectionMode && (
+            <div className="ai-status-card" data-testid="ai-status-card">
+              <span className="ai-status-card__label">
+                AI Detection : {DETECTION_MODE_LABEL[detectionMode]}
+              </span>
+              <button
+                type="button"
+                className={`ai-overlay-toggle${aiOverlayEnabled ? " ai-overlay-toggle--on" : ""}`}
+                onClick={onToggleAiOverlay}
+                data-testid="ai-overlay-toggle"
+                title={aiOverlayEnabled ? "Turn off the AI red/yellow/green overlay" : "Turn on the AI red/yellow/green overlay"}
+              >
+                <span className="ai-overlay-toggle__track">
+                  <span className="ai-overlay-toggle__knob" />
+                </span>
+                <span className="map-controls__btn-label">{aiOverlayEnabled ? "ON" : "OFF"}</span>
+              </button>
+            </div>
+          )}
         </div>
       </div>
       {status.error && (

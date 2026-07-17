@@ -225,15 +225,15 @@ body {
 }
 
 .user-avatar {
-  width: 32px;
-  height: 32px;
+  width: 36px;
+  height: 36px;
   border-radius: 50%;
   background: linear-gradient(135deg, var(--accent) 0%, #0d9488 100%);
   color: white;
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 13px;
+  font-size: 14px;
   font-weight: 700;
   flex-shrink: 0;
   box-shadow: var(--shadow-glow), var(--shadow-sm);
@@ -526,6 +526,43 @@ body {
   color: var(--ink-mute);
 }
 
+/* ── TASKS PLACEHOLDER (pre-dashboard) ────────────────────────────────── */
+.tasks-coming-soon {
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  color: var(--ink-dim);
+}
+
+.tasks-coming-soon__inner {
+  text-align: center;
+}
+
+.tasks-coming-soon__eyebrow {
+  display: inline-block;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--accent);
+  margin-bottom: 10px;
+}
+
+.tasks-coming-soon h1 {
+  font-size: 22px;
+  font-weight: 700;
+  color: var(--ink);
+  letter-spacing: -0.01em;
+  margin-bottom: 6px;
+}
+
+.tasks-coming-soon p {
+  font-size: 14px;
+  color: var(--ink-mute);
+}
+
 /* ── BUTTONS ──────────────────────────────────────────────────────────── */
 .icon-btn {
   width: 32px;
@@ -533,8 +570,8 @@ body {
   display: flex;
   align-items: center;
   justify-content: center;
-  background: var(--surface-2);
-  border: 1px solid var(--edge);
+  background: transparent;
+  border: none;
   border-radius: var(--radius-sm);
   color: var(--ink-dim);
   cursor: pointer;
@@ -544,8 +581,7 @@ body {
 
 .icon-btn:hover {
   color: var(--ink);
-  border-color: var(--edge-strong);
-  background: var(--surface-3);
+  background: transparent;
 }
 
 .icon-btn:active { transform: scale(0.95); }
@@ -2958,28 +2994,8 @@ body {
 .map-controls__btn:hover { background: var(--surface-3); color: var(--ink); }
 .map-controls__btn--active { background: var(--accent); color: var(--accent-ink); }
 
-/* One seamless pill, same as the MAP/SATELLITE/OFF basemap group â€” the
-   toggle sits inline beside the "AI Detection" button, not stacked below
-   it. overflow must be visible here (unlike the base group) so the
-   dropdown menu isn't clipped, so corner-rounding is set explicitly on the
-   first/last child instead of relying on the parent's overflow:hidden. */
-.ai-detection-control {
-  position: relative;
-  overflow: visible;
-}
-
-.ai-detection-control > button:first-child {
-  border-top-left-radius: var(--radius-md);
-  border-bottom-left-radius: var(--radius-md);
-}
-
-.ai-detection-control > button:last-of-type {
-  border-top-right-radius: var(--radius-md);
-  border-bottom-right-radius: var(--radius-md);
-}
-
 .ai-detection-menu {
-  /* position: fixed + top/left are set inline (computed from the button's
+  /* position: fixed + top/left are set inline (computed from the AI icon's
      own rect) since this is portaled to document.body â€” see MapControls. */
   min-width: 150px;
   background: var(--glass-strong);
@@ -2992,6 +3008,13 @@ body {
   flex-direction: column;
   gap: 2px;
   z-index: 2000;
+  transform-origin: left center;
+  animation: ai-detection-menu-in 180ms ease-out;
+}
+
+@keyframes ai-detection-menu-in {
+  from { opacity: 0; transform: translateX(-6px) scale(.97); }
+  to { opacity: 1; transform: translateX(0) scale(1); }
 }
 
 .ai-detection-menu__item {
@@ -3013,14 +3036,16 @@ body {
 .ai-detection-menu__item:hover { background: var(--surface-3); color: var(--ink); }
 .ai-detection-menu__item--active { background: var(--accent-muted); color: var(--accent); }
 
+/* Lives inside .ai-status-card, beside the "AI Detection : {mode}" label —
+   a plain compact switch, no divider (nothing else shares the row). */
 .ai-overlay-toggle {
   display: flex;
   align-items: center;
   gap: 7px;
-  padding: 8px 12px;
+  padding: 5px 9px;
   background: transparent;
   border: none;
-  border-left: 1px solid var(--edge);
+  border-radius: var(--radius-sm);
   color: var(--ink-dim);
   font-size: 10px;
   font-weight: 700;
@@ -3067,6 +3092,48 @@ body {
 
 .ai-overlay-toggle--on .ai-overlay-toggle__knob {
   transform: translateX(11px);
+}
+
+/* Persistent status card: "AI Detection : {mode}" + ON/OFF, anchored to
+   the right of the AI icon inside .map-tools__ai-wrap (see MapControls) —
+   same glass/border/shadow treatment as the app's other floating panels,
+   compact and single-row rather than the vertical picker list. */
+.ai-status-card {
+  position: absolute;
+  top: 50%;
+  left: calc(100% + 8px);
+  transform: translateY(-50%);
+  z-index: 8;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px 6px 12px;
+  border: 1px solid var(--edge);
+  border-radius: var(--radius-md);
+  background: var(--glass-strong);
+  backdrop-filter: blur(16px) saturate(1.4);
+  box-shadow: var(--shadow-md);
+  white-space: nowrap;
+  animation: ai-status-card-in 200ms ease-out;
+}
+
+.ai-status-card__label {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--ink-dim);
+  letter-spacing: 0.01em;
+}
+
+@keyframes ai-status-card-in {
+  from { opacity: 0; transform: translateY(-50%) translateX(-6px); }
+  to { opacity: 1; transform: translateY(-50%) translateX(0); }
+}
+
+@media (max-width: 700px) {
+  .ai-status-card {
+    max-width: calc(100vw - 76px);
+    white-space: normal;
+  }
 }
 
 .map-zoom {
@@ -11250,8 +11317,7 @@ body.is-dragging-map-panel * {
 
 .my-places-panel__head,
 .reference-layers-menu__head,
-.floating-map-panel__dragbar,
-.ai-detection-menu__dragbar {
+.floating-map-panel__dragbar {
   cursor: grab;
   touch-action: none;
   user-select: none;
@@ -11259,8 +11325,7 @@ body.is-dragging-map-panel * {
 
 .my-places-panel__head:active,
 .reference-layers-menu__head:active,
-.floating-map-panel__dragbar:active,
-.ai-detection-menu__dragbar:active {
+.floating-map-panel__dragbar:active {
   cursor: grabbing;
 }
 
@@ -11284,8 +11349,7 @@ body.is-dragging-map-panel * {
   transform: translateY(-1px);
 }
 
-.floating-map-panel__dragbar,
-.ai-detection-menu__dragbar {
+.floating-map-panel__dragbar {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto auto;
   align-items: center;
@@ -11297,8 +11361,7 @@ body.is-dragging-map-panel * {
   color: #e6fffb;
 }
 
-.floating-map-panel__dragbar span,
-.ai-detection-menu__dragbar span {
+.floating-map-panel__dragbar span {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -11309,14 +11372,12 @@ body.is-dragging-map-panel * {
   text-transform: uppercase;
 }
 
-.floating-map-panel__dragbar small,
-.ai-detection-menu__dragbar small {
+.floating-map-panel__dragbar small {
   color: var(--ink-mute);
   font-size: 8px;
 }
 
-.floating-map-panel__dragbar button,
-.ai-detection-menu__dragbar button {
+.floating-map-panel__dragbar button {
   width: 24px;
   height: 24px;
   display: grid;
@@ -11330,8 +11391,7 @@ body.is-dragging-map-panel * {
   cursor: pointer;
 }
 
-.floating-map-panel__dragbar button:hover,
-.ai-detection-menu__dragbar button:hover {
+.floating-map-panel__dragbar button:hover {
   border-color: rgba(45, 212, 191, .55);
   color: #5eead4;
 }
@@ -12487,14 +12547,6 @@ body.is-dragging-map-panel * {
   white-space: nowrap;
 }
 
-.map-tools__floating-panel--ai .ai-detection-control {
-  width: auto;
-}
-
-.map-tools__floating-panel--ai .ai-overlay-toggle {
-  flex: 0 0 auto;
-}
-
 .map-tools__floating-panel--location .map-controls__group--annotations {
   flex: 1 1 430px;
 }
@@ -12687,6 +12739,61 @@ body.is-dragging-map-panel * {
   box-shadow: 0 0 0 2px color-mix(in srgb, currentColor 18%, transparent);
 }
 
+/* AI Detection: an independent floating control, fully separate from the
+   tools menu (toggle + category rail + content). .map-tools__ai-wrap is
+   positioned with a transform computed in JS from real measured element
+   rects (see measureAiOffset in MapCanvas) rather than a hardcoded offset,
+   so it sits flush under the toggle by default and smoothly slides down to
+   clear the tools panel only while that panel is actually open — correct
+   for whichever category's content is showing, and for any future change
+   to rail/content size. */
+.map-tools__ai-wrap {
+  position: absolute;
+  top: 0;
+  left: 0;
+  z-index: 10;
+  transition: transform 240ms cubic-bezier(0.22, 1, 0.36, 1);
+  will-change: transform;
+}
+
+/* Round trigger, matching the Look Around compass / Measure buttons on the
+   map's right-side controls rather than the rounded-square rail buttons. */
+.map-tools__ai-standalone {
+  position: relative;
+  width: 42px;
+  height: 42px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 1px solid var(--edge);
+  border-radius: 50%;
+  background: var(--glass-strong);
+  backdrop-filter: blur(16px) saturate(1.4);
+  box-shadow: var(--shadow-md);
+  color: var(--ink-muted);
+  cursor: pointer;
+  transition: transform var(--transition-fast), border-color var(--transition-fast), background var(--transition-fast), color var(--transition-fast);
+}
+
+.map-tools__ai-standalone:hover {
+  transform: translateY(-1px);
+  border-color: color-mix(in srgb, var(--accent) 58%, var(--edge));
+  background: var(--surface-3);
+  color: var(--ink);
+}
+
+.map-tools__ai-standalone--active {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: var(--accent-ink);
+}
+
+.map-tools__ai-standalone--has-active:not(.map-tools__ai-standalone--active) {
+  border-color: color-mix(in srgb, var(--accent) 58%, var(--edge));
+  color: var(--accent);
+}
+
 .map-tools__content {
   min-width: 0;
   max-width: calc(100vw - 82px);
@@ -12765,7 +12872,8 @@ body.is-dragging-map-panel * {
   }
 
   .map-tools__toggle,
-  .map-tools__category-btn {
+  .map-tools__category-btn,
+  .map-tools__ai-standalone {
     width: 40px;
     min-width: 40px;
     height: 40px;
@@ -12797,5 +12905,9 @@ body.is-dragging-map-panel * {
   .map-tools__floating-panel .map-controls__btn {
     flex: 1 1 auto;
     font-size: 9px;
+  }
+
+  .ai-detection-menu {
+    max-width: calc(100vw - 76px);
   }
 }
