@@ -20,6 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import require_any
 from app.db.session import get_db
+from app.models import User, UserRole
 from app.models.spatial_anomaly import AnomalyStatus, SpatialAnomaly
 from app.schemas.ai import (
     AiAnswer,
@@ -1119,11 +1120,13 @@ async def explain_anomaly(anomaly_id: uuid.UUID, db: AsyncSession = Depends(get_
 @router.patch(
     "/audit/anomalies/{anomaly_id}",
     response_model=SpatialAnomalyOut,
-    dependencies=[Depends(require_any)],
-    summary="Update a finding's review status (open/reviewing/resolved/dismissed)",
+    summary="Update a finding's non-approval review status",
 )
 async def update_anomaly_status(
-    anomaly_id: uuid.UUID, body: AnomalyStatusUpdate, db: AsyncSession = Depends(get_db)
+    anomaly_id: uuid.UUID,
+    body: AnomalyStatusUpdate,
+    user: User = Depends(require_any),
+    db: AsyncSession = Depends(get_db),
 ) -> SpatialAnomalyOut:
     row = (
         await db.execute(select(SpatialAnomaly).where(SpatialAnomaly.id == anomaly_id))
@@ -1131,7 +1134,16 @@ async def update_anomaly_status(
     if row is None:
         raise HTTPException(status_code=404, detail="Anomaly not found")
 
-    row.status = AnomalyStatus(body.status)
+    requested_status = AnomalyStatus(body.status)
+    if requested_status == AnomalyStatus.RESOLVED:
+        raise HTTPException(
+            status_code=409,
+            detail="An AI finding can be resolved only through Architect evidence and Admin approval",
+        )
+    if user.role == UserRole.ARCHITECT and requested_status not in {AnomalyStatus.OPEN, AnomalyStatus.REVIEWING}:
+        raise HTTPException(status_code=403, detail="Architects may only open or mark a finding as reviewing")
+
+    row.status = requested_status
     await db.commit()
     await db.refresh(row)
 

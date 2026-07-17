@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, useCallback, useImperativeHandle, useMemo, forwardRef } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, useCallback, useImperativeHandle, useMemo, forwardRef } from "react";
 import { createPortal } from "react-dom";
 import maplibregl, { Map as MLMap, MapMouseEvent, GeoJSONSource } from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
@@ -27,7 +27,10 @@ import { PlacemarkEditor } from "./map/PlacemarkEditor";
 import { MyPlacesPanel } from "./map/MyPlacesPanel";
 import { PlacemarkDetailsPanel } from "./map/PlacemarkDetailsPanel";
 import { ReferenceLayersMenu, type ReferenceLayerVisibility } from "./map/ReferenceLayersMenu";
+import { CoordinateSearchPanel } from "./map/CoordinateSearchPanel";
 import { useDraggableMapPanel } from "./map/useDraggableMapPanel";
+import type { CoordinateSearchDataset, CoordinateValue } from "../lib/coordinateSearch";
+import { useIsMobile } from "../lib/useIsMobile";
 import {
   bulkDeletePlacemarks, createPlacemark, deletePlacemark, fetchElevationSample, fetchPlacemarks,
   updatePlacemark, type ElevationSample, type Placemark, type PlacemarkDraft,
@@ -53,15 +56,37 @@ function isVectorVisualizationDataset(d: DatasetRow): boolean {
   if (d.dataset_metadata?.raster_overlay || d.dataset_metadata?.model_3d) return false;
   return true;
 }
+function sourceCrsFromDatasetMetadata(dataset: DatasetRow): string | null {
+  const metadata = dataset.dataset_metadata ?? {};
+  const direct = metadata.source_crs ?? metadata.crs;
+  if (typeof direct === "string" && direct.trim()) return direct.trim();
+  const ingestion = metadata.ingestion;
+  if (ingestion && typeof ingestion === "object") {
+    const sourceCrs = (ingestion as { source_crs?: unknown }).source_crs;
+    if (typeof sourceCrs === "string" && sourceCrs.trim()) return sourceCrs.trim();
+  }
+  return null;
+}
+
+export interface AiVerificationContext {
+  anomalyId: string;
+  detectionMode: Exclude<DetectionMode, null>;
+  anomalyType: SpatialAnomaly["anomaly_type"];
+  aiColor: "red" | "yellow";
+  severityScore: number;
+  detectedAt: string;
+  longitude: number;
+  latitude: number;
+}
 
 interface Props {
   filter: FeatureFilter;
-  onFeatureSelect: (feature: UrbanFeature | null) => void;
+  onFeatureSelect: (feature: UrbanFeature | null, aiVerification?: AiVerificationContext | null) => void;
   /** Fires whenever the set of datasets selected in the Command Center
-   * changes Ã¢â‚¬â€ used to drive the ward/dataset-level report panel. */
+   * changes — used to drive the ward/dataset-level report panel. */
   onActiveDatasetsChange?: (rows: DatasetRow[]) => void;
   /** Dataset selection persisted by the parent (survives this component
-   * being unmounted/remounted on tab navigation) Ã¢â‚¬â€ seeds the initial
+   * being unmounted/remounted on tab navigation) — seeds the initial
    * selection and is re-applied once the map and dataset list are ready. */
   initialActiveDatasets?: DatasetRow[];
   /** AI-produced highlight overrides — redundant poles show red,
@@ -71,6 +96,14 @@ interface Props {
   focusFeatureId?: string;
   /** Clears the one-shot route request after the feature has been handled. */
   onFocusHandled?: () => void;
+  /** Refetch point-verification state after an Admin or Architect update. */
+  refreshToken?: number;
+
+  /** Whether the mobile Data Sources drawer is open — lifted up to
+   * WorkspaceLayout so the topbar's menu button can open it. Ignored on
+   * desktop, where the sidebar is always visible. */
+  commandCenterMobileOpen: boolean;
+  onCommandCenterMobileOpenChange: (open: boolean) => void;
 }
 
 const DAVANGERE_CENTER: [number, number] = [75.9218, 14.4644];
@@ -81,7 +114,7 @@ const DAVANGERE_ZOOM = 12;
 // selected dataset/ward/category filters define the data scope.
 const COMPLETE_DATA_BBOX: [number, number, number, number] = [-180, -90, 180, 90];
 
-// Same base the rest of the app's fetch wrapper (lib/api.ts) uses Ã¢â‚¬â€ the
+// Same base the rest of the app's fetch wrapper (lib/api.ts) uses — the
 // dev setup serves the API from a different origin/port than the SPA, so
 // raster preview image requests need the same credentials treatment as
 // every other authenticated call.
@@ -502,7 +535,7 @@ const VIZ_SELECTED_LINES = "visualization-selected-lines";
 const VIZ_SELECTED_POINTS = "visualization-selected-points";
 
 export type VisualizationMode = "default" | "category" | "numeric" | "missing-data";
-export type VisualizationGeometryTarget = "all" | "point" | "line" | "polygon";
+export type VisualizationGeometryTarget = "point" | "line" | "polygon";
 
 interface VisualizationStylePreview {
   loadedCount: number;
@@ -661,11 +694,15 @@ const LAYER_MANHOLE_UNCONNECTED = "manhole-recommend-unconnected-circle";
 const MANHOLE_ROUTE_COLOR = "#3aa1ff";
 const MANHOLE_UNCONNECTED_COLOR = "#9b59b6";
 const ANOMALY_COLOR_EXPR: maplibregl.ExpressionSpecification = [
-  "match", ["get", "color"],
-  "red", "#ef4444",
-  "yellow", "#f59e0b",
-  "green", "#22c55e",
-  "#94a3b8",
+  "case",
+  ["==", ["get", "status"], "resolved"], "#2563eb",
+  [
+    "match", ["get", "color"],
+    "red", "#ef4444",
+    "yellow", "#f59e0b",
+    "green", "#22c55e",
+    "#94a3b8",
+  ],
 ];
 
 // Measurement (ruler) tool — separate GeoJSON sources for the vertex
@@ -1009,11 +1046,21 @@ function featureFocusGeometry(feature: UrbanFeature): {
   };
 }
 
+
+// Blue is an AI-workflow color only. Normal map/category rendering always
+// keeps its original category color, even after Admin approval.
+const POINT_ISSUE_RESOLVED_COLOR = "#2563eb";
+function withPointVerificationColor(
+  fallback: maplibregl.ExpressionSpecification | string,
+): maplibregl.ExpressionSpecification | string {
+  return fallback;
+}
+
 function buildCategoryColorExpression(
   colorByCategory: Map<string, string>
 ): maplibregl.ExpressionSpecification | string {
   // A MapLibre "match" expression requires at least one input/output pair
-  // before its fallback value Ã¢â‚¬â€ with zero categories seen yet (empty map,
+  // before its fallback value — with zero categories seen yet (empty map,
   // no features loaded), building one anyway produces an invalid
   // expression that throws at runtime. Fall back to a plain solid color.
   if (colorByCategory.size === 0) return UNCATEGORIZED_COLOR;
@@ -1058,19 +1105,24 @@ const DEFAULT_FILL_OPACITY = 0.35;
  * encroached building is highlighted red/yellow, everything else defaults
  * to green ("confirmed OK"), matching a real choropleth rather than pins. */
 function buildBuildingColorExpression(
-  buildingColor: Record<string, "red" | "yellow">
+  buildingColor: Record<string, "red" | "yellow" | "blue">
 ): maplibregl.ExpressionSpecification | string {
   const entries = Object.entries(buildingColor);
   if (entries.length === 0) return BUILDING_DEFAULT_COLOR;
   const pairs: (string | maplibregl.ExpressionSpecification)[] = [];
-  for (const [id, color] of entries) pairs.push(id, color === "red" ? BUILDING_RED_COLOR : BUILDING_YELLOW_COLOR);
+  for (const [id, color] of entries) {
+    pairs.push(id, color === "blue" ? POINT_ISSUE_RESOLVED_COLOR : color === "red" ? BUILDING_RED_COLOR : BUILDING_YELLOW_COLOR);
+  }
   return ["match", ["get", "id"], ...pairs, BUILDING_DEFAULT_COLOR] as unknown as maplibregl.ExpressionSpecification;
 }
 
-const ANOMALY_BADGE_COLOR: Record<SpatialAnomaly["color"], string> = {
+type AnomalyDisplayColor = SpatialAnomaly["color"] | "blue";
+
+const ANOMALY_BADGE_COLOR: Record<AnomalyDisplayColor, string> = {
   red: BUILDING_RED_COLOR,
   yellow: BUILDING_YELLOW_COLOR,
   green: BUILDING_DEFAULT_COLOR,
+  blue: POINT_ISSUE_RESOLVED_COLOR,
 };
 
 const ANOMALY_TYPE_LABEL: Record<SpatialAnomaly["anomaly_type"], string> = {
@@ -1082,7 +1134,7 @@ const ANOMALY_TYPE_LABEL: Record<SpatialAnomaly["anomaly_type"], string> = {
 /** One-line, numbers-first summary for the hover tooltip's AI Detected
  * badge — same underlying facts as the click-through AI Alert card, just
  * condensed so it's readable at a glance without opening anything. */
-function summarizeAnomalyForTooltip(a: SpatialAnomaly): { color: SpatialAnomaly["color"]; typeLabel: string; metric: string } {
+function summarizeAnomalyForTooltip(a: SpatialAnomaly): { color: AnomalyDisplayColor; typeLabel: string; metric: string; resolved: boolean; longitude: number; latitude: number } {
   const m = a.anomaly_metadata;
   let metric = "";
   if (a.anomaly_type === "pole_redundancy") {
@@ -1104,7 +1156,69 @@ function summarizeAnomalyForTooltip(a: SpatialAnomaly): { color: SpatialAnomaly[
         : "No nearby drain found"
     );
   }
-  return { color: a.color, typeLabel: ANOMALY_TYPE_LABEL[a.anomaly_type], metric };
+  const resolved = a.status === "resolved";
+  return {
+    color: resolved ? "blue" : a.color,
+    typeLabel: ANOMALY_TYPE_LABEL[a.anomaly_type],
+    metric: resolved ? `Resolved and Admin approved · ${metric}` : metric,
+    resolved,
+    longitude: a.lon,
+    latitude: a.lat,
+  };
+}
+
+function primaryFeatureIdForAnomaly(anomaly: SpatialAnomaly): string | null {
+  return (
+    (anomaly.anomaly_metadata.this_feature_id as string | undefined) ??
+    (anomaly.anomaly_metadata.building_id as string | undefined) ??
+    (anomaly.anomaly_metadata.manhole_id as string | undefined) ??
+    anomaly.feature_ids[0] ??
+    null
+  );
+}
+
+function aiVerificationContextForAnomaly(
+  anomaly: SpatialAnomaly | undefined,
+  mode: DetectionMode,
+): AiVerificationContext | null {
+  if (!anomaly || !mode || (anomaly.color !== "red" && anomaly.color !== "yellow")) return null;
+  if (anomaly.anomaly_type !== DETECTION_MODE_ANOMALY_TYPE[mode]) return null;
+  return {
+    anomalyId: anomaly.id,
+    detectionMode: mode,
+    anomalyType: anomaly.anomaly_type,
+    aiColor: anomaly.color,
+    severityScore: anomaly.severity_score,
+    detectedAt: anomaly.created_at,
+    longitude: anomaly.lon,
+    latitude: anomaly.lat,
+  };
+}
+
+function verificationSummaryFromAttributes(attributes: Record<string, unknown>): HoverInfo["verification"] {
+  const status = typeof attributes._verification_status === "string" ? attributes._verification_status : null;
+  const originalCondition = typeof attributes._verification_original_condition === "string"
+    ? attributes._verification_original_condition
+    : typeof attributes.Condition === "string"
+      ? attributes.Condition
+      : typeof attributes.condition === "string"
+        ? attributes.condition
+        : null;
+  const verified = typeof attributes._verification_current_condition === "string"
+    ? attributes._verification_current_condition
+    : typeof attributes._verification_verified_condition === "string"
+      ? attributes._verification_verified_condition
+      : null;
+  if (!status && !verified) return undefined;
+  return {
+    originalCondition,
+    currentCondition: status === "resolved" && verified ? verified : originalCondition,
+    status,
+    architect: typeof attributes._verification_architect === "string" ? attributes._verification_architect : null,
+    admin: typeof attributes._verification_verified_by === "string" ? attributes._verification_verified_by : null,
+    approvedAt: typeof attributes._verification_resolved_at === "string" ? attributes._verification_resolved_at : null,
+    remarks: typeof attributes._verification_remarks === "string" ? attributes._verification_remarks : null,
+  };
 }
 
 const EMPTY_FC: FeatureCollectionResponse = { type: "FeatureCollection", features: [], bbox: [0, 0, 0, 0], count: 0, limit: 0, truncated: false };
@@ -1146,6 +1260,15 @@ function createPlacemarkMarkerElement(): HTMLDivElement {
   element.setAttribute("role", "img");
   element.setAttribute("aria-label", "Temporary placemark pin");
   element.innerHTML = '<span class="placemark-preview-marker__head"></span><span class="placemark-preview-marker__tail"></span>';
+  return element;
+}
+
+function createCoordinateSearchMarkerElement(): HTMLDivElement {
+  const element = document.createElement("div");
+  element.className = "coordinate-search-marker";
+  element.setAttribute("role", "img");
+  element.setAttribute("aria-label", "Coordinate search target");
+  element.innerHTML = '<span class="coordinate-search-marker__ring"></span><span class="coordinate-search-marker__dot"></span><span class="coordinate-search-marker__cross coordinate-search-marker__cross--horizontal"></span><span class="coordinate-search-marker__cross coordinate-search-marker__cross--vertical"></span>';
   return element;
 }
 
@@ -1230,7 +1353,16 @@ interface HoverInfo {
   /** Populated only while the AI Detection overlay is on and this feature
    * has a finding of its own — a quick "AI Detected" badge at a glance,
    * without needing to click. */
-  aiDetection?: { color: SpatialAnomaly["color"]; typeLabel: string; metric: string };
+  aiDetection?: { color: AnomalyDisplayColor; typeLabel: string; metric: string; resolved: boolean; longitude: number; latitude: number };
+  verification?: {
+    originalCondition: string | null;
+    currentCondition: string | null;
+    status: string | null;
+    architect: string | null;
+    admin: string | null;
+    approvedAt: string | null;
+    remarks: string | null;
+  };
 }
 interface LayerAttributeTableState extends LayerFeatureTableFilter {
   sourceLabel: string;
@@ -1240,7 +1372,17 @@ export interface MapCanvasHandle {
 }
 
 export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
-  { filter, onFeatureSelect, onActiveDatasetsChange, initialActiveDatasets, aiHighlights, focusFeatureId, onFocusHandled },
+  {
+    filter,
+    onFeatureSelect,
+    onActiveDatasetsChange,
+    initialActiveDatasets,
+    aiHighlights,
+    focusFeatureId,
+    onFocusHandled,
+    refreshToken = 0,
+    commandCenterMobileOpen, onCommandCenterMobileOpenChange,
+  },
   ref
 ) {
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -1256,6 +1398,8 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
   const [status, setStatus] = useState<ViewportStatus>({ loading: false, count: 0, truncated: false, error: null, bbox: null });
   // Full (unsliced) per-category breakdown of the currently loaded features,
   // for the QGIS-style layer-visibility checklist in the Command Center.
+  // The compact map overlay remains independently limited.
+
   const [categoryStats, setCategoryStats] = useState<LegendEntry[]>([]);
   // Categories unchecked in that checklist — purely a client-side paint/
   // filter toggle on already-fetched features, so it applies instantly and
@@ -1295,7 +1439,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
   const [visualizationLoadingIds, setVisualizationLoadingIds] = useState<Set<string>>(new Set());
   const [visualizationErrors, setVisualizationErrors] = useState<Record<string, string>>({});
   const [selectedVisualizationDatasetId, setSelectedVisualizationDatasetId] = useState<string | null>(null);
-  const [visualizationTarget, setVisualizationTarget] = useState<VisualizationGeometryTarget>("all");
+  const [visualizationTarget, setVisualizationTarget] = useState<VisualizationGeometryTarget>("point");
   const [visualizationMode, setVisualizationMode] = useState<VisualizationMode>("default");
   const [visualizationField, setVisualizationField] = useState<string | null>(null);
   const [visualizationOpacity, setVisualizationOpacity] = useState(0.85);
@@ -1347,11 +1491,13 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
   // this off until the user turns it on.
   const [aiOverlayEnabled, setAiOverlayEnabled] = useState(false);
   const aiOverlayEnabledRef = useRef(false);
-  const buildingColorMapRef = useRef<Record<string, "red" | "yellow">>({});
+  const buildingColorMapRef = useRef<Record<string, "red" | "yellow" | "blue">>({});
   // feature id -> its own anomaly, for the hover tooltip's "AI Detected"
   // badge — populated whenever anomalies changes, read via ref from the
   // hover handler (registered once at map load).
   const anomalyByFeatureIdRef = useRef<Record<string, SpatialAnomaly>>({});
+  const anomalyByIdRef = useRef<Record<string, SpatialAnomaly>>({});
+  const aiAnomalyClickConsumedRef = useRef(false);
   // building feature id -> its drain_encroachment SpatialAnomaly id, so a
   // click on a recolored building in Drains mode can open the AI Alert card
   // for that specific finding (read via ref from the click handler, which
@@ -1393,6 +1539,13 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
   const [placemarkDetailsId, setPlacemarkDetailsId] = useState<string | null>(null);
   const [placemarkNotice, setPlacemarkNotice] = useState<string | null>(null);
   const [myPlacesOpen, setMyPlacesOpen] = useState(false);
+  const [coordinateSearchOpen, setCoordinateSearchOpen] = useState(false);
+  const coordinateSearchMarkerRef = useRef<maplibregl.Marker | null>(null);
+  // Below the mobile breakpoint the Data Sources sidebar becomes a
+  // slide-in drawer rather than a permanent fixed panel — open state is
+  // lifted up to WorkspaceLayout (see commandCenterMobileOpen prop) so the
+  // topbar's menu button can open it.
+  const isMobile = useIsMobile();
   const [referenceLayers, setReferenceLayers] = useState<ReferenceLayerVisibility>({
     borders: false,
     roads: false,
@@ -1439,6 +1592,49 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     placemarkPreviewMarkerRef.current = null;
     const canvas = mapRef.current?.getCanvas();
     if (canvas) canvas.style.cursor = "";
+  }, []);
+
+  const clearCoordinateSearchTarget = useCallback(() => {
+    coordinateSearchMarkerRef.current?.remove();
+    coordinateSearchMarkerRef.current = null;
+  }, []);
+
+  const closeCoordinateSearch = useCallback(() => {
+    clearCoordinateSearchTarget();
+    setCoordinateSearchOpen(false);
+  }, [clearCoordinateSearchTarget]);
+
+  const toggleCoordinateSearch = useCallback(() => {
+    setCoordinateSearchOpen((current) => {
+      if (current) clearCoordinateSearchTarget();
+      return !current;
+    });
+  }, [clearCoordinateSearchTarget]);
+
+  const handleCoordinateFlyTo = useCallback((coordinate: CoordinateValue) => {
+    const map = mapRef.current;
+    if (!map) return;
+
+    clearCoordinateSearchTarget();
+    coordinateSearchMarkerRef.current = new maplibregl.Marker({
+      element: createCoordinateSearchMarkerElement(),
+      anchor: "center",
+    })
+      .setLngLat([coordinate.longitude, coordinate.latitude])
+      .addTo(map);
+
+    map.flyTo({
+      center: [coordinate.longitude, coordinate.latitude],
+      zoom: Math.max(map.getZoom(), 17),
+      duration: 1500,
+      curve: 1.35,
+      essential: true,
+    });
+  }, [clearCoordinateSearchTarget]);
+
+  useEffect(() => () => {
+    coordinateSearchMarkerRef.current?.remove();
+    coordinateSearchMarkerRef.current = null;
   }, []);
 
   const toggleStreetPickMode = useCallback(() => {
@@ -1676,69 +1872,58 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     () => datasets.filter((dataset) => activeDatasetIds.includes(dataset.id) && isVectorVisualizationDataset(dataset)),
     [datasets, activeDatasetIds]
   );
+  const coordinateSearchDatasets = useMemo<CoordinateSearchDataset[]>(() => {
+    const candidates = activeVectorDatasets.length > 0
+      ? activeVectorDatasets
+      : datasets.filter(isVectorVisualizationDataset);
+    return candidates.map((dataset) => ({
+      id: dataset.id,
+      name: dataset.name,
+      sourceCrs: visualizationManifests[dataset.id]?.source_crs
+        ?? sourceCrsFromDatasetMetadata(dataset),
+      bounds: visualizationManifests[dataset.id]?.bounds ?? null,
+    }));
+  }, [activeVectorDatasets, datasets, visualizationManifests]);
 
   useEffect(() => {
-    setSelectedVisualizationDatasetId((current) => {
-      if (current && activeVectorDatasets.some((dataset) => dataset.id === current)) return current;
-      return activeVectorDatasets[0]?.id ?? null;
-    });
+    setSelectedVisualizationDatasetId((current) => (
+      current && activeVectorDatasets.some((dataset) => dataset.id === current) ? current : null
+    ));
   }, [activeVectorDatasets]);
 
+  // Load styling metadata only after the user explicitly opens Layer for a
+  // vector dataset. Merely checking a GDB on the map must not activate the
+  // styling workflow or add an avoidable backend request.
   useEffect(() => {
-    const pending = activeVectorDatasets.filter(
-      (dataset) => !visualizationManifests[dataset.id]
-    );
-    if (pending.length === 0) return;
+    if (!selectedVisualizationDatasetId) return;
+    const dataset = activeVectorDatasets.find((candidate) => candidate.id === selectedVisualizationDatasetId);
+    if (!dataset || visualizationManifests[dataset.id]) return;
 
     const controller = new AbortController();
-    setVisualizationLoadingIds((current) => {
-      const next = new Set(current);
-      pending.forEach((dataset) => next.add(dataset.id));
-      return next;
-    });
+    setVisualizationLoadingIds((current) => new Set(current).add(dataset.id));
 
-    void Promise.all(
-      pending.map(async (dataset) => {
-        try {
-          const manifest = await fetchVisualizationManifest(dataset.id, controller.signal);
-          return { datasetId: dataset.id, manifest, error: null as string | null };
-        } catch (error) {
-          if ((error as Error).name === "AbortError") throw error;
-          return { datasetId: dataset.id, manifest: null, error: (error as Error).message };
-        }
-      })
-    ).then((results) => {
+    void fetchVisualizationManifest(dataset.id, controller.signal).then((manifest) => {
       if (controller.signal.aborted) return;
-      setVisualizationManifests((current) => {
-        let changed = false;
-        const next = { ...current };
-        for (const result of results) {
-          if (result.manifest) {
-            next[result.datasetId] = result.manifest;
-            changed = true;
-          }
-        }
-        return changed ? next : current;
-      });
+      setVisualizationManifests((current) => ({ ...current, [dataset.id]: manifest }));
       setVisualizationErrors((current) => {
         const next = { ...current };
-        for (const result of results) {
-          if (result.error) next[result.datasetId] = result.error;
-          else delete next[result.datasetId];
-        }
-        return next;
-      });
-      setVisualizationLoadingIds((current) => {
-        const next = new Set(current);
-        pending.forEach((dataset) => next.delete(dataset.id));
+        delete next[dataset.id];
         return next;
       });
     }).catch((error: Error) => {
-      if (error.name !== "AbortError") console.error("Visualization manifest load failed", error);
+      if (error.name === "AbortError") return;
+      setVisualizationErrors((current) => ({ ...current, [dataset.id]: error.message }));
+    }).finally(() => {
+      if (controller.signal.aborted) return;
+      setVisualizationLoadingIds((current) => {
+        const next = new Set(current);
+        next.delete(dataset.id);
+        return next;
+      });
     });
 
     return () => controller.abort();
-  }, [activeVectorDatasets, visualizationManifests]);
+  }, [activeVectorDatasets, selectedVisualizationDatasetId, visualizationManifests]);
 
   const selectedVisualizationManifest = selectedVisualizationDatasetId
     ? visualizationManifests[selectedVisualizationDatasetId] ?? null
@@ -1746,14 +1931,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
 
   const selectedVisualizationLayers = useMemo(() => {
     const layers = selectedVisualizationManifest?.layers ?? [];
-    return layers.filter((layer) => {
-      if (visualizationTarget === "all") {
-        return layer.recommended_renderer === "point"
-          || layer.recommended_renderer === "line"
-          || layer.recommended_renderer === "polygon";
-      }
-      return layer.recommended_renderer === visualizationTarget;
-    });
+    return layers.filter((layer) => layer.recommended_renderer === visualizationTarget);
   }, [selectedVisualizationManifest, visualizationTarget]);
 
   const selectedVisualizationFields = useMemo(
@@ -1773,14 +1951,29 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     ));
   }, [selectedVisualizationDatasetId, selectedVisualizationSourceLayers]);
 
+  const visualizationTargetDatasetRef = useRef<string | null>(null);
+
   useEffect(() => {
+    if (!selectedVisualizationDatasetId) {
+      visualizationTargetDatasetRef.current = null;
+      return;
+    }
     if (!selectedVisualizationManifest) return;
+
     const available = new Set(selectedVisualizationManifest.layers.map(
       (layer) => layer.recommended_renderer
     ));
-    if (visualizationTarget === "all") return;
-    if (!available.has(visualizationTarget)) setVisualizationTarget("all");
-  }, [selectedVisualizationManifest, visualizationTarget]);
+    const firstAvailable = (["point", "line", "polygon"] as const)
+      .find((candidate) => available.has(candidate));
+    if (!firstAvailable) return;
+
+    if (visualizationTargetDatasetRef.current !== selectedVisualizationDatasetId) {
+      visualizationTargetDatasetRef.current = selectedVisualizationDatasetId;
+      setVisualizationTarget(firstAvailable);
+      return;
+    }
+    if (!available.has(visualizationTarget)) setVisualizationTarget(firstAvailable);
+  }, [selectedVisualizationDatasetId, selectedVisualizationManifest, visualizationTarget]);
 
   useEffect(() => {
     setVisualizationMode("default");
@@ -1887,13 +2080,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
       bounds.getWest(), bounds.getSouth(), bounds.getEast(), bounds.getNorth(),
     ];
 
-    const batches = visualizationTarget === "all"
-      ? (["point", "line", "polygon"] as const)
-          .map((renderer) => selectedVisualizationLayers
-            .filter((layer) => layer.recommended_renderer === renderer)
-            .map((layer) => layer.source_layer_name))
-          .filter((sourceLayers) => sourceLayers.length > 0)
-      : [selectedVisualizationSourceLayers];
+    const batches = [selectedVisualizationSourceLayers];
 
     try {
       const responses = await Promise.all(batches.map((sourceLayers) => (
@@ -1940,7 +2127,6 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     selectedVisualizationDatasetId,
     selectedVisualizationLayers,
     selectedVisualizationSourceLayers,
-    visualizationTarget,
   ]);
   useEffect(() => {
     void refreshSelectedVisualizationLayer();
@@ -2783,7 +2969,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     }
 
     const colorExpr = buildCategoryColorExpression(colorMap);
-    if (map.getLayer(LAYER_POINTS)) map.setPaintProperty(LAYER_POINTS, "circle-color", colorExpr);
+    if (map.getLayer(LAYER_POINTS)) map.setPaintProperty(LAYER_POINTS, "circle-color", withPointVerificationColor(colorExpr));
     if (map.getLayer(LAYER_LINES)) map.setPaintProperty(LAYER_LINES, "line-color", colorExpr);
     // In Drains mode, polygons (buildings) are recolored by their own
     // encroachment finding instead of by category — read via a ref (not
@@ -2828,6 +3014,15 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     if (map.getLayer(LAYER_LINES)) map.setFilter(LAYER_LINES, withFeatureVisibility(LINE_BASE_FILTER, hiddenCategories, hiddenForBase));
     if (map.getLayer(LAYER_POINTS)) map.setFilter(LAYER_POINTS, withFeatureVisibility(POINT_BASE_FILTER, hiddenCategories, hiddenForBase));
     if (map.getLayer(LAYER_PHOTOS)) map.setFilter(LAYER_PHOTOS, withFeatureVisibility(PHOTO_BASE_FILTER, hiddenCategories, hiddenForBase));
+
+    // The selected geometry is rendered in a dedicated overlay. It must obey
+    // the same Category Visibility controls as the shared/base layers so both
+    // individual category toggles and Hide all work consistently.
+    const noHiddenVisualizationLayers = new Set<string>();
+    if (map.getLayer(VIZ_SELECTED_POLY_FILL)) map.setFilter(VIZ_SELECTED_POLY_FILL, withFeatureVisibility(POLY_BASE_FILTER, hiddenCategories, noHiddenVisualizationLayers));
+    if (map.getLayer(VIZ_SELECTED_POLY_OUTLINE)) map.setFilter(VIZ_SELECTED_POLY_OUTLINE, withFeatureVisibility(POLY_BASE_FILTER, hiddenCategories, noHiddenVisualizationLayers));
+    if (map.getLayer(VIZ_SELECTED_LINES)) map.setFilter(VIZ_SELECTED_LINES, withFeatureVisibility(LINE_BASE_FILTER, hiddenCategories, noHiddenVisualizationLayers));
+    if (map.getLayer(VIZ_SELECTED_POINTS)) map.setFilter(VIZ_SELECTED_POINTS, withFeatureVisibility(POINT_BASE_FILTER, hiddenCategories, noHiddenVisualizationLayers));
   }, [mapReady, hiddenCategories, detectionMode, selectedVisualizationCompositeIds, selectedVisualizationFeatures.length]);
 
   // Publish the selected source layer into its own viewport-scoped overlay.
@@ -2911,7 +3106,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     // Restore the normal shared layers. The selected source layer is removed
     // from these layers by the filter effect and rendered only by the overlay.
     if (map.getLayer(LAYER_POINTS)) {
-      map.setPaintProperty(LAYER_POINTS, "circle-color", baseColor);
+      map.setPaintProperty(LAYER_POINTS, "circle-color", withPointVerificationColor(baseColor));
       map.setPaintProperty(LAYER_POINTS, "circle-radius", 3.5);
       map.setPaintProperty(LAYER_POINTS, "circle-opacity", 0.9);
     }
@@ -2931,7 +3126,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     }
 
     if (map.getLayer(VIZ_SELECTED_POINTS)) {
-      map.setPaintProperty(VIZ_SELECTED_POINTS, "circle-color", selectedColor);
+      map.setPaintProperty(VIZ_SELECTED_POINTS, "circle-color", withPointVerificationColor(selectedColor));
       map.setPaintProperty(VIZ_SELECTED_POINTS, "circle-radius", selectedPointRadius);
       map.setPaintProperty(VIZ_SELECTED_POINTS, "circle-opacity", visualizationOpacity);
     }
@@ -3197,7 +3392,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
 
   // Restores a dataset selection that was persisted by the parent (e.g.
   // the user picked a dataset, switched to the Datasets/Analytics tab,
-  // then came back to Map) Ã¢â‚¬â€ re-applies the raster overlay(s) and scopes
+  // then came back to Map) — re-applies the raster overlay(s) and scopes
   // the feature fetch, without flying the camera anywhere, since this is
   // a passive restore, not a fresh click.
   // Also acts as a standing reconciliation pass: any raster layer left on
@@ -3218,7 +3413,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     filterRef.current = { datasetIds: activeDatasetIds };
     scheduleFetch();
     // Only re-run when the map/datasets actually become ready or the
-    // persisted id list itself changes Ã¢â‚¬â€ not on every addRasterOverlay
+    // persisted id list itself changes — not on every addRasterOverlay
     // identity change, which would fight with toggleDataset's own call.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mapReady, datasets, activeDatasetIds]);
@@ -3233,7 +3428,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
       .then((lists) => setAnomalies(lists.flat()))
       .catch(() => {});
     return () => ctrl.abort();
-  }, [activeDatasetIds]);
+  }, [activeDatasetIds, refreshToken]);
 
   // Push the fetched anomalies into the map source whenever they change.
   useEffect(() => {
@@ -3247,7 +3442,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
         type: "Feature",
         id: a.id,
         geometry: { type: "Point", coordinates: [a.lon, a.lat] },
-        properties: { id: a.id, color: a.color, anomaly_type: a.anomaly_type },
+        properties: { id: a.id, color: a.color, anomaly_type: a.anomaly_type, status: a.status },
       })),
     });
   }, [mapReady, anomalies]);
@@ -3413,16 +3608,15 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
   // reason (feature_ids[0] happens to already match those two, but reading
   // the explicit metadata field is the correct contract, not a coincidence).
   useEffect(() => {
-    const map: Record<string, SpatialAnomaly> = {};
-    for (const a of anomalies) {
-      const primaryId =
-        (a.anomaly_metadata.this_feature_id as string | undefined) ??
-        (a.anomaly_metadata.building_id as string | undefined) ??
-        (a.anomaly_metadata.manhole_id as string | undefined) ??
-        a.feature_ids[0];
-      if (primaryId) map[primaryId] = a;
+    const byFeature: Record<string, SpatialAnomaly> = {};
+    const byId: Record<string, SpatialAnomaly> = {};
+    for (const anomaly of anomalies) {
+      byId[anomaly.id] = anomaly;
+      const primaryId = primaryFeatureIdForAnomaly(anomaly);
+      if (primaryId) byFeature[primaryId] = anomaly;
     }
-    anomalyByFeatureIdRef.current = map;
+    anomalyByFeatureIdRef.current = byFeature;
+    anomalyByIdRef.current = byId;
   }, [anomalies]);
 
   // Entering/leaving a detection mode drives which asset family is visible —
@@ -3460,13 +3654,13 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     const map = mapRef.current;
     if (!mapReady || !map) return;
 
-    const buildingColors: Record<string, "red" | "yellow"> = {};
+    const buildingColors: Record<string, "red" | "yellow" | "blue"> = {};
     const buildingAnomalyIds: Record<string, string> = {};
     for (const a of anomalies) {
       if (a.anomaly_type !== "drain_encroachment") continue;
       const buildingId = a.feature_ids[0];
       if (buildingId) {
-        buildingColors[buildingId] = a.color === "red" ? "red" : "yellow";
+        buildingColors[buildingId] = a.status === "resolved" ? "blue" : a.color === "red" ? "red" : "yellow";
         buildingAnomalyIds[buildingId] = a.id;
       }
     }
@@ -3688,7 +3882,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
   }, [datasets, mapReady, onActiveDatasetsChange, onFeatureSelect, onFocusHandled, pendingFocusFeatureId, scheduleFetch]);
 
   // Selecting a dataset toggles it in/out of the active set rather than
-  // replacing it Ã¢â‚¬â€ so a raster orthophoto and its companion GDB vector
+  // replacing it — so a raster orthophoto and its companion GDB vector
   // layer over the same area can be viewed together, not just one at a
   // time. Clearing the set (or changing the topbar filter) goes back to
   // the global ward/category/severity view.
@@ -3768,16 +3962,16 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
 
   useEffect(() => {
     // Only a *real* ward/category/severity constraint should override an
-    // active dataset selection Ã¢â‚¬â€ clicking Apply/Reset with everything left
+    // active dataset selection — clicking Apply/Reset with everything left
     // at "all wards"/"all categories"/blank severity is a no-op and must
     // not silently clear the dataset(s) currently shown on the map. A real
     // constraint, though, is an explicit signal to leave dataset isolation
-    // and go back to the global filtered view for the vector FEATURES Ã¢â‚¬â€
+    // and go back to the global filtered view for the vector FEATURES —
     // otherwise a stale dataset selection could silently AND-combine with
     // it into an empty/wrong result.
     //
-    // A raster image overlay is NOT a filterable feature, though Ã¢â‚¬â€ it's a
-    // visual backdrop with no ward/category/severity of its own Ã¢â‚¬â€ so it
+    // A raster image overlay is NOT a filterable feature, though — it's a
+    // visual backdrop with no ward/category/severity of its own — so it
     // deliberately stays on the map here. It's only removed when its own
     // dataset card is clicked again or "Show all" is pressed explicitly.
     const hasRealFilter = Boolean(
@@ -3791,12 +3985,13 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     filterRef.current = filter;
     if (mapRef.current) scheduleFetch();
     // activeDatasetIds/scheduleFetch are read for their latest value here
-    // but must not retrigger this effect on their own Ã¢â‚¬â€ dataset-selection
+    // but must not retrigger this effect on their own — dataset-selection
     // changes are already handled directly by
     // toggleDataset/clearAllDatasets.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [filter]);
 
+  useEffect(() => { if (!mapReady || refreshToken === 0) return; scheduleFetch(); }, [mapReady, refreshToken, scheduleFetch]);
   useEffect(() => {
     if (!containerRef.current || mapRef.current) return;
     const map = new maplibregl.Map({
@@ -3807,7 +4002,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
       minZoom: 4,
       // Raster/image overlays (aerial TIFs etc.) have no tile pyramid of
       // their own, so they can be zoomed in far past where basemap tiles
-      // stop looking sharp Ã¢â‚¬â€ 20 was capping that closer inspection even
+      // stop looking sharp — 20 was capping that closer inspection even
       // with the basemap turned off. MapLibre's practical ceiling is ~24.
       maxZoom: 24,
       attributionControl: false,
@@ -3912,7 +4107,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
         type: "circle",
         source: FEATURE_SOURCE,
         // raster_pixel features are the raster reader's internal sample
-        // grid (kept for the feature table / severity / AI summary) Ã¢â‚¬â€ the
+        // grid (kept for the feature table / severity / AI summary) — the
         // actual image overlay already shows the raster visually, so the
         // grid of dots on top of it would just be redundant clutter.
         // site_photo features get their own camera-icon symbol layer below
@@ -4172,17 +4367,34 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
       });
 
       map.on("click", LAYER_ANOMALIES, (e: MapMouseEvent) => {
-        // In Manholes AI mode, the underlying base point layer sits at the
-        // exact same coordinate and its own click handler (in
-        // handleFeatureClick below) already opens the richer manhole-
-        // recommend card for this click — without this guard, MapLibre
-        // fires both layer-specific handlers for one click and both cards
-        // would open stacked on top of each other.
-        if (detectionModeRef.current === "manholes") return;
         const hit = map.queryRenderedFeatures(e.point, { layers: [LAYER_ANOMALIES] });
         if (!hit.length) return;
         const id = hit[0].properties?.id as string | undefined;
-        if (id) setSelectedAnomalyId(id);
+        if (!id) return;
+
+        const anomaly = anomalyByIdRef.current[id];
+        const activeMode = detectionModeRef.current;
+        const context = aiOverlayEnabledRef.current
+          ? aiVerificationContextForAnomaly(anomaly, activeMode)
+          : null;
+        const primaryFeatureId = anomaly ? primaryFeatureIdForAnomaly(anomaly) : null;
+
+        // Preserve the previous AI UI: Poles/Drains still open the AI Alert
+        // card; Manholes still use their richer recommendation card.
+        if (activeMode !== "manholes") setSelectedAnomalyId(id);
+        if (!context || !primaryFeatureId) return;
+
+        aiAnomalyClickConsumedRef.current = true;
+        window.requestAnimationFrame(() => { aiAnomalyClickConsumedRef.current = false; });
+        void fetchFeatureById(primaryFeatureId)
+          .then((feature) => {
+            onFeatureSelect(feature, context);
+            if (context.detectionMode === "manholes" && feature.properties.dataset_id) {
+              setManholeRecommendOpen(false);
+              void runManholeFeatureRecommend(feature.properties.dataset_id, feature.properties.id);
+            }
+          })
+          .catch(() => {});
       });
       map.on("mouseenter", LAYER_ANOMALIES, () => (map.getCanvas().style.cursor = "pointer"));
       map.on("mouseleave", LAYER_ANOMALIES, () => (map.getCanvas().style.cursor = ""));
@@ -4232,15 +4444,26 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
         // photo — otherwise the two click handlers would both fire for the
         // same click. Once Escape deactivates the tool (panel still open),
         // this must stop applying so ordinary feature clicks work again.
-        if (placemarkModeRef.current || streetPickModeRef.current || streetPickConsumedRef.current || isMeasureInputActive()) return;
+        if (placemarkModeRef.current || streetPickModeRef.current || streetPickConsumedRef.current || aiAnomalyClickConsumedRef.current || isMeasureInputActive()) return;
         const hit = map.queryRenderedFeatures(e.point, { layers: ALL_CLICKABLE });
         if (!hit.length) return;
         const isAi = AI_CLICKABLE.includes(hit[0].layer?.id as string);
         const base = isAi ? hit.find((f) => BASE_CLICKABLE.includes(f.layer?.id as string)) : hit[0];
         const selected = decodeFeature(base ?? hit[0]);
-        if (aiOverlayEnabledRef.current && detectionModeRef.current === "drains") {
+        const activeMode = detectionModeRef.current;
+        const selectedAnomaly = aiOverlayEnabledRef.current && activeMode
+          ? anomalyByFeatureIdRef.current[selected.properties.id]
+          : undefined;
+        const verificationContext = aiOverlayEnabledRef.current
+          ? aiVerificationContextForAnomaly(selectedAnomaly, activeMode)
+          : null;
+        if (aiOverlayEnabledRef.current && activeMode === "drains") {
           const anomalyId = buildingAnomalyIdMapRef.current[selected.properties.id];
-          if (anomalyId) { setSelectedAnomalyId(anomalyId); return; }
+          if (anomalyId) {
+            setSelectedAnomalyId(anomalyId);
+            if (verificationContext) onFeatureSelect(selected, verificationContext);
+            return;
+          }
         }
         if (
           aiOverlayEnabledRef.current &&
@@ -4255,6 +4478,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
           // Poles/Drains: only hide the network SUMMARY PANEL (not its
           // data) so the two cards don't visually stack in the same corner.
           setManholeRecommendOpen(false);
+          if (verificationContext) onFeatureSelect(selected, verificationContext);
           void runManholeFeatureRecommend(selected.properties.dataset_id, selected.properties.id);
           return;
         }
@@ -4266,7 +4490,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
           });
           return;
         }
-        onFeatureSelect(selected);
+        onFeatureSelect(selected, verificationContext);
       };
       const handleFeatureHover = (e: MapMouseEvent) => {
         // While a measurement tool is actually armed/drawing, ordinary
@@ -4291,16 +4515,18 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
         const anomalyForFeature = aiOverlayEnabledRef.current
           ? anomalyByFeatureIdRef.current[decoded.properties.id]
           : undefined;
+        const aiSummary = anomalyForFeature ? summarizeAnomalyForTooltip(anomalyForFeature) : undefined;
         setHover({
           x: e.point.x,
           y: e.point.y,
           label: decoded.properties.label || "-",
           category,
           severity: decoded.properties.severity,
-          color: colorForCategory(category),
+          color: aiSummary ? ANOMALY_BADGE_COLOR[aiSummary.color] : colorForCategory(category),
           attributes: decoded.properties.attributes,
           aiStatus,
-          aiDetection: anomalyForFeature ? summarizeAnomalyForTooltip(anomalyForFeature) : undefined,
+          aiDetection: aiSummary,
+          verification: verificationSummaryFromAttributes(decoded.properties.attributes),
         });
       };
       // Named (not inline-anonymous) so the cursor is never fought: while
@@ -5092,6 +5318,9 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
   return (
     <>
       <CommandCenter
+        isMobile={isMobile}
+        open={!isMobile || commandCenterMobileOpen}
+        onRequestClose={() => onCommandCenterMobileOpenChange(false)}
         datasets={datasets}
         activeDatasetIds={activeDatasetIds}
         flyError={flyError}
@@ -5114,6 +5343,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
         status={status}
         visualization={{
           datasets: activeVectorDatasets,
+          availableDatasetIds: datasets.filter(isVectorVisualizationDataset).map((dataset) => dataset.id),
           manifests: visualizationManifests,
           loadingIds: visualizationLoadingIds,
           errors: visualizationErrors,
@@ -5163,6 +5393,8 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
           placemarkCount={placemarks.length}
           myPlacesOpen={myPlacesOpen}
           onToggleMyPlaces={() => setMyPlacesOpen((current) => !current)}
+          coordinateSearchOpen={coordinateSearchOpen}
+          onToggleCoordinateSearch={toggleCoordinateSearch}
           referenceLayers={referenceLayers}
           onToggleReferenceLayer={handleToggleReferenceLayer}
         />
@@ -5179,6 +5411,14 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
           <div className="placemark-pick-hint" data-testid="placemark-pick-hint">
             Click the map to place a pin · right-click or Esc to cancel
           </div>
+        )}
+        {coordinateSearchOpen && (
+          <CoordinateSearchPanel
+            datasets={coordinateSearchDatasets}
+            onFlyTo={handleCoordinateFlyTo}
+            onClear={clearCoordinateSearchTarget}
+            onClose={closeCoordinateSearch}
+          />
         )}
         {placemarkNotice && (
           <div className="placemark-success-toast" role="status" aria-live="polite">
@@ -5387,6 +5627,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
 
 interface VisualizationPanelProps {
   datasets: DatasetRow[];
+  availableDatasetIds: string[];
   manifests: Record<string, VisualizationManifest>;
   loadingIds: Set<string>;
   errors: Record<string, string>;
@@ -5413,12 +5654,14 @@ interface VisualizationPanelProps {
 }
 
 function CommandCenter({
+  isMobile, open, onRequestClose,
   datasets, activeDatasetIds, flyError, onSelectDataset, onSelectAllDatasets, expandedDatasetId, onToggleDatasetSettings,
   rasterSettingsById, onChangeRasterSettings, categoryStats, hiddenCategories, onToggleCategory,
   onSetAllCategoriesVisible, onRunAudit, auditRunning, auditError, onOpenAttributeTable, status: _status, visualization,
   detectionMode, onRunManholeNetwork, manholeRecommendLoading,
   classMap, extraVisibleCategories, onToggleExtraVisibleCategory, onSetAllExtraVisibleCategories,
 }: {
+  isMobile: boolean; open: boolean; onRequestClose: () => void;
   datasets: DatasetRow[]; activeDatasetIds: string[]; flyError: string | null; onSelectDataset: (d: DatasetRow) => void;
   onSelectAllDatasets: (active: boolean) => void;
   expandedDatasetId: string | null;
@@ -5446,7 +5689,7 @@ function CommandCenter({
   const [layerQuery, setLayerQuery] = useState("");
   const [layerMenu, setLayerMenu] = useState<{ category: string; x: number; y: number } | null>(null);
   const [visualizationOpen, setVisualizationOpen] = useState(false);
-  const visualizationTriggerRef = useRef<HTMLButtonElement | null>(null);
+  const visualizationAnchorRef = useRef<HTMLButtonElement | null>(null);
   const visualizationPopupRef = useRef<HTMLDivElement | null>(null);
   const [visualizationPopupPosition, setVisualizationPopupPosition] = useState<{
     top: number;
@@ -5461,6 +5704,7 @@ function CommandCenter({
       ? { x: visualizationPopupPosition.left, y: visualizationPopupPosition.top }
       : null,
     margin: 8,
+    disabled: isMobile,
   });
   const normalizedLayerQuery = layerQuery.trim().toLocaleLowerCase();
   const displayedLayers = useMemo(
@@ -5489,18 +5733,28 @@ function CommandCenter({
   }, [layerMenu]);
 
   const updateVisualizationPopupPosition = useCallback(() => {
-    const trigger = visualizationTriggerRef.current;
-    if (!trigger) return;
-    const rect = trigger.getBoundingClientRect();
+    const anchor = visualizationAnchorRef.current;
+    if (!anchor) return;
+    const rect = anchor.getBoundingClientRect();
     const viewportGap = 8;
-    const top = rect.bottom + 6;
+    const width = Math.min(420, Math.max(340, window.innerWidth - viewportGap * 2));
+    const left = Math.max(viewportGap, Math.min(rect.right - width, window.innerWidth - width - viewportGap));
+    const hasRoomBelow = window.innerHeight - rect.bottom >= 320;
+    const top = hasRoomBelow ? rect.bottom + 6 : viewportGap;
     setVisualizationPopupPosition({
       top,
-      left: rect.left,
-      width: rect.width,
+      left,
+      width,
       maxHeight: Math.max(280, window.innerHeight - top - viewportGap),
     });
   }, []);
+
+  const openVisualizationForDataset = useCallback((datasetId: string, anchor: HTMLButtonElement) => {
+    visualizationAnchorRef.current = anchor;
+    visualization.onDatasetChange(datasetId);
+    setVisualizationOpen(true);
+    window.requestAnimationFrame(updateVisualizationPopupPosition);
+  }, [updateVisualizationPopupPosition, visualization.onDatasetChange]);
 
   useEffect(() => {
     if (!visualizationOpen) return;
@@ -5508,7 +5762,7 @@ function CommandCenter({
 
     const closeOnOutsideClick = (event: MouseEvent) => {
       const target = event.target as Node;
-      if (visualizationTriggerRef.current?.contains(target)) return;
+      if (visualizationAnchorRef.current?.contains(target)) return;
       if (visualizationPopupRef.current?.contains(target)) return;
       setVisualizationOpen(false);
     };
@@ -5516,18 +5770,50 @@ function CommandCenter({
       if (event.key !== "Escape") return;
       event.stopPropagation();
       setVisualizationOpen(false);
-      visualizationTriggerRef.current?.focus();
+      visualizationAnchorRef.current?.focus();
     };
+    const reposition = () => updateVisualizationPopupPosition();
     document.addEventListener("mousedown", closeOnOutsideClick);
     document.addEventListener("keydown", closeOnEscape);
+    window.addEventListener("resize", reposition);
     return () => {
       document.removeEventListener("mousedown", closeOnOutsideClick);
       document.removeEventListener("keydown", closeOnEscape);
+      window.removeEventListener("resize", reposition);
     };
   }, [updateVisualizationPopupPosition, visualizationOpen]);
 
+  useEffect(() => {
+    if (visualization.selectedDatasetId) return;
+    setVisualizationOpen(false);
+  }, [visualization.selectedDatasetId]);
+
   return (
-    <aside className="command-center" data-testid="command-center">
+    <>
+      {isMobile && open && (
+        <div
+          className="command-center__backdrop"
+          onClick={onRequestClose}
+          data-testid="command-center-backdrop"
+        />
+      )}
+      <aside
+        className={`command-center${isMobile && !open ? " command-center--closed" : ""}`}
+        data-testid="command-center"
+      >
+        {isMobile && (
+          <button
+            type="button"
+            className="command-center__close"
+            onClick={onRequestClose}
+            aria-label="Close data sources"
+            data-testid="command-center-close"
+          >
+            <svg viewBox="0 0 24 24" aria-hidden="true" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2">
+              <path d="M6 6l12 12M18 6L6 18" />
+            </svg>
+          </button>
+        )}
       <div className="command-center__body">
         {datasets.length > 0 && (
           <DataSourceSelector
@@ -5539,45 +5825,12 @@ function CommandCenter({
             onToggleDatasetSettings={onToggleDatasetSettings}
             rasterSettingsById={rasterSettingsById}
             onChangeRasterSettings={onChangeRasterSettings}
+            layerDatasetIds={visualization.availableDatasetIds}
+            selectedLayerDatasetId={visualizationOpen ? visualization.selectedDatasetId : null}
+            onOpenLayer={openVisualizationForDataset}
             flyError={flyError}
           />
         )}
-
-        <div className="visualization-popup-control">
-          <button
-            type="button"
-            ref={visualizationTriggerRef}
-            className={`visualization-popup-trigger${visualizationOpen ? " is-open" : ""}`}
-            disabled={visualization.datasets.length === 0}
-            aria-haspopup="dialog"
-            aria-expanded={visualizationOpen}
-            aria-controls="geometry-styling-popup"
-            onClick={() => setVisualizationOpen((current) => !current)}
-            data-testid="geometry-styling-trigger"
-          >
-            <span className="visualization-popup-trigger__icon" aria-hidden="true">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-                <polygon points="12 2 3 7 12 12 21 7 12 2" />
-                <polyline points="3 12 12 17 21 12" />
-                <polyline points="3 17 12 22 21 17" />
-              </svg>
-            </span>
-            <span className="visualization-popup-trigger__body">
-              <span className="visualization-popup-trigger__main">
-                <span className="visualization-popup-trigger__title">Layers</span>
-                <span className="visualization-popup-trigger__badge">Style</span>
-              </span>
-              <span className="visualization-popup-trigger__sub-row">
-                <span className="visualization-popup-trigger__sub">Open geometry styling</span>
-                <span className={`visualization-popup-trigger__chevron${visualizationOpen ? " is-open" : ""}`} aria-hidden="true">
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                    <polyline points="6 9 12 15 18 9" />
-                  </svg>
-                </span>
-              </span>
-            </span>
-          </button>
-        </div>
 
         {visualizationOpen && visualizationPopupPosition && createPortal(
           <div
@@ -5786,7 +6039,8 @@ function CommandCenter({
         </div>,
         document.body
       )}
-    </aside>
+      </aside>
+    </>
   );
 }
 
@@ -5814,7 +6068,6 @@ function VisualizationPanel({
   layerLoading,
   layerError,
   layerTruncated,
-  onDatasetChange,
   onTargetChange,
   onModeChange,
   onFieldChange,
@@ -5823,7 +6076,7 @@ function VisualizationPanel({
   onLineWidthChange,
   onResetStyle,
 }: VisualizationPanelProps) {
-  const effectiveDatasetId = selectedDatasetId ?? datasets[0]?.id ?? null;
+  const effectiveDatasetId = selectedDatasetId;
   const selectedDataset = datasets.find((dataset) => dataset.id === effectiveDatasetId) ?? null;
   const manifest = effectiveDatasetId ? manifests[effectiveDatasetId] ?? null : null;
   const loading = effectiveDatasetId ? loadingIds.has(effectiveDatasetId) : false;
@@ -5836,12 +6089,7 @@ function VisualizationPanel({
     polygon: layers.filter((layer) => layer.recommended_renderer === "polygon"),
   }), [layers]);
 
-  const targetLayers = useMemo(() => {
-    if (target === "all") {
-      return [...geometryLayers.point, ...geometryLayers.line, ...geometryLayers.polygon];
-    }
-    return geometryLayers[target];
-  }, [geometryLayers, target]);
+  const targetLayers = useMemo(() => geometryLayers[target], [geometryLayers, target]);
 
   const targetFields = useMemo(
     () => aggregateVisualizationFields(targetLayers),
@@ -5882,7 +6130,6 @@ function VisualizationPanel({
     label: string;
     count: number;
   }> = [
-    { value: "all", label: "All", count: allCount },
     { value: "point", label: "Points", count: pointCount },
     { value: "line", label: "Lines", count: lineCount },
     { value: "polygon", label: "Polygons", count: polygonCount },
@@ -5904,22 +6151,13 @@ function VisualizationPanel({
         <span className="visualization-panel__live"><span aria-hidden="true" /> Live</span>
       </div>
 
-      {datasets.length === 0 ? (
+      {!selectedDataset ? (
         <div className="visualization-panel__empty">
-          Select a ready vector dataset to open geometry styling.
+          Click Layer beside an active vector data source to open geometry styling.
         </div>
       ) : (
         <>
-          {datasets.length > 1 ? (
-            <label className="visualization-field">
-              <span>Dataset</span>
-              <select value={effectiveDatasetId ?? ""} onChange={(event) => onDatasetChange(event.target.value || null)}>
-                {datasets.map((dataset) => <option key={dataset.id} value={dataset.id}>{dataset.name}</option>)}
-              </select>
-            </label>
-          ) : (
-            <div className="visualization-panel__dataset" title={selectedDataset?.name ?? ""}>{selectedDataset?.name}</div>
-          )}
+          <div className="visualization-panel__dataset" title={selectedDataset.name}>{selectedDataset.name}</div>
 
           {loading && <div className="visualization-panel__loading"><span className="visualization-panel__spinner" />Profiling geometry and fields…</div>}
           {error && !loading && <div className="visualization-panel__error">Could not load visualization profile: {error}</div>}
@@ -5952,7 +6190,7 @@ function VisualizationPanel({
 
               <div className="visualization-style-card visualization-style-card--geometry">
                 <div className="visualization-style-card__head">
-                  <div><span>Style</span><strong>{targetOptions.find((option) => option.value === target)?.label ?? "All"}</strong></div>
+                  <div><span>Style</span><strong>{targetOptions.find((option) => option.value === target)?.label ?? "Geometry"}</strong></div>
                   <button type="button" onClick={onResetStyle}>Reset</button>
                 </div>
 
@@ -5998,8 +6236,8 @@ function VisualizationPanel({
                 {mode === "missing-data" && field && <div className="visualization-missing-preview"><span><i className="visualization-missing-preview__available" />Available {preview.availableCount.toLocaleString()}</span><span><i className="visualization-missing-preview__missing" />Missing {preview.missingCount.toLocaleString()}</span></div>}
 
                 <label className="visualization-slider"><span><b>Opacity</b><em>{Math.round(opacity * 100)}%</em></span><input type="range" min="0.15" max="1" step="0.05" value={opacity} onChange={(event) => onOpacityChange(Number(event.target.value))} /></label>
-                {(target === "all" || target === "point") && <label className="visualization-slider"><span><b>Point size</b><em>{pointSize}px</em></span><input type="range" min="3" max="24" step="1" value={pointSize} onChange={(event) => onPointSizeChange(Number(event.target.value))} /></label>}
-                {(target === "all" || target === "line" || target === "polygon") && <label className="visualization-slider"><span><b>{target === "polygon" ? "Outline width" : target === "all" ? "Line / outline width" : "Line width"}</b><em>{lineWidth.toFixed(1)}px</em></span><input type="range" min="1" max="12" step="0.5" value={lineWidth} onChange={(event) => onLineWidthChange(Number(event.target.value))} /></label>}
+                {target === "point" && <label className="visualization-slider"><span><b>Point size</b><em>{pointSize}px</em></span><input type="range" min="3" max="24" step="1" value={pointSize} onChange={(event) => onPointSizeChange(Number(event.target.value))} /></label>}
+                {(target === "line" || target === "polygon") && <label className="visualization-slider"><span><b>{target === "polygon" ? "Outline width" : "Line width"}</b><em>{lineWidth.toFixed(1)}px</em></span><input type="range" min="1" max="12" step="0.5" value={lineWidth} onChange={(event) => onLineWidthChange(Number(event.target.value))} /></label>}
               </div>
 
               {manifest.warnings.length > 0 && <details className="visualization-panel__limitations"><summary>Data limitations</summary>{manifest.warnings.map((warning) => <p key={warning}>{warning}</p>)}</details>}
@@ -6048,6 +6286,8 @@ function MapControls({
   placemarkCount,
   myPlacesOpen,
   onToggleMyPlaces,
+  coordinateSearchOpen,
+  onToggleCoordinateSearch,
   referenceLayers,
   onToggleReferenceLayer,
 }: {
@@ -6065,74 +6305,263 @@ function MapControls({
   placemarkCount: number;
   myPlacesOpen: boolean;
   onToggleMyPlaces: () => void;
+  coordinateSearchOpen: boolean;
+  onToggleCoordinateSearch: () => void;
   referenceLayers: ReferenceLayerVisibility;
   onToggleReferenceLayer: (key: keyof ReferenceLayerVisibility, visible: boolean) => void;
 }) {
-  const [menuOpen, setMenuOpen] = useState(false);
+  const [toolsMenuOpen, setToolsMenuOpen] = useState(false);
+  const [activeToolsSection, setActiveToolsSection] = useState<"map" | "location" | null>(null);
   const [menuPos, setMenuPos] = useState<{ top: number; left: number } | null>(null);
-  const menuRef = useRef<HTMLDivElement | null>(null);
+  // AI Detection is an independent floating control, not a tools-menu
+  // category — its own open state, own outside-click handling, own anchor.
+  // Three explicit, independent states (not derived from one another):
+  // showDetectionList (the Poles/Drains/Manholes picker), showDetectionStatus
+  // (the "AI Detection : X  ON/OFF" card), and detectionMode/aiOverlayEnabled
+  // (props — the actual selection/activation, untouched by this UI layer).
+  // Keeping list-visibility and status-visibility as separate booleans
+  // (rather than deriving one from "not the other") is what lets a single
+  // icon click close the status card without also opening the list.
+  const [showDetectionList, setShowDetectionList] = useState(false);
+  const [showDetectionStatus, setShowDetectionStatus] = useState(false);
+  const [aiOffsetY, setAiOffsetY] = useState(0);
+  const toolsControlRef = useRef<HTMLDivElement | null>(null);
+  const toolsToggleRef = useRef<HTMLButtonElement | null>(null);
+  const toolsPanelsRef = useRef<HTMLDivElement | null>(null);
+  const aiWrapRef = useRef<HTMLDivElement | null>(null);
   const portalMenuRef = useRef<HTMLDivElement | null>(null);
+  const isMobile = useIsMobile();
   const aiMenuDrag = useDraggableMapPanel<HTMLDivElement>({
     storageKey: "davangere.ai-detection-position",
     boundary: "viewport",
     initialPosition: menuPos ? { x: menuPos.left, y: menuPos.top } : null,
     margin: 8,
+    disabled: isMobile,
   });
-
-  useEffect(() => {
-    if (!menuOpen) return;
-    const onClickOutside = (e: MouseEvent) => {
-      const target = e.target as Node;
-      if (
-        menuRef.current && !menuRef.current.contains(target) &&
-        portalMenuRef.current && !portalMenuRef.current.contains(target)
-      ) {
-        setMenuOpen(false);
-      }
-    };
-    const onEscape = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setMenuOpen(false);
-    };
-    document.addEventListener("mousedown", onClickOutside);
-    document.addEventListener("keydown", onEscape);
-    return () => {
-      document.removeEventListener("mousedown", onClickOutside);
-      document.removeEventListener("keydown", onEscape);
-    };
-  }, [menuOpen]);
 
   // MapLibre's WebGL canvas can composite on its own GPU layer that paints
   // over positioned overlay siblings regardless of z-index/stacking-context
   // CSS (confirmed via elementFromPoint — the canvas rendered on top of a
   // correctly z-indexed, position:absolute dropdown). Portaling the open
   // dropdown straight to document.body, positioned with fixed coordinates
-  // computed from the button's own rect, sidesteps the map's DOM subtree
-  // entirely instead of fighting that stacking behavior.
+  // computed from the AI icon's own rect, sidesteps the map's DOM subtree
+  // entirely instead of fighting that stacking behavior. Opens beside the
+  // icon (right edge + spacing), not below it.
   useEffect(() => {
-    if (!menuOpen || !menuRef.current) return;
-    const rect = menuRef.current.getBoundingClientRect();
-    setMenuPos({ top: rect.bottom + 6, left: rect.left });
-  }, [menuOpen]);
+    if (!showDetectionList || !aiWrapRef.current) return;
+    const rect = aiWrapRef.current.getBoundingClientRect();
+    setMenuPos({ top: rect.top, left: rect.right + 8 });
+  }, [showDetectionList]);
+
+  useEffect(() => {
+    if (!toolsMenuOpen) {
+      setActiveToolsSection(null);
+      return;
+    }
+
+    const onToolsOutside = (event: MouseEvent) => {
+      const target = event.target as Node;
+      if (toolsControlRef.current?.contains(target)) return;
+      // The AI mode-picker dropdown is portaled to document.body (outside
+      // toolsControlRef) — a click inside it is unrelated to this menu and
+      // must not close it, since AI Detection is now fully independent.
+      if (portalMenuRef.current?.contains(target)) return;
+      if (target instanceof Element && target.closest(".reference-layers-menu")) return;
+      setToolsMenuOpen(false);
+      setActiveToolsSection(null);
+    };
+
+    const onToolsEscape = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      setToolsMenuOpen(false);
+      setActiveToolsSection(null);
+    };
+
+    document.addEventListener("mousedown", onToolsOutside);
+    document.addEventListener("keydown", onToolsEscape);
+    return () => {
+      document.removeEventListener("mousedown", onToolsOutside);
+      document.removeEventListener("keydown", onToolsEscape);
+    };
+  }, [toolsMenuOpen]);
+
+  // AI Detection's own outside-click/escape handling — fully independent of
+  // the tools menu's. The dropdown is portaled to document.body, so it's
+  // exempted the same way the tools menu exempts it above. Dismissing the
+  // list this way (without picking anything) returns to whatever was
+  // showing before it opened — the status card reappears if a mode is
+  // already active, same as before the list was split into its own state.
+  // The AI icon's own click handler is deliberately different (see
+  // handleAiIconClick) and does not restore the status card this way.
+  useEffect(() => {
+    if (!showDetectionList) return;
+    const onAiOutside = (event: MouseEvent) => {
+      const target = event.target as Node;
+      if (aiWrapRef.current?.contains(target)) return;
+      if (portalMenuRef.current?.contains(target)) return;
+      setShowDetectionList(false);
+      setShowDetectionStatus(Boolean(detectionMode));
+    };
+    const onAiEscape = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      setShowDetectionList(false);
+      setShowDetectionStatus(Boolean(detectionMode));
+    };
+    document.addEventListener("mousedown", onAiOutside);
+    document.addEventListener("keydown", onAiEscape);
+    return () => {
+      document.removeEventListener("mousedown", onAiOutside);
+      document.removeEventListener("keydown", onAiEscape);
+    };
+  }, [showDetectionList, detectionMode]);
+
+  // Strict 3-state controller for the AI icon. The two surfaces (list,
+  // status card) must never flip together in one click — closing the status
+  // card must NOT also open the list (that only happens on the next click).
+  // The priority is exactly: (1) close status card if visible, (2) close
+  // list if visible, (3) otherwise open the list.
+  const handleAiIconClick = () => {
+    if (showDetectionStatus) {
+      setShowDetectionStatus(false);
+      return;
+    }
+    if (showDetectionList) {
+      setShowDetectionList(false);
+      return;
+    }
+    setShowDetectionList(true);
+  };
+
+  // Keeps the AI icon flush under the toggle when the tools menu is closed,
+  // and dynamically pushes it below the expanded panel's real rendered
+  // height when the menu opens — measured from actual DOM rects and the
+  // container's own CSS gap (not a hardcoded offset), so it stays correct
+  // regardless of which tool category's content is showing.
+  const measureAiOffset = useCallback(() => {
+    const container = toolsControlRef.current;
+    const toggleEl = toolsToggleRef.current;
+    if (!container || !toggleEl) return;
+    const gap = parseFloat(getComputedStyle(container).rowGap || getComputedStyle(container).gap || "0") || 0;
+    const containerTop = container.getBoundingClientRect().top;
+    let referenceBottom = toggleEl.getBoundingClientRect().bottom;
+    if (toolsMenuOpen && toolsPanelsRef.current) {
+      const panelsBottom = toolsPanelsRef.current.getBoundingClientRect().bottom;
+      if (panelsBottom > referenceBottom) referenceBottom = panelsBottom;
+    }
+    setAiOffsetY(referenceBottom - containerTop + gap);
+  }, [toolsMenuOpen]);
+
+  useLayoutEffect(() => {
+    measureAiOffset();
+  }, [measureAiOffset, activeToolsSection]);
+
+  useEffect(() => {
+    const panelsEl = toolsPanelsRef.current;
+    if (!panelsEl || typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(() => measureAiOffset());
+    observer.observe(panelsEl);
+    return () => observer.disconnect();
+  }, [measureAiOffset]);
+
+  const hasActiveTool = Boolean(
+    detectionMode ||
+    streetPickMode ||
+    placemarkMode ||
+    myPlacesOpen ||
+    coordinateSearchOpen ||
+    Object.values(referenceLayers).some(Boolean)
+  );
 
   return (
     <>
       <div className="feature-count" data-testid="viewport-status">
         {status.loading ? "loading..." : `${status.count} features`}
       </div>
-      <div className="map-controls">
-        <div className="map-controls__group" data-testid="basemap-toggle">
+      <div className="map-tools" ref={toolsControlRef}>
+        <button
+          type="button"
+          ref={toolsToggleRef}
+          className={`map-tools__toggle${toolsMenuOpen ? " map-tools__toggle--open" : ""}${hasActiveTool ? " map-tools__toggle--has-active" : ""}`}
+          onClick={() => {
+            const nextOpen = !toolsMenuOpen;
+            setToolsMenuOpen(nextOpen);
+            if (!nextOpen) {
+              setActiveToolsSection(null);
+            }
+          }}
+          aria-expanded={toolsMenuOpen}
+          aria-controls="map-tools-panels"
+          aria-label={toolsMenuOpen ? "Close map tools" : "Open map tools"}
+          data-testid="map-tools-toggle"
+          title={toolsMenuOpen ? "Close tools" : "Open tools"}
+        >
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="18" height="18" aria-hidden="true">
+            <path d="M4 7h16M4 12h16M4 17h16" />
+          </svg>
+          {hasActiveTool && <span className="map-tools__active-dot" aria-hidden="true" />}
+        </button>
+
+        <div
+          id="map-tools-panels"
+          ref={toolsPanelsRef}
+          className={`map-tools__panels${toolsMenuOpen ? " map-tools__panels--open" : ""}`}
+          aria-label="Map tools"
+          aria-hidden={!toolsMenuOpen}
+        >
+          <div className="map-tools__category-rail" aria-label="Tool categories">
+            <button
+              type="button"
+              className={`map-tools__category-btn${activeToolsSection === "map" ? " map-tools__category-btn--active" : ""}`}
+              onClick={() => {
+                setActiveToolsSection((current) => current === "map" ? null : "map");
+              }}
+              aria-label="Map view tools"
+              aria-expanded={activeToolsSection === "map"}
+              title="Map view"
+              data-testid="map-tools-category-map"
+            >
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" width="19" height="19" aria-hidden="true">
+                <path d="m3 6 5-3 8 3 5-3v15l-5 3-8-3-5 3V6Z" />
+                <path d="M8 3v15M16 6v15" />
+              </svg>
+            </button>
+
+            <button
+              type="button"
+              className={`map-tools__category-btn${activeToolsSection === "location" ? " map-tools__category-btn--active" : ""}${(streetPickMode || placemarkMode || myPlacesOpen || coordinateSearchOpen || Object.values(referenceLayers).some(Boolean)) ? " map-tools__category-btn--has-active" : ""}`}
+              onClick={() => {
+                setActiveToolsSection((current) => current === "location" ? null : "location");
+              }}
+              aria-label="Location and map tools"
+              aria-expanded={activeToolsSection === "location"}
+              title="Location tools"
+              data-testid="map-tools-category-location"
+            >
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" width="19" height="19" aria-hidden="true">
+                <path d="M12 22s7-6.1 7-13a7 7 0 1 0-14 0c0 6.9 7 13 7 13Z" />
+                <circle cx="12" cy="9" r="2.2" />
+              </svg>
+              {(streetPickMode || placemarkMode || myPlacesOpen || coordinateSearchOpen || Object.values(referenceLayers).some(Boolean)) && <span className="map-tools__category-dot" aria-hidden="true" />}
+            </button>
+          </div>
+
+          <div className="map-tools__content">
+          {activeToolsSection === "map" && (
+          <div className="map-tools__floating-panel map-tools__floating-panel--map" data-testid="map-view-panel">
+            <div className="map-controls map-controls--floating-panel">
+              <div className="map-controls__group" data-testid="basemap-toggle">
           <button className={`map-controls__btn${basemap === "street" ? " map-controls__btn--active" : ""}`} onClick={() => onChangeBasemap("street")} data-testid="basemap-street">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="14" height="14" style={{ marginRight: 4, verticalAlign: -2 }}>
               <path d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-4 0h4" />
             </svg>
-            Map
+            <span className="map-controls__btn-label">Map</span>
           </button>
           <button className={`map-controls__btn${basemap === "satellite" ? " map-controls__btn--active" : ""}`} onClick={() => onChangeBasemap("satellite")} data-testid="basemap-satellite">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="14" height="14" style={{ marginRight: 4, verticalAlign: -2 }}>
               <circle cx="12" cy="12" r="10" />
               <path d="M2 12h20M12 2a15.3 15.3 0 014 10 15.3 15.3 0 01-4 10 15.3 15.3 0 01-4-10 15.3 15.3 0 014-10z" />
             </svg>
-            Satellite
+            <span className="map-controls__btn-label">Satellite</span>
           </button>
           <button
             className={`map-controls__btn${basemap === "off" ? " map-controls__btn--active" : ""}`}
@@ -6143,67 +6572,17 @@ function MapControls({
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="14" height="14" style={{ marginRight: 4, verticalAlign: -2 }}>
               <path d="M3 3l18 18M10.58 10.58a2 2 0 002.83 2.83M9.88 4.24A9.4 9.4 0 0112 4c5 0 8.5 4 10 8-.46 1.3-1.13 2.6-2 3.79M6.6 6.6C4.7 8 3.2 10 2 12c1.5 4 5 8 10 8 1.35 0 2.63-.28 3.8-.78" />
             </svg>
-            Off
+            <span className="map-controls__btn-label">Off</span>
           </button>
-        </div>
-        <div className="map-controls__group ai-detection-control" data-testid="ai-detection-control" ref={menuRef}>
-          <button
-            type="button"
-            className={`map-controls__btn${detectionMode ? " map-controls__btn--active" : ""}`}
-            onClick={() => setMenuOpen((v) => !v)}
-            data-testid="ai-detection-toggle"
-          >
-            <svg viewBox="0 0 24 24" fill="currentColor" width="14" height="14" style={{ marginRight: 4, verticalAlign: -2 }}>
-              <path d="M12 2l1.8 5.2L19 9l-5.2 1.8L12 16l-1.8-5.2L5 9l5.2-1.8L12 2z" />
-              <path d="M19 13l.9 2.1L22 16l-2.1.9L19 19l-.9-2.1L16 16l2.1-.9L19 13z" />
-            </svg>
-            AI Detection{detectionMode ? `: ${DETECTION_MODE_LABEL[detectionMode]}` : ""}
-          </button>
-          {detectionMode && (
-            <button
-              type="button"
-              className={`ai-overlay-toggle${aiOverlayEnabled ? " ai-overlay-toggle--on" : ""}`}
-              onClick={onToggleAiOverlay}
-              data-testid="ai-overlay-toggle"
-              title={aiOverlayEnabled ? "Turn off the AI red/yellow/green overlay" : "Turn on the AI red/yellow/green overlay"}
-            >
-              <span className="ai-overlay-toggle__track">
-                <span className="ai-overlay-toggle__knob" />
-              </span>
-              AI {aiOverlayEnabled ? "ON" : "OFF"}
-            </button>
-          )}
-          {menuOpen && menuPos && createPortal(
-            <div
-              className="ai-detection-menu"
-              data-testid="ai-detection-menu"
-              ref={(node) => {
-                portalMenuRef.current = node;
-                aiMenuDrag.panelRef.current = node;
-              }}
-              style={{ position: "fixed", top: menuPos.top, left: menuPos.left, ...aiMenuDrag.style }}
-            >
-              <div className="ai-detection-menu__dragbar" onPointerDown={aiMenuDrag.onDragStart}>
-                <span>AI Detection</span>
-                <small>Drag</small>
-                <button type="button" onClick={() => setMenuOpen(false)} aria-label="Close AI Detection">×</button>
               </div>
-              {(["poles", "drains", "manholes"] as const).map((mode) => (
-                <button
-                  type="button"
-                  key={mode}
-                  className={`ai-detection-menu__item${detectionMode === mode ? " ai-detection-menu__item--active" : ""}`}
-                  onClick={() => { onToggleDetectionMode(mode); setMenuOpen(false); }}
-                  data-testid={`detection-mode-${mode}`}
-                >
-                  {DETECTION_MODE_LABEL[mode]}
-                </button>
-              ))}
-            </div>,
-            document.body
+            </div>
+          </div>
           )}
-        </div>
-        <div className="map-controls__group map-controls__group--annotations" data-testid="annotation-controls">
+
+          {activeToolsSection === "location" && (
+          <div className="map-tools__floating-panel map-tools__floating-panel--location" data-testid="location-tools-panel">
+            <div className="map-controls map-controls--floating-panel map-controls--location-panel">
+              <div className="map-controls__group map-controls__group--annotations" data-testid="annotation-controls">
           <button
             type="button"
             className={`map-controls__btn${placemarkMode ? " map-controls__btn--active" : ""}`}
@@ -6216,7 +6595,7 @@ function MapControls({
               <path d="M12 22s7-6.1 7-13a7 7 0 1 0-14 0c0 6.9 7 13 7 13Z" />
               <circle cx="12" cy="9" r="2.2" />
             </svg>
-            Placemark
+            <span className="map-controls__btn-label">Placemark</span>
           </button>
           <button
             type="button"
@@ -6230,11 +6609,26 @@ function MapControls({
               <path d="M4 5.5A2.5 2.5 0 0 1 6.5 3H18a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6.5A2.5 2.5 0 0 1 4 18.5v-13Z" />
               <path d="M8 3v18M12 8h5M12 12h5" />
             </svg>
-            My Places{placemarkCount > 0 ? ` · ${placemarkCount}` : ""}
+            <span className="map-controls__btn-label">My Places{placemarkCount > 0 ? ` · ${placemarkCount}` : ""}</span>
+          </button>
+          <button
+            type="button"
+            className={`map-controls__btn${coordinateSearchOpen ? " map-controls__btn--active" : ""}`}
+            onClick={onToggleCoordinateSearch}
+            data-testid="coordinate-search-toggle"
+            aria-pressed={coordinateSearchOpen}
+            title="Enter latitude and longitude and fly to the exact location"
+          >
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" width="15" height="15" style={{ marginRight: 4, verticalAlign: -2 }} aria-hidden="true">
+              <circle cx="12" cy="12" r="6" />
+              <path d="M12 2v4M12 18v4M2 12h4M18 12h4" />
+              <circle cx="12" cy="12" r="1.5" fill="currentColor" stroke="none" />
+            </svg>
+            Coordinate Search
           </button>
           <ReferenceLayersMenu value={referenceLayers} onChange={onToggleReferenceLayer} />
-        </div>
-        <div className="map-controls__group map-controls__group--street-view">
+              </div>
+              <div className="map-controls__group map-controls__group--street-view">
           <button
             className={`map-controls__btn map-controls__btn--street-view${streetPickMode ? " map-controls__btn--active" : ""}`}
             onClick={onToggleStreetView}
@@ -6246,8 +6640,104 @@ function MapControls({
               <circle cx="12" cy="5" r="2.5" fill="currentColor" stroke="none" />
               <path d="M8 10c1.2-1.2 2.5-1.8 4-1.8s2.8.6 4 1.8M9.2 10.2 8 16m6.8-5.8L16 16M9.3 13h5.4M10.5 16v5m3-5v5" />
             </svg>
-            Street View
+            <span className="map-controls__btn-label">Street View</span>
           </button>
+              </div>
+            </div>
+          </div>
+          )}
+          </div>
+        </div>
+        {/* AI Detection: an independent floating control, not a tools-menu
+            category. It sits directly below the toggle and dynamically
+            slides down (via aiOffsetY, see measureAiOffset) when the tools
+            menu expands, but its own panel opens to the right and is never
+            gated by toolsMenuOpen/activeToolsSection. */}
+        <div
+          className="map-tools__ai-wrap"
+          ref={aiWrapRef}
+          style={{ transform: `translateY(${aiOffsetY}px)` }}
+        >
+          <button
+            type="button"
+            className={`map-tools__ai-standalone${(showDetectionList || showDetectionStatus) ? " map-tools__ai-standalone--active" : ""}${detectionMode ? " map-tools__ai-standalone--has-active" : ""}`}
+            onClick={handleAiIconClick}
+            aria-label="AI detection tools"
+            aria-haspopup="true"
+            aria-expanded={showDetectionList}
+            title="AI detection"
+            data-testid="map-tools-category-ai"
+          >
+            <svg viewBox="0 0 24 24" fill="currentColor" width="19" height="19" aria-hidden="true">
+              <path d="M12 2l1.8 5.2L19 9l-5.2 1.8L12 16l-1.8-5.2L5 9l5.2-1.8L12 2Z" />
+              <path d="m19 13 .9 2.1L22 16l-2.1.9L19 19l-.9-2.1L16 16l2.1-.9L19 13Z" />
+            </svg>
+            {detectionMode && <span className="map-tools__category-dot" aria-hidden="true" />}
+          </button>
+
+          {showDetectionList && menuPos && createPortal(
+            <div
+              className="ai-detection-menu"
+              data-testid="ai-detection-menu"
+              ref={(node) => {
+                portalMenuRef.current = node;
+                aiMenuDrag.panelRef.current = node;
+              }}
+              style={{ position: "fixed", top: menuPos.top, left: menuPos.left, ...aiMenuDrag.style }}
+              onPointerDown={aiMenuDrag.onDragStart}
+            >
+              {(["poles", "drains", "manholes"] as const).map((mode) => (
+                <button
+                  type="button"
+                  key={mode}
+                  className={`ai-detection-menu__item${detectionMode === mode ? " ai-detection-menu__item--active" : ""}`}
+                  onClick={() => {
+                    // Always activate the chosen mode — never toggle it off.
+                    // onToggleDetectionMode is a toggle, so re-picking the
+                    // already-active mode would clear detectionMode and hide
+                    // the status card; guard against that so selection is a
+                    // pure "set" (matching the spec).
+                    if (detectionMode !== mode) {
+                      onToggleDetectionMode(mode);
+                    }
+                    setShowDetectionList(false);
+                    setShowDetectionStatus(true);
+                  }}
+                  data-testid={`detection-mode-${mode}`}
+                >
+                  {DETECTION_MODE_LABEL[mode]}
+                </button>
+              ))}
+            </div>,
+            document.body
+          )}
+
+          {/* Persistent status card — its visibility (showDetectionStatus)
+              is a fully independent boolean from the list's, not derived
+              from "list closed". That decoupling is what lets the AI icon's
+              first click close just this card without also opening the
+              list (see handleAiIconClick above). Reuses the same
+              aiOverlayEnabled/onToggleAiOverlay state as everything else;
+              no new or duplicate detection state. */}
+          {showDetectionStatus && detectionMode && (
+            <div className="ai-status-card" data-testid="ai-status-card">
+              <span className="ai-status-card__label">
+                AI Detection : {DETECTION_MODE_LABEL[detectionMode]}
+              </span>
+              <button
+                type="button"
+                className={`ai-overlay-toggle${aiOverlayEnabled ? " ai-overlay-toggle--on" : ""}`}
+                onClick={onToggleAiOverlay}
+                data-testid="ai-overlay-toggle"
+                title={aiOverlayEnabled ? "Turn off the AI red/yellow/green overlay" : "Turn on the AI red/yellow/green overlay"}
+              >
+                <span className="ai-overlay-toggle__track">
+                  <span className="ai-overlay-toggle__knob" />
+                </span>
+                <span className="map-controls__btn-label">{aiOverlayEnabled ? "ON" : "OFF"}</span>
+              </button>
+            </div>
+          )}
         </div>
       </div>
       {status.error && (
@@ -6267,8 +6757,8 @@ function formatAttrValue(v: unknown): string {
 
 function HoverTooltip({ hover }: { hover: HoverInfo | null }) {
   if (!hover) return null;
-  // Only show attributes that actually have a value Ã¢â‚¬â€ most survey rows
-  // leave many condition/status fields blank, and a tooltip full of "Ã¢â‚¬â€"
+  // Only show attributes that actually have a value — most survey rows
+  // leave many condition/status fields blank, and a tooltip full of "—"
   // placeholders is noise, not information.
   const isPhoto = hover.category === "site_photo";
   const isPanorama = isPhoto && hover.attributes.is_360 === true;
@@ -6282,7 +6772,7 @@ function HoverTooltip({ hover }: { hover: HoverInfo | null }) {
   });
 
   const aiBadge = hover.aiStatus === "redundant"
-    ? { text: "⚠ AI: Recommended for removal", bg: "#ef4444", color: "#fff" }
+    ? { text: "⚠  AI: Recommended for removal", bg: "#ef4444", color: "#fff" }
     : hover.aiStatus === "needed"
     ? { text: "✓ AI: Critical — junction / corner / relay", bg: "#22c55e", color: "#fff" }
     : null;
@@ -6331,6 +6821,19 @@ function HoverTooltip({ hover }: { hover: HoverInfo | null }) {
             AI Detected: {hover.aiDetection.typeLabel}
           </div>
           <div style={{ fontWeight: 600, opacity: 0.92 }}>{hover.aiDetection.metric}</div>
+          <div style={{ marginTop: 4, display: "grid", gridTemplateColumns: "auto 1fr", columnGap: 8, rowGap: 2, fontFamily: "var(--font-mono)", fontSize: 9, opacity: 0.96 }}>
+            <span>Latitude</span><strong style={{ textAlign: "right" }}>{hover.aiDetection.latitude.toFixed(7)}</strong>
+            <span>Longitude</span><strong style={{ textAlign: "right" }}>{hover.aiDetection.longitude.toFixed(7)}</strong>
+          </div>
+        </div>
+      )}
+      {hover.verification && (
+        <div className="map__tooltip-verification">
+          <div><span>Original GDB Condition</span><strong>{hover.verification.originalCondition ?? "—"}</strong></div>
+          <div><span>Current Condition</span><strong>{hover.verification.currentCondition ?? "—"}</strong></div>
+          <div><span>Resolution Status</span><strong>{hover.verification.status?.replaceAll("_", " ") ?? "—"}</strong></div>
+          {hover.verification.admin && <div><span>Approved By</span><strong>{hover.verification.admin}</strong></div>}
+          {hover.verification.approvedAt && <div><span>Approved Date</span><strong>{new Date(hover.verification.approvedAt).toLocaleString()}</strong></div>}
         </div>
       )}
       {attrEntries.length > 0 && (

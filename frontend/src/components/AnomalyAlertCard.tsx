@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { ApiError } from "../lib/api";
+import { useAuth } from "../context/AuthContext";
 import { explainAnomaly, type AnomalyStatus, type SpatialAnomaly } from "../lib/workflow";
 
 interface Props {
@@ -37,6 +38,8 @@ function metadataEntries(metadata: Record<string, unknown>): [string, string][] 
 }
 
 export function AnomalyAlertCard({ anomaly, onClose, onStatusChange, onStale }: Props) {
+  const { user } = useAuth();
+  const isAdmin = user?.role === "admin";
   const [explanation, setExplanation] = useState<string | null>(anomaly.explanation_text);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -89,15 +92,13 @@ export function AnomalyAlertCard({ anomaly, onClose, onStatusChange, onStale }: 
       </div>
 
       <footer className="anomaly-card__actions">
-        {anomaly.status !== "reviewing" && (
+        {anomaly.status !== "reviewing" && anomaly.status !== "resolved" && (
           <button type="button" onClick={() => onStatusChange(anomaly.id, "reviewing")}>Mark Reviewing</button>
         )}
-        {anomaly.status !== "resolved" && (
-          <button type="button" onClick={() => onStatusChange(anomaly.id, "resolved")}>Mark Resolved</button>
-        )}
-        {anomaly.status !== "dismissed" && (
+        {isAdmin && anomaly.status !== "dismissed" && anomaly.status !== "resolved" && (
           <button type="button" onClick={() => onStatusChange(anomaly.id, "dismissed")}>Dismiss</button>
         )}
+        <span className="anomaly-card__workflow-note">Resolved status is applied only after Architect evidence and Admin approval.</span>
       </footer>
     </aside>
   );

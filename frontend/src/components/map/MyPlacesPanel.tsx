@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import type { Placemark } from "../../lib/placemarks";
 import { useDraggableMapPanel } from "./useDraggableMapPanel";
+import { useIsMobile } from "../../lib/useIsMobile";
 
 interface Props {
   placemarks: Placemark[];
@@ -26,10 +27,12 @@ export function MyPlacesPanel({
   onHover,
 }: Props) {
   const [query, setQuery] = useState("");
+  const isMobile = useIsMobile();
   const { panelRef, style, onDragStart } = useDraggableMapPanel<HTMLElement>({
     storageKey: "davangere.my-places-position",
     dock: "right",
     top: 118,
+    disabled: isMobile,
   });
 
   useEffect(() => {

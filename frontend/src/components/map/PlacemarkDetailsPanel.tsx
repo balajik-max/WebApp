@@ -1,5 +1,6 @@
 import type { Placemark } from "../../lib/placemarks";
 import { useDraggableMapPanel } from "./useDraggableMapPanel";
+import { useIsMobile } from "../../lib/useIsMobile";
 
 interface Props {
   placemark: Placemark;
@@ -15,10 +16,12 @@ function formatCoordinate(value: number, positive: string, negative: string) {
 }
 
 export function PlacemarkDetailsPanel({ placemark, datasetName, onClose, onEdit, onDelete }: Props) {
+  const isMobile = useIsMobile();
   const { panelRef, style, onDragStart } = useDraggableMapPanel<HTMLElement>({
     storageKey: "davangere.placemark-details-position",
     dock: "left",
     top: 132,
+    disabled: isMobile,
   });
 
   return (

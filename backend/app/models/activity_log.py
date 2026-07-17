@@ -37,6 +37,9 @@ class ActivityAction(str, enum.Enum):
     PLACEMARK_CREATED = "placemark_created"
     PLACEMARK_UPDATED = "placemark_updated"
     PLACEMARK_DELETED = "placemark_deleted"
+    POINT_VERIFICATION_UPDATED = "point_verification_updated"
+    ARCHITECT_REMEDIATION_SUBMITTED = "architect_remediation_submitted"
+    ADMIN_REMEDIATION_DECIDED = "admin_remediation_decided"
 
 
 class ActivityLog(Base):
