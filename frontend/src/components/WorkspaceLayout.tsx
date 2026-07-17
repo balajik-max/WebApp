@@ -10,7 +10,8 @@ import {
 } from "react";
 import { NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
 import { useAuth, type AuthUser, type Role } from "../context/AuthContext";
-import { NotificationBell } from "./NotificationBell";
+import { listAssignedWork, subscribeAssignedWork, type AssignedWorkRecord } from "../lib/assignedWork";
+import { NotificationBell, type NotificationItem } from "./NotificationBell";
 import type { FeatureFilter } from "../lib/types";
 import { searchFeatureFids, type FidSearchResult } from "../lib/features";
 import type { DatasetRow } from "../lib/workflow";
@@ -408,6 +409,29 @@ export function WorkspaceLayout() {
         } as Record<string, string>)[user.role] ?? user.role
       : "";
 
+  const [assignedWorkRecords, setAssignedWorkRecords] = useState<AssignedWorkRecord[]>([]);
+  useEffect(() => {
+    if (user?.role !== "ae") {
+      setAssignedWorkRecords([]);
+      return;
+    }
+    setAssignedWorkRecords(listAssignedWork());
+    return subscribeAssignedWork(() => setAssignedWorkRecords(listAssignedWork()));
+  }, [user?.role]);
+
+  const workerNotifications = useMemo<NotificationItem[]>(() => {
+    if (user?.role !== "ae") return [];
+    return [...assignedWorkRecords]
+      .sort((a, b) => (a.assignedAt < b.assignedAt ? 1 : -1))
+      .slice(0, 4)
+      .map((record) => ({
+        id: record.id,
+        title: `${record.serial} · ${record.issueName}`,
+        body: `Deadline: ${record.deadline || "—"}${record.road ? ` · ${record.road}` : ""}`,
+        timestamp: new Date(record.assignedAt).toLocaleString(),
+      }));
+  }, [assignedWorkRecords, user?.role]);
+
   const [selectedDatasets, setSelectedDatasets] = useState<DatasetRow[]>([]);
   const selectedDatasetIds = useMemo(() => selectedDatasets.map((dataset) => dataset.id), [selectedDatasets]);
   // Drives the Data Sources drawer on the mobile Map page — lifted up here
@@ -486,7 +510,7 @@ export function WorkspaceLayout() {
         )}
 
         <div className="workspace__right">
-          <NotificationBell />
+          <NotificationBell notifications={workerNotifications} unreadCount={workerNotifications.length} />
 
           <button
             type="button"

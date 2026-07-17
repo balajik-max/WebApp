@@ -83,6 +83,10 @@ const KIND_LABEL: Record<string, string> = {
   road: "Concrete road",
   powerline: "Power line",
   utilitypole: "Utility pole",
+  vegetation: "Vegetation",
+  signage: "Signage",
+  contour: "Elevation contour",
+  levelpoint: "Drainage level point",
 };
 
 function makeProjector(centerLon: number, centerLat: number): Projector {
@@ -386,16 +390,10 @@ export function ManholePlan3D({ features, classMap, anomalies, manholeAnswer, da
   // button). Each category lives in its own THREE.Group so toggling is a live
   // show/hide with no scene rebuild.
   type CatKey =
-    | "terrain"
-    | "buildings"
-    | "manholes"
-    | "pipes"
-    | "drains"
-    | "polesLight"
-    | "polesSolar"
-    | "polesPower"
-    | "roads"
-    | "powerlines";
+    | "terrain" | "buildings" | "manholes" | "pipes"
+    | "drains" | "polesLight" | "polesSolar" | "polesPower"
+    | "roads" | "powerlines" | "vegetation" | "signage"
+    | "contours" | "levelpoints";
   const [visible, setVisible] = useState<Record<CatKey, boolean>>({
     terrain: true,
     buildings: true,
@@ -407,6 +405,10 @@ export function ManholePlan3D({ features, classMap, anomalies, manholeAnswer, da
     polesPower: true,
     roads: true,
     powerlines: true,
+    vegetation: true,
+    signage: true,
+    contours: true,
+    levelpoints: true,
   });
   const groupRefs = useRef<Record<CatKey, THREE.Group | null>>({
     terrain: null,
@@ -419,6 +421,10 @@ export function ManholePlan3D({ features, classMap, anomalies, manholeAnswer, da
     polesPower: null,
     roads: null,
     powerlines: null,
+    vegetation: null,
+    signage: null,
+    contours: null,
+    levelpoints: null,
   });
   const surfaceMeshesRef = useRef<THREE.Mesh[]>([]);
   const camRef = useRef<THREE.PerspectiveCamera | null>(null);
@@ -472,15 +478,24 @@ export function ManholePlan3D({ features, classMap, anomalies, manholeAnswer, da
     const defs: [CatKey, string, string][] = [["terrain", "Terrain", "#cbb894"]];
     if (categoryPresence.has("Building")) defs.push(["buildings", "Buildings", colorForCategory("Building")]);
     if (categoryPresence.has("Access_Point")) defs.push(["manholes", "Manholes", colorForCategory("Access_Point")]);
-    defs.push(["pipes", "Pipes", "#3aa1ff"]);
+    // AI-proposed pipe routes only exist when this view was opened from a
+    // manhole recommendation/AI-detection flow — plain "browse the real GIS
+    // data" sessions have no manholeAnswer, so there is nothing to show and
+    // the chip would just be dead weight (and confusingly implies there's a
+    // "pipe" GIS layer, which isn't a real surveyed category here).
+    if ((manholeAnswer?.routes?.length ?? 0) > 0) defs.push(["pipes", "Pipes", "#3aa1ff"]);
     if (categoryPresence.has("Drainage_Asset")) defs.push(["drains", "Drains", colorForCategory("Drainage_Asset")]);
     if (poleCategoryPresence.light) defs.push(["polesLight", "Light poles", LIGHT_POLE_HEX]);
     if (poleCategoryPresence.solar) defs.push(["polesSolar", "Solar poles", SOLAR_POLE_HEX]);
     if (poleCategoryPresence.power) defs.push(["polesPower", "Power poles", POWER_POLE_HEX]);
     if (categoryPresence.has("Road_Segment")) defs.push(["roads", "Concrete roads", colorForCategory("Road_Segment")]);
     if (categoryPresence.has("Power_Line")) defs.push(["powerlines", "Power lines", colorForCategory("Power_Line")]);
+    if (categoryPresence.has("Vegetation")) defs.push(["vegetation", "Vegetation", colorForCategory("Vegetation")]);
+    if (categoryPresence.has("Signage")) defs.push(["signage", "Signage", colorForCategory("Signage")]);
+    if (categoryPresence.has("Elevation_Contour")) defs.push(["contours", "Elevation contours", colorForCategory("Elevation_Contour")]);
+    if (categoryPresence.has("Drainage_Level_Point")) defs.push(["levelpoints", "Drainage level points", colorForCategory("Drainage_Level_Point")]);
     return defs;
-  }, [categoryPresence, poleCategoryPresence]);
+  }, [categoryPresence, poleCategoryPresence, manholeAnswer]);
 
   useEffect(() => {
     const container = containerRef.current;
@@ -592,6 +607,10 @@ export function ManholePlan3D({ features, classMap, anomalies, manholeAnswer, da
           polesPower: new THREE.Group(),
           roads: new THREE.Group(),
           powerlines: new THREE.Group(),
+          vegetation: new THREE.Group(),
+          signage: new THREE.Group(),
+          contours: new THREE.Group(),
+          levelpoints: new THREE.Group(),
         };
         Object.entries(groups).forEach(([k, g]) => {
           g.name = `group-${k}`;
@@ -999,6 +1018,135 @@ export function ManholePlan3D({ features, classMap, anomalies, manholeAnswer, da
           }
         }
 
+        // Real surveyed vegetation (trees) — a small trunk + canopy marker
+        // at each surveyed point, canopy tinted with the same category color
+        // used on the 2D map.
+        const vegetation = features.filter((f) => classMap[f.properties.category ?? ""] === "Vegetation");
+        const vegColor = new THREE.Color(colorForCategory("Vegetation"));
+        for (const v of vegetation) {
+          const geom = v.geometry;
+          const pt =
+            geom.type === "Point"
+              ? geom.coordinates
+              : geom.type === "Polygon"
+              ? geom.coordinates[0][0]
+              : null;
+          if (!pt) continue;
+          const [lon, lat] = pt;
+          const [x, z] = projector.toLocal(lon, lat);
+          const ground = elevAt(lon, lat);
+          const g = new THREE.Group();
+          const trunk = new THREE.Mesh(
+            new THREE.CylinderGeometry(0.15, 0.2, 1.2, 8),
+            new THREE.MeshStandardMaterial({ color: 0x6b4a34, roughness: 0.9 })
+          );
+          trunk.position.y = ground + 0.6;
+          g.add(trunk);
+          const canopy = new THREE.Mesh(
+            new THREE.SphereGeometry(1.3, 10, 10),
+            new THREE.MeshStandardMaterial({ color: vegColor, roughness: 0.8 })
+          );
+          canopy.position.y = ground + 2.1;
+          canopy.scale.y = 1.15;
+          g.add(canopy);
+          g.position.set(x, 0, z);
+          g.userData = {
+            kind: "vegetation",
+            id: v.properties.id,
+            extra: `${v.properties.label || v.properties.id}\nCategory: Vegetation`,
+          };
+          groups.vegetation.add(g);
+          clickable.push(g);
+        }
+
+        // Real surveyed signage (road signs, markers) — a thin post with a
+        // small flat board, colored with the map's category color.
+        const signage = features.filter((f) => classMap[f.properties.category ?? ""] === "Signage");
+        const signColor = new THREE.Color(colorForCategory("Signage"));
+        for (const s of signage) {
+          if (s.geometry.type !== "Point") continue;
+          const [lon, lat] = s.geometry.coordinates;
+          const [x, z] = projector.toLocal(lon, lat);
+          const ground = elevAt(lon, lat);
+          const g = new THREE.Group();
+          const post = new THREE.Mesh(
+            new THREE.CylinderGeometry(0.05, 0.05, 1.8, 6),
+            new THREE.MeshStandardMaterial({ color: 0x6b7280, roughness: 0.6, metalness: 0.4 })
+          );
+          post.position.y = ground + 0.9;
+          g.add(post);
+          const board = new THREE.Mesh(
+            new THREE.BoxGeometry(0.55, 0.4, 0.04),
+            new THREE.MeshStandardMaterial({ color: signColor, roughness: 0.5, metalness: 0.2 })
+          );
+          board.position.y = ground + 1.75;
+          g.add(board);
+          g.position.set(x, 0, z);
+          g.userData = {
+            kind: "signage",
+            id: s.properties.id,
+            extra: `${s.properties.label || s.properties.id}\nCategory: Signage`,
+          };
+          groups.signage.add(g);
+          clickable.push(g);
+        }
+
+        // Real surveyed elevation contour lines, draped directly on the
+        // terrain surface (no lift) as thin ribbons in the map's category color.
+        const contours = features.filter((f) => classMap[f.properties.category ?? ""] === "Elevation_Contour");
+        const contourColor = new THREE.Color(colorForCategory("Elevation_Contour"));
+        for (const c of contours) {
+          const geom = c.geometry;
+          const lines: [number, number][][] =
+            geom.type === "LineString"
+              ? [geom.coordinates]
+              : geom.type === "MultiLineString"
+              ? (geom.coordinates as [number, number][][])
+              : [];
+          for (const line of lines) {
+            if (line.length < 2) continue;
+            const pts = line.map(([lon, lat]) => {
+              const [x, z] = projector.toLocal(lon, lat);
+              return new THREE.Vector3(x, elevAt(lon, lat) + 0.05, z);
+            });
+            const curve = new THREE.CatmullRomCurve3(pts);
+            const geo = new THREE.TubeGeometry(curve, Math.max(2, pts.length * 3), 0.08, 6, false);
+            const mat = new THREE.MeshStandardMaterial({ color: contourColor, roughness: 0.7 });
+            const mesh = new THREE.Mesh(geo, mat);
+            mesh.userData = {
+              kind: "contour",
+              id: c.properties.id,
+              extra: `${c.properties.label || c.properties.id}\nCategory: Elevation_Contour`,
+            };
+            groups.contours.add(mesh);
+            clickable.push(mesh);
+          }
+        }
+
+        // Real surveyed drain/manhole level-reading points (invert/top
+        // level, pipe type, condition) — a small flat disc marker at each
+        // surveyed point, distinct from the Access_Point/Drainage_Asset
+        // geometry it was measured at.
+        const levelPoints = features.filter((f) => classMap[f.properties.category ?? ""] === "Drainage_Level_Point");
+        const levelColor = new THREE.Color(colorForCategory("Drainage_Level_Point"));
+        for (const lp of levelPoints) {
+          if (lp.geometry.type !== "Point") continue;
+          const [lon, lat] = lp.geometry.coordinates;
+          const [x, z] = projector.toLocal(lon, lat);
+          const ground = elevAt(lon, lat);
+          const mesh = new THREE.Mesh(
+            new THREE.CylinderGeometry(0.3, 0.3, 0.12, 12),
+            new THREE.MeshStandardMaterial({ color: levelColor, roughness: 0.5, metalness: 0.3 })
+          );
+          mesh.position.set(x, ground + 0.3, z);
+          mesh.userData = {
+            kind: "levelpoint",
+            id: lp.properties.id,
+            extra: `${lp.properties.label || lp.properties.id}\nCategory: Drainage_Level_Point`,
+          };
+          groups.levelpoints.add(mesh);
+          clickable.push(mesh);
+        }
 
         const raycaster = new THREE.Raycaster();
         const pointer = new THREE.Vector2();

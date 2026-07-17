@@ -3,6 +3,7 @@ import { createPortal } from "react-dom";
 
 import { useAuth } from "../context/AuthContext";
 import { ApiError } from "../lib/api";
+import { addAssignedWork, findAssignedWork, type AssignedWorkRecord } from "../lib/assignedWork";
 import { fetchFeatureById } from "../lib/features";
 import {
   downloadPointVerificationExcel,
@@ -28,6 +29,10 @@ interface Props {
 function localDateTimeValue(date = new Date()): string {
   const offset = date.getTimezoneOffset();
   return new Date(date.getTime() - offset * 60_000).toISOString().slice(0, 16);
+}
+
+function localDateValue(date = new Date()): string {
+  return localDateTimeValue(date).slice(0, 10);
 }
 
 function displayDate(value: string | null | undefined): string {
@@ -68,6 +73,13 @@ const FINDING_LABEL = {
   drain_encroachment: "Drain Encroachment",
   manhole_status: "Manhole Status",
 } as const;
+
+const ASSIGN_WORK_MODES = new Set(["manholes", "poles"]);
+
+const ASSIGN_DEFAULT_ISSUE_NAME: Record<string, string> = {
+  manholes: "Manhole Fix",
+  poles: "Pole Fix",
+};
 
 const STATUS_LABEL: Record<string, string> = {
   open: "Awaiting Architect work",
@@ -111,6 +123,14 @@ export function PointVerificationPanel({ feature, aiVerification, onClose, onUpd
   const [adminRemarks, setAdminRemarks] = useState("");
   const [verifiedCondition, setVerifiedCondition] = useState<VerifiedCondition>("good");
   const [decision, setDecision] = useState<"approve" | "reject">("approve");
+
+  const [showAssignWork, setShowAssignWork] = useState(false);
+  const [assignIssueName, setAssignIssueName] = useState("Manhole Fix");
+  const [assignDate, setAssignDate] = useState(localDateValue());
+  const [assignDeadline, setAssignDeadline] = useState("");
+  const [assignRemarks, setAssignRemarks] = useState("");
+  const [assignedRecord, setAssignedRecord] = useState<AssignedWorkRecord | null>(null);
+  const [assignNotice, setAssignNotice] = useState<string | null>(null);
 
   useEffect(() => {
     if (!feature || !aiVerification) {
@@ -164,13 +184,32 @@ export function PointVerificationPanel({ feature, aiVerification, onClose, onUpd
   }, [afterPhoto]);
 
   useEffect(() => {
+    if (!feature || !aiVerification) {
+      setAssignedRecord(null);
+      return;
+    }
+    setAssignedRecord(findAssignedWork(feature.properties.id, aiVerification.anomalyId));
+  }, [feature?.properties.id, aiVerification?.anomalyId]);
+
+  useEffect(() => {
+    if (!assignNotice) return;
+    const timeout = window.setTimeout(() => setAssignNotice(null), 2800);
+    return () => window.clearTimeout(timeout);
+  }, [assignNotice]);
+
+  useEffect(() => {
     if (!feature || !aiVerification) return;
     const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape" && !saving) onClose();
+      if (event.key !== "Escape") return;
+      if (showAssignWork) {
+        setShowAssignWork(false);
+        return;
+      }
+      if (!saving) onClose();
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [feature, aiVerification, onClose, saving]);
+  }, [feature, aiVerification, onClose, saving, showAssignWork]);
 
   const details = useMemo(() => {
     if (!feature || !aiVerification) return [];
@@ -196,6 +235,9 @@ export function PointVerificationPanel({ feature, aiVerification, onClose, onUpd
   const currentStatus = record?.status ?? "open";
   const canArchitectSubmit = isArchitect && (currentStatus === "open" || currentStatus === "rejected");
   const canAdminDecide = isAdmin && currentStatus === "pending_admin";
+  const isAee = user?.role === "aee";
+  const isAeeRedAssignableIssue = isAee && ASSIGN_WORK_MODES.has(activeAi.detectionMode) && activeAi.aiColor === "red";
+  const statusLabel = isAeeRedAssignableIssue && currentStatus === "open" ? "Fix Pending" : STATUS_LABEL[currentStatus] ?? currentStatus;
 
   async function refreshFeature() {
     const refreshed = await fetchFeatureById(activeFeature.properties.id);
@@ -291,15 +333,47 @@ export function PointVerificationPanel({ feature, aiVerification, onClose, onUpd
     }
   }
 
-  return createPortal(
-    <div className="point-verification-backdrop" onMouseDown={(event) => {
-      if (event.target === event.currentTarget && !saving) onClose();
-    }}>
+  function handleAssignWork() {
+    setAssignIssueName(ASSIGN_DEFAULT_ISSUE_NAME[activeAi.detectionMode] ?? "Fix Work");
+    setAssignDate(localDateValue());
+    setAssignDeadline("");
+    setAssignRemarks("");
+    setShowAssignWork(true);
+  }
+
+  function submitAssignWork() {
+    // TODO: notify the backend once an Assign Work endpoint is available.
+    const road = attributeValue(activeFeature, "Road_Name", "road_name");
+    const record = addAssignedWork({
+      featureId: activeFeature.properties.id,
+      anomalyId: activeAi.anomalyId,
+      detectionMode: activeAi.detectionMode,
+      issueName: assignIssueName.trim(),
+      date: assignDate,
+      deadline: assignDeadline.trim(),
+      latitude: activeAi.latitude,
+      longitude: activeAi.longitude,
+      remarks: assignRemarks.trim(),
+      assignedByName: user?.name ?? null,
+      featureLabel: activeFeature.properties.label ?? activeFeature.properties.category ?? null,
+      road: road !== "—" ? road : null,
+    });
+    setAssignedRecord(record);
+    setShowAssignWork(false);
+    setAssignNotice("Work Assigned Successfully");
+  }
+
+  return (
+    <>
+      {createPortal(
+        <div className="point-verification-backdrop" onMouseDown={(event) => {
+          if (event.target === event.currentTarget && !saving) onClose();
+        }}>
       <section className="point-verification-dialog point-verification-dialog--wide" role="dialog" aria-modal="true" aria-label="AI remediation workflow">
         <header className="point-verification-dialog__header">
           <div>
             <span className={`point-verification-status point-verification-status--${currentStatus}`}>
-              {STATUS_LABEL[currentStatus] ?? currentStatus}
+              {statusLabel}
             </span>
             <h2>AI Issue Remediation</h2>
             <p>{feature.properties.label ?? feature.properties.category ?? "Detected survey feature"}</p>
@@ -461,10 +535,84 @@ export function PointVerificationPanel({ feature, aiVerification, onClose, onUpd
             <button type="button" onClick={downloadExcel} disabled={downloading}>{downloading ? "Preparing Excel…" : "Download remediation Excel"}</button>
             <button type="button" onClick={downloadUpdatedGdb} disabled={gdbDownloading}>{gdbDownloading ? "Generating updated GDB…" : "Download Updated Resolved GDB"}</button>
           </div>
-          <span>The original uploaded GDB remains unchanged. The generated GDB copy updates approved rows to Good and preserves the original condition in a separate field.</span>
+          {isAeeRedAssignableIssue ? (
+            assignedRecord ? (
+              <span className="point-verification-assigned-label">Work Assigned!</span>
+            ) : (
+              <button type="button" className="point-verification-assign-work" onClick={handleAssignWork}>Assign Work</button>
+            )
+          ) : (
+            <span>The original uploaded GDB remains unchanged. The generated GDB copy updates approved rows to Good and preserves the original condition in a separate field.</span>
+          )}
         </footer>
       </section>
-    </div>,
-    document.body,
+        </div>,
+        document.body,
+      )}
+      {showAssignWork && isAeeRedAssignableIssue && createPortal(
+        <div
+          className="assign-work-backdrop"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) setShowAssignWork(false);
+          }}
+        >
+          <section className="assign-work-dialog" role="dialog" aria-modal="true" aria-label="Assign work to field team">
+            <header className="assign-work-dialog__header">
+              <h3>Assign Work</h3>
+              <button type="button" className="assign-work-dialog__close" onClick={() => setShowAssignWork(false)} aria-label="Close">×</button>
+            </header>
+            <div className="assign-work-dialog__body">
+              <label className="assign-work-field assign-work-field--full">
+                <span>Issue Name</span>
+                <input
+                  type="text"
+                  value={assignIssueName}
+                  onChange={(event) => setAssignIssueName(event.target.value)}
+                  maxLength={120}
+                  placeholder="Describe the issue for the field team"
+                />
+              </label>
+              <div className="assign-work-row">
+                <label className="assign-work-field">
+                  <span>Date</span>
+                  <input type="date" value={assignDate} onChange={(event) => setAssignDate(event.target.value)} />
+                </label>
+                <label className="assign-work-field">
+                  <span>Deadline</span>
+                  <input
+                    type="text"
+                    value={assignDeadline}
+                    onChange={(event) => setAssignDeadline(event.target.value)}
+                    placeholder="dd/mm/yyyy"
+                    inputMode="numeric"
+                  />
+                </label>
+              </div>
+              <label className="assign-work-field assign-work-field--full">
+                <span>Remarks</span>
+                <textarea
+                  value={assignRemarks}
+                  onChange={(event) => setAssignRemarks(event.target.value)}
+                  rows={4}
+                  placeholder="Add a message for the field worker (optional)"
+                />
+              </label>
+            </div>
+            <footer className="assign-work-dialog__footer">
+              <button type="button" className="assign-work-cancel" onClick={() => setShowAssignWork(false)}>Cancel</button>
+              <button type="button" className="assign-work-confirm" onClick={submitAssignWork} disabled={!assignIssueName.trim()}>Assign</button>
+            </footer>
+          </section>
+        </div>,
+        document.body,
+      )}
+      {assignNotice && createPortal(
+        <div className="assign-work-success-toast" role="status" aria-live="polite">
+          <span aria-hidden="true">✓</span>
+          {assignNotice}
+        </div>,
+        document.body,
+      )}
+    </>
   );
 }
