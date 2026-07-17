@@ -661,7 +661,7 @@ async def _manhole_network_response(dataset_id: uuid.UUID, model: str, db: Async
     this is fundamentally a structured data dump, and Ollama would only be
     asked to restate counts already computed here — the same reasoning
     that already skips the LLM for the empty-scope area-mode response."""
-    edges, unconnected = await build_full_network(dataset_id, db)
+    edges, unconnected, outfall_ids = await build_full_network(dataset_id, db)
     confirmed = [e for e in edges if e.flow_confirmed]
     routed = [e for e in edges if e.route]
     sewage_routed = [e for e in routed if e.route_basis == "sewage_line"]
@@ -684,12 +684,17 @@ async def _manhole_network_response(dataset_id: uuid.UUID, model: str, db: Async
     source_lines = "\n".join(
         f"- {_ELEVATION_SOURCE_LABEL.get(src, src)}: {count} manhole(s)" for src, count in sorted(by_source.items())
     )
+    outfall_lines = "\n".join(f"- `{oid}`" for oid in outfall_ids) or "- none (no manhole elevation data available)"
     answer_markdown = (
         f"## Full Drainage Network\n\n"
         f"**{len(connected_manhole_ids)} of {total_manholes}** manholes are connected to their real nearest "
         f"downstream neighbour, linked by **{len(edges)}** segments — each one following the actual sewage/drain "
         f"pipe or road, never a straight line between two manholes that just happen to be nearby, and never "
-        f"skipping past a real intermediate manhole without connecting to it first.\n\n"
+        f"skipping past a real intermediate manhole without connecting to it first. Every connection prefers a "
+        f"downhill neighbour over a merely-nearer one, so chains trend toward the ward's real lowest points "
+        f"instead of many disconnected local pairs.\n\n"
+        f"### Master outfalls (the {len(outfall_ids)} real lowest manholes — everything drains toward these)\n"
+        f"{outfall_lines}\n\n"
         f"- **{len(sewage_routed)}** segments follow a real, directly-surveyed sewage/drain pipe.\n"
         f"- **{len(road_routed)}** segments had no sewage-pipe path (a digitization gap in that layer) and instead "
         f"follow the concrete road network as a stated assumption — real sewage pipes run alongside/beneath roads "
@@ -713,6 +718,7 @@ async def _manhole_network_response(dataset_id: uuid.UUID, model: str, db: Async
             "flow_confirmed": len(confirmed), "routed": len(routed),
             "sewage_routed": len(sewage_routed), "road_routed": len(road_routed), "bridge_routed": len(bridge_routed),
             "unconnected": len(unconnected), "by_elevation_source": by_source,
+            "outfall_ids": outfall_ids,
         },
         routes=[
             _route_out(e.route, e.elevation_source, e.flow_confirmed, e.rainy_season_closed, e.route_basis)

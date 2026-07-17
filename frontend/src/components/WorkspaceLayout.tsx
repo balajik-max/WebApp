@@ -1,23 +1,55 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type TransitionEvent,
+} from "react";
 import { NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
 import type { FeatureFilter } from "../lib/types";
 import { searchFeatureFids, type FidSearchResult } from "../lib/features";
-import { fetchCategories, fetchWards, type CategoryOption, type WardOption, type DatasetRow } from "../lib/workflow";
+import type { DatasetRow } from "../lib/workflow";
 
-interface CategoryMultiSelectProps {
-  options: CategoryOption[];
-  value: string[];
-  onChange: (categories: string[]) => void;
-}
+type ClearButtonPhase = "hidden" | "detaching" | "visible" | "reattaching";
 
-function FidSearch({ ward, datasetIds }: { ward?: string; datasetIds: string[] }) {
+// Stable reference so passing it through outletContext every render never
+// looks like a change to consumers that depend on `filter` (e.g. MapCanvas's
+// data-fetch effect) — filtering UI was removed, so this is always empty.
+const EMPTY_FILTER: FeatureFilter = {};
+
+function FidSearch({ datasetIds }: { datasetIds: string[] }) {
   const navigate = useNavigate();
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<FidSearchResult[]>([]);
   const [open, setOpen] = useState(false);
   const [loading, setLoading] = useState(false);
   const rootRef = useRef<HTMLDivElement | null>(null);
+  const inputRef = useRef<HTMLInputElement | null>(null);
+  const [clearPhase, setClearPhase] = useState<ClearButtonPhase>("hidden");
+  const phaseRef = useRef<ClearButtonPhase>("hidden");
+
+  const setPhase = useCallback((next: ClearButtonPhase) => {
+    phaseRef.current = next;
+    setClearPhase(next);
+  }, []);
+
+  const hasSearchText = query.trim().length > 0;
+
+  // Drive the detach / reattach animation from the input content so typing
+  // extra characters never restarts the transition and manual Backspace to
+  // empty triggers the same reverse merge as clicking clear.
+  useEffect(() => {
+    if (hasSearchText) {
+      if (phaseRef.current === "hidden" || phaseRef.current === "reattaching") {
+        setPhase("detaching");
+      }
+    } else if (phaseRef.current === "detaching" || phaseRef.current === "visible") {
+      setPhase("reattaching");
+    }
+  }, [hasSearchText, setPhase]);
 
   useEffect(() => {
     const normalized = query.trim();
@@ -30,7 +62,7 @@ function FidSearch({ ward, datasetIds }: { ward?: string; datasetIds: string[] }
     const controller = new AbortController();
     const timer = window.setTimeout(() => {
       setLoading(true);
-      searchFeatureFids(normalized, { ward: datasetIds.length === 0 ? ward : undefined, datasetIds }, controller.signal)
+      searchFeatureFids(normalized, { datasetIds }, controller.signal)
         .then(({ results: matches }) => {
           setResults(matches);
           setOpen(true);
@@ -49,7 +81,7 @@ function FidSearch({ ward, datasetIds }: { ward?: string; datasetIds: string[] }
       window.clearTimeout(timer);
       controller.abort();
     };
-  }, [datasetIds, query, ward]);
+  }, [datasetIds, query]);
 
   useEffect(() => {
     const close = (event: MouseEvent) => {
@@ -65,14 +97,51 @@ function FidSearch({ ward, datasetIds }: { ward?: string; datasetIds: string[] }
     navigate(`/map?locateFeature=${encodeURIComponent(result.id)}`);
   };
 
+  const clearQuery = () => {
+    setQuery("");
+    setResults([]);
+    setOpen(false);
+  };
+
+  const handleAnimatedClear = useCallback(() => {
+    // Ignore repeated clicks while the reverse merge is already running.
+    if (phaseRef.current === "reattaching") return;
+    clearQuery();
+    // Keep focus on the input so the user can immediately type again.
+    requestAnimationFrame(() => inputRef.current?.focus());
+  }, []);
+
+  const handleClearTransitionEnd = (event: TransitionEvent<HTMLButtonElement>) => {
+    // Only the geometric transition ends the phase so a faster opacity
+    // transition cannot prematurely flip state.
+    if (event.propertyName !== "transform") return;
+    if (phaseRef.current === "detaching") {
+      setPhase("visible");
+    } else if (phaseRef.current === "reattaching") {
+      setPhase("hidden");
+    }
+  };
+
+  const clearInteractive = clearPhase === "visible";
+
+  const searchClass = [
+    "fid-search",
+    clearPhase === "detaching" && "fid-search--detaching",
+    clearPhase === "visible" && "fid-search--clear-visible",
+    clearPhase === "reattaching" && "fid-search--reattaching",
+  ]
+    .filter(Boolean)
+    .join(" ");
+
   return (
-    <div className="fid-search" ref={rootRef}>
-      <div className="fid-search__input-wrap">
+    <div className={searchClass} ref={rootRef}>
+      <div className="fid-search__field">
         <svg viewBox="0 0 24 24" aria-hidden="true">
           <circle cx="11" cy="11" r="7" />
           <path d="m16.5 16.5 4 4" />
         </svg>
         <input
+          ref={inputRef}
           value={query}
           placeholder="Search FID"
           aria-label="Search feature by FID"
@@ -91,7 +160,27 @@ function FidSearch({ ward, datasetIds }: { ward?: string; datasetIds: string[] }
           }}
         />
         {loading && <span className="fid-search__spinner" aria-label="Searching" />}
+        <span className="fid-search__seam" aria-hidden="true" />
       </div>
+
+      <button
+        type="button"
+        className="fid-search__clear"
+        onClick={handleAnimatedClear}
+        onPointerDown={(event) => event.preventDefault()}
+        onTransitionEnd={handleClearTransitionEnd}
+        aria-label="Clear search"
+        aria-hidden={!clearInteractive}
+        tabIndex={clearInteractive ? 0 : -1}
+        data-testid="filter-fid-search-clear"
+      >
+        <span className="fid-search__clear-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24">
+            <path d="M6 6l12 12M18 6L6 18" />
+          </svg>
+        </span>
+      </button>
+
       {open && (
         <div className="fid-search__results" role="listbox" data-testid="fid-search-results">
           {results.map((result) => (
@@ -108,135 +197,6 @@ function FidSearch({ ward, datasetIds }: { ward?: string; datasetIds: string[] }
             </button>
           ))}
           {!loading && results.length === 0 && <div className="fid-search__empty">No matching FID</div>}
-        </div>
-      )}
-    </div>
-  );
-}
-
-function CategoryMultiSelect({ options, value, onChange }: CategoryMultiSelectProps) {
-  const [open, setOpen] = useState(false);
-  const [query, setQuery] = useState("");
-  const rootRef = useRef<HTMLDivElement | null>(null);
-  const searchRef = useRef<HTMLInputElement | null>(null);
-
-  const sortedOptions = useMemo(
-    () => [...options].sort((a, b) => a.category.localeCompare(b.category, undefined, { sensitivity: "base", numeric: true })),
-    [options]
-  );
-  const normalizedQuery = query.trim().toLocaleLowerCase();
-  const visibleOptions = useMemo(
-    () => normalizedQuery
-      ? sortedOptions.filter((option) => option.category.toLocaleLowerCase().includes(normalizedQuery))
-      : sortedOptions,
-    [normalizedQuery, sortedOptions]
-  );
-  const selected = useMemo(() => new Set(value), [value]);
-
-  useEffect(() => {
-    if (!open) {
-      setQuery("");
-      return;
-    }
-    window.requestAnimationFrame(() => searchRef.current?.focus());
-    const handlePointerDown = (event: MouseEvent) => {
-      if (!rootRef.current?.contains(event.target as Node)) setOpen(false);
-    };
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setOpen(false);
-    };
-    document.addEventListener("mousedown", handlePointerDown);
-    document.addEventListener("keydown", handleKeyDown);
-    return () => {
-      document.removeEventListener("mousedown", handlePointerDown);
-      document.removeEventListener("keydown", handleKeyDown);
-    };
-  }, [open]);
-
-  function toggleCategory(category: string) {
-    if (selected.has(category)) onChange(value.filter((item) => item !== category));
-    else onChange([...value, category]);
-  }
-
-  const label = value.length === 0
-    ? "all categories"
-    : value.length === 1
-      ? value[0]
-      : `${value.length} categories selected`;
-
-  return (
-    <div className="category-picker" ref={rootRef}>
-      <button
-        type="button"
-        className={`category-picker__trigger${open ? " category-picker__trigger--open" : ""}`}
-        onClick={() => setOpen((current) => !current)}
-        aria-haspopup="listbox"
-        aria-expanded={open}
-        data-testid="filter-category"
-        title={value.length > 0 ? value.join(", ") : "All categories"}
-      >
-        <span className="category-picker__trigger-label">{label}</span>
-        <svg viewBox="0 0 20 20" aria-hidden="true">
-          <path d="M5.5 7.5 10 12l4.5-4.5" />
-        </svg>
-      </button>
-
-      {open && (
-        <div className="category-picker__menu" data-testid="filter-category-menu">
-          <div className="category-picker__search-wrap">
-            <svg viewBox="0 0 24 24" aria-hidden="true">
-              <circle cx="11" cy="11" r="7" />
-              <path d="m16.5 16.5 4 4" />
-            </svg>
-            <input
-              ref={searchRef}
-              className="category-picker__search"
-              value={query}
-              onChange={(event) => setQuery(event.target.value)}
-              onKeyDown={(event) => {
-                if (event.key === "Enter") event.preventDefault();
-              }}
-              placeholder="Search categories..."
-              aria-label="Search categories"
-              data-testid="filter-category-search"
-            />
-          </div>
-
-          <div className="category-picker__list" role="listbox" aria-multiselectable="true">
-            {!normalizedQuery && (
-              <button
-                type="button"
-                role="option"
-                aria-selected={value.length === 0}
-                className={`category-picker__option${value.length === 0 ? " category-picker__option--selected" : ""}`}
-                onClick={() => onChange([])}
-              >
-                <span className="category-picker__check" aria-hidden="true">{value.length === 0 ? "✓" : ""}</span>
-                <span className="category-picker__name">All categories</span>
-              </button>
-            )}
-            {visibleOptions.map((option) => {
-              const isSelected = selected.has(option.category);
-              return (
-                <button
-                  type="button"
-                  role="option"
-                  aria-selected={isSelected}
-                  className={`category-picker__option${isSelected ? " category-picker__option--selected" : ""}`}
-                  key={option.category}
-                  onClick={() => toggleCategory(option.category)}
-                  data-testid={`filter-category-option-${option.category}`}
-                >
-                  <span className="category-picker__check" aria-hidden="true">{isSelected ? "✓" : ""}</span>
-                  <span className="category-picker__name">{option.category}</span>
-                  <span className="category-picker__count">{option.count}</span>
-                </button>
-              );
-            })}
-            {visibleOptions.length === 0 && (
-              <div className="category-picker__empty">No matching categories</div>
-            )}
-          </div>
         </div>
       )}
     </div>
@@ -366,95 +326,18 @@ export function WorkspaceLayout() {
   const location = useLocation();
   const navigate = useNavigate();
 
-  const [ward, setWard] = useState("");
-  const [categories, setCategories] = useState<string[]>([]);
-  const [severity, setSeverity] = useState("");
-  const [filter, setFilter] = useState<FeatureFilter>({});
-  const [wardOptions, setWardOptions] = useState<WardOption[]>([]);
-  const [categoryOptions, setCategoryOptions] = useState<CategoryOption[]>([]);
   const [selectedDatasets, setSelectedDatasets] = useState<DatasetRow[]>([]);
   const selectedDatasetIds = useMemo(() => selectedDatasets.map((dataset) => dataset.id), [selectedDatasets]);
 
-  // Display-only mirror of the Measure tool's active state, driven by MapCanvas
-  // (the sole owner of the real state) so the top-bar button can show the
-  // active state. `measureToggle` is the imperative handler registered by the
-  // map view — clicking the button calls the map's existing toggle.
-  const [measureActive, setMeasureActive] = useState(false);
-  const [measureToggle, setMeasureToggle] = useState<() => void>(() => () => {});
-  const registerMeasure = useCallback((api: { toggle: () => void }) => {
-    setMeasureToggle(() => api.toggle);
-  }, []);
-
-  const showFilters = location.pathname.startsWith("/map");
-
-  // Reset only appears once Apply has actually been clicked — before that
-  // there's nothing to reset, so showing both buttons up front was just
-  // visual noise. Reset swaps back to showing Apply so the same slot is
-  // reused rather than the two buttons stacking side by side.
-  const [filtersApplied, setFiltersApplied] = useState(false);
-
-  useEffect(() => {
-    if (!showFilters) return;
-    const ctrl = new AbortController();
-    fetchWards(ctrl.signal)
-      .then(setWardOptions)
-      .catch(() => {
-        /* filter still works without the dropdown populated */
-      });
-    return () => ctrl.abort();
-  }, [showFilters]);
-
-  useEffect(() => {
-    if (!showFilters) return;
-    const ctrl = new AbortController();
-    fetchCategories(ward || undefined, ctrl.signal)
-      .then(setCategoryOptions)
-      .catch(() => { });
-    return () => ctrl.abort();
-  }, [showFilters, ward]);
-
-  function applyFilters(e: React.FormEvent) {
-    e.preventDefault();
-    const next: FeatureFilter = {};
-    if (ward.trim()) next.ward = ward.trim();
-    if (categories.length > 0) {
-      next.categories = [...categories].sort((a, b) => a.localeCompare(b, undefined, { sensitivity: "base", numeric: true }));
-      // Keep the existing single-category AI tools available when exactly
-      // one option is selected. Multi-category map filtering uses `categories`.
-      if (categories.length === 1) next.category = categories[0];
-    }
-    if (severity.trim() && !Number.isNaN(Number(severity))) next.severity = Number(severity);
-    setFilter(next);
-    setFiltersApplied(true);
-  }
-
-  function resetFilters() {
-    setWard("");
-    setCategories([]);
-    setSeverity("");
-    setFilter({});
-    setFiltersApplied(false);
-  }
-
-  // Reflect the ward of the currently selected dataset(s) in the top-bar ward
-  // filter so its name is visible even before "Apply" — selecting a dataset
-  // on the map should surface the ward there, not leave it on "all wards".
-  const handleActiveDatasetsChange = useCallback((datasets: DatasetRow[]) => {
-    setSelectedDatasets(datasets);
-    const firstWard = datasets.find((d) => d.ward)?.ward ?? "";
-    setWard(firstWard);
-  }, [setSelectedDatasets]);
+  const showSearch = location.pathname.startsWith("/map");
 
   const outletContext = useMemo(
     () => ({
-      filter,
+      filter: EMPTY_FILTER,
       selectedDatasets,
-      setSelectedDatasets: handleActiveDatasetsChange,
-      measureActive,
-      onMeasureChange: setMeasureActive,
-      registerMeasure,
+      setSelectedDatasets,
     }),
-    [filter, selectedDatasets, handleActiveDatasetsChange, measureActive, registerMeasure]
+    [selectedDatasets]
   );
 
   return (
@@ -480,6 +363,12 @@ export function WorkspaceLayout() {
 
         <TabsNav pathname={location.pathname} />
 
+        {showSearch && (
+          <div className="workspace__search">
+            <FidSearch datasetIds={selectedDatasetIds} />
+          </div>
+        )}
+
         <div className="workspace__right">
           <button
             type="button"
@@ -493,75 +382,6 @@ export function WorkspaceLayout() {
           </button>
         </div>
       </header>
-
-      {showFilters && (
-        <header className="workspace__subbar" data-testid="subbar">
-          <form className="filters" onSubmit={applyFilters} data-testid="filter-form">
-            <FidSearch ward={ward || undefined} datasetIds={selectedDatasetIds} />
-            <select
-              data-testid="filter-ward"
-              value={ward}
-              onChange={(e) => setWard(e.target.value)}
-            >
-              <option value="">all wards</option>
-              {wardOptions.map((w) => (
-                <option key={w.ward} value={w.ward}>
-                  {w.ward} ({w.feature_count})
-                </option>
-              ))}
-              {ward && !wardOptions.some((w) => w.ward === ward) && (
-                <option key={ward} value={ward}>
-                  {ward} (selected)
-                </option>
-              )}
-            </select>
-            <CategoryMultiSelect
-              options={categoryOptions}
-              value={categories}
-              onChange={setCategories}
-            />
-            <input
-              data-testid="filter-severity"
-              placeholder="min severity"
-              value={severity}
-              onChange={(e) => setSeverity(e.target.value)}
-              inputMode="numeric"
-            />
-            {filtersApplied ? (
-              <button
-                type="button"
-                className="ghost"
-                onClick={resetFilters}
-                data-testid="filter-reset"
-              >
-                Reset
-              </button>
-            ) : (
-              <button type="submit" data-testid="filter-apply">
-                Apply
-              </button>
-            )}
-            <button
-              type="button"
-              className={`ghost topbar-measure-btn${
-                measureActive ? " topbar-measure-btn--active" : ""
-              }`}
-              onClick={measureToggle}
-              title="Measure"
-              aria-label="Open Measure tools"
-              aria-pressed={measureActive}
-              data-testid="topbar-measure"
-            >
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                <rect x="2.5" y="8" width="19" height="8" rx="1.5" transform="rotate(-45 12 12)" />
-                <g transform="rotate(-45 12 12)">
-                  <path d="M6 8v3M9.5 8v2M13 8v3M16.5 8v2" />
-                </g>
-              </svg>
-            </button>
-          </form>
-        </header>
-      )}
 
       <main className="workspace__body" data-testid="workspace-body">
         <Outlet context={outletContext} />
