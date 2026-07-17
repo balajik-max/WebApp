@@ -291,12 +291,20 @@ export function LoginPage() {
               <p>Demo credentials:</p>
               <div className="login__demo-accounts">
                 <button type="button" onClick={() => { setEmail("admin@davangere.gov.in"); setPassword("Admin@12345"); }}>
-                  <span className="login__demo-badge login__demo-badge--admin">Admin</span>
+                  <span className="login__demo-badge login__demo-badge--admin">DEMO</span>
                   admin@davangere.gov.in
                 </button>
-                <button type="button" onClick={() => { setEmail("architect@davangere.gov.in"); setPassword("Architect@12345"); }}>
-                  <span className="login__demo-badge login__demo-badge--architect">Architect</span>
-                  architect@davangere.gov.in
+                <button type="button" onClick={() => { setEmail("commissioner@davangere.gov.in"); setPassword("Commissioner@123"); }}>
+                  <span className="login__demo-badge login__demo-badge--commissioner">Commissioner</span>
+                  commissioner@davangere.gov.in
+                </button>
+                <button type="button" onClick={() => { setEmail("aee@davangere.gov.in"); setPassword("AEE@123"); }}>
+                  <span className="login__demo-badge login__demo-badge--aee">AEE</span>
+                  aee@davangere.gov.in
+                </button>
+                <button type="button" onClick={() => { setEmail("ae@davangere.gov.in"); setPassword("AE@123"); }}>
+                  <span className="login__demo-badge login__demo-badge--ae">AE</span>
+                  ae@davangere.gov.in
                 </button>
               </div>
             </div>

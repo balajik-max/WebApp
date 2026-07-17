@@ -89,6 +89,18 @@ class Settings(BaseSettings):
     architect_password: str = Field(validation_alias="ARCHITECT_PASSWORD")
     architect_name: str = Field(default="City Architect", validation_alias="ARCHITECT_NAME")
 
+    commissioner_email: str = Field(validation_alias="COMMISSIONER_EMAIL")
+    commissioner_password: str = Field(validation_alias="COMMISSIONER_PASSWORD")
+    commissioner_name: str = Field(default="Commissioner", validation_alias="COMMISSIONER_NAME")
+
+    aee_email: str = Field(validation_alias="AEE_EMAIL")
+    aee_password: str = Field(validation_alias="AEE_PASSWORD")
+    aee_name: str = Field(default="AEE", validation_alias="AEE_NAME")
+
+    ae_email: str = Field(validation_alias="AE_EMAIL")
+    ae_password: str = Field(validation_alias="AE_PASSWORD")
+    ae_name: str = Field(default="AE", validation_alias="AE_NAME")
+
 
 @lru_cache
 def get_settings() -> Settings:
