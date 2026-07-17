@@ -29,6 +29,7 @@ jobs:
 
     # 4. Run your project's validation pipeline script
     - name: Run Pipeline Verification
+      working-directory: backend
       run: |
         echo "Running pipeline verification..."
         python verify_pipeline.py
