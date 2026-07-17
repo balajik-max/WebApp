@@ -1293,12 +1293,68 @@ export function Map3DViewer({ features, classMap, anomalies, manholeAnswer, data
         const SOLAR_PANEL_COLOR = 0x1e3a5f;
         const INSULATOR_COLOR = 0xe5e7eb;
 
+        // A clearly-lit lamp: bright emissive globe plus a soft additive halo
+        // so the fixture reads as "on" in the 3D scene without spawning dozens
+        // of real (and expensive) PointLights.
+        const addGlowLamp = (parent: THREE.Group, x: number, y: number, z: number, radius: number) => {
+          const lamp = new THREE.Mesh(
+            new THREE.SphereGeometry(radius, 12, 12),
+            new THREE.MeshStandardMaterial({
+              color: LAMP_GLASS_COLOR,
+              emissive: LAMP_GLASS_COLOR,
+              emissiveIntensity: 1.8,
+              roughness: 0.25,
+            })
+          );
+          lamp.position.set(x, y, z);
+          parent.add(lamp);
+          const halo = new THREE.Mesh(
+            new THREE.SphereGeometry(radius * 2.6, 12, 12),
+            new THREE.MeshBasicMaterial({
+              color: LAMP_GLASS_COLOR,
+              transparent: true,
+              opacity: 0.32,
+              blending: THREE.AdditiveBlending,
+              depthWrite: false,
+            })
+          );
+          halo.position.set(x, y, z);
+          parent.add(halo);
+        };
+
         // Every real pole's exact (x, z) and top height, recorded as each one
         // is built — used below to snap overhead power-line vertices exactly
         // onto the pole tops instead of floating past them at a flat height
         // (the line geometry and the pole points are two separately-surveyed
         // layers, so their coordinates don't line up on their own).
         const polePositions: { x: number; z: number; topY: number }[] = [];
+        const powerPolePositions: { x: number; z: number; topY: number }[] = [];
+
+        // Precompute road sample points (local coords) so each lamp-bearing pole
+        // can aim its arm + lamp at the carriageway instead of the building side.
+        const roadPts: [number, number][] = [];
+        for (const f of features) {
+          if (classMap[f.properties.category ?? ""] !== "Road_Segment") continue;
+          const g = f.geometry;
+          const push = (lon: number, lat: number) => {
+            const [X, Z] = projector.toLocal(lon, lat);
+            roadPts.push([X, Z]);
+          };
+          if (g.type === "LineString") (g.coordinates as [number, number][]).forEach((c) => push(c[0], c[1]));
+          else if (g.type === "MultiLineString")
+            (g.coordinates as [number, number][][]).forEach((l) => l.forEach((c) => push(c[0], c[1])));
+          else if (g.type === "Point") push((g.coordinates as [number, number])[0], (g.coordinates as [number, number])[1]);
+        }
+        const angleToRoad = (x: number, z: number): number | null => {
+          let best = Infinity, bx = 0, bz = 0;
+          for (const [rx, rz] of roadPts) {
+            const d = (rx - x) * (rx - x) + (rz - z) * (rz - z);
+            if (d < best) { best = d; bx = rx; bz = rz; }
+          }
+          if (best === Infinity || (bx === x && bz === z)) return null;
+          // Aim the local +X arm toward the nearest road point.
+          return Math.atan2(-(bz - z), bx - x);
+        };
 
         const buildPoleMarker = (
           p: UrbanFeature,
@@ -1314,6 +1370,10 @@ export function Map3DViewer({ features, classMap, anomalies, manholeAnswer, data
           // Real pole height when surveyed, else a typical 7 m street pole.
           const poleH = readAttr(attrs, "height") ?? readAttr(attrs, "pole_height") ?? readAttr(attrs, "elevation") ?? 7;
           polePositions.push({ x, z, topY: ground + poleH });
+          // Power poles (bare or with a light) are the supports an overhead
+          // power line actually hangs from — keep a separate list so the
+          // conductor only snaps onto real power poles, not streetlights/solar.
+          if (kind === "power-pole") powerPolePositions.push({ x, z, topY: ground + poleH });
           const g = new THREE.Group();
           // A power pole with a light fixture is still fundamentally a power
           // pole (wooden, carries a crossarm) — not a steel streetlight mast.
@@ -1348,17 +1408,7 @@ export function Map3DViewer({ features, classMap, anomalies, manholeAnswer, data
             shade.position.set(0.75, ground + poleH - 0.35, 0);
             g.add(shade);
 
-            const lamp = new THREE.Mesh(
-              new THREE.SphereGeometry(0.12, 10, 10),
-              new THREE.MeshStandardMaterial({
-                color: LAMP_GLASS_COLOR,
-                emissive: LAMP_GLASS_COLOR,
-                emissiveIntensity: 0.9,
-                roughness: 0.3,
-              })
-            );
-            lamp.position.set(0.75, ground + poleH - 0.48, 0);
-            g.add(lamp);
+            addGlowLamp(g, 0.75, ground + poleH - 0.48, 0, 0.18);
 
             if (kind === "solar-pole") {
               const panel = new THREE.Mesh(
@@ -1400,21 +1450,15 @@ export function Map3DViewer({ features, classMap, anomalies, manholeAnswer, data
               bracket.rotation.z = Math.PI / 2.5;
               bracket.position.set(0.22, ground + poleH + 0.08, 0);
               g.add(bracket);
-              const comboLamp = new THREE.Mesh(
-                new THREE.SphereGeometry(0.14, 10, 10),
-                new THREE.MeshStandardMaterial({
-                  color: LAMP_GLASS_COLOR,
-                  emissive: LAMP_GLASS_COLOR,
-                  emissiveIntensity: 0.9,
-                  roughness: 0.3,
-                })
-              );
-              comboLamp.position.set(0.45, ground + poleH - 0.08, 0);
-              g.add(comboLamp);
+              addGlowLamp(g, 0.45, ground + poleH + 0.15, 0, 0.2);
             }
           }
 
           g.position.set(x, 0, z);
+          // Aim the lamp arm at the nearest road so the light falls on the
+          // carriageway, not the building side.
+          const ang = angleToRoad(x, z);
+          if (ang != null) g.rotation.y = ang;
           {
             const detail = featureDetail(p, kind, sceneColor(p.properties.category), lon, lat);
             g.userData = {
@@ -1531,20 +1575,31 @@ export function Map3DViewer({ features, classMap, anomalies, manholeAnswer, data
         //     line and the pole points are two separately-surveyed layers,
         //     so their raw coordinates never line up exactly on their own).
         const powerLines = features.filter((f) => classMap[f.properties.category ?? ""] === "Power_Line");
-        const OVERHEAD_LINE_H = 7.5; // fallback height where no pole is close enough to snap to
-        const POLE_SNAP_TOLERANCE_M = 4;
-        const snapToNearestPoleTop = (x: number, z: number, fallbackY: number): number => {
-          let bestD2 = POLE_SNAP_TOLERANCE_M * POLE_SNAP_TOLERANCE_M;
-          let bestY: number | null = null;
-          for (const p of polePositions) {
-            const dx = p.x - x, dz = p.z - z;
-            const d2 = dx * dx + dz * dz;
-            if (d2 <= bestD2) {
-              bestD2 = d2;
-              bestY = p.topY;
-            }
+        const OVERHEAD_LINE_H = 8; // typical conductor height above ground when not on a pole
+        // Closest point on segment a->b to point p (local x/z); returns the
+        // fractional position t along the segment and the perpendicular distance.
+        const segClosest = (
+          p: { x: number; z: number },
+          a: { x: number; z: number },
+          b: { x: number; z: number }
+        ): { t: number; dist: number } => {
+          const vx = b.x - a.x, vz = b.z - a.z;
+          const len2 = vx * vx + vz * vz;
+          let t = len2 > 0 ? ((p.x - a.x) * vx + (p.z - a.z) * vz) / len2 : 0;
+          t = Math.max(0, Math.min(1, t));
+          const cx = a.x + vx * t, cz = a.z + vz * t;
+          return { t, dist: Math.hypot(cx - p.x, cz - p.z) };
+        };
+        // Nearest power-pole top height for a point — used so the conductor rides
+        // at the actual pole-top level between supports instead of floating a
+        // fixed amount above them.
+        const nearestPowerPoleTopY = (x: number, z: number): number => {
+          let best = Infinity, bestY = 0;
+          for (const p of powerPolePositions) {
+            const d = (p.x - x) * (p.x - x) + (p.z - z) * (p.z - z);
+            if (d < best) { best = d; bestY = p.topY; }
           }
-          return bestY ?? fallbackY;
+          return bestY;
         };
         const buildBuriedLine = (
           pl: UrbanFeature,
@@ -1600,15 +1655,33 @@ export function Map3DViewer({ features, classMap, anomalies, manholeAnswer, data
               // overhead line.
               buildBuriedLine(pl, line, 2.0, 0.3, lineColor, 1, "electricline");
             } else {
-              // Power line: a real overhead 3-phase conductor bundle, each
-              // vertex snapped onto the nearest real pole top when one is
-              // close by. Three parallel wires read unmistakably as a real
-              // overhead power line landing on the poles standing beside it.
-              const pts = line.map(([lon, lat]) => {
+              // Power line: a real OVERHEAD 3-phase conductor hanging from the
+              // power poles. The poles are a separately-surveyed layer that lies
+              // ON the line but not on its vertices, so we INSERT a pole-top
+              // vertex wherever a power pole sits on a segment — the conductor
+              // then visibly lands on every pole instead of floating past them.
+              const POLE_SNAP_TOL = 4; // metres from the line to count as a support
+              const vlocal = line.map(([lon, lat]) => {
                 const [x, z] = projector.toLocal(lon, lat);
-                const fallbackY = elevAt(lon, lat) + OVERHEAD_LINE_H;
-                return new THREE.Vector3(x, snapToNearestPoleTop(x, z, fallbackY), z);
+                const y = powerPolePositions.length
+                  ? nearestPowerPoleTopY(x, z)
+                  : elevAt(lon, lat) + OVERHEAD_LINE_H;
+                return { x, z, y };
               });
+              const out: { x: number; z: number; y: number }[] = [];
+              for (let i = 0; i < vlocal.length; i++) {
+                out.push(vlocal[i]);
+                if (i < vlocal.length - 1) {
+                  const a = vlocal[i], b = vlocal[i + 1];
+                  for (const p of powerPolePositions) {
+                    const c = segClosest(p, a, b);
+                    if (c.t > 0.02 && c.t < 0.98 && c.dist <= POLE_SNAP_TOL) {
+                      out.push({ x: p.x, z: p.z, y: p.topY });
+                    }
+                  }
+                }
+              }
+              const pts = out.map((o) => new THREE.Vector3(o.x, o.y, o.z));
               const mat = new THREE.MeshStandardMaterial({ color: lineColor, roughness: 0.5, metalness: 0.4 });
               const [firstLon, firstLat] = line[0];
               const wireDetail = featureDetail(pl, "powerline", lineColor, firstLon, firstLat);
@@ -2017,13 +2090,6 @@ export function Map3DViewer({ features, classMap, anomalies, manholeAnswer, data
         </div>
         <button type="button" onClick={onClose} aria-label="Close">×</button>
       </header>
-      <div className="manhole-3d-overlay__legend">
-        <span><i style={{ background: "#dc2626" }} /> Manhole status: red</span>
-        <span><i style={{ background: "#eab308" }} /> yellow</span>
-        <span><i style={{ background: "#16a34a" }} /> green / proposed</span>
-        <span><i style={{ background: "linear-gradient(90deg,#38bdf8,#1e3a8a)" }} /> Pipe depth (shallow→deep)</span>
-        <span><i style={{ background: "#22d3ee" }} /> Flow direction</span>
-      </div>
       <div className="manhole-3d-overlay__body">
       <div className="manhole-3d-overlay__panel">
         <div className="manhole-3d-overlay__colormode" role="radiogroup" aria-label="Color mode">
