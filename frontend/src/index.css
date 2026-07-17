@@ -7247,12 +7247,23 @@ body {
 
 /* ── AI MANHOLE PLAN — 3D SUBSURFACE VIEW ────────────────────────────── */
 .manhole-3d-overlay {
+  /* --surface-0/--surface-1 were never added to the global palette at all
+     (a typo/leftover), so they silently resolved to transparent — that's
+     what made the Layers panel text unreadable (dark ink text with nothing
+     behind it but whatever was further back). Aliasing them to the real,
+     already theme-aware --surface/--surface-2 tokens (rather than pinning
+     hardcoded dark colors) makes this viewer follow the app's actual light/
+     dark mode, the same as the 2D Map Canvas — white panels in light mode,
+     dark panels in dark mode. */
+  --surface-0: var(--surface);
+  --surface-1: var(--surface-2);
+
   position: fixed;
   inset: 0;
   z-index: 200;
   display: flex;
   flex-direction: column;
-  background: var(--surface-0, #0b1013);
+  background: var(--surface-0);
 }
 .manhole-3d-overlay__head {
   display: flex;
@@ -7317,6 +7328,12 @@ body {
 }
 .manhole-3d-overlay__chip.is-on { opacity: 1; color: var(--ink); border-color: var(--accent); }
 .manhole-3d-overlay__chip i { width: 9px; height: 9px; border-radius: 50%; display: inline-block; }
+.manhole-3d-overlay__canvas-wrap {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  position: relative;
+}
 .manhole-3d-overlay__canvas { flex: 1; position: relative; }
 .manhole-3d-overlay__status {
   position: absolute;
@@ -7346,6 +7363,116 @@ body {
 }
 .manhole-3d-overlay__info b { text-transform: capitalize; color: var(--accent); }
 .manhole-3d-overlay__info-hint { margin-top: 6px; font-size: 11px; color: var(--ink-mute); font-style: italic; }
+
+/* ── 3D SELECTION DETAIL PANEL — fixed top-right, not a cursor-following
+   tooltip. Shown when an object is clicked (it also gets a bright wireframe
+   highlight box in the scene itself). ─────────────────────────────────── */
+.manhole-3d-overlay__detail {
+  position: absolute;
+  top: 14px;
+  right: 14px;
+  z-index: 8;
+  width: 260px;
+  max-height: calc(100% - 28px);
+  overflow-y: auto;
+  background: var(--surface-1);
+  border: 1px solid var(--edge);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-lg);
+  color: var(--ink);
+  font-size: 12.5px;
+}
+.manhole-3d-overlay__detail-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 8px 10px 14px;
+  border-bottom: 1px solid var(--edge);
+}
+.manhole-3d-overlay__detail-swatch {
+  width: 11px;
+  height: 11px;
+  border-radius: 3px;
+  flex: none;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.18);
+}
+.manhole-3d-overlay__detail-title {
+  flex: 1;
+  min-width: 0;
+  font-weight: 700;
+  color: var(--ink);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.manhole-3d-overlay__detail-head button {
+  border: none;
+  background: transparent;
+  color: var(--ink-mute);
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 2px 6px;
+  border-radius: var(--radius-sm);
+}
+.manhole-3d-overlay__detail-head button:hover { color: var(--ink); background: var(--surface-2); }
+.manhole-3d-overlay__detail-body { padding: 10px 14px 12px; }
+.manhole-3d-overlay__detail-category {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--accent);
+  text-transform: capitalize;
+}
+.manhole-3d-overlay__detail-sev {
+  font-weight: 700;
+  font-family: var(--font-mono);
+  color: var(--ink-mute);
+  text-transform: none;
+}
+.manhole-3d-overlay__detail-latlng {
+  margin-top: 4px;
+  font-size: 11px;
+  font-family: var(--font-mono);
+  color: var(--ink-mute);
+}
+.manhole-3d-overlay__detail-attrs {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--edge);
+  max-height: 260px;
+  overflow-y: auto;
+  display: grid;
+  gap: 4px;
+}
+.manhole-3d-overlay__detail-attr-row {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  font-size: 11px;
+}
+.manhole-3d-overlay__detail-attr-key {
+  color: var(--ink-mute);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  flex: 0 0 auto;
+  max-width: 50%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.manhole-3d-overlay__detail-attr-val {
+  color: var(--ink);
+  font-family: var(--font-mono);
+  text-align: right;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .manhole-3d-overlay__popup {
   position: absolute;
   z-index: 9;
@@ -7383,6 +7510,147 @@ body {
   cursor: pointer;
 }
 .manhole-3d-overlay__popup-go:hover { filter: brightness(1.08); }
+
+/* ── 3D LAYERS PANEL — a real docked sidebar, not a floating overlay card,
+   so it never covers the 3D scene underneath it. ─────────────────────── */
+.manhole-3d-overlay__body {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+}
+.manhole-3d-overlay__panel {
+  position: static;
+  flex: 0 0 288px;
+  width: 288px;
+  z-index: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-height: none;
+  height: 100%;
+  padding: 14px;
+  background: var(--surface-1);
+  border-right: 1px solid var(--edge);
+  box-sizing: border-box;
+}
+/* Default color / Real world color segmented toggle, above the Layers list. */
+.manhole-3d-overlay__colormode {
+  flex: 0 0 auto;
+  display: flex;
+  gap: 4px;
+  padding: 3px;
+  background: var(--surface-2);
+  border: 1px solid var(--edge);
+  border-radius: var(--radius-md);
+}
+.manhole-3d-overlay__colormode-btn {
+  flex: 1;
+  border: none;
+  background: transparent;
+  color: var(--ink-mute);
+  font-size: 11.5px;
+  font-weight: 600;
+  padding: 7px 8px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: background var(--transition-fast), color var(--transition-fast);
+}
+.manhole-3d-overlay__colormode-btn:hover { color: var(--ink); }
+.manhole-3d-overlay__colormode-btn.is-active {
+  background: var(--accent);
+  color: var(--accent-ink);
+}
+.manhole-3d-overlay__panel .command-center__section {
+  background: transparent;
+  backdrop-filter: none;
+  border: none;
+  box-shadow: none;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  max-height: 100%;
+}
+.manhole-3d-overlay__panel .command-center__section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+.manhole-3d-overlay__panel .command-center__section-title {
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  color: var(--ink);
+}
+.manhole-3d-overlay__panel .command-center__text-btn {
+  border: none;
+  background: transparent;
+  color: var(--accent);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  padding: 2px 4px;
+  border-radius: var(--radius-sm);
+}
+.manhole-3d-overlay__panel .command-center__text-btn:hover {
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+}
+.manhole-3d-overlay__panel .layer-search {
+  margin-bottom: 8px;
+  flex: 0 0 auto;
+}
+.manhole-3d-overlay__panel .layer-list {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  min-height: 0;
+  padding-right: 2px;
+}
+.manhole-3d-overlay__panel .layer-row {
+  padding: 6px 8px;
+  border-radius: var(--radius-sm);
+  transition: background 0.12s ease;
+}
+.manhole-3d-overlay__panel .layer-row:hover {
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+}
+.manhole-3d-overlay__panel .layer-row__name {
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.manhole-3d-overlay__panel .layer-row__swatch {
+  width: 11px;
+  height: 11px;
+  border-radius: 3px;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.18);
+}
+.manhole-3d-overlay__panel .layer-row__count {
+  font-variant-numeric: tabular-nums;
+  color: var(--ink-mute);
+}
+.manhole-3d-overlay__panel .btn {
+  flex: 0 0 auto;
+  align-self: stretch;
+  width: 100%;
+  box-sizing: border-box;
+  padding: 10px 14px;
+  font-size: 13px;
+  font-weight: 600;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--edge);
+  background: var(--surface-2);
+  color: var(--ink);
+  cursor: pointer;
+  box-shadow: none;
+}
+.manhole-3d-overlay__panel .btn--active {
+  background: var(--accent);
+  color: var(--accent-ink);
+  border-color: var(--accent);
+}
 
 /* ── MAP TOOLTIP ──────────────────────────────────────────────────────── */
 .map__tooltip {
