@@ -3244,24 +3244,49 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
       return (b.coordinates?.length ?? 0) - (a.coordinates?.length ?? 0);
     });
 
-    // Undirected segment key: the two endpoints rounded to 6 dp, order-independent.
+    // Coordinate snapping to a coarse ~3m grid. Two paths that run 1-3m apart
+    // for a shared stretch (e.g. two genuine edges sharing a hub manhole and
+    // converging on the same corridor, computed independently and snapped to
+    // slightly different road points) collapse onto the same lattice grid, so
+    // their segments resolve to identical keys and merge into ONE drawn line
+    // instead of rendering as near-parallel duplicates. Snapping every
+    // coordinate *before* segmenting also handles the case where the two paths
+    // have different point densities — their consecutive-segment endpoints will
+    // now coincide on the grid regardless.
+    const GRID = 0.00006; // ~3m at typical latitudes
+    const snap = (v: number): number => Math.round(v / GRID) * GRID;
+    const snapPt = (p: number[]): [number, number] => [snap(p[0]), snap(p[1])];
     const segKey = (a: number[], b: number[]): string => {
-      const ra = `${a[0].toFixed(6)},${a[1].toFixed(6)}`;
-      const rb = `${b[0].toFixed(6)},${b[1].toFixed(6)}`;
+      const ra = `${a[0].toFixed(5)},${a[1].toFixed(5)}`;
+      const rb = `${b[0].toFixed(5)},${b[1].toFixed(5)}`;
       return ra < rb ? `${ra}|${rb}` : `${rb}|${ra}`;
     };
+    // Two snapped points count as the SAME node if they share a grid cell.
+    const sameNode = (a: number[], b: number[]): boolean =>
+      a[0] === b[0] && a[1] === b[1];
 
     const drawn = new Set<string>();
     const features: GeoJSON.Feature[] = [];
 
     for (const route of ordered) {
-      const coords = route.coordinates;
-      if (!coords || coords.length < 2) continue;
+      const raw = route.coordinates;
+      if (!raw || raw.length < 2) continue;
+
+      // 1) Snap every coordinate to the grid, then collapse consecutive
+      //    duplicate grid-nodes (this removes a single route's own tiny
+      //    zig-zag / double-back so one path never renders as two lines).
+      const snapped: number[][] = [];
+      for (const p of raw) {
+        const s = snapPt(p);
+        const last = snapped[snapped.length - 1];
+        if (!last || !sameNode(last, s)) snapped.push(s);
+      }
+      if (snapped.length < 2) continue;
 
       // Group consecutive UN-drawn segments into contiguous runs so the
       // dashed line style stays continuous; a drawn (shared) segment becomes
       // a gap that the owning route already covers.
-      let run: number[][] = [coords[0]];
+      let run: number[][] = [snapped[0]];
       const flush = () => {
         if (run.length >= 2) {
           features.push({
@@ -3277,10 +3302,10 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
         run = [];
       };
 
-      let prev = coords[0];
+      let prev = snapped[0];
       run = [prev];
-      for (let i = 1; i < coords.length; i++) {
-        const cur = coords[i];
+      for (let i = 1; i < snapped.length; i++) {
+        const cur = snapped[i];
         const key = segKey(prev, cur);
         if (drawn.has(key)) {
           flush();          // gap: start a fresh run after the shared segment
