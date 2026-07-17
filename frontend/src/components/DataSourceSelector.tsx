@@ -16,6 +16,9 @@ interface DataSourceSelectorProps {
   onToggleDatasetSettings: (datasetId: string) => void;
   rasterSettingsById: Record<string, RasterDisplaySettings>;
   onChangeRasterSettings: (datasetId: string, patch: Partial<RasterDisplaySettings>) => void;
+  layerDatasetIds: string[];
+  selectedLayerDatasetId: string | null;
+  onOpenLayer: (datasetId: string, anchor: HTMLButtonElement) => void;
   flyError: string | null;
 }
 
@@ -56,6 +59,9 @@ export function DataSourceSelector({
   onToggleDatasetSettings,
   rasterSettingsById,
   onChangeRasterSettings,
+  layerDatasetIds,
+  selectedLayerDatasetId,
+  onOpenLayer,
   flyError,
 }: DataSourceSelectorProps) {
   const selectedCount = activeDatasetIds.length;
@@ -101,12 +107,20 @@ export function DataSourceSelector({
                 const selectable = d.status === "ready";
                 const modelMetadata = d.dataset_metadata?.model_3d;
                 // TIFF/GeoTIFF rasters (including DSM/DTM) are locked to a
-                // fixed render mode and expose no display settings — so they
-                // get no gear and no panel. RGB for ordinary GeoTIFFs,
-                // Enhanced for DSM/DTM, both enforced at the rendering layer.
-                const hasRasterControls = d.status === "ready" && Boolean(d.dataset_metadata?.raster_overlay) && !isGeoTiffDataset(d);
+                // fixed render mode and expose no display settings. RGB is used
+                // for ordinary GeoTIFFs and Enhanced for DSM/DTM.
+                const hasRasterControls =
+                  d.status === "ready"
+                  && Boolean(d.dataset_metadata?.raster_overlay)
+                  && !isGeoTiffDataset(d);
+                // Vector/GDB datasets keep the coordinate-search branch's
+                // layer styling control.
+                const hasLayerControls = layerDatasetIds.includes(d.id);
+
                 const canOpenSettings = hasRasterControls && isActive;
+                const canOpenLayer = hasLayerControls && isActive;
                 const isExpanded = canOpenSettings && expandedDatasetId === d.id;
+                const isLayerSelected = canOpenLayer && selectedLayerDatasetId === d.id;
                 const rasterSettings = resolveRasterSettings(rasterSettingsById[d.id]);
 
                 return (
@@ -151,6 +165,22 @@ export function DataSourceSelector({
                             <circle cx="12" cy="12" r="3" />
                             <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z" />
                           </svg>
+                        </button>
+                      ) : hasLayerControls ? (
+                        <button
+                          type="button"
+                          className={`dataset-card__layer-btn${isLayerSelected ? " dataset-card__layer-btn--active" : ""}`}
+                          aria-label={`Open layer styling for ${d.name}`}
+                          aria-pressed={isLayerSelected}
+                          disabled={!canOpenLayer}
+                          onClick={(event) => {
+                            event.preventDefault();
+                            event.stopPropagation();
+                            if (!canOpenLayer) return;
+                            onOpenLayer(d.id, event.currentTarget);
+                          }}
+                        >
+                          Layer
                         </button>
                       ) : (
                         <span className={`dataset-card__status dataset-card__status--${d.status}`}>{d.status}</span>

@@ -18,6 +18,9 @@ class NotificationSource(str, enum.Enum):
     REVIEW_ASSIGNED = "review_assigned"
     REVIEW_STATUS_CHANGED = "review_status_changed"
     SURVEY_REQUESTED = "survey_requested"
+    REMEDIATION_SUBMITTED = "remediation_submitted"
+    REMEDIATION_APPROVED = "remediation_approved"
+    REMEDIATION_REJECTED = "remediation_rejected"
 
 
 class Notification(Base):

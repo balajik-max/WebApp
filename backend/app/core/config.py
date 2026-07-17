@@ -74,6 +74,12 @@ class Settings(BaseSettings):
     ai_max_context_tokens: int = Field(default=4096, validation_alias="AI_MAX_CONTEXT_TOKENS")
     ai_max_features: int = Field(default=30, validation_alias="AI_MAX_FEATURES")
 
+    # --- AI remediation evidence ----------------------------------------
+    remediation_pole_buffer_m: float = Field(default=15.0, validation_alias="REMEDIATION_POLE_BUFFER_M")
+    remediation_manhole_buffer_m: float = Field(default=15.0, validation_alias="REMEDIATION_MANHOLE_BUFFER_M")
+    remediation_drain_buffer_m: float = Field(default=30.0, validation_alias="REMEDIATION_DRAIN_BUFFER_M")
+    remediation_max_image_mb: int = Field(default=12, validation_alias="REMEDIATION_MAX_IMAGE_MB")
+
     # --- Seed users ------------------------------------------------------
     admin_email: str = Field(validation_alias="ADMIN_EMAIL")
     admin_password: str = Field(validation_alias="ADMIN_PASSWORD")

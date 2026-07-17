@@ -11,6 +11,12 @@
  */
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "";
 
+export function apiAssetUrl(path: string): string {
+  if (!path) return path;
+  if (/^https?:\/\//i.test(path)) return path;
+  return `${API_BASE}${path}`;
+}
+
 export class ApiError extends Error {
   status: number;
   body: unknown;
@@ -96,6 +102,26 @@ export async function apiPost<T>(
     signal,
   });
   const body = await res.json().catch(() => null);
+  if (!res.ok) {
+    throw new ApiError(res.status, `${res.status} ${res.statusText}`, body);
+  }
+  return body as T;
+}
+
+
+export async function apiPostForm<T>(
+  path: string,
+  payload: FormData,
+  signal?: AbortSignal
+): Promise<T> {
+  const res = await doFetch(path, {
+    method: "POST",
+    credentials: "include",
+    headers: { Accept: "application/json" },
+    body: payload,
+    signal,
+  });
+  const body = await parseBody(res);
   if (!res.ok) {
     throw new ApiError(res.status, `${res.status} ${res.statusText}`, body);
   }
