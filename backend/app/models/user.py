@@ -24,6 +24,9 @@ class UserRole(str, enum.Enum):
     AE = "ae"
     ADMIN = "admin"
     ARCHITECT = "architect"
+    COMMISSIONER = "commissioner"
+    AEE = "aee"  # Assistant Executive Engineer
+    AE = "ae"  # Assistant Engineer
 
 
 class User(Base):

@@ -306,6 +306,18 @@ export function LoginPage() {
                   <span className="login__demo-badge login__demo-badge--ae">AE</span>
                   ae@davangere.gov.in
                 </button>
+                <button type="button" onClick={() => { setEmail("commissioner@davangere.gov.in"); setPassword("Commissioner@12345"); }}>
+                  <span className="login__demo-badge login__demo-badge--commissioner">Commissioner</span>
+                  commissioner@davangere.gov.in
+                </button>
+                <button type="button" onClick={() => { setEmail("aee@davangere.gov.in"); setPassword("Aee@12345"); }}>
+                  <span className="login__demo-badge login__demo-badge--aee">AEE</span>
+                  aee@davangere.gov.in
+                </button>
+                <button type="button" onClick={() => { setEmail("ae@davangere.gov.in"); setPassword("Ae@12345"); }}>
+                  <span className="login__demo-badge login__demo-badge--ae">AE</span>
+                  ae@davangere.gov.in
+                </button>
               </div>
             </div>
           </div>

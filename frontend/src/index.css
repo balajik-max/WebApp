@@ -1592,18 +1592,18 @@ body {
 }
 
 .login__demo-badge--commissioner {
-  background: var(--danger-muted);
-  color: var(--danger);
+  background: #fef3c7;
+  color: #b45309;
 }
 
 .login__demo-badge--aee {
-  background: var(--blue-muted);
-  color: var(--blue);
+  background: #dbeafe;
+  color: #1d4ed8;
 }
 
 .login__demo-badge--ae {
-  background: var(--ok-muted);
-  color: var(--ok);
+  background: #dcfce7;
+  color: #15803d;
 }
 
 /* ── MAP PAGE ─────────────────────────────────────────────────────────── */
