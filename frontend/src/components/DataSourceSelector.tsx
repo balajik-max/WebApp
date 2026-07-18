@@ -41,6 +41,19 @@ function DatasetTypeIcon({ fileType, isModel3d = false }: { fileType: string; is
       </svg>
     );
   }
+  if (fileType === "las") {
+    return (
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+        <circle cx="6" cy="7" r="1.4" />
+        <circle cx="11.5" cy="5.5" r="1.4" />
+        <circle cx="17" cy="8" r="1.4" />
+        <circle cx="8.5" cy="14.5" r="1.4" />
+        <circle cx="14.5" cy="13.5" r="1.4" />
+        <circle cx="19" cy="16.5" r="1.4" />
+        <path d="M4 19l16-12" />
+      </svg>
+    );
+  }
   return (
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
       <polygon points="12 2 2 7 12 12 22 7 12 2" />

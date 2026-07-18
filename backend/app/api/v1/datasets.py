@@ -10,9 +10,11 @@ Endpoints mount under `/api/v1/datasets/*`.
 """
 from __future__ import annotations
 
+import asyncio
 import io
 import logging
 import mimetypes
+import tempfile
 import uuid
 from datetime import date as date_type, datetime, timezone
 from pathlib import Path
@@ -55,7 +57,7 @@ from app.services.attribute_table import (
 )
 from app.services.ingestion import ingest_dataset
 from app.services.readers import get_reader_for
-from app.services.storage import delete_object, delete_objects_with_prefix, ensure_bucket, upload_stream
+from app.services.storage import delete_object, delete_objects_with_prefix, download_to_file, ensure_bucket, upload_stream
 
 log = logging.getLogger("davangere.api.datasets")
 router = APIRouter()
@@ -175,6 +177,8 @@ _SUFFIX_TO_TYPE: dict[str, DatasetFileType] = {
     ".tiff": DatasetFileType.GEOTIFF,
     ".geotiff": DatasetFileType.GEOTIFF,
     ".ecw": DatasetFileType.GEOTIFF,
+    ".las": DatasetFileType.LAS,
+    ".laz": DatasetFileType.LAS,
     ".obj": DatasetFileType.OTHER,       # 3D model
     ".gdb": DatasetFileType.SHAPEFILE,   # Esri File Geodatabase
     ".jpg": DatasetFileType.IMAGE,
@@ -261,7 +265,7 @@ def _classify(filename: str, payload: bytes | None = None) -> DatasetFileType:
 async def upload_dataset(
     background_tasks: BackgroundTasks,
     response: Response,
-    file: UploadFile = File(..., description="GIS, raster, tabular, photo, or OBJ/OBJ bundle"),
+    file: UploadFile = File(..., description="GIS, raster, tabular, photo, LAS/LAZ point cloud, or OBJ/OBJ bundle"),
     name: str = Form(..., min_length=1, max_length=255),
     description: str | None = Form(default=None, max_length=1024),
     ward: str | None = Form(default=None, max_length=128),
@@ -516,6 +520,49 @@ async def get_raw_file(dataset_id: uuid.UUID, db: AsyncSession = Depends(get_db)
         raise HTTPException(status_code=404, detail="Source file not found in storage") from exc
 
     return Response(content=raw_bytes, media_type="application/octet-stream")
+
+
+@router.get(
+    "/{dataset_id}/point-cloud-preview",
+    dependencies=[Depends(require_any)],
+    summary="Dense XYZ/RGB preview stream for a LAS or LAZ dataset",
+)
+async def get_point_cloud_preview(
+    dataset_id: uuid.UUID,
+    max_points: int = Query(default=2_000_000, ge=10_000, le=2_000_000),
+    db: AsyncSession = Depends(get_db),
+) -> Response:
+    row = (await db.execute(select(Dataset).where(Dataset.id == dataset_id))).scalar_one_or_none()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+    if row.file_type != DatasetFileType.LAS or not row.storage_key:
+        raise HTTPException(status_code=400, detail="Dataset is not a LAS/LAZ point cloud")
+
+    from app.services.readers.las_reader import build_point_cloud_preview
+
+    original_name = str((row.dataset_metadata or {}).get("original_filename") or "point-cloud.las")
+    suffix = Path(original_name).suffix.lower()
+    if suffix not in {".las", ".laz"}:
+        suffix = ".las"
+
+    try:
+        with tempfile.TemporaryDirectory(prefix="naksha-point-cloud-") as temp_dir:
+            local_path = Path(temp_dir) / f"source{suffix}"
+            await download_to_file(row.storage_key, local_path)
+            preview = await asyncio.to_thread(build_point_cloud_preview, local_path, max_points)
+    except Exception as exc:  # noqa: BLE001
+        log.exception("Could not build point-cloud preview for dataset %s", dataset_id)
+        raise HTTPException(status_code=422, detail=f"Could not render LAS/LAZ point cloud: {exc}") from exc
+
+    return Response(
+        content=preview.payload,
+        media_type="application/vnd.naksha.point-cloud",
+        headers={
+            "Cache-Control": "private, max-age=3600",
+            "X-Point-Count": str(preview.point_count),
+            "X-Point-Color-Mode": preview.color_mode,
+        },
+    )
 
 
 @router.get(
@@ -895,6 +942,8 @@ _MAGIC: dict[str, list[bytes]] = {
     ".tiff": [b"II\x2a\x00", b"MM\x00\x2a", b"II\x2b\x00", b"MM\x00\x2b"],
     ".geotiff": [b"II\x2a\x00", b"MM\x00\x2a", b"II\x2b\x00", b"MM\x00\x2b"],
     ".ecw": [],  # validated by GDAL/rasterio after upload
+    ".las": [b"LASF"],
+    ".laz": [b"LASF"],
     ".obj": [b"#", b"v ", b"vt ", b"vn ", b"vp ", b"f ", b"o ", b"g ", b"s ", b"mtllib", b"usemtl"],
     ".jpg": [b"\xff\xd8\xff"],
     ".jpeg": [b"\xff\xd8\xff"],

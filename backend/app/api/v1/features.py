@@ -368,7 +368,7 @@ async def list_features_in_viewport(
     ),
     exclude_internal: bool = Query(
         default=False,
-        description="Exclude internal raster sample rows. Used by the read-only Analytics map.",
+        description="Exclude rows represented by dedicated raster/OBJ/point-cloud renderers.",
     ),
     limit: int = Query(default=_DEFAULT_ROW_LIMIT, ge=1, le=_HARD_ROW_LIMIT),
     db: AsyncSession = Depends(get_db),
@@ -433,7 +433,10 @@ async def list_features_in_viewport(
         "ST_Intersects(f.geom, ST_MakeEnvelope(:min_x, :min_y, :max_x, :max_y, 4326))"
     ]
     if exclude_internal:
-        conditions.append("f.category IS DISTINCT FROM 'raster_pixel'")
+        conditions.append(
+            "COALESCE(f.category, 'uncategorized') NOT IN "
+            "('raster_pixel', '3d_vertex', 'las_point')"
+        )
     params: dict[str, Any] = {
         "min_x": min_x, "min_y": min_y, "max_x": max_x, "max_y": max_y,
         "limit": limit,
@@ -500,8 +503,31 @@ async def list_features_in_viewport(
     where_clause = " AND ".join(conditions)
     join_clause = "JOIN datasets d ON d.id = f.dataset_id" if join_dataset else ""
 
+    source_layer_expression = (
+        "COALESCE(NULLIF(BTRIM(f.attributes ->> 'gdb_layer'), ''), "
+        "NULLIF(BTRIM(f.category), ''), 'uncategorized')"
+    )
     sql = text(
         f"""
+        WITH ranked_ids AS (
+            SELECT
+                f.id,
+                f.dataset_id,
+                {source_layer_expression} AS source_layer_key,
+                ROW_NUMBER() OVER (
+                    PARTITION BY f.dataset_id, {source_layer_expression}
+                    ORDER BY f.severity DESC, f.id
+                ) AS layer_rank
+            FROM features f
+            {join_clause}
+            WHERE {where_clause}
+        ),
+        selected_ids AS (
+            SELECT id, dataset_id, source_layer_key, layer_rank
+            FROM ranked_ids
+            ORDER BY layer_rank, dataset_id, source_layer_key
+            LIMIT :limit
+        )
         SELECT
             f.id::text                          AS id,
             f.dataset_id::text                  AS dataset_id,
@@ -511,11 +537,9 @@ async def list_features_in_viewport(
             f.attributes->>'_canonical_class'   AS canonical_class,
             f.attributes                        AS attributes,
             ST_AsGeoJSON(f.geom)::text          AS geom_json
-        FROM features f
-        {join_clause}
-        WHERE {where_clause}
-        ORDER BY f.severity DESC
-        LIMIT :limit
+        FROM selected_ids selected
+        JOIN features f ON f.id = selected.id
+        ORDER BY selected.layer_rank, selected.dataset_id, selected.source_layer_key, f.severity DESC, f.id
         """
     )
     result = await db.execute(sql, params)
