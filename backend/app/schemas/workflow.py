@@ -270,8 +270,12 @@ class WardSupplyComparisonOut(BaseModel):
     city_total_population: int
     deficit_mld: float
     surplus_mld: float
+    gap_mld: float
     demand_vs_expected_supply_pct: float
+    ward_lpcd: float | None = None
+    expected_lpcd: float | None = None
     is_deficit: bool
+    severity: str
     note: str
 
 

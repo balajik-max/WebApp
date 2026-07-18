@@ -98,6 +98,17 @@ async def build_ward_water_demand(
             ward_population_share = population_used / city_population if city_population > 0 else 0
             expected_supply_for_ward = city_supply_mld * ward_population_share
             
+            gap_mld = round(total_demand_mld - expected_supply_for_ward, 3)
+            ward_lpcd = round((total_demand_mld * 1_000_000) / population_used, 1) if population_used else None
+            expected_lpcd = round((expected_supply_for_ward * 1_000_000) / population_used, 1) if population_used else None
+            if gap_mld <= 0:
+                severity = "surplus"
+            elif gap_mld <= 0.2:
+                severity = "mild_deficit"
+            elif gap_mld <= 0.5:
+                severity = "moderate_deficit"
+            else:
+                severity = "severe_deficit"
             supply_comparison = {
                 "ward_demand_mld": round(total_demand_mld, 3),
                 "expected_supply_mld": round(expected_supply_for_ward, 3),
@@ -105,8 +116,12 @@ async def build_ward_water_demand(
                 "city_total_population": city_population,
                 "deficit_mld": round(max(0, total_demand_mld - expected_supply_for_ward), 3),
                 "surplus_mld": round(max(0, expected_supply_for_ward - total_demand_mld), 3),
+                "gap_mld": gap_mld,
                 "demand_vs_expected_supply_pct": round((total_demand_mld / expected_supply_for_ward * 100) if expected_supply_for_ward > 0 else 0, 1),
+                "ward_lpcd": ward_lpcd,
+                "expected_lpcd": expected_lpcd,
                 "is_deficit": total_demand_mld > expected_supply_for_ward if expected_supply_for_ward > 0 else False,
+                "severity": severity,
                 "note": (
                     "\"Fair share\" assumes the city's total supply is distributed in proportion to "
                     "population alone — it does not account for this ward's actual network capacity, "

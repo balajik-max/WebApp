@@ -4,6 +4,7 @@ import { useNavigate } from "react-router-dom";
 import { deleteDataset, fetchDatasets, updateDataset, type DatasetRow } from "../lib/workflow";
 import { AttributeTable } from "../components/AttributeTable";
 import { UnclassifiedCategoriesPanel } from "../components/UnclassifiedCategoriesPanel";
+import { useLanguage } from "../context/LanguageContext";
 
 const REFRESH_MS = 4000;
 
@@ -27,6 +28,146 @@ declare global {
     showDirectoryPicker?: (options?: { mode?: "read" | "readwrite" }) => Promise<FileSystemDirectoryHandle>;
   }
 }
+
+interface Official {
+  name: string;
+  designation: string;
+  phone: string;
+}
+
+interface Department {
+  id: string;
+  name: string;
+  scope: string;
+  helpline: string;
+  email: string;
+  office: string;
+  officials: Official[];
+}
+
+// Source: Namma Davanagere — Connect Officials (Gandhinagar-1 ward directory).
+const CITY_OFFICIALS: Department[] = [
+  {
+    id: "health",
+    name: "Health and Sanitation",
+    scope: "Garbage, Sweeping, Dustbin, Septic Tank, Toilet, Mosquito control",
+    helpline: "8277234444",
+    email: "commissioner_davanagere@yahoo.com",
+    office: "City Corporation, Davanagere",
+    officials: [
+      { name: "Mohamed Tanvir", designation: "Health Inspector", phone: "7022474799" },
+      { name: "Shivrajappa B", designation: "Sanitary Supervisor", phone: "8867867600" },
+    ],
+  },
+  {
+    id: "water",
+    name: "Water Supply Department",
+    scope: "Water supply, Leakage, Dirty water, New connection, Borewell, Meter",
+    helpline: "8277234444",
+    email: "commissioner_davanagere@yahoo.com",
+    office: "City Corporation, Davanagere",
+    officials: [
+      { name: "Veeresh B", designation: "Waterman", phone: "8880485103" },
+      { name: "Veeresh B", designation: "Water Supply Maintenance", phone: "8880485103" },
+      { name: "Sunil Kumar C", designation: "Water Supply Bill Collector", phone: "7676042048" },
+    ],
+  },
+  {
+    id: "engineering",
+    name: "Engineering Department",
+    scope: "Pothole, Footpath, Drainage, Manhole, Water stagnation, Debris",
+    helpline: "8277234444",
+    email: "commissioner_davanagere@yahoo.com",
+    office: "City Corporation, Davanagere",
+    officials: [
+      { name: "Prathibha B R", designation: "Junior Engineer (JE)", phone: "9113048826" },
+      { name: "Shruthi H", designation: "Asst-Exe Engineer (AEE)", phone: "9113270974" },
+      { name: "Abishek KR", designation: "Exe-Engineer (EE)", phone: "7892198334" },
+      { name: "Dandeppa", designation: "UGD Maintenance", phone: "9611250996" },
+      { name: "Manjunath", designation: "UGD Maintenance", phone: "9945745133" },
+    ],
+  },
+  {
+    id: "electrical",
+    name: "Electrical Department",
+    scope: "Street lights, Park lights, Tree obstruction",
+    helpline: "8277234444",
+    email: "commissioner_davanagere@yahoo.com",
+    office: "City Corporation, Davanagere",
+    officials: [
+      { name: "Shoheb", designation: "Electrical Engineer", phone: "8660852374" },
+    ],
+  },
+  {
+    id: "revenue",
+    name: "Revenue Services",
+    scope: "Property tax, Revenue collection, Land records",
+    helpline: "8277234444",
+    email: "commissioner_davanagere@yahoo.com",
+    office: "City Corporation, Davanagere",
+    officials: [
+      { name: "Umesh M", designation: "Revenue Inspector", phone: "9740292929" },
+      { name: "Yamunesh M", designation: "Property Tax Bill collector", phone: "9611915076" },
+    ],
+  },
+  {
+    id: "animal",
+    name: "Animal Husbandry",
+    scope: "Stray dogs, Stray cattle, Stray pigs, Dead animals, Snakes",
+    helpline: "8277234444",
+    email: "commissioner_davanagere@yahoo.com",
+    office: "City Corporation, Davanagere",
+    officials: [
+      { name: "Jagadeesh S R", designation: "Asst-Exe Engineer (AEE) Environment", phone: "9632983527" },
+    ],
+  },
+  {
+    id: "corporation",
+    name: "Davanagere City Corporation",
+    scope: "Municipal governance, civic services, urban planning and city administration",
+    helpline: "8050061112",
+    email: "ka.davanagere.cc@gmail.com",
+    office: "City Corporation, Davanagere",
+    officials: [
+      { name: "Dr. N.Mahantesh", designation: "Commissioner", phone: "8050061112" },
+    ],
+  },
+  {
+    id: "ward",
+    name: "Ward Corporator",
+    scope: "Davanagere Municipal Corporation",
+    helpline: "—",
+    email: "—",
+    office: "—",
+    officials: [
+      { name: "To be elected", designation: "Corporator", phone: "—" },
+    ],
+  },
+  {
+    id: "mla",
+    name: "MLA Information",
+    scope: "Member of Legislative Assembly",
+    helpline: "080-22255023",
+    email: "—",
+    office: "Home Office",
+    officials: [
+      { name: "Samarth Mallikarjun", designation: "MLA", phone: "080-22255023" },
+    ],
+  },
+  {
+    id: "mp",
+    name: "MP Information",
+    scope: "Member of Parliament",
+    helpline: "9964070830",
+    email: "prabhamallikarjun76@gmail.com",
+    office: "Home Office",
+    officials: [
+      { name: "Dr. Prabha Mallikarjun", designation: "MP", phone: "9964070830" },
+    ],
+  },
+];
+
+
 
 const FILE_TYPE_INFO: Record<string, { icon: React.ReactNode; label: string }> = {
   shapefile: {
@@ -315,9 +456,15 @@ function getFileIcon(type: string): React.ReactNode {
 
 export function DatasetsView() {
   const navigate = useNavigate();
-  const [rows, setRows] = useState<DatasetRow[] | null>(null);
+  const { t } = useLanguage();  const [rows, setRows] = useState<DatasetRow[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [mounted, setMounted] = useState(false);
+  const [storage, setStorage] = useState<{
+    total_bytes: number;
+    used_bytes: number;
+    free_bytes: number;
+    used_percent: number;
+  } | null>(null);
 
   const [dragOver, setDragOver] = useState(false);
   const [uploadName, setUploadName] = useState("");
@@ -335,6 +482,7 @@ export function DatasetsView() {
   const [wardDraft, setWardDraft] = useState("");
   const [wardSaving, setWardSaving] = useState(false);
   const [zipping, setZipping] = useState(false);
+  const [activeDeptId, setActiveDeptId] = useState<string>(CITY_OFFICIALS[0].id);
 
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const folderInputRef = useRef<HTMLInputElement | null>(null);
@@ -342,6 +490,18 @@ export function DatasetsView() {
 
   useEffect(() => {
     setMounted(true);
+  }, []);
+
+  useEffect(() => {
+    const ctrl = new AbortController();
+    fetch(`${import.meta.env.VITE_API_BASE_URL ?? ""}/api/v1/system/storage`, {
+      credentials: "include",
+      signal: ctrl.signal,
+    })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => d && setStorage(d))
+      .catch(() => {});
+    return () => ctrl.abort();
   }, []);
 
   const refresh = useCallback(async (signal?: AbortSignal) => {
@@ -675,7 +835,6 @@ export function DatasetsView() {
     }
   }
 
-  const readyCount = rows?.filter((r) => r.status === "ready").length ?? 0;
   const processingCount = rows?.filter((r) => r.status === "processing" || r.status === "queued").length ?? 0;
   const failedCount = rows?.filter((r) => r.status === "failed").length ?? 0;
   const totalSize = rows?.reduce((sum, r) => sum + (r.size_bytes ?? 0), 0) ?? 0;
@@ -686,34 +845,50 @@ export function DatasetsView() {
       {/* ── HEADER ──────────────────────────────────────────────────── */}
       <header className="ds-header">
         <div className="ds-header__left">
-          <h1 className="ds-header__title">Survey Datasets</h1>
-          <p className="ds-header__sub">Upload, manage, and analyze geospatial survey data for Davangere city</p>
+          <h1 className="ds-header__title">{t("datasets.title")}</h1>
+          <p className="ds-header__sub">{t("datasets.sub")}</p>
         </div>
         {rows && rows.length > 0 && (
           <div className="ds-stats">
             <div className="ds-stat ds-stat--accent">
               <span className="ds-stat__value">{rows.length}</span>
-              <span className="ds-stat__label">Total</span>
-            </div>
-            <div className="ds-stat ds-stat--ok">
-              <span className="ds-stat__value">{readyCount}</span>
-              <span className="ds-stat__label">Ready</span>
+              <span className="ds-stat__label">{t("datasets.stat.total")}</span>
             </div>
             {processingCount > 0 && (
               <div className="ds-stat ds-stat--warn">
                 <span className="ds-stat__value">{processingCount}</span>
-                <span className="ds-stat__label">Processing</span>
+                <span className="ds-stat__label">{t("datasets.stat.processing")}</span>
               </div>
             )}
             {failedCount > 0 && (
               <div className="ds-stat ds-stat--danger">
                 <span className="ds-stat__value">{failedCount}</span>
-                <span className="ds-stat__label">Failed</span>
+                <span className="ds-stat__label">{t("datasets.stat.failed")}</span>
               </div>
             )}
-            <div className="ds-stat">
+            <div className="ds-stat ds-stat--storage">
               <span className="ds-stat__value">{formatBytes(totalSize)}</span>
-              <span className="ds-stat__label">Total Size</span>
+              <span className="ds-stat__label">{t("datasets.stat.totalsize")}</span>
+              {storage && (
+                <div className="ds-storage">
+                  <div className="ds-storage__bar">
+                    <div
+                      className="ds-storage__fill"
+                      style={{
+                        width: `${Math.min(100, storage.used_percent)}%`,
+                        background:
+                          storage.used_percent >= 85
+                            ? "linear-gradient(90deg,#f59e0b,#ef4444)"
+                            : "linear-gradient(90deg,#22c55e,#14b8a6,#3b82f6,#8b5cf6,#ef4444)",
+                      }}
+                    />
+                  </div>
+                  <div className="ds-storage__meta">
+                    <span>{formatBytes(storage.free_bytes)} {t("common.free")}</span>
+                    <span>{storage.used_percent}% {t("common.used")}</span>
+                  </div>
+                </div>
+              )}
             </div>
           </div>
         )}
@@ -724,7 +899,7 @@ export function DatasetsView() {
       <div className="ds-grid__row">
 
         {/* ── UPLOAD SECTION ────────────────────────────────────────── */}
-        <section className="ds-upload-card ds-grid__upload">
+        <section className="ds-upload-card ds-grid__upload-compact">
           <div className="ds-upload-card__header">
             <div className="ds-upload-card__icon">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" width="24" height="24">
@@ -732,8 +907,8 @@ export function DatasetsView() {
               </svg>
             </div>
             <div>
-              <h2 className="ds-upload-card__title">Upload New Dataset</h2>
-              <p className="ds-upload-card__sub">Add geospatial data to the survey platform</p>
+              <h2 className="ds-upload-card__title">{t("datasets.upload")}</h2>
+              <p className="ds-upload-card__sub">{t("datasets.uploadSub")}</p>
             </div>
           </div>
 
@@ -987,98 +1162,57 @@ export function DatasetsView() {
           </button>
         </section>
 
-        {/* ── SUPPORTED FORMATS ─────────────────────────────────────── */}
-        <section className="ds-grid__formats">
-          <div className="ds-info-card">
-            <div className="ds-info-card__header">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" width="18" height="18">
-                <path d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" strokeLinecap="round" strokeLinejoin="round" />
-              </svg>
-              <h3>Supported Formats</h3>
+        {/* ── CITY OFFICIALS DIRECTORY ──────────────────────────────── */}
+        <section className="ds-officials ds-grid__officials">
+          <div className="ds-officials__header">
+            <div className="ds-officials__title-wrap">
+              <h2 className="ds-officials__title">{t("datasets.officials")}</h2>
+              <p className="ds-officials__sub">{t("datasets.officialsSub")}</p>
             </div>
-            <ul className="ds-format-list">
-              <li>
-                <span className="ds-format-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" width="14" height="14"><path d="M9 20l-5.447-2.724A1 1 0 013 16.382V5.618a1 1 0 011.447-.894L9 7m0 13l6-3m-6 3V7m6 10l5.447 2.724A1 1 0 0021 18.382V7.618a1 1 0 00-.553-.894L15 4m0 13V4m0 0L9 7" strokeLinecap="round" strokeLinejoin="round" /></svg></span>
-                <span className="ds-format-name">Shapefile</span>
-                <span className="ds-format-desc">Select .shp + .dbf + .shx + .prj together</span>
-              </li>
-              <li>
-                <span className="ds-format-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" width="14" height="14"><path d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z" /><path d="M15 11a3 3 0 11-6 0 3 3 0 016 0z" /></svg></span>
-                <span className="ds-format-name">GeoJSON</span>
-                <span className="ds-format-desc">.geojson or .json</span>
-              </li>
-              <li>
-                <span className="ds-format-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" width="14" height="14"><path d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4" strokeLinecap="round" strokeLinejoin="round" /></svg></span>
-                <span className="ds-format-name">GeoPackage</span>
-                <span className="ds-format-desc">.gpkg format</span>
-              </li>
-              <li>
-                <span className="ds-format-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" width="14" height="14"><path d="M3.055 11H5a2 2 0 012 2v1a2 2 0 002 2 2 2 0 012 2v2.945M8 3.935V5.5A2.5 2.5 0 0010.5 8h.5a2 2 0 012 2 2 2 0 104 0 2 2 0 012-2h1.064M15 20.488V18a2 2 0 012-2h3.064M21 12a9 9 0 11-18 0 9 9 0 0118 0z" strokeLinecap="round" strokeLinejoin="round" /></svg></span>
-                <span className="ds-format-name">KML</span>
-                <span className="ds-format-desc">Google Earth format</span>
-              </li>
-              <li>
-                <span className="ds-format-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" width="14" height="14"><path d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" strokeLinecap="round" strokeLinejoin="round" /></svg></span>
-                <span className="ds-format-name">GeoTIFF</span>
-                <span className="ds-format-desc">.tif / .tiff raster data</span>
-              </li>
-              <li>
-                <span className="ds-format-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" width="14" height="14"><path d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" strokeLinecap="round" strokeLinejoin="round" /></svg></span>
-                <span className="ds-format-name">ECW</span>
-                <span className="ds-format-desc">.ecw (requires GDAL ECW driver; GeoTIFF recommended)</span>
-              </li>
-              <li>
-                <span className="ds-format-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" width="14" height="14"><path d="M14 10l-2 1m0 0l-2-1m2 1v2.5M20 7l-2 1m2-1l-2-1m2 1v2.5M14 4l-2-1-2 1M4 7l2-1M4 7l2 1M4 7v2.5M12 21l-2-1m2 1l2-1m-2 1v-2.5M6 18l-2-1v-2.5M18 18l2-1v-2.5" strokeLinecap="round" strokeLinejoin="round" /></svg></span>
-                <span className="ds-format-name">OBJ (3D)</span>
-                <span className="ds-format-desc">.obj 3D model files</span>
-              </li>
-              <li>
-                <span className="ds-format-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" width="14" height="14"><path d="M9 17v-2m3 2v-4m3 4v-6m2 10H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" strokeLinecap="round" strokeLinejoin="round" /></svg></span>
-                <span className="ds-format-name">CSV / TSV</span>
-                <span className="ds-format-desc">Tabular with coords</span>
-              </li>
-              <li>
-                <span className="ds-format-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" width="14" height="14"><path d="M9 17v-2m3 2v-4m3 4v-6m2 10H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" strokeLinecap="round" strokeLinejoin="round" /><path d="M14 3v4a1 1 0 001 1h4" strokeLinecap="round" strokeLinejoin="round" /></svg></span>
-                <span className="ds-format-name">Excel</span>
-                <span className="ds-format-desc">.xlsx or .xls</span>
-              </li>
-              <li>
-                <span className="ds-format-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" width="14" height="14"><path d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14M4 6h16M4 6a2 2 0 00-2 2v10a2 2 0 002 2h16a2 2 0 002-2V8a2 2 0 00-2-2M4 6l4-4h8l4 4" strokeLinecap="round" strokeLinejoin="round" /><circle cx="9" cy="10" r="1.5" /></svg></span>
-                <span className="ds-format-name">Photos</span>
-                <span className="ds-format-desc">Geo-tagged JPG/PNG/GIF/BMP/WEBP</span>
-              </li>
-            </ul>
           </div>
+
+          <div className="ds-officials__tabs" role="tablist" aria-label="Department">
+            {CITY_OFFICIALS.map((dept) => (
+              <button
+                key={dept.id}
+                type="button"
+                role="tab"
+                aria-selected={activeDeptId === dept.id}
+                className={`ds-officials__tab ${activeDeptId === dept.id ? "is-active" : ""}`}
+                onClick={() => setActiveDeptId(dept.id)}
+              >
+                {dept.name}
+              </button>
+            ))}
+          </div>
+
+          {CITY_OFFICIALS.filter((d) => d.id === activeDeptId).map((dept) => (
+            <div className="ds-officials__panel" key={dept.id} role="tabpanel">
+              <p className="ds-officials__scope">{dept.scope}</p>
+              <ul className="ds-officials__list">
+                {dept.officials.map((o, i) => (
+                  <li className="ds-official" key={`${o.name}-${i}`}>
+                    <div className="ds-official__main">
+                      <span className="ds-official__name">{o.name}</span>
+                      <span className="ds-official__desg">{o.designation}</span>
+                    </div>
+                    {o.phone && o.phone !== "—" && (
+                      <a className="ds-official__phone" href={`tel:${o.phone}`}>{o.phone}</a>
+                    )}
+                  </li>
+                ))}
+              </ul>
+              <div className="ds-officials__meta">
+                <div><span>Office</span>{dept.office}</div>
+                <div><span>Helpline</span>{dept.helpline}</div>
+                <div><span>Email</span>{dept.email}</div>
+              </div>
+            </div>
+          ))}
         </section>
 
       </div>
       <div className="ds-grid__row">
-
-        {/* ── TIPS ──────────────────────────────────────────────────── */}
-        <section className="ds-grid__tips">
-          <div className="ds-info-card ds-info-card--tips">
-            <div className="ds-info-card__header">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" width="18" height="18">
-                <path d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" strokeLinecap="round" strokeLinejoin="round" />
-              </svg>
-              <h3>Tips for Best Results</h3>
-            </div>
-            <ul className="ds-tips-list">
-              <li>Select .shp, .dbf, .shx, and .prj together; .cpg is included when present</li>
-              <li>Projected shapefiles are automatically converted to WGS84 for the web map</li>
-              <li>CSV files should have latitude/longitude columns</li>
-              <li>Use consistent coordinate systems (WGS84 / EPSG:4326)</li>
-              <li>Name datasets descriptively for easy identification</li>
-              <li>Assign ward names for spatial filtering</li>
-              <li>Photos need real GPS EXIF data (most phone/survey cameras add this automatically) — photos without it are skipped</li>
-              <li>Drop a whole File Geodatabase (.gdb) folder directly — it's zipped in your browser before upload</li>
-              <li>Batches of photos can be selected together and are bundled into a single dataset automatically</li>
-              <li>GeoTIFF rasters can be uploaded directly or as a ZIP containing one raster and its sidecar files</li>
-              <li>ECW is routed correctly, but the server must have a GDAL ECW driver; convert to GeoTIFF when that driver is unavailable</li>
-              <li>Large uploads run in the background — you can keep working while a dataset finishes processing</li>
-            </ul>
-          </div>
-        </section>
 
       {/* ── DATASETS TABLE ──────────────────────────────────────────── */}
       <section className="ds-table-section ds-grid__uploaded">

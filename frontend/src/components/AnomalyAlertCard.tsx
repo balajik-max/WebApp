@@ -17,6 +17,7 @@ const TYPE_LABEL: Record<SpatialAnomaly["anomaly_type"], string> = {
   pole_redundancy: "Pole Redundancy",
   drain_encroachment: "Drain Encroachment",
   manhole_status: "Manhole Status",
+  road_width_narrowing: "Road Width Narrowing",
 };
 
 const COLOR_LABEL: Record<SpatialAnomaly["color"], string> = {
@@ -28,7 +29,11 @@ const COLOR_LABEL: Record<SpatialAnomaly["color"], string> = {
 /** Facts worth surfacing verbatim next to the AI narration — the same
  * numbers the LLM was given, shown as data so this is never a black box. */
 function metadataEntries(metadata: Record<string, unknown>): [string, string][] {
-  const skip = new Set(["this_feature_id", "kept_feature_id", "building_id", "manhole_id", "nearest_drain_id", "drain_ids"]);
+  const skip = new Set([
+    "this_feature_id", "kept_feature_id", "building_id", "manhole_id", "nearest_drain_id", "drain_ids",
+    "centerline_feature_id", "left_edge_feature_id", "right_edge_feature_id",
+    "affected_line_wkt", "sample_interval_m", "probe_length_m",
+  ]);
   return Object.entries(metadata)
     .filter(([k, v]) => !skip.has(k) && v !== null && v !== undefined)
     .map(([k, v]) => [
