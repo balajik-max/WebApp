@@ -173,6 +173,13 @@ async def init_database() -> None:
         )
         await _seed_user(
             session,
+            email=settings.architect_email,
+            password=settings.architect_password,
+            name=settings.architect_name,
+            role=UserRole.ARCHITECT,
+        )
+        await _seed_user(
+            session,
             email=settings.commissioner_email,
             password=settings.commissioner_password,
             name=settings.commissioner_name,

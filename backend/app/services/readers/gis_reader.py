@@ -14,7 +14,7 @@ import logging
 import math
 import uuid
 import zipfile
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 import geopandas as gpd
@@ -91,10 +91,12 @@ def _find_gdb_entry(zip_path: Path) -> str | None:
     """
     with zipfile.ZipFile(zip_path) as zf:
         for entry in zf.namelist():
-            parts = Path(entry).parts
-            for part in parts:
+            parts = PurePosixPath(entry.replace("\\", "/")).parts
+            for index, part in enumerate(parts):
                 if part.lower().endswith(".gdb"):
-                    return part
+                    # Preserve any outer folder path instead of assuming the
+                    # .gdb directory is at the ZIP root.
+                    return "/".join(parts[: index + 1])
     return None
 
 
@@ -115,14 +117,21 @@ class GISReader:
 
         # geopandas I/O is CPU-bound → offload to a worker thread so we
         # never stall the FastAPI event loop.
-        gdf, source_crs = await asyncio.to_thread(self._load_geodataframe, file_path)
-        return await self._persist(gdf, dataset_id=dataset_id, source_crs=source_crs)
+        gdf, source_crs, source_layers = await asyncio.to_thread(self._load_geodataframe, file_path)
+        return await self._persist(
+            gdf,
+            dataset_id=dataset_id,
+            source_crs=source_crs,
+            source_layers=source_layers,
+        )
 
-    def _load_geodataframe(self, file_path: Path) -> tuple[gpd.GeoDataFrame, str | None]:
+    def _load_geodataframe(
+        self, file_path: Path
+    ) -> tuple[gpd.GeoDataFrame, str | None, list[dict[str, Any]]]:
         gdb_entry = _find_gdb_entry(file_path) if file_path.suffix.lower() == ".zip" else None
 
         if gdb_entry is not None:
-            gdf, source_crs = self._load_zipped_gdb(file_path, gdb_entry)
+            gdf, source_crs, source_layers = self._load_zipped_gdb(file_path, gdb_entry)
         elif file_path.suffix.lower() == ".zip":
             # Zipped Shapefiles → let pyogrio unpack via the /vsizip/ handler.
             # NOTE: SHAPE_RESTORE_SHX is deliberately NOT enabled here — GDAL
@@ -141,6 +150,17 @@ class GISReader:
 
         if gdb_entry is None:
             source_crs = self._normalize_horizontal_crs(gdf.crs)
+            source_layers = [
+                {
+                    "source_name": file_path.stem,
+                    "geometry_type": str(gdf.geom_type.iloc[0]) if not gdf.empty else "Unknown",
+                    "feature_count": int(len(gdf)),
+                    "fields": [str(column) for column in gdf.columns if column != "geometry"],
+                    "source_crs": source_crs,
+                    "status": "ready" if not gdf.empty else "empty",
+                    "warning": None,
+                }
+            ]
 
         if gdf.crs is None:
             log.warning(
@@ -151,7 +171,7 @@ class GISReader:
         elif str(gdf.crs).upper() != _TARGET_CRS:
             gdf = gdf.to_crs(_TARGET_CRS)
 
-        return gdf, source_crs
+        return gdf, source_crs, source_layers
 
     @staticmethod
     def _normalize_horizontal_crs(raw_crs: Any) -> str | None:
@@ -168,7 +188,7 @@ class GISReader:
         self,
         file_path: Path,
         gdb_entry: str,
-    ) -> tuple[gpd.GeoDataFrame, str | None]:
+    ) -> tuple[gpd.GeoDataFrame, str | None, list[dict[str, Any]]]:
         """Read every layer out of a zipped Esri File Geodatabase.
 
         GDAL's OpenFileGDB driver reads a `.gdb` directory directly; inside
@@ -183,12 +203,22 @@ class GISReader:
 
         frames: list[gpd.GeoDataFrame] = []
         source_crs_values: set[str] = set()
-        for layer_name, _geom_type in layers:
+        source_layers: list[dict[str, Any]] = []
+        for layer_name, listed_geom_type in layers:
+            layer_info: dict[str, Any] = {
+                "source_name": str(layer_name),
+                "geometry_type": str(listed_geom_type or "None"),
+                "feature_count": 0,
+                "fields": [],
+                "source_crs": None,
+                "status": "unreadable",
+                "warning": None,
+            }
             try:
-                # OpenFileGDB exposes its true source FID through the frame
-                # index when ``fid_as_index`` is requested (for example a
-                # Polygon table may legitimately start at FID 884). Preserve
-                # it before concatenation resets the per-layer indices.
+                # Attribute-only FileGDB tables are valid.  Depending on the
+                # GDAL/pyogrio build they are returned as a plain pandas
+                # DataFrame rather than a GeoDataFrame, so never access .crs
+                # or .geometry until the type has been verified.
                 layer_frame = gpd.read_file(
                     vsizip_path,
                     layer=layer_name,
@@ -196,41 +226,41 @@ class GISReader:
                     fid_as_index=True,
                 )
             except Exception as exc:  # noqa: BLE001 — one bad layer shouldn't sink the whole dataset
+                layer_info["warning"] = str(exc)
+                source_layers.append(layer_info)
                 log.warning(
-                    "Skipping unreadable layer %r in %s: %s",
-                    layer_name,
-                    gdb_entry,
-                    exc,
+                    "Skipping unreadable layer %r in %s: %s", layer_name, gdb_entry, exc
                 )
                 continue
+
+            layer_info.update({
+                "feature_count": int(len(layer_frame)),
+                "fields": [str(column) for column in layer_frame.columns if column != "geometry"],
+            })
 
             if layer_frame.empty:
+                layer_info["status"] = "empty"
+                source_layers.append(layer_info)
+                log.info("Skipping empty GDB layer %r in %s", layer_name, gdb_entry)
+                continue
+
+            if not isinstance(layer_frame, gpd.GeoDataFrame) or "geometry" not in layer_frame.columns:
+                layer_info["status"] = "non_spatial"
+                layer_info["warning"] = "Attribute-only table retained in the layer manifest; no map geometry was imported."
+                source_layers.append(layer_info)
                 log.info(
-                    "Skipping empty GDB layer %r in %s",
+                    "Skipping non-spatial GDB table %r in %s (%d rows)",
                     layer_name,
                     gdb_entry,
+                    len(layer_frame),
                 )
                 continue
 
-            # File Geodatabases may contain attribute-only tables.
-            # Those are returned as pandas DataFrames and have no CRS.
-            if not isinstance(layer_frame, gpd.GeoDataFrame):
-                log.info(
-                    "Skipping non-spatial GDB table %r in %s",
-                    layer_name,
-                    gdb_entry,
-                )
-                continue
-
-            if "geometry" not in layer_frame.columns:
-                log.info(
-                    "Skipping GDB layer %r in %s because it has no geometry column",
-                    layer_name,
-                    gdb_entry,
-                )
-                continue
-
-            if layer_frame.geometry.isna().all():
+            layer_gdf = layer_frame
+            if layer_gdf.geometry.isna().all():
+                layer_info["status"] = "empty_geometry"
+                layer_info["warning"] = "All geometry values are empty."
+                source_layers.append(layer_info)
                 log.info(
                     "Skipping GDB layer %r in %s because all geometries are empty",
                     layer_name,
@@ -238,66 +268,55 @@ class GISReader:
                 )
                 continue
 
-            layer_gdf = layer_frame
             layer_crs = getattr(layer_gdf, "crs", None)
-
             normalized_source_crs = self._normalize_horizontal_crs(layer_crs)
+            layer_info["source_crs"] = normalized_source_crs
+            layer_info["status"] = "ready"
+            source_layers.append(layer_info)
+
             if normalized_source_crs:
                 source_crs_values.add(normalized_source_crs)
 
-            # Real-world GDBs frequently mix CRS across layers — e.g. one
-            # layer in a plain projected CRS and another with a vertical
-            # height datum tacked on (WGS 84 / UTM zone 43N vs. WGS 84 /
-            # UTM zone 43N + EGM2008 height). geopandas refuses to
-            # `pd.concat` frames whose CRS objects aren't identical, so
-            # every layer must be normalized to the shared target CRS
-            # *before* concatenation, not after.
+            # Real-world GDBs frequently mix CRS across layers. Normalize each
+            # valid spatial layer before concatenation.
             if not any(str(column).casefold() == "fid" for column in layer_gdf.columns):
                 layer_gdf.insert(0, "FID", layer_gdf.index.to_list())
             layer_gdf = layer_gdf.reset_index(drop=True)
 
             if layer_crs is None:
                 min_x, min_y, max_x, max_y = layer_gdf.total_bounds
-
                 looks_geographic = (
-                    -180 <= min_x <= 180
+                    all(math.isfinite(value) for value in (min_x, min_y, max_x, max_y))
+                    and -180 <= min_x <= 180
                     and -180 <= max_x <= 180
                     and -90 <= min_y <= 90
                     and -90 <= max_y <= 90
                 )
-
                 if looks_geographic:
-                    log.warning(
-                        "Layer %r in %s has no CRS, but its bounds look geographic; "
-                        "assigning EPSG:4326.",
-                        layer_name,
-                        gdb_entry,
-                    )
-                    layer_gdf = layer_gdf.set_crs(
-                        _TARGET_CRS,
-                        allow_override=True,
-                    )
+                    layer_info["warning"] = "CRS was missing; EPSG:4326 was assigned because the coordinate bounds are geographic."
+                    layer_gdf = layer_gdf.set_crs(_TARGET_CRS, allow_override=True)
                 else:
+                    layer_info["status"] = "missing_crs"
+                    layer_info["warning"] = (
+                        "Projected coordinates were detected but the layer has no CRS; "
+                        "the layer was skipped to prevent incorrect map placement."
+                    )
                     log.warning(
-                        "Skipping projected GDB layer %r in %s because its CRS is missing. "
-                        "Bounds=%s",
+                        "Skipping projected GDB layer %r in %s because its CRS is missing. Bounds=%s",
                         layer_name,
                         gdb_entry,
                         layer_gdf.total_bounds.tolist(),
                     )
                     continue
-
             elif str(layer_crs).upper() != _TARGET_CRS:
                 try:
                     layer_gdf = layer_gdf.to_crs(_TARGET_CRS)
                 except Exception as exc:  # noqa: BLE001
+                    layer_info["status"] = "crs_error"
+                    layer_info["warning"] = f"Could not reproject from {layer_crs} to {_TARGET_CRS}: {exc}"
                     log.warning(
                         "Skipping layer %r in %s: could not reproject from %s to %s: %s",
-                        layer_name,
-                        gdb_entry,
-                        layer_crs,
-                        _TARGET_CRS,
-                        exc,
+                        layer_name, gdb_entry, layer_crs, _TARGET_CRS, exc,
                     )
                     continue
 
@@ -323,6 +342,7 @@ class GISReader:
         return (
             gpd.GeoDataFrame(combined, geometry="geometry", crs=_TARGET_CRS),
             source_crs,
+            source_layers,
         )
 
     async def _persist(
@@ -331,6 +351,7 @@ class GISReader:
         *,
         dataset_id: str,
         source_crs: str | None,
+        source_layers: list[dict[str, Any]],
     ) -> ReaderResult:
         dataset_uuid = uuid.UUID(dataset_id)
         inserted = 0
@@ -501,4 +522,13 @@ class GISReader:
             skipped,
             source_crs,
         )
-        return ReaderResult(inserted=inserted, skipped=skipped, source_crs=source_crs)
+        is_gdb = any("gdb_layer" in str(column).casefold() for column in gdf.columns)
+        return ReaderResult(
+            inserted=inserted,
+            skipped=skipped,
+            source_crs=source_crs,
+            dataset_metadata={
+                "source_format": "gdb" if is_gdb else "vector",
+                "source_layers": source_layers,
+            },
+        )

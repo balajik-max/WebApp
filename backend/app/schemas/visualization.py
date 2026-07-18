@@ -1,4 +1,4 @@
-"""Pydantic contracts for the universal visualization manifest."""
+"""Pydantic contracts for the universal visualization and layer-review engine."""
 from __future__ import annotations
 
 import uuid
@@ -17,6 +17,7 @@ VisualizationFieldType = Literal[
     "mixed",
     "unknown",
 ]
+LayerReviewStatus = Literal["auto", "needs_review", "confirmed"]
 
 
 class VisualizationFieldProfile(BaseModel):
@@ -38,6 +39,14 @@ class VisualizationLayerManifest(BaseModel):
     recommended_renderer: VisualizationRenderer = "generic"
     recommended_modes: list[str] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
+    dashboard_type: str = "generic"
+    classification_confidence: float = 0.0
+    classification_reasons: list[str] = Field(default_factory=list)
+    review_status: LayerReviewStatus = "auto"
+    included: bool = True
+    ingestion_status: str = "ready"
+    source_feature_count: int | None = None
+    ingestion_warning: str | None = None
 
 
 class VisualizationManifest(BaseModel):
@@ -49,4 +58,57 @@ class VisualizationManifest(BaseModel):
     bounds: list[float] | None = None
     total_features: int = 0
     layers: list[VisualizationLayerManifest] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+
+
+class LayerReviewUpdate(BaseModel):
+    display_name: str | None = Field(default=None, max_length=160)
+    dashboard_type: str | None = Field(default=None, max_length=64)
+    included: bool | None = None
+    confirmed: bool = True
+
+
+class DashboardValueCount(BaseModel):
+    label: str
+    count: int
+
+
+class DashboardNumericSummary(BaseModel):
+    field: str
+    count: int = 0
+    minimum: float | None = None
+    maximum: float | None = None
+    average: float | None = None
+
+
+class DashboardLayerSummary(BaseModel):
+    layer_key: str
+    display_name: str
+    dashboard_type: str
+    geometry_types: list[str] = Field(default_factory=list)
+    feature_count: int = 0
+    completeness_percentage: float = 100.0
+    issue_count: int = 0
+    category_breakdown: list[DashboardValueCount] = Field(default_factory=list)
+    status_field: str | None = None
+    status_breakdown: list[DashboardValueCount] = Field(default_factory=list)
+    numeric_summaries: list[DashboardNumericSummary] = Field(default_factory=list)
+    fields: list[VisualizationFieldProfile] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+
+
+class UniversalDashboard(BaseModel):
+    dataset_id: uuid.UUID
+    dataset_name: str
+    total_features: int = 0
+    included_layers: int = 0
+    point_features: int = 0
+    line_features: int = 0
+    polygon_features: int = 0
+    issue_count: int = 0
+    missing_values: int = 0
+    profiled_values: int = 0
+    geometry_breakdown: list[DashboardValueCount] = Field(default_factory=list)
+    dashboard_types: list[DashboardValueCount] = Field(default_factory=list)
+    layers: list[DashboardLayerSummary] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)

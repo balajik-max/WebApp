@@ -253,6 +253,17 @@ const TABS: TabDef[] = [
     ),
   },
   {
+    to: "/layer-review",
+    label: "Layer Review",
+    testId: "tab-layer-review",
+    icon: (
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+        <path d="M12 2 2 7l10 5 10-5-10-5Z" />
+        <path d="M2 17l10 5 10-5M2 12l10 5 10-5" />
+      </svg>
+    ),
+  },
+  {
     to: "/tasks",
     label: "Tasks",
     testId: "tab-tasks",
@@ -543,13 +554,15 @@ export function useTabTitle(base = "Davangere Urban Survey") {
           ? "Datasets"
             : location.pathname.startsWith("/analytics")
             ? "Analytics"
-            : location.pathname.startsWith("/tasks")
-              ? "Tasks"
-              : location.pathname.startsWith("/activity")
-                ? "Activity"
-                : location.pathname.startsWith("/profile")
-                  ? "Profile"
-                  : "";
+            : location.pathname.startsWith("/layer-review")
+              ? "Layer Review"
+              : location.pathname.startsWith("/tasks")
+                ? "Tasks"
+                : location.pathname.startsWith("/activity")
+                  ? "Activity"
+                  : location.pathname.startsWith("/profile")
+                    ? "Profile"
+                    : "";
     document.title = label ? `${label} · ${base}` : base;
   }, [location.pathname, base]);
 }

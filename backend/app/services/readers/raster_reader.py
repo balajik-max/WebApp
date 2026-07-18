@@ -26,7 +26,9 @@ import io
 import json
 import logging
 import math
+import tempfile
 import uuid
+import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -42,7 +44,8 @@ from app.services.storage import upload_stream
 
 log = logging.getLogger("davangere.readers.raster")
 
-_RASTER_SUFFIXES = {".tif", ".tiff", ".geotiff"}
+_RASTER_SUFFIXES = {".tif", ".tiff", ".geotiff", ".ecw"}
+_ARCHIVE_SUFFIX = ".zip"
 _BATCH_SIZE = 500
 _MAX_SAMPLE_POINTS = 200  # Max points to extract from raster
 _MAX_PREVIEW_DIM = 1600  # Longest edge of the rendered preview image, px
@@ -94,8 +97,55 @@ class RasterReader:
         return Path(filename).suffix.lower() in _RASTER_SUFFIXES
 
     async def read(self, file_path: Path, dataset_id: str) -> ReaderResult:
-        parsed = await asyncio.to_thread(self._parse_sync, file_path)
+        parsed = await asyncio.to_thread(self._parse_input_sync, file_path)
         return await self._persist(parsed, dataset_id=dataset_id)
+
+    def _parse_input_sync(self, file_path: Path) -> _ParsedRaster:
+        if file_path.suffix.lower() != _ARCHIVE_SUFFIX:
+            return self._parse_sync(file_path)
+
+        with tempfile.TemporaryDirectory(prefix="raster_zip_") as tmpdir:
+            root = Path(tmpdir)
+            try:
+                with zipfile.ZipFile(file_path) as zf:
+                    candidates = [
+                        name
+                        for name in zf.namelist()
+                        if not name.endswith("/")
+                        and Path(name).suffix.lower() in _RASTER_SUFFIXES
+                    ]
+                    if not candidates:
+                        raise ValueError(
+                            "Raster ZIP does not contain a .tif, .tiff, .geotiff, or .ecw file"
+                        )
+                    if len(candidates) > 1:
+                        raise ValueError(
+                            "Raster ZIP contains multiple raster files. Upload each DSM/DTM/ECW "
+                            "raster as a separate dataset: " + ", ".join(candidates[:8])
+                        )
+
+                    # Extract all safe members so sidecar files such as .aux.xml,
+                    # .ovr, and .prj remain available to GDAL.
+                    for member in zf.infolist():
+                        if member.is_dir():
+                            continue
+                        member_path = Path(member.filename.replace("\\", "/"))
+                        if member_path.is_absolute() or ".." in member_path.parts:
+                            raise ValueError(
+                                f"Unsafe path found in raster ZIP: {member.filename}"
+                            )
+                        destination = root.joinpath(*member_path.parts)
+                        destination.parent.mkdir(parents=True, exist_ok=True)
+                        with zf.open(member) as src, destination.open("wb") as dst:
+                            while chunk := src.read(1024 * 1024):
+                                dst.write(chunk)
+            except zipfile.BadZipFile as exc:
+                raise ValueError("Uploaded raster ZIP is invalid or corrupted") from exc
+
+            inner_path = root.joinpath(*Path(candidates[0].replace("\\", "/")).parts)
+            parsed = self._parse_sync(inner_path)
+            parsed.filename = Path(candidates[0]).name
+            return parsed
 
     def _parse_sync(self, file_path: Path) -> _ParsedRaster:
         try:
@@ -109,9 +159,28 @@ class RasterReader:
 
         skipped = 0
 
-        with rasterio.open(file_path) as src:
+        suffix = file_path.suffix.lower()
+        if suffix == ".ecw":
+            with rasterio.Env() as env:
+                if "ECW" not in env.drivers():
+                    raise ValueError(
+                        "ECW decoding is not available in this server's GDAL build. "
+                        "Convert the ECW to GeoTIFF (.tif) or install a GDAL ECW driver."
+                    )
+
+        try:
+            src_context = rasterio.open(file_path)
+        except Exception as exc:  # noqa: BLE001
+            raise ValueError(f"Could not open raster '{file_path.name}': {exc}") from exc
+
+        with src_context as src:
+            if src.crs is None:
+                raise ValueError(
+                    f"Raster '{file_path.name}' has no coordinate reference system. "
+                    "Assign the correct CRS before upload so it can be placed on the map."
+                )
             transform = src.transform
-            crs = str(src.crs) if src.crs else "EPSG:4326"
+            crs = str(src.crs)
             width = src.width
             height = src.height
             band_count = src.count
@@ -370,10 +439,16 @@ class RasterReader:
             parsed.crs,
             bool(raster_overlay),
         )
+        suffix = Path(parsed.filename).suffix.lower()
+        source_format = "ecw" if suffix == ".ecw" else "geotiff"
         return ReaderResult(
             inserted=inserted,
             skipped=skipped,
             source_crs=parsed.crs,
             notes=f"bands={parsed.band_count}, size={parsed.width}x{parsed.height}",
             raster_overlay=raster_overlay,
+            dataset_metadata={
+                "source_format": source_format,
+                "raster_source_file": parsed.filename,
+            },
         )

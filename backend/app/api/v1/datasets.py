@@ -47,6 +47,7 @@ from app.models import (
     User,
 )
 from app.schemas.dataset import DatasetOut, DatasetUpdate, DatasetUploadAccepted, WardOption
+from app.services.archive_inspection import inspect_zip_bytes
 from app.services.attribute_table import (
     order_attribute_columns,
     populated_attribute_column_count,
@@ -173,6 +174,7 @@ _SUFFIX_TO_TYPE: dict[str, DatasetFileType] = {
     ".tif": DatasetFileType.GEOTIFF,
     ".tiff": DatasetFileType.GEOTIFF,
     ".geotiff": DatasetFileType.GEOTIFF,
+    ".ecw": DatasetFileType.GEOTIFF,
     ".obj": DatasetFileType.OTHER,       # 3D model
     ".gdb": DatasetFileType.SHAPEFILE,   # Esri File Geodatabase
     ".jpg": DatasetFileType.IMAGE,
@@ -182,11 +184,6 @@ _SUFFIX_TO_TYPE: dict[str, DatasetFileType] = {
     ".bmp": DatasetFileType.IMAGE,
     ".webp": DatasetFileType.IMAGE,
 }
-
-_ZIP_IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp"}
-_ZIP_GIS_EXTS = {".shp", ".dbf", ".shx", ".prj", ".gpkg"}
-_ZIP_OBJ_EXTS = {".obj"}
-
 
 def _validate_zipped_shapefile(payload: bytes) -> None:
     """Require a complete, unambiguous shapefile before queueing ingestion."""
@@ -219,25 +216,39 @@ def _validate_zipped_shapefile(payload: bytes) -> None:
         )
 
 
+def _inspect_source_format(filename: str, payload: bytes | None = None) -> str:
+    ext = Path(filename).suffix.lower()
+    if ext == ".zip" and payload:
+        try:
+            return inspect_zip_bytes(payload).source_format
+        except ValueError:
+            return "zip"
+    return {
+        ".gdb": "gdb",
+        ".shp": "shapefile",
+        ".tif": "geotiff",
+        ".tiff": "geotiff",
+        ".geotiff": "geotiff",
+        ".ecw": "ecw",
+        ".obj": "obj",
+    }.get(ext, ext.lstrip(".") or "unknown")
+
+
 def _classify(filename: str, payload: bytes | None = None) -> DatasetFileType:
     ext = Path(filename).suffix.lower()
     if ext == ".zip" and payload:
-        # A zip could be a shapefile/GDB bundle, a batch of geo-tagged
-        # photos, or a 3D model bundle (.obj + .mtl + textures) — peek at
-        # its real contents rather than assuming, so the dataset row's
-        # declared type matches what actually got ingested.
-        import zipfile
-
         try:
-            with zipfile.ZipFile(io.BytesIO(payload)) as zf:
-                names = [n for n in zf.namelist() if not n.endswith("/")]
-            if any(Path(n).suffix.lower() in _ZIP_OBJ_EXTS for n in names):
-                return DatasetFileType.OTHER
-            if not any(Path(n).suffix.lower() in _ZIP_GIS_EXTS or ".gdb/" in n.lower() for n in names):
-                if any(Path(n).suffix.lower() in _ZIP_IMAGE_EXTS for n in names):
-                    return DatasetFileType.IMAGE
-        except zipfile.BadZipFile:
-            pass
+            kind = inspect_zip_bytes(payload).kind
+        except ValueError:
+            kind = "unknown"
+        if kind == "obj":
+            return DatasetFileType.OTHER
+        if kind == "images":
+            return DatasetFileType.IMAGE
+        if kind in {"geotiff", "ecw"}:
+            return DatasetFileType.GEOTIFF
+        if kind in {"gdb", "shapefile", "vector"}:
+            return DatasetFileType.SHAPEFILE
     return _SUFFIX_TO_TYPE.get(ext, DatasetFileType.OTHER)
 
 
@@ -319,6 +330,7 @@ async def upload_dataset(
             "original_filename": file.filename,
             "content_type": file.content_type,
             "uploaded_at": datetime.now(timezone.utc).isoformat(),
+            "source_format": _inspect_source_format(file.filename, payload),
         },
         uploaded_by=current_user.id,
     )
@@ -882,6 +894,7 @@ _MAGIC: dict[str, list[bytes]] = {
     ".tif": [b"II\x2a\x00", b"MM\x00\x2a", b"II\x2b\x00", b"MM\x00\x2b"],
     ".tiff": [b"II\x2a\x00", b"MM\x00\x2a", b"II\x2b\x00", b"MM\x00\x2b"],
     ".geotiff": [b"II\x2a\x00", b"MM\x00\x2a", b"II\x2b\x00", b"MM\x00\x2b"],
+    ".ecw": [],  # validated by GDAL/rasterio after upload
     ".obj": [b"#", b"v ", b"vt ", b"vn ", b"vp ", b"f ", b"o ", b"g ", b"s ", b"mtllib", b"usemtl"],
     ".jpg": [b"\xff\xd8\xff"],
     ".jpeg": [b"\xff\xd8\xff"],

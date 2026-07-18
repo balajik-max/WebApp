@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import JSZip from "jszip";
+import { useNavigate } from "react-router-dom";
 import { deleteDataset, fetchDatasets, updateDataset, type DatasetRow } from "../lib/workflow";
 import { AttributeTable } from "../components/AttributeTable";
 import { UnclassifiedCategoriesPanel } from "../components/UnclassifiedCategoriesPanel";
@@ -8,7 +9,7 @@ const REFRESH_MS = 4000;
 
 const ACCEPTED_EXTENSIONS = [
   ".geojson", ".json", ".zip", ".shp", ".dbf", ".shx", ".prj", ".cpg", ".gpkg", ".kml", ".csv", ".tsv", ".xlsx", ".xls",
-  ".tif", ".tiff", ".geotiff", ".obj",
+  ".tif", ".tiff", ".geotiff", ".ecw", ".obj",
   ".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp",
 ];
 
@@ -55,6 +56,10 @@ const FILE_TYPE_INFO: Record<string, { icon: React.ReactNode; label: string }> =
   tif: {
     icon: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" width="16" height="16"><path d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" strokeLinecap="round" strokeLinejoin="round" /></svg>,
     label: "GeoTIFF",
+  },
+  ecw: {
+    icon: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" width="16" height="16"><path d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" strokeLinecap="round" strokeLinejoin="round" /></svg>,
+    label: "ECW Raster",
   },
   obj: {
     icon: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" width="16" height="16"><path d="M14 10l-2 1m0 0l-2-1m2 1v2.5M20 7l-2 1m2-1l-2-1m2 1v2.5M14 4l-2-1-2 1M4 7l2-1M4 7l2 1M4 7v2.5M12 21l-2-1m2 1l2-1m-2 1v-2.5M6 18l-2-1v-2.5M18 18l2-1v-2.5" strokeLinecap="round" strokeLinejoin="round" /></svg>,
@@ -266,8 +271,35 @@ function validateShapefileBundle(files: File[]): { stem: string; files: File[] }
   return { stem, files: matching };
 }
 
+function datasetSourceFormat(dataset: DatasetRow): string {
+  const value = dataset.dataset_metadata?.source_format;
+  return typeof value === "string" ? value : "";
+}
+
 function datasetDisplayType(dataset: DatasetRow): string {
-  return dataset.dataset_metadata?.model_3d ? "OBJ 3D" : dataset.file_type;
+  if (dataset.dataset_metadata?.model_3d) return "OBJ 3D";
+  const sourceFormat = datasetSourceFormat(dataset);
+  const labels: Record<string, string> = {
+    gdb: "File Geodatabase",
+    shapefile_zip: "Shapefile ZIP",
+    vector_zip: "Vector ZIP",
+    geotiff: "GeoTIFF",
+    geotiff_zip: "GeoTIFF ZIP",
+    ecw: "ECW Raster",
+    ecw_zip: "ECW ZIP",
+    image_bundle: "Photo ZIP",
+    obj_bundle: "OBJ 3D",
+  };
+  return labels[sourceFormat] ?? dataset.file_type;
+}
+
+function datasetIconType(dataset: DatasetRow): string {
+  if (dataset.dataset_metadata?.model_3d) return "obj";
+  const sourceFormat = datasetSourceFormat(dataset);
+  if (sourceFormat.startsWith("geotiff")) return "tif";
+  if (sourceFormat.startsWith("ecw")) return "ecw";
+  if (sourceFormat === "obj_bundle") return "obj";
+  return dataset.file_type;
 }
 
 function getFileIcon(type: string): React.ReactNode {
@@ -282,6 +314,7 @@ function getFileIcon(type: string): React.ReactNode {
 }
 
 export function DatasetsView() {
+  const navigate = useNavigate();
   const [rows, setRows] = useState<DatasetRow[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [mounted, setMounted] = useState(false);
@@ -338,7 +371,7 @@ export function DatasetsView() {
     if (f && !ACCEPTED_EXTENSIONS.includes(extensionOf(f.name))) {
       setUploadFile(null);
       setUploadError(
-        `Unsupported file type "${extensionOf(f.name) || f.name}". Supported: GeoJSON, Shapefile, GeoPackage, KML, GeoTIFF, OBJ, CSV, TSV, XLSX, and photos (JPG/PNG/GIF/BMP/WEBP).`
+        `Unsupported file type "${extensionOf(f.name) || f.name}". Supported: GeoJSON, Shapefile, FileGDB ZIP, GeoPackage, KML, GeoTIFF, ECW, OBJ, CSV, TSV, XLSX, and photos (JPG/PNG/GIF/BMP/WEBP).`
       );
       return;
     }
@@ -826,7 +859,7 @@ export function DatasetsView() {
                   </span>
                 </span>
                 <span className="ds-dropzone__formats">
-                  GeoJSON · Shapefile · GeoPackage · KML · GeoTIFF · OBJ · CSV · Excel · Photos (JPG/PNG/GIF/BMP/WEBP)
+                  GeoJSON · Shapefile · FileGDB · GeoPackage · KML · GeoTIFF/DSM/DTM ZIP · ECW · OBJ · CSV · Excel · Photos
                 </span>
               </label>
             ) : (
@@ -990,6 +1023,11 @@ export function DatasetsView() {
                 <span className="ds-format-desc">.tif / .tiff raster data</span>
               </li>
               <li>
+                <span className="ds-format-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" width="14" height="14"><path d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" strokeLinecap="round" strokeLinejoin="round" /></svg></span>
+                <span className="ds-format-name">ECW</span>
+                <span className="ds-format-desc">.ecw (requires GDAL ECW driver; GeoTIFF recommended)</span>
+              </li>
+              <li>
                 <span className="ds-format-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" width="14" height="14"><path d="M14 10l-2 1m0 0l-2-1m2 1v2.5M20 7l-2 1m2-1l-2-1m2 1v2.5M14 4l-2-1-2 1M4 7l2-1M4 7l2 1M4 7v2.5M12 21l-2-1m2 1l2-1m-2 1v-2.5M6 18l-2-1v-2.5M18 18l2-1v-2.5" strokeLinecap="round" strokeLinejoin="round" /></svg></span>
                 <span className="ds-format-name">OBJ (3D)</span>
                 <span className="ds-format-desc">.obj 3D model files</span>
@@ -1035,7 +1073,8 @@ export function DatasetsView() {
               <li>Photos need real GPS EXIF data (most phone/survey cameras add this automatically) — photos without it are skipped</li>
               <li>Drop a whole File Geodatabase (.gdb) folder directly — it's zipped in your browser before upload</li>
               <li>Batches of photos can be selected together and are bundled into a single dataset automatically</li>
-              <li>GeoTIFF rasters support live color and clarity adjustments from the dataset's display settings</li>
+              <li>GeoTIFF rasters can be uploaded directly or as a ZIP containing one raster and its sidecar files</li>
+              <li>ECW is routed correctly, but the server must have a GDAL ECW driver; convert to GeoTIFF when that driver is unavailable</li>
               <li>Large uploads run in the background — you can keep working while a dataset finishes processing</li>
             </ul>
           </div>
@@ -1094,7 +1133,7 @@ export function DatasetsView() {
                 style={{ animationDelay: `${i * 50}ms` }}
               >
                 <div className="ds-table__td ds-table__td--name" title={d.description ?? d.name}>
-                  <span className="ds-table__file-icon">{getFileIcon(d.dataset_metadata?.model_3d ? "obj" : d.file_type)}</span>
+                  <span className="ds-table__file-icon">{getFileIcon(datasetIconType(d))}</span>
                   <div className="ds-table__name-wrap">
                     <span className="ds-table__name">{d.name}</span>
                     {d.processing_error && (
@@ -1149,6 +1188,21 @@ export function DatasetsView() {
                 </div>
                 <div className="ds-table__td ds-table__td--mono ds-table__td--muted">{formatDate(d.created_at)}</div>
                 <div className="ds-table__td ds-table__td--actions">
+                  <button
+                    type="button"
+                    className="ds-action-btn ds-action-btn--view"
+                    data-testid={`review-layers-${d.id}`}
+                    disabled={d.status !== "ready"}
+                    onClick={() => navigate(`/layer-review?dataset=${encodeURIComponent(d.id)}`)}
+                    title="Review detected layers and generate dashboard"
+                  >
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="14" height="14">
+                      <path d="M4 5h16M4 12h10M4 19h7" strokeLinecap="round" />
+                      <circle cx="18" cy="12" r="2" />
+                      <circle cx="15" cy="19" r="2" />
+                    </svg>
+                    Layer Review
+                  </button>
                   <button
                     type="button"
                     className="ds-action-btn ds-action-btn--view"
