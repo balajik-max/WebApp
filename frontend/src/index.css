@@ -68,12 +68,14 @@
   --transition-base: 150ms ease;
   --transition-slow: 250ms ease;
 
-  /* Left Map sidebar (Command Center) width — single source of truth,
-     tuned to a compact enterprise-GIS dashboard size and stepped down at
-     smaller breakpoints below (see .map-page--dual media queries). Not a
-     colour token, so it is intentionally defined only here and inherited
-     unchanged by [data-theme="light"]. */
-  --map-sidebar-width: 300px;
+  /* Left Map sidebar (Command Center) width. On desktop this is overridden
+     inline by MapView (a plain CSS custom property, driven by React state —
+     see DEFAULT_SIDEBAR_WIDTH in pages/MapView.tsx) so the user can drag-
+     resize it; this value is only the pre-hydration/fallback default and
+     must be kept in sync with that constant. Not a colour token, so it is
+     intentionally defined only here and inherited unchanged by
+     [data-theme="light"]. */
+  --map-sidebar-width: 340px;
 
   /* Bottom offset shared by every map-footer-row overlay (the coordinate/
      status bar and the feature-count pill) so they always sit on the same
@@ -1615,6 +1617,56 @@ body {
 
 .map-page--dual {
   grid-template-columns: var(--map-sidebar-width) 1fr;
+  /* Positioning context for .map-page__sidebar-resize-handle, which is
+     placed at `left: <sidebarWidth>` to sit exactly on the grid boundary. */
+  position: relative;
+}
+
+/* Thin drag handle straddling the sidebar/map boundary — desktop only (see
+   the `!isMobile` guard in MapView.tsx; mobile keeps its fixed-width
+   off-canvas drawer, untouched by this). The visible divider stays a plain
+   1px border on .command-center; this is purely the wider invisible hit
+   target plus its hover/focus grip indicator. */
+.map-page__sidebar-resize-handle {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 8px;
+  margin-left: -4px;
+  background: transparent;
+  cursor: col-resize;
+  touch-action: none;
+  z-index: 20;
+}
+
+.map-page__sidebar-resize-handle::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 2px;
+  height: 36px;
+  transform: translate(-50%, -50%);
+  border-radius: var(--radius-full);
+  background: transparent;
+  transition: background var(--transition-fast);
+}
+
+.map-page__sidebar-resize-handle:hover::after,
+.map-page__sidebar-resize-handle:focus-visible::after {
+  background: var(--accent);
+}
+
+.map-page__sidebar-resize-handle:focus-visible {
+  outline: none;
+}
+
+/* Applied to <body> only while a drag is in progress (see MapView.tsx) so
+   the resize cursor and no-select behaviour hold even when the pointer
+   moves off the thin handle itself during a fast drag. */
+body.is-resizing-sidebar {
+  cursor: col-resize !important;
+  user-select: none;
 }
 
 /* â”€â”€ MAP CANVAS â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
@@ -1661,6 +1713,22 @@ body {
   padding: 12px 16px;
   border-top: 1px solid var(--edge);
   background: var(--surface);
+}
+
+/* Pinned the same way as .command-center__footer (sibling of the scrollable
+   body, no flex value) so it stays visible above the footer regardless of
+   how far the Data Sources / Category Visibility list is scrolled. */
+.command-center__audit-success {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 16px;
+  border-top: 1px solid var(--edge);
+  background: var(--ok-muted);
+  color: var(--ok);
+  font-size: 11px;
+  font-weight: 600;
 }
 
 .command-center__import-btn {
@@ -1965,15 +2033,72 @@ body {
   display:flex;
   align-items:center;
   gap:8px;
-  padding:6px 8px 2px;
-  font-size:11px;
-  font-weight:800;
-  letter-spacing:0.04em;
-  text-transform:uppercase;
+  padding:4px 8px 2px;
+  font-size:10px;
+  font-weight:500;
+  letter-spacing:0.02em;
+  text-transform:capitalize;
   color:var(--ink-2, var(--ink));
 }
 
+.layer-group__check {
+  flex:0 0 auto;
+  width:14px;
+  height:14px;
+  margin:0;
+  cursor:pointer;
+  accent-color:var(--accent, #14b8a6);
+}
+
+.layer-group__toggle {
+  flex:1 1 auto;
+  display:flex;
+  align-items:center;
+  gap:8px;
+  min-width:0;
+  width:100%;
+  margin:0;
+  padding:3px 4px;
+  background:transparent;
+  border:0;
+  border-radius:var(--radius-md, 8px);
+  box-shadow:none;
+  font:inherit;
+  color:inherit;
+  text-align:left;
+  cursor:pointer;
+}
+
+.layer-group__toggle:hover {
+  background:var(--surface-3, rgba(128,128,128,0.10));
+}
+
+.layer-group__toggle:focus-visible {
+  outline:2px solid var(--accent, #14b8a6);
+  outline-offset:1px;
+}
+
+.layer-group__name {
+  flex:0 1 auto;
+  min-width:0;
+  overflow:hidden;
+  text-overflow:ellipsis;
+  white-space:nowrap;
+  letter-spacing:0.02em;
+  text-transform:capitalize;
+}
+
+.layer-group__chevron {
+  flex:0 0 auto;
+  margin-left:auto;
+}
+
+.layer-group__toggle[aria-expanded="true"] .grouped-field-list__chevron {
+  transform:rotate(90deg);
+}
+
 .layer-group__count {
+  flex:0 0 auto;
   font-size:10px;
   font-weight:700;
   color:var(--ink-mute);
@@ -2353,58 +2478,6 @@ body {
   transform: rotate(90deg);
 }
 
-.dataset-card__layer-btn {
-  flex: 0 0 auto;
-  min-width: 48px;
-  padding: 5px 9px;
-  border: 1px solid var(--edge-strong);
-  border-radius: var(--radius-sm);
-  background: var(--surface-3);
-  color: var(--ink-mute);
-  font-size: 10px;
-  font-weight: 800;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-  cursor: pointer;
-  transition: border-color var(--transition-fast), background var(--transition-fast), color var(--transition-fast);
-}
-
-.dataset-card__layer-btn:hover:not(:disabled),
-.dataset-card__layer-btn--active {
-  border-color: var(--accent);
-  background: var(--accent-muted);
-  color: var(--accent);
-}
-
-.dataset-card__layer-btn:disabled {
-  opacity: 0.38;
-  cursor: default;
-}
-
-.dataset-card__status {
-  font-size: 10px;
-  font-weight: 700;
-  padding: 3px 8px;
-  border-radius: var(--radius-full);
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-}
-
-.dataset-card__status--ready {
-  background: var(--ok-muted);
-  color: var(--ok);
-}
-
-.dataset-card__status--processing {
-  background: var(--warn-muted);
-  color: var(--warn);
-}
-
-.dataset-card__status--failed {
-  background: var(--danger-muted);
-  color: var(--danger);
-}
-
 .dataset-card__settings {
   padding: 14px;
   border: 1px solid var(--accent);
@@ -2654,6 +2727,15 @@ body {
   background: transparent;
 }
 
+.dss-row--layer-capable {
+  cursor: context-menu;
+}
+
+.dss-row:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
 .dss-checkbox {
   position: relative;
   width: 18px;
@@ -2700,21 +2782,6 @@ body {
   cursor: default;
 }
 
-.dss-row__icon {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 18px;
-  height: 18px;
-  flex-shrink: 0;
-  color: var(--ink-dim);
-}
-
-.dss-row__icon svg {
-  width: 18px;
-  height: 18px;
-}
-
 .dss-row__info {
   flex: 1;
   min-width: 0;
@@ -2728,21 +2795,6 @@ body {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-}
-
-.dss-row__meta {
-  display: block;
-  font-size: 10px;
-  color: var(--ink-mute);
-  margin-top: 2px;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.dss-row__meta strong {
-  color: var(--accent);
-  font-weight: 700;
 }
 
 .dss-panel__error {
@@ -10666,19 +10718,19 @@ button.analytics-readiness-count--missing.is-active { box-shadow: inset 0 0 0 1p
   gap: 8px;
   margin: 10px 0;
   padding: 9px 10px;
-  border: 1px solid rgba(56, 189, 248, .18);
+  border: 1px solid var(--edge);
   border-radius: 8px;
-  background: rgba(14, 116, 144, .1);
-  color: #b9d4e5;
+  background: var(--surface-3);
+  color: var(--ink-dim);
   font-size: 11px;
   line-height: 1.4;
 }
 .visualization-layer-runtime--ok { display: block; }
-.visualization-layer-runtime--ok b { color: #5eead4; }
+.visualization-layer-runtime--ok b { color: var(--accent); }
 .visualization-layer-runtime em {
   display: block;
   margin-top: 3px;
-  color: #fbbf24;
+  color: var(--warn);
   font-style: normal;
 }
 .visualization-back-button {
@@ -10694,7 +10746,7 @@ button.analytics-readiness-count--missing.is-active { box-shadow: inset 0 0 0 1p
 }
 .visualization-base-cap-note {
   margin-top: 9px;
-  color: #fbbf24;
+  color: var(--warn);
   font-size: 10px;
   line-height: 1.45;
 }
@@ -10705,18 +10757,11 @@ button.analytics-readiness-count--missing.is-active { box-shadow: inset 0 0 0 1p
   }
 }
 
-/* Responsive Command Center width — compact enterprise-GIS sizing.
-   Desktop (>=1440px) uses the base 300px token; laptop and tablet ranges
-   step it down so the map keeps the majority of the screen without ever
-   overflowing or compressing the map controls. Mobile (<=768px) keeps the
-   existing fixed off-canvas drawer behaviour defined elsewhere. */
-@media (min-width: 1200px) and (max-width: 1439.98px) {
-  .map-page--dual { --map-sidebar-width: 280px; }
-}
-
-@media (min-width: 769px) and (max-width: 1199.98px) {
-  .map-page--dual { --map-sidebar-width: 260px; }
-}
+/* Command Center width at laptop/tablet desktop breakpoints is no longer
+   stepped down here — MapView.tsx now sets --map-sidebar-width inline from
+   React state (resizable, user-driven), which always wins over any class-
+   based rule at the same specificity. Mobile (<=768px) is unaffected and
+   keeps its existing fixed off-canvas drawer behaviour defined elsewhere. */
 
 
 /* Universal Visualization V3: compact geometry-level styling. */
@@ -10782,23 +10827,23 @@ button.analytics-readiness-count--missing.is-active { box-shadow: inset 0 0 0 1p
   padding: 8px 5px;
   border: 1px solid var(--edge);
   border-radius: 8px;
-  background: rgba(9, 20, 34, .72);
+  background: var(--surface-2);
   color: var(--ink-mute);
   cursor: pointer;
   transition: border-color .16s ease, background .16s ease, color .16s ease, transform .16s ease;
 }
 
 .visualization-target-grid button:hover:not(:disabled) {
-  border-color: rgba(45, 212, 191, .55);
+  border-color: var(--accent);
   color: var(--ink);
   transform: translateY(-1px);
 }
 
 .visualization-target-grid button.is-active {
   border-color: var(--accent);
-  background: rgba(20, 184, 166, .14);
-  color: #5eead4;
-  box-shadow: inset 0 0 0 1px rgba(45, 212, 191, .12);
+  background: var(--accent-muted);
+  color: var(--accent);
+  box-shadow: inset 0 0 0 1px var(--accent-muted);
 }
 
 .visualization-target-grid button:disabled {
@@ -11005,12 +11050,12 @@ button.analytics-readiness-count--missing.is-active { box-shadow: inset 0 0 0 1p
   overflow-y: auto;
   overscroll-behavior: contain;
   box-sizing: border-box;
-  border: 1px solid rgba(72, 101, 128, .58);
+  border: 1px solid var(--edge-strong);
   border-radius: 12px;
-  background: #132437;
-  box-shadow: 0 24px 64px rgba(0, 8, 20, .58), 0 0 0 1px rgba(45, 212, 191, .05);
+  background: var(--surface);
+  box-shadow: var(--shadow-xl), 0 0 0 1px var(--accent-muted);
   scrollbar-width: thin;
-  scrollbar-color: rgba(45, 212, 191, .4) transparent;
+  scrollbar-color: var(--edge-strong) transparent;
 }
 
 .visualization-popup::-webkit-scrollbar {
@@ -11019,7 +11064,11 @@ button.analytics-readiness-count--missing.is-active { box-shadow: inset 0 0 0 1p
 
 .visualization-popup::-webkit-scrollbar-thumb {
   border-radius: 999px;
-  background: rgba(45, 212, 191, .38);
+  background: var(--edge-strong);
+}
+
+.visualization-popup::-webkit-scrollbar-thumb:hover {
+  background: var(--ink-mute);
 }
 
 .visualization-popup .visualization-panel--v3 {
@@ -11926,6 +11975,26 @@ body.is-dragging-map-panel * {
 .floating-map-panel__dragbar button:hover {
   border-color: rgba(45, 212, 191, .55);
   color: #5eead4;
+}
+
+/* Geometry Styling popup only — My Places / Reference Layers keep the dark-
+   tinted glass header above unchanged, this popup uses the app's own theme
+   variables instead so it flips correctly with the light/dark toggle. */
+.visualization-popup > .floating-map-panel__dragbar {
+  border-bottom: 1px solid var(--edge);
+  background: linear-gradient(135deg, var(--accent-muted), transparent);
+  color: var(--ink);
+}
+
+.visualization-popup > .floating-map-panel__dragbar button {
+  border-color: var(--edge-strong);
+  background: var(--surface-2);
+  color: var(--ink-mute);
+}
+
+.visualization-popup > .floating-map-panel__dragbar button:hover {
+  border-color: var(--accent);
+  color: var(--accent);
 }
 
 .visualization-popup {
