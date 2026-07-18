@@ -10,7 +10,7 @@ const REFRESH_MS = 4000;
 
 const ACCEPTED_EXTENSIONS = [
   ".geojson", ".json", ".zip", ".shp", ".dbf", ".shx", ".prj", ".cpg", ".gpkg", ".kml", ".csv", ".tsv", ".xlsx", ".xls",
-  ".tif", ".tiff", ".geotiff", ".ecw", ".obj",
+  ".tif", ".tiff", ".geotiff", ".ecw", ".las", ".laz", ".obj",
   ".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp",
 ];
 
@@ -201,6 +201,18 @@ const FILE_TYPE_INFO: Record<string, { icon: React.ReactNode; label: string }> =
   ecw: {
     icon: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" width="16" height="16"><path d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" strokeLinecap="round" strokeLinejoin="round" /></svg>,
     label: "ECW Raster",
+  },
+  las: {
+    icon: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" width="16" height="16">
+      <circle cx="6" cy="7" r="1.4" />
+      <circle cx="11.5" cy="5.5" r="1.4" />
+      <circle cx="17" cy="8" r="1.4" />
+      <circle cx="8.5" cy="14.5" r="1.4" />
+      <circle cx="14.5" cy="13.5" r="1.4" />
+      <circle cx="19" cy="16.5" r="1.4" />
+      <path d="M4 19l16-12" strokeLinecap="round" />
+    </svg>,
+    label: "LAS / LAZ Point Cloud",
   },
   obj: {
     icon: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" width="16" height="16"><path d="M14 10l-2 1m0 0l-2-1m2 1v2.5M20 7l-2 1m2-1l-2-1m2 1v2.5M14 4l-2-1-2 1M4 7l2-1M4 7l2 1M4 7v2.5M12 21l-2-1m2 1l2-1m-2 1v-2.5M6 18l-2-1v-2.5M18 18l2-1v-2.5" strokeLinecap="round" strokeLinejoin="round" /></svg>,
@@ -419,6 +431,7 @@ function datasetSourceFormat(dataset: DatasetRow): string {
 
 function datasetDisplayType(dataset: DatasetRow): string {
   if (dataset.dataset_metadata?.model_3d) return "OBJ 3D";
+  if (dataset.file_type === "las") return "LAS";
   const sourceFormat = datasetSourceFormat(dataset);
   const labels: Record<string, string> = {
     gdb: "File Geodatabase",
@@ -449,6 +462,7 @@ function getFileIcon(type: string): React.ReactNode {
     "tiff": "tif",
     "geotiff": "tif",
     "shapefile": "shapefile",
+    "las": "las",
   };
   const normalizedType = typeMap[type] ?? type;
   return FILE_TYPE_INFO[normalizedType]?.icon ?? <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" width="16" height="16"><path d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" strokeLinecap="round" strokeLinejoin="round" /></svg>;
@@ -531,7 +545,7 @@ export function DatasetsView() {
     if (f && !ACCEPTED_EXTENSIONS.includes(extensionOf(f.name))) {
       setUploadFile(null);
       setUploadError(
-        `Unsupported file type "${extensionOf(f.name) || f.name}". Supported: GeoJSON, Shapefile, FileGDB ZIP, GeoPackage, KML, GeoTIFF, ECW, OBJ, CSV, TSV, XLSX, and photos (JPG/PNG/GIF/BMP/WEBP).`
+        `Unsupported file type "${extensionOf(f.name) || f.name}". Supported: GeoJSON, Shapefile, FileGDB ZIP, GeoPackage, KML, GeoTIFF, ECW, LAS, LAZ, OBJ, CSV, TSV, XLSX, and photos (JPG/PNG/GIF/BMP/WEBP).`
       );
       return;
     }
@@ -1034,7 +1048,7 @@ export function DatasetsView() {
                   </span>
                 </span>
                 <span className="ds-dropzone__formats">
-                  GeoJSON · Shapefile · FileGDB · GeoPackage · KML · GeoTIFF/DSM/DTM ZIP · ECW · OBJ · CSV · Excel · Photos
+                  GeoJSON · Shapefile · FileGDB · GeoPackage · KML · GeoTIFF/DSM/DTM ZIP · ECW · LAS / LAZ · OBJ · CSV · Excel · Photos
                 </span>
               </label>
             ) : (

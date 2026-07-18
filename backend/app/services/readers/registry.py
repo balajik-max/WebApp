@@ -10,6 +10,7 @@ from __future__ import annotations
 from app.services.readers.base import DatasetReader
 from app.services.readers.gis_reader import GISReader
 from app.services.readers.image_reader import ImageReader
+from app.services.readers.las_reader import LasReader
 from app.services.readers.obj_reader import ObjReader
 from app.services.readers.raster_reader import RasterReader
 from app.services.readers.table_reader import TableReader
@@ -21,6 +22,7 @@ _STRATEGIES: tuple[DatasetReader, ...] = (
     GISReader(),
     RasterReader(),
     ObjReader(),
+    LasReader(),
     ImageReader(),
     TableReader(),
 )

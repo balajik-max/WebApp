@@ -11,6 +11,10 @@ export function buildFeatureQuery(
   const params = new URLSearchParams();
   params.set("bbox", bbox.join(","));
   params.set("limit", String(limit));
+  // LAS/LAZ clouds, OBJ vertices, and raster samples have dedicated renderers.
+  // Keeping their database samples out of this bounded vector response leaves
+  // the full row budget available to visible GDB/GeoJSON map layers.
+  params.set("exclude_internal", "true");
   if (filter.datasetIds && filter.datasetIds.length > 0) {
     for (const id of filter.datasetIds) params.append("dataset_id", id);
   } else {
