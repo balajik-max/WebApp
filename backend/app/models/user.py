@@ -20,13 +20,10 @@ from app.models._mixins import created_at_col, updated_at_col, uuid_pk
 
 class UserRole(str, enum.Enum):
     COMMISSIONER = "commissioner"
-    AEE = "aee"
-    AE = "ae"
-    ADMIN = "admin"
-    ARCHITECT = "architect"
-    COMMISSIONER = "commissioner"
     AEE = "aee"  # Assistant Executive Engineer
     AE = "ae"  # Assistant Engineer
+    ADMIN = "admin"
+    ARCHITECT = "architect"
 
 
 class User(Base):

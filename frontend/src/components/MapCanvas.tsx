@@ -1129,6 +1129,7 @@ const ANOMALY_TYPE_LABEL: Record<SpatialAnomaly["anomaly_type"], string> = {
   pole_redundancy: "Pole Redundancy",
   drain_encroachment: "Drain Encroachment",
   manhole_status: "Manhole Status",
+  road_width_narrowing: "Road Width Narrowing",
 };
 
 /** One-line, numbers-first summary for the hover tooltip's AI Detected

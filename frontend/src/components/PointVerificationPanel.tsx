@@ -72,6 +72,7 @@ const FINDING_LABEL = {
   pole_redundancy: "Pole Redundancy",
   drain_encroachment: "Drain Encroachment",
   manhole_status: "Manhole Status",
+  road_width_narrowing: "Road Width Narrowing",
 } as const;
 
 const ASSIGN_WORK_MODES = new Set(["manholes", "poles"]);
