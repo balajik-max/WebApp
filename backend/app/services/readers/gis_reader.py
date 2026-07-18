@@ -189,7 +189,7 @@ class GISReader:
                 # index when ``fid_as_index`` is requested (for example a
                 # Polygon table may legitimately start at FID 884). Preserve
                 # it before concatenation resets the per-layer indices.
-                layer_gdf = gpd.read_file(
+                layer_frame = gpd.read_file(
                     vsizip_path,
                     layer=layer_name,
                     engine="pyogrio",
@@ -197,13 +197,51 @@ class GISReader:
                 )
             except Exception as exc:  # noqa: BLE001 — one bad layer shouldn't sink the whole dataset
                 log.warning(
-                    "Skipping unreadable layer %r in %s: %s", layer_name, gdb_entry, exc
+                    "Skipping unreadable layer %r in %s: %s",
+                    layer_name,
+                    gdb_entry,
+                    exc,
                 )
                 continue
-            if layer_gdf.empty:
+
+            if layer_frame.empty:
+                log.info(
+                    "Skipping empty GDB layer %r in %s",
+                    layer_name,
+                    gdb_entry,
+                )
                 continue
 
-            normalized_source_crs = self._normalize_horizontal_crs(layer_gdf.crs)
+            # File Geodatabases may contain attribute-only tables.
+            # Those are returned as pandas DataFrames and have no CRS.
+            if not isinstance(layer_frame, gpd.GeoDataFrame):
+                log.info(
+                    "Skipping non-spatial GDB table %r in %s",
+                    layer_name,
+                    gdb_entry,
+                )
+                continue
+
+            if "geometry" not in layer_frame.columns:
+                log.info(
+                    "Skipping GDB layer %r in %s because it has no geometry column",
+                    layer_name,
+                    gdb_entry,
+                )
+                continue
+
+            if layer_frame.geometry.isna().all():
+                log.info(
+                    "Skipping GDB layer %r in %s because all geometries are empty",
+                    layer_name,
+                    gdb_entry,
+                )
+                continue
+
+            layer_gdf = layer_frame
+            layer_crs = getattr(layer_gdf, "crs", None)
+
+            normalized_source_crs = self._normalize_horizontal_crs(layer_crs)
             if normalized_source_crs:
                 source_crs_values.add(normalized_source_crs)
 
@@ -218,15 +256,48 @@ class GISReader:
                 layer_gdf.insert(0, "FID", layer_gdf.index.to_list())
             layer_gdf = layer_gdf.reset_index(drop=True)
 
-            if layer_gdf.crs is None:
-                layer_gdf = layer_gdf.set_crs(_TARGET_CRS, allow_override=True)
-            elif str(layer_gdf.crs).upper() != _TARGET_CRS:
+            if layer_crs is None:
+                min_x, min_y, max_x, max_y = layer_gdf.total_bounds
+
+                looks_geographic = (
+                    -180 <= min_x <= 180
+                    and -180 <= max_x <= 180
+                    and -90 <= min_y <= 90
+                    and -90 <= max_y <= 90
+                )
+
+                if looks_geographic:
+                    log.warning(
+                        "Layer %r in %s has no CRS, but its bounds look geographic; "
+                        "assigning EPSG:4326.",
+                        layer_name,
+                        gdb_entry,
+                    )
+                    layer_gdf = layer_gdf.set_crs(
+                        _TARGET_CRS,
+                        allow_override=True,
+                    )
+                else:
+                    log.warning(
+                        "Skipping projected GDB layer %r in %s because its CRS is missing. "
+                        "Bounds=%s",
+                        layer_name,
+                        gdb_entry,
+                        layer_gdf.total_bounds.tolist(),
+                    )
+                    continue
+
+            elif str(layer_crs).upper() != _TARGET_CRS:
                 try:
                     layer_gdf = layer_gdf.to_crs(_TARGET_CRS)
                 except Exception as exc:  # noqa: BLE001
                     log.warning(
                         "Skipping layer %r in %s: could not reproject from %s to %s: %s",
-                        layer_name, gdb_entry, layer_gdf.crs, _TARGET_CRS, exc,
+                        layer_name,
+                        gdb_entry,
+                        layer_crs,
+                        _TARGET_CRS,
+                        exc,
                     )
                     continue
 
