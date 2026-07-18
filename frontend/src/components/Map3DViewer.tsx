@@ -400,19 +400,142 @@ function buildGenericFeature(
       pod.position.y = ground + 16;
       g.add(pod);
     } else if (has("transformer")) {
-      // Transformer: a ground-mounted cabinet on a small plinth.
+      // Real H-pole (double-pole) transformer mount: TWO poles standing
+      // side by side, a platform spanning between them, and the transformer
+      // tank sitting upright on that platform — the actual real-world
+      // structure for a pole-mounted distribution transformer, not a single
+      // pole with a can bolted to its side.
+      const poleH = 8;
+      const poleMat = new THREE.MeshStandardMaterial({ color: 0x6b4a34, roughness: 0.85 });
+      const poleXs = [-0.9, 0.9];
+      for (const px of poleXs) {
+        const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.13, 0.17, poleH, 10), poleMat);
+        pole.position.set(px, ground + poleH / 2, 0);
+        g.add(pole);
+      }
+
+      // Crossarm + line insulators spanning both poles near the top — the
+      // visual cue that this connects into the overhead line network.
+      const crossarm = new THREE.Mesh(
+        new THREE.BoxGeometry(2.2, 0.08, 0.08),
+        new THREE.MeshStandardMaterial({ color: 0x6b4a34, roughness: 0.8 })
+      );
+      crossarm.position.y = ground + poleH - 0.25;
+      g.add(crossarm);
+      for (const dx of [-0.9, 0, 0.9]) {
+        const lineIns = new THREE.Mesh(
+          new THREE.CylinderGeometry(0.06, 0.08, 0.2, 8),
+          new THREE.MeshStandardMaterial({ color: 0xe5e7eb, roughness: 0.4 })
+        );
+        lineIns.position.set(dx, ground + poleH - 0.13, 0);
+        g.add(lineIns);
+      }
+
+      // Platform spanning the two poles, mounted below the crossarm.
+      const platformY = ground + poleH - 1.6;
+      const platform = new THREE.Mesh(
+        new THREE.BoxGeometry(2.1, 0.1, 0.9),
+        new THREE.MeshStandardMaterial({ color: 0x4b5563, roughness: 0.6, metalness: 0.4 })
+      );
+      platform.position.y = platformY;
+      g.add(platform);
+      for (const px of poleXs) {
+        const brace = new THREE.Mesh(
+          new THREE.BoxGeometry(0.08, 0.6, 0.08),
+          new THREE.MeshStandardMaterial({ color: 0x4b5563, roughness: 0.6, metalness: 0.4 })
+        );
+        brace.position.set(px * 0.75, platformY - 0.3, 0);
+        brace.rotation.z = px > 0 ? -0.35 : 0.35;
+        g.add(brace);
+      }
+
+      // The transformer tank, standing upright on the platform between the
+      // two poles — the classic distribution-transformer "can".
+      const tankMat = new THREE.MeshStandardMaterial({ color: colorObj, roughness: 0.4, metalness: 0.5 });
+      const tank = new THREE.Mesh(new THREE.CylinderGeometry(0.42, 0.42, 1.1, 16), tankMat);
+      tank.position.y = platformY + 0.6;
+      g.add(tank);
+      const tankLid = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.3, 0.42, 0.18, 16),
+        new THREE.MeshStandardMaterial({ color: 0x374151, roughness: 0.5, metalness: 0.5 })
+      );
+      tankLid.position.y = platformY + 1.24;
+      g.add(tankLid);
+      // Bushing insulators on top of the tank, feeding up to the crossarm.
+      for (const dx of [-0.15, 0.15]) {
+        const bushing = new THREE.Mesh(
+          new THREE.CylinderGeometry(0.04, 0.06, 0.45, 8),
+          new THREE.MeshStandardMaterial({ color: 0xe5e7eb, roughness: 0.4 })
+        );
+        bushing.position.set(dx, platformY + 1.55, 0);
+        g.add(bushing);
+      }
+    } else if (has("well")) {
+      // Open well: a low circular stone/concrete ring wall around the shaft.
+      const ring = new THREE.Mesh(
+        new THREE.TorusGeometry(0.55, 0.18, 10, 20),
+        new THREE.MeshStandardMaterial({ color: 0x9a978f, roughness: 0.95 })
+      );
+      ring.rotation.x = Math.PI / 2;
+      ring.position.y = ground + 0.5;
+      g.add(ring);
+      const shaft = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.5, 0.55, 1.0, 16, 1, true),
+        new THREE.MeshStandardMaterial({ color: 0x5b5147, roughness: 0.9, side: THREE.DoubleSide })
+      );
+      shaft.position.y = ground + 0.1;
+      g.add(shaft);
+    } else if (has("pump")) {
+      // Hand/motor pump: a compact housing on a small plinth with a spout.
       const plinth = new THREE.Mesh(
-        new THREE.BoxGeometry(1.1, 0.3, 0.9),
-        new THREE.MeshStandardMaterial({ color: 0x6b7280, roughness: 0.8 })
+        new THREE.CylinderGeometry(0.35, 0.4, 0.15, 16),
+        new THREE.MeshStandardMaterial({ color: 0x9a978f, roughness: 0.9 })
       );
-      plinth.position.y = ground + 0.15;
+      plinth.position.y = ground + 0.08;
       g.add(plinth);
-      const cab = new THREE.Mesh(
-        new THREE.BoxGeometry(1.0, 1.4, 0.8),
-        new THREE.MeshStandardMaterial({ color: colorObj, roughness: 0.5, metalness: 0.3 })
+      const body = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.16, 0.18, 0.9, 10),
+        new THREE.MeshStandardMaterial({ color: colorObj, roughness: 0.4, metalness: 0.5 })
       );
-      cab.position.y = ground + 1.0;
-      g.add(cab);
+      body.position.y = ground + 0.6;
+      g.add(body);
+      const spout = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.05, 0.05, 0.4, 8),
+        new THREE.MeshStandardMaterial({ color: 0x374151, roughness: 0.5, metalness: 0.5 })
+      );
+      spout.rotation.z = Math.PI / 2;
+      spout.position.set(0.25, ground + 0.95, 0);
+      g.add(spout);
+    } else if (has("water", "tank", "reservoir")) {
+      // Overhead water tank (OHT): a raised tank on a slim support pedestal
+      // — the real, unmistakable municipal-landmark silhouette, not a squat
+      // cylinder sitting flush on the ground.
+      const supportH = 6;
+      const support = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.5, 0.7, supportH, 16),
+        new THREE.MeshStandardMaterial({ color: 0xb8b2a6, roughness: 0.9 })
+      );
+      support.position.y = ground + supportH / 2;
+      g.add(support);
+      const tank = new THREE.Mesh(
+        new THREE.CylinderGeometry(1.6, 1.4, 2.0, 20),
+        new THREE.MeshStandardMaterial({ color: colorObj, roughness: 0.4, metalness: 0.3 })
+      );
+      tank.position.y = ground + supportH + 1.0;
+      g.add(tank);
+      const dome = new THREE.Mesh(
+        new THREE.SphereGeometry(1.6, 16, 10, 0, Math.PI * 2, 0, Math.PI / 2.2),
+        new THREE.MeshStandardMaterial({ color: colorObj, roughness: 0.4, metalness: 0.3 })
+      );
+      dome.position.y = ground + supportH + 2.0;
+      g.add(dome);
+      const rim = new THREE.Mesh(
+        new THREE.TorusGeometry(1.6, 0.06, 8, 24),
+        new THREE.MeshStandardMaterial({ color: 0x374151, roughness: 0.5, metalness: 0.5 })
+      );
+      rim.rotation.x = Math.PI / 2;
+      rim.position.y = ground + supportH + 2.0;
+      g.add(rim);
     } else if (has("planter")) {
       // Planter box: a low rectangular planter with a green planting top.
       const box = new THREE.Mesh(
@@ -428,6 +551,48 @@ function buildGenericFeature(
       plants.position.y = ground + 0.75;
       plants.scale.set(1.4, 0.8, 1.4);
       g.add(plants);
+    } else if (has("high mast", "highmast", "high_mast")) {
+      // High mast: a tall (20 m+) floodlight tower with a whole LANTERN RING
+      // of floodlights at the top and a raising/lowering winch ring below
+      // it — a real high mast looks nothing like an ordinary street light
+      // (a single small lamp on a 7 m pole), it's a much taller structure
+      // carrying a cluster of several floodlights together.
+      const mastH = 24;
+      const mast = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.22, 0.32, mastH, 12),
+        new THREE.MeshStandardMaterial({ color: 0x9ca3af, roughness: 0.45, metalness: 0.55 })
+      );
+      mast.position.y = ground + mastH / 2;
+      g.add(mast);
+      // Winch/lowering ring just below the lantern cluster.
+      const winchRing = new THREE.Mesh(
+        new THREE.TorusGeometry(0.32, 0.05, 8, 20),
+        new THREE.MeshStandardMaterial({ color: 0x4b5563, roughness: 0.5, metalness: 0.5 })
+      );
+      winchRing.rotation.x = Math.PI / 2;
+      winchRing.position.y = ground + mastH - 0.8;
+      g.add(winchRing);
+      // The lantern ring: a whole cluster of floodlights angled outward and
+      // down, radiating around the mast top — the real high-mast silhouette.
+      const floodCount = 8;
+      const lanternY = ground + mastH;
+      for (let i = 0; i < floodCount; i++) {
+        const a = (i / floodCount) * Math.PI * 2;
+        const flood = new THREE.Mesh(
+          new THREE.ConeGeometry(0.22, 0.4, 8),
+          new THREE.MeshStandardMaterial({
+            color: colorObj,
+            emissive: colorObj,
+            emissiveIntensity: 0.7,
+            roughness: 0.4,
+          })
+        );
+        flood.position.set(Math.cos(a) * 0.5, lanternY - 0.15, Math.sin(a) * 0.5);
+        flood.rotation.order = "YXZ";
+        flood.rotation.y = -a;
+        flood.rotation.z = Math.PI / 2 + 0.5; // angled outward and down, floodlighting the ground below
+        g.add(flood);
+      }
     } else if (has("pole", "mast", "tower", "pylon", "light", "lamp", "streetlight", "solar")) {
       // Pole / light / mast: galvanised mast + small lamp head.
       const mast = new THREE.Mesh(
@@ -442,6 +607,22 @@ function buildGenericFeature(
       );
       lamp.position.y = ground + 7;
       g.add(lamp);
+    } else if (has("chainage")) {
+      // Chainage: a survey distance marker along a route — a real ground
+      // stake/peg, NOT a lit beacon. Small and low so it never reads as a
+      // streetlight or a signal light.
+      const stake = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.04, 0.05, 0.5, 8),
+        new THREE.MeshStandardMaterial({ color: 0x9ca3af, roughness: 0.6, metalness: 0.3 })
+      );
+      stake.position.y = ground + 0.25;
+      g.add(stake);
+      const cap = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.08, 0.08, 0.05, 10),
+        new THREE.MeshStandardMaterial({ color: colorObj, roughness: 0.5 })
+      );
+      cap.position.y = ground + 0.52;
+      g.add(cap);
     } else if (has("manhole", "chamber", "pit", "inspection", "cover")) {
       // Manhole / access chamber: reuse the realistic chamber builder.
       g.add(buildManholeMarker(x, ground - 3, z, colorObj.getHex(), "manhole", String(f.properties.id ?? "x"), 3));
@@ -467,14 +648,6 @@ function buildGenericFeature(
       );
       board.position.y = ground + 1.75;
       g.add(board);
-    } else if (has("water", "tank", "pump", "well", "reservoir")) {
-      // Tank / pump: a cylinder on the ground.
-      const tank = new THREE.Mesh(
-        new THREE.CylinderGeometry(0.7, 0.7, 1.6, 16),
-        new THREE.MeshStandardMaterial({ color: colorObj, roughness: 0.5, metalness: 0.3 })
-      );
-      tank.position.y = ground + 0.8;
-      g.add(tank);
     } else {
       // Generic asset: a realistic slim pylon + coloured cap so it reads as a
       // surveyed point feature rather than an abstract dot.
@@ -1328,7 +1501,6 @@ export function Map3DViewer({ features, classMap, anomalies, manholeAnswer, data
         // (the line geometry and the pole points are two separately-surveyed
         // layers, so their coordinates don't line up on their own).
         const polePositions: { x: number; z: number; topY: number }[] = [];
-        const powerPolePositions: { x: number; z: number; topY: number }[] = [];
 
         // Precompute road sample points (local coords) so each lamp-bearing pole
         // can aim its arm + lamp at the carriageway instead of the building side.
@@ -1369,11 +1541,13 @@ export function Map3DViewer({ features, classMap, anomalies, manholeAnswer, data
           const attrs = p.properties.attributes ?? {};
           // Real pole height when surveyed, else a typical 7 m street pole.
           const poleH = readAttr(attrs, "height") ?? readAttr(attrs, "pole_height") ?? readAttr(attrs, "elevation") ?? 7;
-          polePositions.push({ x, z, topY: ground + poleH });
-          // Power poles (bare or with a light) are the supports an overhead
-          // power line actually hangs from — keep a separate list so the
-          // conductor only snaps onto real power poles, not streetlights/solar.
-          if (kind === "power-pole") powerPolePositions.push({ x, z, topY: ground + poleH });
+          // Light, power, and combo poles are all plausible grid supports an
+          // overhead line actually hangs from. Solar poles are NOT — they're
+          // self-contained/off-grid (their own panel powers the lamp), so a
+          // grid power line has no real reason to run through one; treating
+          // them as a support was wrong and made lines snap onto poles they
+          // have no real connection to.
+          if (kind !== "solar-pole") polePositions.push({ x, z, topY: ground + poleH });
           const g = new THREE.Group();
           // A power pole with a light fixture is still fundamentally a power
           // pole (wooden, carries a crossarm) — not a steel streetlight mast.
@@ -1590,12 +1764,13 @@ export function Map3DViewer({ features, classMap, anomalies, manholeAnswer, data
           const cx = a.x + vx * t, cz = a.z + vz * t;
           return { t, dist: Math.hypot(cx - p.x, cz - p.z) };
         };
-        // Nearest power-pole top height for a point — used so the conductor rides
-        // at the actual pole-top level between supports instead of floating a
+        // Nearest grid-pole top height for a point (light/power/combo, NOT
+        // solar — see polePositions above) — used so the conductor rides at
+        // the actual pole-top level between supports instead of floating a
         // fixed amount above them.
-        const nearestPowerPoleTopY = (x: number, z: number): number => {
+        const nearestPoleTopY = (x: number, z: number): number => {
           let best = Infinity, bestY = 0;
-          for (const p of powerPolePositions) {
+          for (const p of polePositions) {
             const d = (p.x - x) * (p.x - x) + (p.z - z) * (p.z - z);
             if (d < best) { best = d; bestY = p.topY; }
           }
@@ -1655,16 +1830,19 @@ export function Map3DViewer({ features, classMap, anomalies, manholeAnswer, data
               // overhead line.
               buildBuriedLine(pl, line, 2.0, 0.3, lineColor, 1, "electricline");
             } else {
-              // Power line: a real OVERHEAD 3-phase conductor hanging from the
-              // power poles. The poles are a separately-surveyed layer that lies
-              // ON the line but not on its vertices, so we INSERT a pole-top
-              // vertex wherever a power pole sits on a segment — the conductor
-              // then visibly lands on every pole instead of floating past them.
+              // Power line: a real OVERHEAD 3-phase conductor hanging from
+              // whatever real grid poles are actually there (light, power,
+              // or combo — solar poles are excluded from polePositions,
+              // they're off-grid). The poles are a separately-surveyed layer
+              // that lies ON the line but not on its vertices, so we INSERT
+              // a pole-top vertex wherever a grid pole sits on a segment —
+              // the conductor then visibly lands on every real support
+              // instead of floating past them at a flat height.
               const POLE_SNAP_TOL = 4; // metres from the line to count as a support
               const vlocal = line.map(([lon, lat]) => {
                 const [x, z] = projector.toLocal(lon, lat);
-                const y = powerPolePositions.length
-                  ? nearestPowerPoleTopY(x, z)
+                const y = polePositions.length
+                  ? nearestPoleTopY(x, z)
                   : elevAt(lon, lat) + OVERHEAD_LINE_H;
                 return { x, z, y };
               });
@@ -1673,7 +1851,7 @@ export function Map3DViewer({ features, classMap, anomalies, manholeAnswer, data
                 out.push(vlocal[i]);
                 if (i < vlocal.length - 1) {
                   const a = vlocal[i], b = vlocal[i + 1];
-                  for (const p of powerPolePositions) {
+                  for (const p of polePositions) {
                     const c = segClosest(p, a, b);
                     if (c.t > 0.02 && c.t < 0.98 && c.dist <= POLE_SNAP_TOL) {
                       out.push({ x: p.x, z: p.z, y: p.topY });
