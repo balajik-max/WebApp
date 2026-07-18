@@ -1,6 +1,7 @@
 import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
 import { AuthProvider } from "./context/AuthContext";
 import { ThemeProvider } from "./context/ThemeContext";
+import { LanguageProvider } from "./context/LanguageContext";
 import { AuthShield } from "./components/AuthShield";
 import { WorkspaceLayout } from "./components/WorkspaceLayout";
 import { LoginPage } from "./pages/Login";
@@ -10,12 +11,14 @@ import { AnalyticsView } from "./pages/AnalyticsView";
 import { ProfileView } from "./pages/ProfileView";
 import { ActivityView } from "./pages/ActivityView";
 import { TasksView } from "./pages/TasksView";
+import { GrievanceView } from "./pages/GrievanceView";
 
 export default function App() {
   return (
     <ThemeProvider>
-      <AuthProvider>
-        <BrowserRouter>
+      <LanguageProvider>
+        <AuthProvider>
+          <BrowserRouter>
           <Routes>
             <Route path="/login" element={<LoginPage />} />
 
@@ -32,13 +35,15 @@ export default function App() {
               <Route path="/analytics" element={<AnalyticsView />} />
               <Route path="/activity" element={<ActivityView />} />
               <Route path="/tasks" element={<TasksView />} />
+              <Route path="/grievance" element={<GrievanceView />} />
               <Route path="/profile" element={<ProfileView />} />
             </Route>
 
             <Route path="*" element={<Navigate to="/map" replace />} />
           </Routes>
         </BrowserRouter>
-      </AuthProvider>
+        </AuthProvider>
+      </LanguageProvider>
     </ThemeProvider>
   );
 }

@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
 import { useTheme } from "../context/ThemeContext";
+import { useLanguage } from "../context/LanguageContext";
 import { ApiError } from "../lib/api";
 import { resolvePostLoginPath, debugAuthRedirect } from "../lib/authRedirect";
 
@@ -17,6 +18,7 @@ function validEmail(v: string): boolean {
 export function LoginPage() {
   const { user, login } = useAuth();
   const { theme, toggle } = useTheme();
+  const { t } = useLanguage();
   const navigate = useNavigate();
 
   const [email, setEmail] = useState("");
@@ -170,8 +172,8 @@ export function LoginPage() {
         <div className="login__right">
           <div className="login__card">
             <div className="login__card-header">
-              <h2 className="login__title">Welcome back</h2>
-              <p className="login__lead">Sign in to continue to your workspace</p>
+              <h2 className="login__title">{t("login.welcome")}</h2>
+              <p className="login__lead">{t("login.lead")}</p>
             </div>
 
             <form onSubmit={submit} className="login__form" data-testid="login-form" noValidate>
@@ -180,7 +182,7 @@ export function LoginPage() {
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" width="16" height="16">
                     <path d="M16 12a4 4 0 10-8 0 4 4 0 008 0zm0 0v1.5a2.5 2.5 0 005 0V12a9 9 0 10-9 9m4.5-1.206a8.959 8.959 0 01-4.5 1.207" strokeLinecap="round" strokeLinejoin="round" />
                   </svg>
-                  Email address
+                  {t("login.emailAddress")}
                 </label>
                 <input
                   id="email"
@@ -210,7 +212,7 @@ export function LoginPage() {
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" width="16" height="16">
                     <path d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" strokeLinecap="round" strokeLinejoin="round" />
                   </svg>
-                  Password
+                  {t("login.password")}
                 </label>
                 <div className="login__password-wrap">
                   <input
@@ -274,11 +276,11 @@ export function LoginPage() {
                 {busy ? (
                   <span className="login__spinner-wrap">
                     <span className="login__spinner" />
-                    Signing in...
+                     {t("login.signingIn")}
                   </span>
                 ) : (
                   <>
-                    Sign in
+                     {t("login.signInBtn")}
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="16" height="16">
                       <path d="M14 5l7 7m0 0l-7 7m7-7H3" strokeLinecap="round" strokeLinejoin="round" />
                     </svg>
@@ -288,23 +290,11 @@ export function LoginPage() {
             </form>
 
             <div className="login__demo">
-              <p>Demo credentials:</p>
+              <p>{t("login.demo")}</p>
               <div className="login__demo-accounts">
                 <button type="button" onClick={() => { setEmail("admin@davangere.gov.in"); setPassword("Admin@12345"); }}>
                   <span className="login__demo-badge login__demo-badge--admin">DEMO</span>
                   admin@davangere.gov.in
-                </button>
-                <button type="button" onClick={() => { setEmail("commissioner@davangere.gov.in"); setPassword("Commissioner@123"); }}>
-                  <span className="login__demo-badge login__demo-badge--commissioner">Commissioner</span>
-                  commissioner@davangere.gov.in
-                </button>
-                <button type="button" onClick={() => { setEmail("aee@davangere.gov.in"); setPassword("AEE@123"); }}>
-                  <span className="login__demo-badge login__demo-badge--aee">AEE</span>
-                  aee@davangere.gov.in
-                </button>
-                <button type="button" onClick={() => { setEmail("ae@davangere.gov.in"); setPassword("AE@123"); }}>
-                  <span className="login__demo-badge login__demo-badge--ae">AE</span>
-                  ae@davangere.gov.in
                 </button>
                 <button type="button" onClick={() => { setEmail("commissioner@davangere.gov.in"); setPassword("Commissioner@12345"); }}>
                   <span className="login__demo-badge login__demo-badge--commissioner">Commissioner</span>
