@@ -17,37 +17,8 @@ interface DataSourceSelectorProps {
   rasterSettingsById: Record<string, RasterDisplaySettings>;
   onChangeRasterSettings: (datasetId: string, patch: Partial<RasterDisplaySettings>) => void;
   layerDatasetIds: string[];
-  selectedLayerDatasetId: string | null;
-  onOpenLayer: (datasetId: string, anchor: HTMLButtonElement) => void;
+  onOpenLayer: (datasetId: string, anchor: HTMLElement) => void;
   flyError: string | null;
-}
-
-function DatasetTypeIcon({ fileType, isModel3d = false }: { fileType: string; isModel3d?: boolean }) {
-  if (isModel3d) {
-    return (
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
-        <path d="M12 2 3.5 6.5v11L12 22l8.5-4.5v-11L12 2Z" />
-        <path d="m3.5 6.5 8.5 5 8.5-5M12 11.5V22" />
-      </svg>
-    );
-  }
-  const isRaster = fileType === "geotiff" || fileType.toLowerCase().includes("image");
-  if (isRaster) {
-    return (
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
-        <rect x="3" y="3" width="18" height="18" rx="2" />
-        <circle cx="8.5" cy="8.5" r="1.6" />
-        <path d="M21 15l-5-5L5 21" />
-      </svg>
-    );
-  }
-  return (
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
-      <polygon points="12 2 2 7 12 12 22 7 12 2" />
-      <polyline points="2 17 12 22 22 17" />
-      <polyline points="2 12 12 17 22 12" />
-    </svg>
-  );
 }
 
 export function DataSourceSelector({
@@ -60,7 +31,6 @@ export function DataSourceSelector({
   rasterSettingsById,
   onChangeRasterSettings,
   layerDatasetIds,
-  selectedLayerDatasetId,
   onOpenLayer,
   flyError,
 }: DataSourceSelectorProps) {
@@ -105,7 +75,6 @@ export function DataSourceSelector({
               datasets.map((d) => {
                 const isActive = activeDatasetIds.includes(d.id);
                 const selectable = d.status === "ready";
-                const modelMetadata = d.dataset_metadata?.model_3d;
                 // TIFF/GeoTIFF rasters (including DSM/DTM) are locked to a
                 // fixed render mode and expose no display settings. RGB is used
                 // for ordinary GeoTIFFs and Enhanced for DSM/DTM.
@@ -120,12 +89,29 @@ export function DataSourceSelector({
                 const canOpenSettings = hasRasterControls && isActive;
                 const canOpenLayer = hasLayerControls && isActive;
                 const isExpanded = canOpenSettings && expandedDatasetId === d.id;
-                const isLayerSelected = canOpenLayer && selectedLayerDatasetId === d.id;
                 const rasterSettings = resolveRasterSettings(rasterSettingsById[d.id]);
 
                 return (
                   <div className={`dss-row-shell${isExpanded ? " dss-row-shell--expanded" : ""}`} key={d.id}>
-                    <label className={`dss-row${isActive ? " dss-row--active" : ""}${selectable ? "" : " dss-row--disabled"}`}>
+                    <label
+                      className={`dss-row${isActive ? " dss-row--active" : ""}${selectable ? "" : " dss-row--disabled"}${canOpenLayer ? " dss-row--layer-capable" : ""}`}
+                      tabIndex={canOpenLayer ? 0 : undefined}
+                      title={canOpenLayer ? "Right-click to view layers" : undefined}
+                      aria-label={canOpenLayer ? `${d.name}. Right-click or press Shift+F10 to view layers.` : undefined}
+                      onContextMenu={(event) => {
+                        if (!canOpenLayer) return;
+                        event.preventDefault();
+                        event.stopPropagation();
+                        onOpenLayer(d.id, event.currentTarget);
+                      }}
+                      onKeyDown={(event) => {
+                        if (!canOpenLayer) return;
+                        const isContextMenuShortcut = event.key === "ContextMenu" || (event.shiftKey && event.key === "F10");
+                        if (!isContextMenuShortcut) return;
+                        event.preventDefault();
+                        onOpenLayer(d.id, event.currentTarget);
+                      }}
+                    >
                       <input
                         type="checkbox"
                         className="dss-checkbox"
@@ -134,18 +120,8 @@ export function DataSourceSelector({
                         onChange={() => selectable && onSelectDataset(d)}
                         aria-label={d.name}
                       />
-                      <span className="dss-row__icon" aria-hidden="true">
-                        <DatasetTypeIcon fileType={d.file_type} isModel3d={Boolean(modelMetadata)} />
-                      </span>
                       <span className="dss-row__info">
                         <span className="dss-row__name" title={d.name}>{d.name}</span>
-                        <span className="dss-row__meta">
-                          {d.ward ? (
-                            <><strong>Ward {d.ward}</strong> · {modelMetadata ? `OBJ 3D · ${modelMetadata.source_crs}` : d.file_type}</>
-                          ) : (
-                            <>All wards · {modelMetadata ? `OBJ 3D · ${modelMetadata.source_crs}` : d.file_type}</>
-                          )}
-                        </span>
                       </span>
                       {hasRasterControls ? (
                         <button
@@ -166,25 +142,7 @@ export function DataSourceSelector({
                             <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z" />
                           </svg>
                         </button>
-                      ) : hasLayerControls ? (
-                        <button
-                          type="button"
-                          className={`dataset-card__layer-btn${isLayerSelected ? " dataset-card__layer-btn--active" : ""}`}
-                          aria-label={`Open layer styling for ${d.name}`}
-                          aria-pressed={isLayerSelected}
-                          disabled={!canOpenLayer}
-                          onClick={(event) => {
-                            event.preventDefault();
-                            event.stopPropagation();
-                            if (!canOpenLayer) return;
-                            onOpenLayer(d.id, event.currentTarget);
-                          }}
-                        >
-                          Layer
-                        </button>
-                      ) : (
-                        <span className={`dataset-card__status dataset-card__status--${d.status}`}>{d.status}</span>
-                      )}
+                      ) : null}
                     </label>
                     {canOpenSettings && isExpanded && (
                       <div className="dataset-card__settings" onClick={(event) => event.stopPropagation()}>
