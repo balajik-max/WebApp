@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, useCallback, useImperativeHandle, useMemo, forwardRef } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, useCallback, useImperativeHandle, useMemo, forwardRef } from "react";
 import { createPortal } from "react-dom";
 import maplibregl, { Map as MLMap, MapMouseEvent, GeoJSONSource } from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
@@ -30,12 +30,13 @@ import { ReferenceLayersMenu, type ReferenceLayerVisibility } from "./map/Refere
 import { CoordinateSearchPanel } from "./map/CoordinateSearchPanel";
 import { useDraggableMapPanel } from "./map/useDraggableMapPanel";
 import type { CoordinateSearchDataset, CoordinateValue } from "../lib/coordinateSearch";
+import { useIsMobile } from "../lib/useIsMobile";
 import {
   bulkDeletePlacemarks, createPlacemark, deletePlacemark, fetchElevationSample, fetchPlacemarks,
   updatePlacemark, type ElevationSample, type Placemark, type PlacemarkDraft,
 } from "../lib/placemarks";
 import { ManholeRecommendCard } from "./ManholeRecommendCard";
-import { ManholePlan3D } from "./ManholePlan3D";
+import { Map3DViewer } from "./Map3DViewer";
 import { aiManholeRecommend, type AiAnswer } from "../lib/ai";
 
 // .obj datasets are persisted with file_type "other" (the enum has no
@@ -67,9 +68,20 @@ function sourceCrsFromDatasetMetadata(dataset: DatasetRow): string | null {
   return null;
 }
 
+export interface AiVerificationContext {
+  anomalyId: string;
+  detectionMode: Exclude<DetectionMode, null>;
+  anomalyType: SpatialAnomaly["anomaly_type"];
+  aiColor: "red" | "yellow";
+  severityScore: number;
+  detectedAt: string;
+  longitude: number;
+  latitude: number;
+}
+
 interface Props {
   filter: FeatureFilter;
-  onFeatureSelect: (feature: UrbanFeature | null) => void;
+  onFeatureSelect: (feature: UrbanFeature | null, aiVerification?: AiVerificationContext | null) => void;
   /** Fires whenever the set of datasets selected in the Command Center
    * changes — used to drive the ward/dataset-level report panel. */
   onActiveDatasetsChange?: (rows: DatasetRow[]) => void;
@@ -84,6 +96,14 @@ interface Props {
   focusFeatureId?: string;
   /** Clears the one-shot route request after the feature has been handled. */
   onFocusHandled?: () => void;
+  /** Refetch point-verification state after an Admin or Architect update. */
+  refreshToken?: number;
+
+  /** Whether the mobile Data Sources drawer is open — lifted up to
+   * WorkspaceLayout so the topbar's menu button can open it. Ignored on
+   * desktop, where the sidebar is always visible. */
+  commandCenterMobileOpen: boolean;
+  onCommandCenterMobileOpenChange: (open: boolean) => void;
 }
 
 const DAVANGERE_CENTER: [number, number] = [75.9218, 14.4644];
@@ -660,12 +680,6 @@ const AI_NEEDED_COLOR = "#22c55e";    // green
 // decided server-side, no client bucket math needed).
 const ANOMALY_SOURCE = "spatial-anomalies";
 const LAYER_ANOMALIES = "spatial-anomalies-points";
-// Road-width narrowing is drawn as a coloured LINE (the affected carriageway
-// stretch, like a traffic segment) rather than vertex dots — see
-// ANOMALY_ROAD_LINE_SOURCE below, populated from each finding's
-// `affected_line_wkt` metadata. The point layer explicitly excludes this type.
-const ANOMALY_ROAD_LINE_SOURCE = "spatial-anomalies-road-lines";
-const LAYER_ANOMALIES_ROAD = "spatial-anomalies-road-lines";
 
 // AI Manhole Recommendation Engine — proposed/rehab pipe routes, its own
 // source/layer so it never touches the anomaly/highlight layers above.
@@ -680,11 +694,15 @@ const LAYER_MANHOLE_UNCONNECTED = "manhole-recommend-unconnected-circle";
 const MANHOLE_ROUTE_COLOR = "#3aa1ff";
 const MANHOLE_UNCONNECTED_COLOR = "#9b59b6";
 const ANOMALY_COLOR_EXPR: maplibregl.ExpressionSpecification = [
-  "match", ["get", "color"],
-  "red", "#ef4444",
-  "yellow", "#f59e0b",
-  "green", "#22c55e",
-  "#94a3b8",
+  "case",
+  ["==", ["get", "status"], "resolved"], "#2563eb",
+  [
+    "match", ["get", "color"],
+    "red", "#ef4444",
+    "yellow", "#f59e0b",
+    "green", "#22c55e",
+    "#94a3b8",
+  ],
 ];
 
 // Measurement (ruler) tool — separate GeoJSON sources for the vertex
@@ -1028,6 +1046,16 @@ function featureFocusGeometry(feature: UrbanFeature): {
   };
 }
 
+
+// Blue is an AI-workflow color only. Normal map/category rendering always
+// keeps its original category color, even after Admin approval.
+const POINT_ISSUE_RESOLVED_COLOR = "#2563eb";
+function withPointVerificationColor(
+  fallback: maplibregl.ExpressionSpecification | string,
+): maplibregl.ExpressionSpecification | string {
+  return fallback;
+}
+
 function buildCategoryColorExpression(
   colorByCategory: Map<string, string>
 ): maplibregl.ExpressionSpecification | string {
@@ -1043,20 +1071,18 @@ function buildCategoryColorExpression(
 
 /** AI Detection focus modes — each isolates the map to one asset family and
  * one anomaly type, instead of showing every layer/finding at once. */
-export type DetectionMode = "poles" | "drains" | "manholes" | "roads" | null;
+export type DetectionMode = "poles" | "drains" | "manholes" | null;
 
 const DETECTION_MODE_TARGET_CLASSES: Record<Exclude<DetectionMode, null>, string[]> = {
   poles: ["Illumination_Asset"],
   drains: ["Building", "Drainage_Asset"],
   manholes: ["Access_Point"],
-  roads: ["Road_Centerline", "Road_Surface"],
 };
 
 const DETECTION_MODE_ANOMALY_TYPE: Record<Exclude<DetectionMode, null>, string> = {
   poles: "pole_redundancy",
   drains: "drain_encroachment",
   manholes: "manhole_status",
-  roads: "road_width_narrowing",
 };
 
 // Deliberately darker/more saturated than the category-color palette used
@@ -1079,32 +1105,36 @@ const DEFAULT_FILL_OPACITY = 0.35;
  * encroached building is highlighted red/yellow, everything else defaults
  * to green ("confirmed OK"), matching a real choropleth rather than pins. */
 function buildBuildingColorExpression(
-  buildingColor: Record<string, "red" | "yellow">
+  buildingColor: Record<string, "red" | "yellow" | "blue">
 ): maplibregl.ExpressionSpecification | string {
   const entries = Object.entries(buildingColor);
   if (entries.length === 0) return BUILDING_DEFAULT_COLOR;
   const pairs: (string | maplibregl.ExpressionSpecification)[] = [];
-  for (const [id, color] of entries) pairs.push(id, color === "red" ? BUILDING_RED_COLOR : BUILDING_YELLOW_COLOR);
+  for (const [id, color] of entries) {
+    pairs.push(id, color === "blue" ? POINT_ISSUE_RESOLVED_COLOR : color === "red" ? BUILDING_RED_COLOR : BUILDING_YELLOW_COLOR);
+  }
   return ["match", ["get", "id"], ...pairs, BUILDING_DEFAULT_COLOR] as unknown as maplibregl.ExpressionSpecification;
 }
 
-const ANOMALY_BADGE_COLOR: Record<SpatialAnomaly["color"], string> = {
+type AnomalyDisplayColor = SpatialAnomaly["color"] | "blue";
+
+const ANOMALY_BADGE_COLOR: Record<AnomalyDisplayColor, string> = {
   red: BUILDING_RED_COLOR,
   yellow: BUILDING_YELLOW_COLOR,
   green: BUILDING_DEFAULT_COLOR,
+  blue: POINT_ISSUE_RESOLVED_COLOR,
 };
 
 const ANOMALY_TYPE_LABEL: Record<SpatialAnomaly["anomaly_type"], string> = {
   pole_redundancy: "Pole Redundancy",
   drain_encroachment: "Drain Encroachment",
   manhole_status: "Manhole Status",
-  road_width_narrowing: "Road Width Narrowing",
 };
 
 /** One-line, numbers-first summary for the hover tooltip's AI Detected
  * badge — same underlying facts as the click-through AI Alert card, just
  * condensed so it's readable at a glance without opening anything. */
-function summarizeAnomalyForTooltip(a: SpatialAnomaly): { color: SpatialAnomaly["color"]; typeLabel: string; metric: string } {
+function summarizeAnomalyForTooltip(a: SpatialAnomaly): { color: AnomalyDisplayColor; typeLabel: string; metric: string; resolved: boolean; longitude: number; latitude: number } {
   const m = a.anomaly_metadata;
   let metric = "";
   if (a.anomaly_type === "pole_redundancy") {
@@ -1125,10 +1155,70 @@ function summarizeAnomalyForTooltip(a: SpatialAnomaly): { color: SpatialAnomaly[
         ? `Nearest drain: ${m.nearest_drain_category} (${m.nearest_drain_distance_m ?? "?"}m)`
         : "No nearby drain found"
     );
-  } else if (a.anomaly_type === "road_width_narrowing") {
-    metric = `Width ${m.width_m ?? "?"}m — down ${m.drop_pct ?? "?"}% from ~${m.rolling_avg_m ?? "?"}m avg`;
   }
-  return { color: a.color, typeLabel: ANOMALY_TYPE_LABEL[a.anomaly_type], metric };
+  const resolved = a.status === "resolved";
+  return {
+    color: resolved ? "blue" : a.color,
+    typeLabel: ANOMALY_TYPE_LABEL[a.anomaly_type],
+    metric: resolved ? `Resolved and Admin approved · ${metric}` : metric,
+    resolved,
+    longitude: a.lon,
+    latitude: a.lat,
+  };
+}
+
+function primaryFeatureIdForAnomaly(anomaly: SpatialAnomaly): string | null {
+  return (
+    (anomaly.anomaly_metadata.this_feature_id as string | undefined) ??
+    (anomaly.anomaly_metadata.building_id as string | undefined) ??
+    (anomaly.anomaly_metadata.manhole_id as string | undefined) ??
+    anomaly.feature_ids[0] ??
+    null
+  );
+}
+
+function aiVerificationContextForAnomaly(
+  anomaly: SpatialAnomaly | undefined,
+  mode: DetectionMode,
+): AiVerificationContext | null {
+  if (!anomaly || !mode || (anomaly.color !== "red" && anomaly.color !== "yellow")) return null;
+  if (anomaly.anomaly_type !== DETECTION_MODE_ANOMALY_TYPE[mode]) return null;
+  return {
+    anomalyId: anomaly.id,
+    detectionMode: mode,
+    anomalyType: anomaly.anomaly_type,
+    aiColor: anomaly.color,
+    severityScore: anomaly.severity_score,
+    detectedAt: anomaly.created_at,
+    longitude: anomaly.lon,
+    latitude: anomaly.lat,
+  };
+}
+
+function verificationSummaryFromAttributes(attributes: Record<string, unknown>): HoverInfo["verification"] {
+  const status = typeof attributes._verification_status === "string" ? attributes._verification_status : null;
+  const originalCondition = typeof attributes._verification_original_condition === "string"
+    ? attributes._verification_original_condition
+    : typeof attributes.Condition === "string"
+      ? attributes.Condition
+      : typeof attributes.condition === "string"
+        ? attributes.condition
+        : null;
+  const verified = typeof attributes._verification_current_condition === "string"
+    ? attributes._verification_current_condition
+    : typeof attributes._verification_verified_condition === "string"
+      ? attributes._verification_verified_condition
+      : null;
+  if (!status && !verified) return undefined;
+  return {
+    originalCondition,
+    currentCondition: status === "resolved" && verified ? verified : originalCondition,
+    status,
+    architect: typeof attributes._verification_architect === "string" ? attributes._verification_architect : null,
+    admin: typeof attributes._verification_verified_by === "string" ? attributes._verification_verified_by : null,
+    approvedAt: typeof attributes._verification_resolved_at === "string" ? attributes._verification_resolved_at : null,
+    remarks: typeof attributes._verification_remarks === "string" ? attributes._verification_remarks : null,
+  };
 }
 
 const EMPTY_FC: FeatureCollectionResponse = { type: "FeatureCollection", features: [], bbox: [0, 0, 0, 0], count: 0, limit: 0, truncated: false };
@@ -1263,7 +1353,16 @@ interface HoverInfo {
   /** Populated only while the AI Detection overlay is on and this feature
    * has a finding of its own — a quick "AI Detected" badge at a glance,
    * without needing to click. */
-  aiDetection?: { color: SpatialAnomaly["color"]; typeLabel: string; metric: string };
+  aiDetection?: { color: AnomalyDisplayColor; typeLabel: string; metric: string; resolved: boolean; longitude: number; latitude: number };
+  verification?: {
+    originalCondition: string | null;
+    currentCondition: string | null;
+    status: string | null;
+    architect: string | null;
+    admin: string | null;
+    approvedAt: string | null;
+    remarks: string | null;
+  };
 }
 interface LayerAttributeTableState extends LayerFeatureTableFilter {
   sourceLabel: string;
@@ -1273,7 +1372,17 @@ export interface MapCanvasHandle {
 }
 
 export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
-  { filter, onFeatureSelect, onActiveDatasetsChange, initialActiveDatasets, aiHighlights, focusFeatureId, onFocusHandled },
+  {
+    filter,
+    onFeatureSelect,
+    onActiveDatasetsChange,
+    initialActiveDatasets,
+    aiHighlights,
+    focusFeatureId,
+    onFocusHandled,
+    refreshToken = 0,
+    commandCenterMobileOpen, onCommandCenterMobileOpenChange,
+  },
   ref
 ) {
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -1289,7 +1398,8 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
   const [status, setStatus] = useState<ViewportStatus>({ loading: false, count: 0, truncated: false, error: null, bbox: null });
   // Full (unsliced) per-category breakdown of the currently loaded features,
   // for the QGIS-style layer-visibility checklist in the Command Center.
-  // `legend` above stays capped at 10 entries for the compact map overlay.
+  // The compact map overlay remains independently limited.
+
   const [categoryStats, setCategoryStats] = useState<LegendEntry[]>([]);
   // Categories unchecked in that checklist — purely a client-side paint/
   // filter toggle on already-fetched features, so it applies instantly and
@@ -1381,11 +1491,13 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
   // this off until the user turns it on.
   const [aiOverlayEnabled, setAiOverlayEnabled] = useState(false);
   const aiOverlayEnabledRef = useRef(false);
-  const buildingColorMapRef = useRef<Record<string, "red" | "yellow">>({});
+  const buildingColorMapRef = useRef<Record<string, "red" | "yellow" | "blue">>({});
   // feature id -> its own anomaly, for the hover tooltip's "AI Detected"
   // badge — populated whenever anomalies changes, read via ref from the
   // hover handler (registered once at map load).
   const anomalyByFeatureIdRef = useRef<Record<string, SpatialAnomaly>>({});
+  const anomalyByIdRef = useRef<Record<string, SpatialAnomaly>>({});
+  const aiAnomalyClickConsumedRef = useRef(false);
   // building feature id -> its drain_encroachment SpatialAnomaly id, so a
   // click on a recolored building in Drains mode can open the AI Alert card
   // for that specific finding (read via ref from the click handler, which
@@ -1429,6 +1541,11 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
   const [myPlacesOpen, setMyPlacesOpen] = useState(false);
   const [coordinateSearchOpen, setCoordinateSearchOpen] = useState(false);
   const coordinateSearchMarkerRef = useRef<maplibregl.Marker | null>(null);
+  // Below the mobile breakpoint the Data Sources sidebar becomes a
+  // slide-in drawer rather than a permanent fixed panel — open state is
+  // lifted up to WorkspaceLayout (see commandCenterMobileOpen prop) so the
+  // topbar's menu button can open it.
+  const isMobile = useIsMobile();
   const [referenceLayers, setReferenceLayers] = useState<ReferenceLayerVisibility>({
     borders: false,
     roads: false,
@@ -2852,7 +2969,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     }
 
     const colorExpr = buildCategoryColorExpression(colorMap);
-    if (map.getLayer(LAYER_POINTS)) map.setPaintProperty(LAYER_POINTS, "circle-color", colorExpr);
+    if (map.getLayer(LAYER_POINTS)) map.setPaintProperty(LAYER_POINTS, "circle-color", withPointVerificationColor(colorExpr));
     if (map.getLayer(LAYER_LINES)) map.setPaintProperty(LAYER_LINES, "line-color", colorExpr);
     // In Drains mode, polygons (buildings) are recolored by their own
     // encroachment finding instead of by category — read via a ref (not
@@ -2989,7 +3106,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     // Restore the normal shared layers. The selected source layer is removed
     // from these layers by the filter effect and rendered only by the overlay.
     if (map.getLayer(LAYER_POINTS)) {
-      map.setPaintProperty(LAYER_POINTS, "circle-color", baseColor);
+      map.setPaintProperty(LAYER_POINTS, "circle-color", withPointVerificationColor(baseColor));
       map.setPaintProperty(LAYER_POINTS, "circle-radius", 3.5);
       map.setPaintProperty(LAYER_POINTS, "circle-opacity", 0.9);
     }
@@ -3009,7 +3126,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     }
 
     if (map.getLayer(VIZ_SELECTED_POINTS)) {
-      map.setPaintProperty(VIZ_SELECTED_POINTS, "circle-color", selectedColor);
+      map.setPaintProperty(VIZ_SELECTED_POINTS, "circle-color", withPointVerificationColor(selectedColor));
       map.setPaintProperty(VIZ_SELECTED_POINTS, "circle-radius", selectedPointRadius);
       map.setPaintProperty(VIZ_SELECTED_POINTS, "circle-opacity", visualizationOpacity);
     }
@@ -3311,22 +3428,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
       .then((lists) => setAnomalies(lists.flat()))
       .catch(() => {});
     return () => ctrl.abort();
-  }, [activeDatasetIds]);
-
-  // Parse a "LINESTRING(lon lat, ...)" / "SRID=4326;LINESTRING(...)" WKT into
-  // GeoJSON [lon, lat] coordinates. Returns null if not a line.
-  const wktLineCoords = (wkt: string | undefined): [number, number][] | null => {
-    if (!wkt) return null;
-    const m = wkt.match(/LINESTRING\s*\(([^)]+)\)/i);
-    if (!m) return null;
-    return m[1]
-      .trim()
-      .split(",")
-      .map((pair) => {
-        const [lon, lat] = pair.trim().split(/\s+/).map(Number);
-        return [lon, lat] as [number, number];
-      });
-  };
+  }, [activeDatasetIds, refreshToken]);
 
   // Push the fetched anomalies into the map source whenever they change.
   useEffect(() => {
@@ -3340,31 +3442,9 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
         type: "Feature",
         id: a.id,
         geometry: { type: "Point", coordinates: [a.lon, a.lat] },
-        properties: { id: a.id, color: a.color, anomaly_type: a.anomaly_type },
+        properties: { id: a.id, color: a.color, anomaly_type: a.anomaly_type, status: a.status },
       })),
     });
-    // Road-width narrowing is rendered as a line (the affected carriageway
-    // stretch), not a point — feed its WKT geometry into a separate source.
-    const roadSrc = map.getSource(ANOMALY_ROAD_LINE_SOURCE) as GeoJSONSource | undefined;
-    if (roadSrc) {
-      roadSrc.setData({
-        type: "FeatureCollection",
-        features: anomalies
-          .filter((a) => a.anomaly_type === "road_width_narrowing")
-          .map((a) => {
-            const coords = wktLineCoords(a.anomaly_metadata?.affected_line_wkt as string | undefined);
-            return coords
-              ? {
-                  type: "Feature" as const,
-                  id: a.id,
-                  geometry: { type: "LineString" as const, coordinates: coords },
-                  properties: { id: a.id, color: a.color, anomaly_type: a.anomaly_type },
-                }
-              : null;
-          })
-          .filter((f): f is NonNullable<typeof f> => f !== null),
-      });
-    }
   }, [mapReady, anomalies]);
 
   // Push the current manhole-recommend answer's routes into their own map
@@ -3528,16 +3608,15 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
   // reason (feature_ids[0] happens to already match those two, but reading
   // the explicit metadata field is the correct contract, not a coincidence).
   useEffect(() => {
-    const map: Record<string, SpatialAnomaly> = {};
-    for (const a of anomalies) {
-      const primaryId =
-        (a.anomaly_metadata.this_feature_id as string | undefined) ??
-        (a.anomaly_metadata.building_id as string | undefined) ??
-        (a.anomaly_metadata.manhole_id as string | undefined) ??
-        a.feature_ids[0];
-      if (primaryId) map[primaryId] = a;
+    const byFeature: Record<string, SpatialAnomaly> = {};
+    const byId: Record<string, SpatialAnomaly> = {};
+    for (const anomaly of anomalies) {
+      byId[anomaly.id] = anomaly;
+      const primaryId = primaryFeatureIdForAnomaly(anomaly);
+      if (primaryId) byFeature[primaryId] = anomaly;
     }
-    anomalyByFeatureIdRef.current = map;
+    anomalyByFeatureIdRef.current = byFeature;
+    anomalyByIdRef.current = byId;
   }, [anomalies]);
 
   // Entering/leaving a detection mode drives which asset family is visible —
@@ -3575,13 +3654,13 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     const map = mapRef.current;
     if (!mapReady || !map) return;
 
-    const buildingColors: Record<string, "red" | "yellow"> = {};
+    const buildingColors: Record<string, "red" | "yellow" | "blue"> = {};
     const buildingAnomalyIds: Record<string, string> = {};
     for (const a of anomalies) {
       if (a.anomaly_type !== "drain_encroachment") continue;
       const buildingId = a.feature_ids[0];
       if (buildingId) {
-        buildingColors[buildingId] = a.color === "red" ? "red" : "yellow";
+        buildingColors[buildingId] = a.status === "resolved" ? "blue" : a.color === "red" ? "red" : "yellow";
         buildingAnomalyIds[buildingId] = a.id;
       }
     }
@@ -3602,39 +3681,8 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
       );
     }
     if (map.getLayer(LAYER_ANOMALIES)) {
-      // Each detection mode isolates its own finding type as dots. Road-width
-      // narrowing is drawn as a LINE (LAYER_ANOMALIES_ROAD), so in Road Width
-      // mode the point layer shows nothing; in other modes it shows that
-      // mode's type (never road_width_narrowing). With no mode but the overlay
-      // on (e.g. after "Run Spatial Audit") it shows every type except
-      // road_width_narrowing. Drains mode suppresses points entirely — it
-      // communicates through polygon fill instead.
-      const anomalyType =
-        aiOn && detectionMode !== null && detectionMode !== "drains" && detectionMode !== "roads"
-          ? DETECTION_MODE_ANOMALY_TYPE[detectionMode]
-          : null;
-      let pointFilter: maplibregl.FilterSpecification;
-      if (anomalyType) {
-        pointFilter = ["==", ["get", "anomaly_type"], anomalyType];
-      } else if (aiOn && detectionMode === null) {
-        pointFilter = ["!=", ["get", "anomaly_type"], "road_width_narrowing"];
-      } else {
-        // roads or drains mode, or overlay off => no dots
-        pointFilter = ["==", ["get", "anomaly_type"], "__none__"];
-      }
-      map.setFilter(LAYER_ANOMALIES, pointFilter);
-    }
-    if (map.getLayer(LAYER_ANOMALIES_ROAD)) {
-      // The road-line layer mirrors the same visibility logic, but it ONLY
-      // ever carries road_width_narrowing — so it shows whenever that type is
-      // in scope: Road Width mode, or "show everything" (overlay on, no
-      // specific mode). Drains mode communicates via polygon fill, so it
-      // hides the road lines too.
-      const roadInScope = aiOn && detectionMode !== "drains" && (detectionMode === "roads" || detectionMode === null);
-      const roadFilter: maplibregl.FilterSpecification = roadInScope
-        ? ["==", ["get", "anomaly_type"], "road_width_narrowing"]
-        : ["==", ["get", "anomaly_type"], "__none__"];
-      map.setFilter(LAYER_ANOMALIES_ROAD, roadFilter);
+      const anomalyType = aiOn && detectionMode !== "drains" ? DETECTION_MODE_ANOMALY_TYPE[detectionMode] : null;
+      map.setFilter(LAYER_ANOMALIES, anomalyType ? ["==", ["get", "anomaly_type"], anomalyType] : ["==", ["get", "anomaly_type"], "__none__"]);
     }
 
     function colorByCategoryExpr() {
@@ -3657,12 +3705,10 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
 
   const toggleDetectionMode = useCallback((mode: Exclude<DetectionMode, null>) => {
     setDetectionMode((current) => (current === mode ? null : mode));
-    // A detection mode's whole purpose is the AI red/yellow/green highlight,
-    // so selecting one turns the overlay on immediately (the mode already
-    // filters the anomaly layer down to its own finding type — e.g. Road
-    // Width shows only road_width_narrowing). Toggling a mode off leaves the
-    // overlay as-is so other findings stay visible.
-    if (detectionModeRef.current !== mode) setAiOverlayEnabled(true);
+    // Every fresh mode selection starts with the AI overlay off — isolate
+    // the category first, plain colors, then the user explicitly turns AI
+    // on as a separate step.
+    setAiOverlayEnabled(false);
   }, []);
 
   const toggleAiOverlay = useCallback(() => {
@@ -3694,11 +3740,6 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
       }
     }
     if (failures.length > 0) setAuditError(failures.join("; "));
-    // Auto-turn on the AI overlay so the freshly-computed audit findings are
-    // visible on the map immediately, without the user having to also toggle
-    // "AI Detection" on. With no detection mode active this shows ALL audit
-    // anomaly types (including the new road_width_narrowing), not one mode.
-    setAiOverlayEnabled(true);
     setAuditRunning(false);
   }, []);
 
@@ -3950,6 +3991,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [filter]);
 
+  useEffect(() => { if (!mapReady || refreshToken === 0) return; scheduleFetch(); }, [mapReady, refreshToken, scheduleFetch]);
   useEffect(() => {
     if (!containerRef.current || mapRef.current) return;
     const map = new maplibregl.Map({
@@ -3968,7 +4010,6 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
         API_BASE && url.startsWith(API_BASE) ? { url, credentials: "include" } : { url },
     });
     mapRef.current = map;
-    if (typeof window !== "undefined") (window as unknown as { __mapCanvas?: unknown }).__mapCanvas = map;
 
     // Keeps the custom horizontal zoom slider's thumb synced to the map's
     // actual zoom regardless of how it changed (wheel, pinch, double-click,
@@ -4218,34 +4259,12 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
         id: LAYER_ANOMALIES,
         type: "circle",
         source: ANOMALY_SOURCE,
-        // Road-width narrowing is drawn as a line elsewhere, never as dots.
-        filter: ["!=", ["get", "anomaly_type"], "road_width_narrowing"],
         paint: {
           "circle-radius": ["interpolate", ["linear"], ["zoom"], 8, 6, 12, 10, 16, 15],
           "circle-color": ANOMALY_COLOR_EXPR,
           "circle-opacity": 0.95,
           "circle-stroke-color": "#0b1013",
           "circle-stroke-width": 2,
-        },
-      });
-
-      // Road-width narrowing rendered as a coloured LINE (the affected
-      // carriageway stretch) — like a traffic segment, not vertex markers.
-      map.addSource(ANOMALY_ROAD_LINE_SOURCE, {
-        type: "geojson",
-        data: { type: "FeatureCollection", features: [] },
-        promoteId: "id",
-      });
-      map.addLayer({
-        id: LAYER_ANOMALIES_ROAD,
-        type: "line",
-        source: ANOMALY_ROAD_LINE_SOURCE,
-        layout: { "line-cap": "round", "line-join": "round" },
-        paint: {
-          "line-color": ANOMALY_COLOR_EXPR,
-          "line-width": ["interpolate", ["linear"], ["zoom"], 12, 4, 16, 8, 19, 14],
-          "line-opacity": 0.85,
-          "line-blur": 0.5,
         },
       });
 
@@ -4348,30 +4367,37 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
       });
 
       map.on("click", LAYER_ANOMALIES, (e: MapMouseEvent) => {
-        // In Manholes AI mode, the underlying base point layer sits at the
-        // exact same coordinate and its own click handler (in
-        // handleFeatureClick below) already opens the richer manhole-
-        // recommend card for this click — without this guard, MapLibre
-        // fires both layer-specific handlers for one click and both cards
-        // would open stacked on top of each other.
-        if (detectionModeRef.current === "manholes") return;
         const hit = map.queryRenderedFeatures(e.point, { layers: [LAYER_ANOMALIES] });
         if (!hit.length) return;
         const id = hit[0].properties?.id as string | undefined;
-        if (id) setSelectedAnomalyId(id);
+        if (!id) return;
+
+        const anomaly = anomalyByIdRef.current[id];
+        const activeMode = detectionModeRef.current;
+        const context = aiOverlayEnabledRef.current
+          ? aiVerificationContextForAnomaly(anomaly, activeMode)
+          : null;
+        const primaryFeatureId = anomaly ? primaryFeatureIdForAnomaly(anomaly) : null;
+
+        // Preserve the previous AI UI: Poles/Drains still open the AI Alert
+        // card; Manholes still use their richer recommendation card.
+        if (activeMode !== "manholes") setSelectedAnomalyId(id);
+        if (!context || !primaryFeatureId) return;
+
+        aiAnomalyClickConsumedRef.current = true;
+        window.requestAnimationFrame(() => { aiAnomalyClickConsumedRef.current = false; });
+        void fetchFeatureById(primaryFeatureId)
+          .then((feature) => {
+            onFeatureSelect(feature, context);
+            if (context.detectionMode === "manholes" && feature.properties.dataset_id) {
+              setManholeRecommendOpen(false);
+              void runManholeFeatureRecommend(feature.properties.dataset_id, feature.properties.id);
+            }
+          })
+          .catch(() => {});
       });
       map.on("mouseenter", LAYER_ANOMALIES, () => (map.getCanvas().style.cursor = "pointer"));
       map.on("mouseleave", LAYER_ANOMALIES, () => (map.getCanvas().style.cursor = ""));
-
-      // Road-width narrowing lines open the same anomaly card on click/hover.
-      map.on("click", LAYER_ANOMALIES_ROAD, (e: MapMouseEvent) => {
-        const hit = map.queryRenderedFeatures(e.point, { layers: [LAYER_ANOMALIES_ROAD] });
-        if (!hit.length) return;
-        const id = hit[0].properties?.id as string | undefined;
-        if (id) setSelectedAnomalyId(id);
-      });
-      map.on("mouseenter", LAYER_ANOMALIES_ROAD, () => (map.getCanvas().style.cursor = "pointer"));
-      map.on("mouseleave", LAYER_ANOMALIES_ROAD, () => (map.getCanvas().style.cursor = ""));
 
       // A separate, top-most source keeps an attribute-table selection
       // visible even while the regular dataset source is being refreshed.
@@ -4418,15 +4444,26 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
         // photo — otherwise the two click handlers would both fire for the
         // same click. Once Escape deactivates the tool (panel still open),
         // this must stop applying so ordinary feature clicks work again.
-        if (placemarkModeRef.current || streetPickModeRef.current || streetPickConsumedRef.current || isMeasureInputActive()) return;
+        if (placemarkModeRef.current || streetPickModeRef.current || streetPickConsumedRef.current || aiAnomalyClickConsumedRef.current || isMeasureInputActive()) return;
         const hit = map.queryRenderedFeatures(e.point, { layers: ALL_CLICKABLE });
         if (!hit.length) return;
         const isAi = AI_CLICKABLE.includes(hit[0].layer?.id as string);
         const base = isAi ? hit.find((f) => BASE_CLICKABLE.includes(f.layer?.id as string)) : hit[0];
         const selected = decodeFeature(base ?? hit[0]);
-        if (aiOverlayEnabledRef.current && detectionModeRef.current === "drains") {
+        const activeMode = detectionModeRef.current;
+        const selectedAnomaly = aiOverlayEnabledRef.current && activeMode
+          ? anomalyByFeatureIdRef.current[selected.properties.id]
+          : undefined;
+        const verificationContext = aiOverlayEnabledRef.current
+          ? aiVerificationContextForAnomaly(selectedAnomaly, activeMode)
+          : null;
+        if (aiOverlayEnabledRef.current && activeMode === "drains") {
           const anomalyId = buildingAnomalyIdMapRef.current[selected.properties.id];
-          if (anomalyId) { setSelectedAnomalyId(anomalyId); return; }
+          if (anomalyId) {
+            setSelectedAnomalyId(anomalyId);
+            if (verificationContext) onFeatureSelect(selected, verificationContext);
+            return;
+          }
         }
         if (
           aiOverlayEnabledRef.current &&
@@ -4441,6 +4478,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
           // Poles/Drains: only hide the network SUMMARY PANEL (not its
           // data) so the two cards don't visually stack in the same corner.
           setManholeRecommendOpen(false);
+          if (verificationContext) onFeatureSelect(selected, verificationContext);
           void runManholeFeatureRecommend(selected.properties.dataset_id, selected.properties.id);
           return;
         }
@@ -4452,7 +4490,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
           });
           return;
         }
-        onFeatureSelect(selected);
+        onFeatureSelect(selected, verificationContext);
       };
       const handleFeatureHover = (e: MapMouseEvent) => {
         // While a measurement tool is actually armed/drawing, ordinary
@@ -4477,16 +4515,18 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
         const anomalyForFeature = aiOverlayEnabledRef.current
           ? anomalyByFeatureIdRef.current[decoded.properties.id]
           : undefined;
+        const aiSummary = anomalyForFeature ? summarizeAnomalyForTooltip(anomalyForFeature) : undefined;
         setHover({
           x: e.point.x,
           y: e.point.y,
           label: decoded.properties.label || "-",
           category,
           severity: decoded.properties.severity,
-          color: colorForCategory(category),
+          color: aiSummary ? ANOMALY_BADGE_COLOR[aiSummary.color] : colorForCategory(category),
           attributes: decoded.properties.attributes,
           aiStatus,
-          aiDetection: anomalyForFeature ? summarizeAnomalyForTooltip(anomalyForFeature) : undefined,
+          aiDetection: aiSummary,
+          verification: verificationSummaryFromAttributes(decoded.properties.attributes),
         });
       };
       // Named (not inline-anonymous) so the cursor is never fought: while
@@ -5278,6 +5318,9 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
   return (
     <>
       <CommandCenter
+        isMobile={isMobile}
+        open={!isMobile || commandCenterMobileOpen}
+        onRequestClose={() => onCommandCenterMobileOpenChange(false)}
         datasets={datasets}
         activeDatasetIds={activeDatasetIds}
         flyError={flyError}
@@ -5471,6 +5514,19 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
               </g>
             </svg>
           </button>
+          <button
+            type="button"
+            className="map-measure-btn"
+            onClick={() => setShow3DPlan(true)}
+            title="3D Viewer"
+            aria-label="Open 3D Viewer"
+            data-testid="topbar-3d-viewer"
+          >
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <path d="M12 3.5l7.5 4.2v8.6L12 20.5l-7.5-4.2V7.7L12 3.5z" />
+              <path d="M12 12v8.5M12 12l7.5-4.3M12 12L4.5 7.7" />
+            </svg>
+          </button>
         </div>
         {manholeRecommendOpen && (
           <ManholeRecommendCard
@@ -5542,7 +5598,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
         />
       )}
       {show3DPlan && (
-        <ManholePlan3D
+        <Map3DViewer
           features={loadedFeatures}
           classMap={classMap}
           anomalies={anomalies}
@@ -5598,12 +5654,14 @@ interface VisualizationPanelProps {
 }
 
 function CommandCenter({
+  isMobile, open, onRequestClose,
   datasets, activeDatasetIds, flyError, onSelectDataset, onSelectAllDatasets, expandedDatasetId, onToggleDatasetSettings,
   rasterSettingsById, onChangeRasterSettings, categoryStats, hiddenCategories, onToggleCategory,
   onSetAllCategoriesVisible, onRunAudit, auditRunning, auditError, onOpenAttributeTable, status: _status, visualization,
   detectionMode, onRunManholeNetwork, manholeRecommendLoading,
   classMap, extraVisibleCategories, onToggleExtraVisibleCategory, onSetAllExtraVisibleCategories,
 }: {
+  isMobile: boolean; open: boolean; onRequestClose: () => void;
   datasets: DatasetRow[]; activeDatasetIds: string[]; flyError: string | null; onSelectDataset: (d: DatasetRow) => void;
   onSelectAllDatasets: (active: boolean) => void;
   expandedDatasetId: string | null;
@@ -5646,6 +5704,7 @@ function CommandCenter({
       ? { x: visualizationPopupPosition.left, y: visualizationPopupPosition.top }
       : null,
     margin: 8,
+    disabled: isMobile,
   });
   const normalizedLayerQuery = layerQuery.trim().toLocaleLowerCase();
   const displayedLayers = useMemo(
@@ -5730,7 +5789,31 @@ function CommandCenter({
   }, [visualization.selectedDatasetId]);
 
   return (
-    <aside className="command-center" data-testid="command-center">
+    <>
+      {isMobile && open && (
+        <div
+          className="command-center__backdrop"
+          onClick={onRequestClose}
+          data-testid="command-center-backdrop"
+        />
+      )}
+      <aside
+        className={`command-center${isMobile && !open ? " command-center--closed" : ""}`}
+        data-testid="command-center"
+      >
+        {isMobile && (
+          <button
+            type="button"
+            className="command-center__close"
+            onClick={onRequestClose}
+            aria-label="Close data sources"
+            data-testid="command-center-close"
+          >
+            <svg viewBox="0 0 24 24" aria-hidden="true" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2">
+              <path d="M6 6l12 12M18 6L6 18" />
+            </svg>
+          </button>
+        )}
       <div className="command-center__body">
         {datasets.length > 0 && (
           <DataSourceSelector
@@ -5956,7 +6039,8 @@ function CommandCenter({
         </div>,
         document.body
       )}
-    </aside>
+      </aside>
+    </>
   );
 }
 
@@ -6185,7 +6269,6 @@ const DETECTION_MODE_LABEL: Record<Exclude<DetectionMode, null>, string> = {
   poles: "Poles",
   drains: "Drains",
   manholes: "Manholes",
-  roads: "Road Width",
 };
 
 function MapControls({
@@ -6227,58 +6310,51 @@ function MapControls({
   referenceLayers: ReferenceLayerVisibility;
   onToggleReferenceLayer: (key: keyof ReferenceLayerVisibility, visible: boolean) => void;
 }) {
-  const [menuOpen, setMenuOpen] = useState(false);
   const [toolsMenuOpen, setToolsMenuOpen] = useState(false);
-  const [activeToolsSection, setActiveToolsSection] = useState<"map" | "ai" | "location" | null>(null);
+  const [activeToolsSection, setActiveToolsSection] = useState<"map" | "location" | null>(null);
   const [menuPos, setMenuPos] = useState<{ top: number; left: number } | null>(null);
+  // AI Detection is an independent floating control, not a tools-menu
+  // category — its own open state, own outside-click handling, own anchor.
+  // Three explicit, independent states (not derived from one another):
+  // showDetectionList (the Poles/Drains/Manholes picker), showDetectionStatus
+  // (the "AI Detection : X  ON/OFF" card), and detectionMode/aiOverlayEnabled
+  // (props — the actual selection/activation, untouched by this UI layer).
+  // Keeping list-visibility and status-visibility as separate booleans
+  // (rather than deriving one from "not the other") is what lets a single
+  // icon click close the status card without also opening the list.
+  const [showDetectionList, setShowDetectionList] = useState(false);
+  const [showDetectionStatus, setShowDetectionStatus] = useState(false);
+  const [aiOffsetY, setAiOffsetY] = useState(0);
   const toolsControlRef = useRef<HTMLDivElement | null>(null);
-  const menuRef = useRef<HTMLDivElement | null>(null);
+  const toolsToggleRef = useRef<HTMLButtonElement | null>(null);
+  const toolsPanelsRef = useRef<HTMLDivElement | null>(null);
+  const aiWrapRef = useRef<HTMLDivElement | null>(null);
   const portalMenuRef = useRef<HTMLDivElement | null>(null);
+  const isMobile = useIsMobile();
   const aiMenuDrag = useDraggableMapPanel<HTMLDivElement>({
     storageKey: "davangere.ai-detection-position",
     boundary: "viewport",
     initialPosition: menuPos ? { x: menuPos.left, y: menuPos.top } : null,
     margin: 8,
+    disabled: isMobile,
   });
-
-  useEffect(() => {
-    if (!menuOpen) return;
-    const onClickOutside = (e: MouseEvent) => {
-      const target = e.target as Node;
-      if (
-        menuRef.current && !menuRef.current.contains(target) &&
-        portalMenuRef.current && !portalMenuRef.current.contains(target)
-      ) {
-        setMenuOpen(false);
-      }
-    };
-    const onEscape = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setMenuOpen(false);
-    };
-    document.addEventListener("mousedown", onClickOutside);
-    document.addEventListener("keydown", onEscape);
-    return () => {
-      document.removeEventListener("mousedown", onClickOutside);
-      document.removeEventListener("keydown", onEscape);
-    };
-  }, [menuOpen]);
 
   // MapLibre's WebGL canvas can composite on its own GPU layer that paints
   // over positioned overlay siblings regardless of z-index/stacking-context
   // CSS (confirmed via elementFromPoint — the canvas rendered on top of a
   // correctly z-indexed, position:absolute dropdown). Portaling the open
   // dropdown straight to document.body, positioned with fixed coordinates
-  // computed from the button's own rect, sidesteps the map's DOM subtree
-  // entirely instead of fighting that stacking behavior.
+  // computed from the AI icon's own rect, sidesteps the map's DOM subtree
+  // entirely instead of fighting that stacking behavior. Opens beside the
+  // icon (right edge + spacing), not below it.
   useEffect(() => {
-    if (!menuOpen || !menuRef.current) return;
-    const rect = menuRef.current.getBoundingClientRect();
-    setMenuPos({ top: rect.bottom + 6, left: rect.left });
-  }, [menuOpen]);
+    if (!showDetectionList || !aiWrapRef.current) return;
+    const rect = aiWrapRef.current.getBoundingClientRect();
+    setMenuPos({ top: rect.top, left: rect.right + 8 });
+  }, [showDetectionList]);
 
   useEffect(() => {
     if (!toolsMenuOpen) {
-      setMenuOpen(false);
       setActiveToolsSection(null);
       return;
     }
@@ -6286,18 +6362,19 @@ function MapControls({
     const onToolsOutside = (event: MouseEvent) => {
       const target = event.target as Node;
       if (toolsControlRef.current?.contains(target)) return;
+      // The AI mode-picker dropdown is portaled to document.body (outside
+      // toolsControlRef) — a click inside it is unrelated to this menu and
+      // must not close it, since AI Detection is now fully independent.
       if (portalMenuRef.current?.contains(target)) return;
       if (target instanceof Element && target.closest(".reference-layers-menu")) return;
       setToolsMenuOpen(false);
       setActiveToolsSection(null);
-      setMenuOpen(false);
     };
 
     const onToolsEscape = (event: KeyboardEvent) => {
       if (event.key !== "Escape") return;
       setToolsMenuOpen(false);
       setActiveToolsSection(null);
-      setMenuOpen(false);
     };
 
     document.addEventListener("mousedown", onToolsOutside);
@@ -6307,6 +6384,84 @@ function MapControls({
       document.removeEventListener("keydown", onToolsEscape);
     };
   }, [toolsMenuOpen]);
+
+  // AI Detection's own outside-click/escape handling — fully independent of
+  // the tools menu's. The dropdown is portaled to document.body, so it's
+  // exempted the same way the tools menu exempts it above. Dismissing the
+  // list this way (without picking anything) returns to whatever was
+  // showing before it opened — the status card reappears if a mode is
+  // already active, same as before the list was split into its own state.
+  // The AI icon's own click handler is deliberately different (see
+  // handleAiIconClick) and does not restore the status card this way.
+  useEffect(() => {
+    if (!showDetectionList) return;
+    const onAiOutside = (event: MouseEvent) => {
+      const target = event.target as Node;
+      if (aiWrapRef.current?.contains(target)) return;
+      if (portalMenuRef.current?.contains(target)) return;
+      setShowDetectionList(false);
+      setShowDetectionStatus(Boolean(detectionMode));
+    };
+    const onAiEscape = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      setShowDetectionList(false);
+      setShowDetectionStatus(Boolean(detectionMode));
+    };
+    document.addEventListener("mousedown", onAiOutside);
+    document.addEventListener("keydown", onAiEscape);
+    return () => {
+      document.removeEventListener("mousedown", onAiOutside);
+      document.removeEventListener("keydown", onAiEscape);
+    };
+  }, [showDetectionList, detectionMode]);
+
+  // Strict 3-state controller for the AI icon. The two surfaces (list,
+  // status card) must never flip together in one click — closing the status
+  // card must NOT also open the list (that only happens on the next click).
+  // The priority is exactly: (1) close status card if visible, (2) close
+  // list if visible, (3) otherwise open the list.
+  const handleAiIconClick = () => {
+    if (showDetectionStatus) {
+      setShowDetectionStatus(false);
+      return;
+    }
+    if (showDetectionList) {
+      setShowDetectionList(false);
+      return;
+    }
+    setShowDetectionList(true);
+  };
+
+  // Keeps the AI icon flush under the toggle when the tools menu is closed,
+  // and dynamically pushes it below the expanded panel's real rendered
+  // height when the menu opens — measured from actual DOM rects and the
+  // container's own CSS gap (not a hardcoded offset), so it stays correct
+  // regardless of which tool category's content is showing.
+  const measureAiOffset = useCallback(() => {
+    const container = toolsControlRef.current;
+    const toggleEl = toolsToggleRef.current;
+    if (!container || !toggleEl) return;
+    const gap = parseFloat(getComputedStyle(container).rowGap || getComputedStyle(container).gap || "0") || 0;
+    const containerTop = container.getBoundingClientRect().top;
+    let referenceBottom = toggleEl.getBoundingClientRect().bottom;
+    if (toolsMenuOpen && toolsPanelsRef.current) {
+      const panelsBottom = toolsPanelsRef.current.getBoundingClientRect().bottom;
+      if (panelsBottom > referenceBottom) referenceBottom = panelsBottom;
+    }
+    setAiOffsetY(referenceBottom - containerTop + gap);
+  }, [toolsMenuOpen]);
+
+  useLayoutEffect(() => {
+    measureAiOffset();
+  }, [measureAiOffset, activeToolsSection]);
+
+  useEffect(() => {
+    const panelsEl = toolsPanelsRef.current;
+    if (!panelsEl || typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(() => measureAiOffset());
+    observer.observe(panelsEl);
+    return () => observer.disconnect();
+  }, [measureAiOffset]);
 
   const hasActiveTool = Boolean(
     detectionMode ||
@@ -6325,13 +6480,13 @@ function MapControls({
       <div className="map-tools" ref={toolsControlRef}>
         <button
           type="button"
+          ref={toolsToggleRef}
           className={`map-tools__toggle${toolsMenuOpen ? " map-tools__toggle--open" : ""}${hasActiveTool ? " map-tools__toggle--has-active" : ""}`}
           onClick={() => {
             const nextOpen = !toolsMenuOpen;
             setToolsMenuOpen(nextOpen);
             if (!nextOpen) {
               setActiveToolsSection(null);
-              setMenuOpen(false);
             }
           }}
           aria-expanded={toolsMenuOpen}
@@ -6348,6 +6503,7 @@ function MapControls({
 
         <div
           id="map-tools-panels"
+          ref={toolsPanelsRef}
           className={`map-tools__panels${toolsMenuOpen ? " map-tools__panels--open" : ""}`}
           aria-label="Map tools"
           aria-hidden={!toolsMenuOpen}
@@ -6357,7 +6513,6 @@ function MapControls({
               type="button"
               className={`map-tools__category-btn${activeToolsSection === "map" ? " map-tools__category-btn--active" : ""}`}
               onClick={() => {
-                setMenuOpen(false);
                 setActiveToolsSection((current) => current === "map" ? null : "map");
               }}
               aria-label="Map view tools"
@@ -6373,28 +6528,8 @@ function MapControls({
 
             <button
               type="button"
-              className={`map-tools__category-btn${activeToolsSection === "ai" ? " map-tools__category-btn--active" : ""}${detectionMode ? " map-tools__category-btn--has-active" : ""}`}
-              onClick={() => {
-                setMenuOpen(false);
-                setActiveToolsSection((current) => current === "ai" ? null : "ai");
-              }}
-              aria-label="AI detection tools"
-              aria-expanded={activeToolsSection === "ai"}
-              title="AI detection"
-              data-testid="map-tools-category-ai"
-            >
-              <svg viewBox="0 0 24 24" fill="currentColor" width="19" height="19" aria-hidden="true">
-                <path d="M12 2l1.8 5.2L19 9l-5.2 1.8L12 16l-1.8-5.2L5 9l5.2-1.8L12 2Z" />
-                <path d="m19 13 .9 2.1L22 16l-2.1.9L19 19l-.9-2.1L16 16l2.1-.9L19 13Z" />
-              </svg>
-              {detectionMode && <span className="map-tools__category-dot" aria-hidden="true" />}
-            </button>
-
-            <button
-              type="button"
               className={`map-tools__category-btn${activeToolsSection === "location" ? " map-tools__category-btn--active" : ""}${(streetPickMode || placemarkMode || myPlacesOpen || coordinateSearchOpen || Object.values(referenceLayers).some(Boolean)) ? " map-tools__category-btn--has-active" : ""}`}
               onClick={() => {
-                setMenuOpen(false);
                 setActiveToolsSection((current) => current === "location" ? null : "location");
               }}
               aria-label="Location and map tools"
@@ -6419,14 +6554,14 @@ function MapControls({
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="14" height="14" style={{ marginRight: 4, verticalAlign: -2 }}>
               <path d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-4 0h4" />
             </svg>
-            Map
+            <span className="map-controls__btn-label">Map</span>
           </button>
           <button className={`map-controls__btn${basemap === "satellite" ? " map-controls__btn--active" : ""}`} onClick={() => onChangeBasemap("satellite")} data-testid="basemap-satellite">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="14" height="14" style={{ marginRight: 4, verticalAlign: -2 }}>
               <circle cx="12" cy="12" r="10" />
               <path d="M2 12h20M12 2a15.3 15.3 0 014 10 15.3 15.3 0 01-4 10 15.3 15.3 0 01-4-10 15.3 15.3 0 014-10z" />
             </svg>
-            Satellite
+            <span className="map-controls__btn-label">Satellite</span>
           </button>
           <button
             className={`map-controls__btn${basemap === "off" ? " map-controls__btn--active" : ""}`}
@@ -6437,72 +6572,8 @@ function MapControls({
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="14" height="14" style={{ marginRight: 4, verticalAlign: -2 }}>
               <path d="M3 3l18 18M10.58 10.58a2 2 0 002.83 2.83M9.88 4.24A9.4 9.4 0 0112 4c5 0 8.5 4 10 8-.46 1.3-1.13 2.6-2 3.79M6.6 6.6C4.7 8 3.2 10 2 12c1.5 4 5 8 10 8 1.35 0 2.63-.28 3.8-.78" />
             </svg>
-            Off
+            <span className="map-controls__btn-label">Off</span>
           </button>
-              </div>
-            </div>
-          </div>
-          )}
-
-          {activeToolsSection === "ai" && (
-          <div className="map-tools__floating-panel map-tools__floating-panel--ai" data-testid="ai-tools-panel">
-            <div className="map-controls map-controls--floating-panel">
-              <div className="map-controls__group ai-detection-control" data-testid="ai-detection-control" ref={menuRef}>
-          <button
-            type="button"
-            className={`map-controls__btn${detectionMode ? " map-controls__btn--active" : ""}`}
-            onClick={() => setMenuOpen((v) => !v)}
-            data-testid="ai-detection-toggle"
-          >
-            <svg viewBox="0 0 24 24" fill="currentColor" width="14" height="14" style={{ marginRight: 4, verticalAlign: -2 }}>
-              <path d="M12 2l1.8 5.2L19 9l-5.2 1.8L12 16l-1.8-5.2L5 9l5.2-1.8L12 2z" />
-              <path d="M19 13l.9 2.1L22 16l-2.1.9L19 19l-.9-2.1L16 16l2.1-.9L19 13z" />
-            </svg>
-            AI Detection{detectionMode ? `: ${DETECTION_MODE_LABEL[detectionMode]}` : ""}
-          </button>
-          {detectionMode && (
-            <button
-              type="button"
-              className={`ai-overlay-toggle${aiOverlayEnabled ? " ai-overlay-toggle--on" : ""}`}
-              onClick={onToggleAiOverlay}
-              data-testid="ai-overlay-toggle"
-              title={aiOverlayEnabled ? "Turn off the AI red/yellow/green overlay" : "Turn on the AI red/yellow/green overlay"}
-            >
-              <span className="ai-overlay-toggle__track">
-                <span className="ai-overlay-toggle__knob" />
-              </span>
-              AI {aiOverlayEnabled ? "ON" : "OFF"}
-            </button>
-          )}
-          {menuOpen && menuPos && createPortal(
-            <div
-              className="ai-detection-menu"
-              data-testid="ai-detection-menu"
-              ref={(node) => {
-                portalMenuRef.current = node;
-                aiMenuDrag.panelRef.current = node;
-              }}
-              style={{ position: "fixed", top: menuPos.top, left: menuPos.left, ...aiMenuDrag.style }}
-            >
-              <div className="ai-detection-menu__dragbar" onPointerDown={aiMenuDrag.onDragStart}>
-                <span>AI Detection</span>
-                <small>Drag</small>
-                <button type="button" onClick={() => setMenuOpen(false)} aria-label="Close AI Detection">×</button>
-              </div>
-              {(["poles", "drains", "manholes", "roads"] as const).map((mode) => (
-                <button
-                  type="button"
-                  key={mode}
-                  className={`ai-detection-menu__item${detectionMode === mode ? " ai-detection-menu__item--active" : ""}`}
-                  onClick={() => { onToggleDetectionMode(mode); setMenuOpen(false); }}
-                  data-testid={`detection-mode-${mode}`}
-                >
-                  {DETECTION_MODE_LABEL[mode]}
-                </button>
-              ))}
-            </div>,
-            document.body
-          )}
               </div>
             </div>
           </div>
@@ -6524,7 +6595,7 @@ function MapControls({
               <path d="M12 22s7-6.1 7-13a7 7 0 1 0-14 0c0 6.9 7 13 7 13Z" />
               <circle cx="12" cy="9" r="2.2" />
             </svg>
-            Placemark
+            <span className="map-controls__btn-label">Placemark</span>
           </button>
           <button
             type="button"
@@ -6538,7 +6609,7 @@ function MapControls({
               <path d="M4 5.5A2.5 2.5 0 0 1 6.5 3H18a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6.5A2.5 2.5 0 0 1 4 18.5v-13Z" />
               <path d="M8 3v18M12 8h5M12 12h5" />
             </svg>
-            My Places{placemarkCount > 0 ? ` · ${placemarkCount}` : ""}
+            <span className="map-controls__btn-label">My Places{placemarkCount > 0 ? ` · ${placemarkCount}` : ""}</span>
           </button>
           <button
             type="button"
@@ -6569,13 +6640,104 @@ function MapControls({
               <circle cx="12" cy="5" r="2.5" fill="currentColor" stroke="none" />
               <path d="M8 10c1.2-1.2 2.5-1.8 4-1.8s2.8.6 4 1.8M9.2 10.2 8 16m6.8-5.8L16 16M9.3 13h5.4M10.5 16v5m3-5v5" />
             </svg>
-            Street View
+            <span className="map-controls__btn-label">Street View</span>
           </button>
               </div>
             </div>
           </div>
           )}
           </div>
+        </div>
+        {/* AI Detection: an independent floating control, not a tools-menu
+            category. It sits directly below the toggle and dynamically
+            slides down (via aiOffsetY, see measureAiOffset) when the tools
+            menu expands, but its own panel opens to the right and is never
+            gated by toolsMenuOpen/activeToolsSection. */}
+        <div
+          className="map-tools__ai-wrap"
+          ref={aiWrapRef}
+          style={{ transform: `translateY(${aiOffsetY}px)` }}
+        >
+          <button
+            type="button"
+            className={`map-tools__ai-standalone${(showDetectionList || showDetectionStatus) ? " map-tools__ai-standalone--active" : ""}${detectionMode ? " map-tools__ai-standalone--has-active" : ""}`}
+            onClick={handleAiIconClick}
+            aria-label="AI detection tools"
+            aria-haspopup="true"
+            aria-expanded={showDetectionList}
+            title="AI detection"
+            data-testid="map-tools-category-ai"
+          >
+            <svg viewBox="0 0 24 24" fill="currentColor" width="19" height="19" aria-hidden="true">
+              <path d="M12 2l1.8 5.2L19 9l-5.2 1.8L12 16l-1.8-5.2L5 9l5.2-1.8L12 2Z" />
+              <path d="m19 13 .9 2.1L22 16l-2.1.9L19 19l-.9-2.1L16 16l2.1-.9L19 13Z" />
+            </svg>
+            {detectionMode && <span className="map-tools__category-dot" aria-hidden="true" />}
+          </button>
+
+          {showDetectionList && menuPos && createPortal(
+            <div
+              className="ai-detection-menu"
+              data-testid="ai-detection-menu"
+              ref={(node) => {
+                portalMenuRef.current = node;
+                aiMenuDrag.panelRef.current = node;
+              }}
+              style={{ position: "fixed", top: menuPos.top, left: menuPos.left, ...aiMenuDrag.style }}
+              onPointerDown={aiMenuDrag.onDragStart}
+            >
+              {(["poles", "drains", "manholes"] as const).map((mode) => (
+                <button
+                  type="button"
+                  key={mode}
+                  className={`ai-detection-menu__item${detectionMode === mode ? " ai-detection-menu__item--active" : ""}`}
+                  onClick={() => {
+                    // Always activate the chosen mode — never toggle it off.
+                    // onToggleDetectionMode is a toggle, so re-picking the
+                    // already-active mode would clear detectionMode and hide
+                    // the status card; guard against that so selection is a
+                    // pure "set" (matching the spec).
+                    if (detectionMode !== mode) {
+                      onToggleDetectionMode(mode);
+                    }
+                    setShowDetectionList(false);
+                    setShowDetectionStatus(true);
+                  }}
+                  data-testid={`detection-mode-${mode}`}
+                >
+                  {DETECTION_MODE_LABEL[mode]}
+                </button>
+              ))}
+            </div>,
+            document.body
+          )}
+
+          {/* Persistent status card — its visibility (showDetectionStatus)
+              is a fully independent boolean from the list's, not derived
+              from "list closed". That decoupling is what lets the AI icon's
+              first click close just this card without also opening the
+              list (see handleAiIconClick above). Reuses the same
+              aiOverlayEnabled/onToggleAiOverlay state as everything else;
+              no new or duplicate detection state. */}
+          {showDetectionStatus && detectionMode && (
+            <div className="ai-status-card" data-testid="ai-status-card">
+              <span className="ai-status-card__label">
+                AI Detection : {DETECTION_MODE_LABEL[detectionMode]}
+              </span>
+              <button
+                type="button"
+                className={`ai-overlay-toggle${aiOverlayEnabled ? " ai-overlay-toggle--on" : ""}`}
+                onClick={onToggleAiOverlay}
+                data-testid="ai-overlay-toggle"
+                title={aiOverlayEnabled ? "Turn off the AI red/yellow/green overlay" : "Turn on the AI red/yellow/green overlay"}
+              >
+                <span className="ai-overlay-toggle__track">
+                  <span className="ai-overlay-toggle__knob" />
+                </span>
+                <span className="map-controls__btn-label">{aiOverlayEnabled ? "ON" : "OFF"}</span>
+              </button>
+            </div>
+          )}
         </div>
       </div>
       {status.error && (
@@ -6610,7 +6772,7 @@ function HoverTooltip({ hover }: { hover: HoverInfo | null }) {
   });
 
   const aiBadge = hover.aiStatus === "redundant"
-    ? { text: "⚠ AI: Recommended for removal", bg: "#ef4444", color: "#fff" }
+    ? { text: "⚠  AI: Recommended for removal", bg: "#ef4444", color: "#fff" }
     : hover.aiStatus === "needed"
     ? { text: "✓ AI: Critical — junction / corner / relay", bg: "#22c55e", color: "#fff" }
     : null;
@@ -6659,6 +6821,19 @@ function HoverTooltip({ hover }: { hover: HoverInfo | null }) {
             AI Detected: {hover.aiDetection.typeLabel}
           </div>
           <div style={{ fontWeight: 600, opacity: 0.92 }}>{hover.aiDetection.metric}</div>
+          <div style={{ marginTop: 4, display: "grid", gridTemplateColumns: "auto 1fr", columnGap: 8, rowGap: 2, fontFamily: "var(--font-mono)", fontSize: 9, opacity: 0.96 }}>
+            <span>Latitude</span><strong style={{ textAlign: "right" }}>{hover.aiDetection.latitude.toFixed(7)}</strong>
+            <span>Longitude</span><strong style={{ textAlign: "right" }}>{hover.aiDetection.longitude.toFixed(7)}</strong>
+          </div>
+        </div>
+      )}
+      {hover.verification && (
+        <div className="map__tooltip-verification">
+          <div><span>Original GDB Condition</span><strong>{hover.verification.originalCondition ?? "—"}</strong></div>
+          <div><span>Current Condition</span><strong>{hover.verification.currentCondition ?? "—"}</strong></div>
+          <div><span>Resolution Status</span><strong>{hover.verification.status?.replaceAll("_", " ") ?? "—"}</strong></div>
+          {hover.verification.admin && <div><span>Approved By</span><strong>{hover.verification.admin}</strong></div>}
+          {hover.verification.approvedAt && <div><span>Approved Date</span><strong>{new Date(hover.verification.approvedAt).toLocaleString()}</strong></div>}
         </div>
       )}
       {attrEntries.length > 0 && (

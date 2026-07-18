@@ -1,0 +1,317 @@
+/* Mobile-only presentation rules for phone-width viewports.
+   Breakpoint (768px) matches frontend/src/lib/useIsMobile.ts and the
+   existing `@media (max-width: 768px)` convention already used in
+   index.css — kept in a separate file so new mobile work stays
+   auditable instead of buried in an 11k-line stylesheet. Desktop/tablet
+   responsive rules that already existed in index.css are left there. */
+
+@media (max-width: 768px) {
+  /* ── App shell: bottom tab bar ─────────────────────────────────────── */
+  .workspace {
+    padding-bottom: env(safe-area-inset-bottom, 0);
+  }
+
+  .workspace__topbar {
+    gap: 8px;
+    padding: 0 12px;
+  }
+
+  .workspace__topbar .tabs {
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 200;
+    background: var(--surface);
+    border-top: 1px solid var(--edge);
+    padding: env(safe-area-inset-bottom, 0) 0 0;
+    box-shadow: 0 -2px 12px rgba(0, 0, 0, 0.08);
+  }
+
+  .workspace__topbar .tabs__list {
+    gap: 0;
+    width: 100%;
+  }
+
+  /* Bottom-nav pattern: icon over label, no filled pill — the active tab
+     is read from icon/label color plus the top accent bar below, since a
+     full-width colored pill (the desktop treatment) reads as too heavy
+     stretched across a 1/3-screen-wide tap target. */
+  .workspace__topbar .tabs__list a {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 3px;
+    padding: 8px 4px 6px;
+    min-height: 52px;
+    text-align: center;
+  }
+
+  .workspace__topbar .tabs__indicator {
+    top: auto;
+    bottom: 0;
+    height: 2.5px;
+    border-radius: 0;
+    box-shadow: none;
+  }
+
+  .tabs__icon {
+    display: flex;
+    width: 22px;
+    height: 22px;
+  }
+
+  .tabs__icon svg {
+    width: 100%;
+    height: 100%;
+  }
+
+  .tabs__label {
+    font-size: 9.5px;
+  }
+
+  .workspace__topbar .tabs a.active {
+    color: var(--accent);
+  }
+
+  .workspace__body {
+    padding-bottom: 56px;
+  }
+
+  /* ── Gmail-style persistent search bar (Map page only) ───────────────
+     .workspace__topbar--search-mode only applies on /map (see showSearch
+     in WorkspaceLayout.tsx) — Datasets/Analytics keep the plain mobile
+     topbar (brand + avatar) untouched. The topbar itself becomes the
+     rounded pill (menu icon, search field, avatar as its three children)
+     rather than nesting a second pill inside it. */
+  .workspace__topbar--search-mode {
+    margin: 8px 10px 0;
+    height: 44px;
+    padding: 0 4px 0 2px;
+    gap: 2px;
+    background: var(--surface-2);
+    border-radius: 999px;
+    border-bottom: none;
+  }
+
+  .workspace__topbar--search-mode .workspace__brand {
+    display: none;
+  }
+
+  .workspace__menu-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    width: 38px;
+    height: 38px;
+    border-radius: 50%;
+    background: transparent;
+    border: none;
+    color: var(--ink-dim);
+    cursor: pointer;
+  }
+
+  .workspace__menu-btn:active {
+    background: var(--surface-3);
+  }
+
+  .workspace__topbar--search-mode .workspace__search {
+    position: static;
+    flex: 1;
+    min-width: 0;
+    transform: none;
+  }
+
+  .workspace__topbar--search-mode .fid-search {
+    width: 100%;
+  }
+
+  .workspace__topbar--search-mode .fid-search input {
+    background: transparent;
+    border: none;
+  }
+
+  .workspace__topbar--search-mode .fid-search input:focus {
+    border: none;
+    box-shadow: none;
+  }
+
+  .workspace__topbar--search-mode .workspace__right {
+    margin-left: 0;
+  }
+
+  .workspace__topbar--search-mode .user-avatar {
+    width: 34px;
+    height: 34px;
+    font-size: 12px;
+  }
+
+  /* ── Data Sources sidebar: real off-canvas drawer ─────────────────── */
+  .command-center {
+    transition: transform 220ms ease;
+  }
+
+  .command-center--closed {
+    transform: translateX(-100%);
+  }
+
+  .command-center__backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 149;
+    background: rgba(0, 0, 0, 0.5);
+  }
+
+  .command-center__close {
+    align-self: flex-end;
+    flex-shrink: 0;
+    width: 32px;
+    height: 32px;
+    margin: 10px 10px 0 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: var(--surface-2);
+    border: 1px solid var(--edge);
+    border-radius: var(--radius-sm);
+    color: var(--ink-dim);
+    cursor: pointer;
+  }
+
+  /* ── Top toolbar: icon-only ───────────────────────────────────────── */
+  .map-controls {
+    top: 12px;
+    left: 8px;
+    gap: 6px;
+    max-width: calc(100vw - 16px);
+  }
+
+  .map-controls__group {
+    flex-wrap: wrap;
+  }
+
+  .map-controls__btn {
+    padding: 9px 10px;
+    min-width: 44px;
+    min-height: 44px;
+    justify-content: center;
+  }
+
+  .map-controls__btn svg {
+    margin-right: 0 !important;
+  }
+
+  .map-controls__btn-label {
+    display: none;
+  }
+
+  .ai-overlay-toggle {
+    padding: 9px 10px;
+    min-height: 44px;
+  }
+
+  .feature-count {
+    display: none;
+  }
+
+  /* ── Floating panels: full-width bottom sheets instead of small
+     draggable boxes ─────────────────────────────────────────────────── */
+  .placemark-editor,
+  .placemark-details-panel,
+  .my-places-panel,
+  .reference-layers-menu,
+  .ai-detection-menu,
+  .visualization-popup,
+  .ruler-panel {
+    position: fixed !important;
+    left: 0 !important;
+    right: 0 !important;
+    bottom: 0 !important;
+    top: auto !important;
+    width: 100% !important;
+    max-width: 100% !important;
+    max-height: 75vh !important;
+    overflow-y: auto;
+    border-radius: 16px 16px 0 0;
+    z-index: 210;
+  }
+
+  .placemark-editor__head,
+  .placemark-details-panel__head,
+  .my-places-panel__head,
+  .reference-layers-menu__head,
+  .ai-detection-menu__dragbar,
+  .floating-map-panel__dragbar,
+  .ruler-panel__titlebar {
+    cursor: default;
+    touch-action: auto;
+  }
+
+  /* ── Zoom control + compass: smaller, touch-sized ────────────────────── */
+  .map-zoom-slider {
+    right: 8px;
+    height: 36px;
+    padding: 0 6px;
+  }
+
+  .map-zoom-slider__btn {
+    width: 32px;
+    height: 32px;
+    font-size: 16px;
+  }
+
+  .map-zoom-slider__track {
+    width: 64px;
+  }
+
+  .map-side-controls {
+    top: 56px;
+    right: 8px;
+    gap: 8px;
+    transform: scale(0.9);
+    transform-origin: top right;
+  }
+
+  /* ── Bottom status bar: keep only coordinates + scale ────────────────── */
+  .map__dataset-readout,
+  .map__elevation-readout,
+  .map__eye-altitude-readout {
+    display: none;
+  }
+
+  .map__status-bar--earth {
+    max-width: calc(100% - 16px);
+  }
+
+  /* ── TEMPORARY: minimal mobile view — search bar + map only ──────────
+     Iterating on the mobile UI one piece at a time; everything below is
+     hidden (not removed) so it's a one-line revert per item as each piece
+     gets its own pass. Remove this block to bring it all back at once. */
+  .command-center,
+  .command-center__backdrop,
+  .workspace__menu-btn,
+  .map-controls,
+  .map-zoom-slider,
+  .map-side-controls,
+  .map__status-bar,
+  .workspace__topbar .tabs {
+    display: none !important;
+  }
+
+  .workspace__body {
+    padding-bottom: 0;
+  }
+}
+
+@media (min-width: 769px) {
+  .workspace__menu-btn {
+    display: none;
+  }
+
+  .tabs__icon {
+    display: none;
+  }
+}

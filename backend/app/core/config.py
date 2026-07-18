@@ -74,6 +74,12 @@ class Settings(BaseSettings):
     ai_max_context_tokens: int = Field(default=4096, validation_alias="AI_MAX_CONTEXT_TOKENS")
     ai_max_features: int = Field(default=30, validation_alias="AI_MAX_FEATURES")
 
+    # --- AI remediation evidence ----------------------------------------
+    remediation_pole_buffer_m: float = Field(default=15.0, validation_alias="REMEDIATION_POLE_BUFFER_M")
+    remediation_manhole_buffer_m: float = Field(default=15.0, validation_alias="REMEDIATION_MANHOLE_BUFFER_M")
+    remediation_drain_buffer_m: float = Field(default=30.0, validation_alias="REMEDIATION_DRAIN_BUFFER_M")
+    remediation_max_image_mb: int = Field(default=12, validation_alias="REMEDIATION_MAX_IMAGE_MB")
+
     # --- Seed users ------------------------------------------------------
     admin_email: str = Field(validation_alias="ADMIN_EMAIL")
     admin_password: str = Field(validation_alias="ADMIN_PASSWORD")
@@ -82,6 +88,18 @@ class Settings(BaseSettings):
     architect_email: str = Field(validation_alias="ARCHITECT_EMAIL")
     architect_password: str = Field(validation_alias="ARCHITECT_PASSWORD")
     architect_name: str = Field(default="City Architect", validation_alias="ARCHITECT_NAME")
+
+    commissioner_email: str = Field(validation_alias="COMMISSIONER_EMAIL")
+    commissioner_password: str = Field(validation_alias="COMMISSIONER_PASSWORD")
+    commissioner_name: str = Field(default="Commissioner", validation_alias="COMMISSIONER_NAME")
+
+    aee_email: str = Field(validation_alias="AEE_EMAIL")
+    aee_password: str = Field(validation_alias="AEE_PASSWORD")
+    aee_name: str = Field(default="AEE", validation_alias="AEE_NAME")
+
+    ae_email: str = Field(validation_alias="AE_EMAIL")
+    ae_password: str = Field(validation_alias="AE_PASSWORD")
+    ae_name: str = Field(default="AE", validation_alias="AE_NAME")
 
 
 @lru_cache

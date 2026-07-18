@@ -73,9 +73,9 @@ from sqlalchemy import delete, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.dataset import Dataset
+from app.models.point_verification import PointVerification, PointVerificationStatus
 from app.models.spatial_anomaly import AnomalyColor, AnomalyStatus, AnomalyType, SpatialAnomaly
 from app.services.manhole_recommend import is_bad_condition, is_good_condition, parse_level_m
-from app.services.road_width import detect_road_width_narrowing
 
 # Per-class DBSCAN epsilon (meters). Only Illumination_Asset is clustered in
 # Phase 1; other classes can get their own entry here later without touching
@@ -121,7 +121,21 @@ class AuditSummary:
     pole_redundancy: dict[str, int] = field(default_factory=dict)
     drain_encroachment: dict[str, int] = field(default_factory=dict)
     manhole_status: dict[str, int] = field(default_factory=dict)
-    road_width_narrowing: dict[str, int] = field(default_factory=dict)
+
+
+def _primary_feature_id(anomaly: SpatialAnomaly) -> str | None:
+    metadata = anomaly.anomaly_metadata or {}
+    value = (
+        metadata.get("this_feature_id")
+        or metadata.get("building_id")
+        or metadata.get("manhole_id")
+        or (anomaly.feature_ids[0] if anomaly.feature_ids else None)
+    )
+    return str(value) if value is not None else None
+
+
+def _empty_counts() -> dict[str, int]:
+    return {"red": 0, "yellow": 0, "green": 0}
 
 
 def _pick_keep_pole(members: list[dict]) -> dict:
@@ -450,20 +464,87 @@ async def run_spatial_audit(dataset_id: uuid.UUID, db: AsyncSession) -> AuditSum
         raise ValueError(f"Dataset {dataset_id} not found")
     ward = dataset.ward
 
-    # Idempotent re-run: clear this dataset's own open/reviewing findings
-    # first. resolved/dismissed rows are a human decision and are left alone.
-    await db.execute(
-        delete(SpatialAnomaly).where(
-            SpatialAnomaly.dataset_id == dataset_id,
-            SpatialAnomaly.status.in_([AnomalyStatus.OPEN, AnomalyStatus.REVIEWING]),
+    # Preserve every finding already attached to the remediation workflow
+    # across AI re-runs on the SAME dataset. This prevents a re-run from
+    # orphaning pending/rejected evidence or painting a new red duplicate on
+    # top of an Admin-approved blue point.
+    protected_rows = (
+        await db.execute(
+            select(SpatialAnomaly)
+            .join(PointVerification, PointVerification.anomaly_id == SpatialAnomaly.id)
+            .where(
+                SpatialAnomaly.dataset_id == dataset_id,
+                PointVerification.status.in_(
+                    [
+                        PointVerificationStatus.PENDING_ADMIN,
+                        PointVerificationStatus.REJECTED,
+                        PointVerificationStatus.RESOLVED,
+                    ]
+                ),
+            )
         )
+    ).scalars().all()
+    protected_ids = {row.id for row in protected_rows}
+    protected_keys = {
+        (row.anomaly_type, primary_id)
+        for row in protected_rows
+        if (primary_id := _primary_feature_id(row)) is not None
+    }
+
+    # Idempotent re-run: clear only unprotected open/reviewing findings.
+    # Resolved/dismissed and remediation-linked rows are retained.
+    delete_stmt = delete(SpatialAnomaly).where(
+        SpatialAnomaly.dataset_id == dataset_id,
+        SpatialAnomaly.status.in_([AnomalyStatus.OPEN, AnomalyStatus.REVIEWING]),
+    )
+    if protected_ids:
+        delete_stmt = delete_stmt.where(SpatialAnomaly.id.notin_(protected_ids))
+    await db.execute(delete_stmt)
+
+    await _detect_pole_redundancy(dataset_id, ward, db)
+    await _detect_drain_encroachment(dataset_id, ward, db)
+    await _detect_manhole_status(dataset_id, ward, db)
+    await db.flush()
+
+    if protected_keys:
+        generated_rows = (
+            await db.execute(
+                select(SpatialAnomaly).where(
+                    SpatialAnomaly.dataset_id == dataset_id,
+                    SpatialAnomaly.status.in_([AnomalyStatus.OPEN, AnomalyStatus.REVIEWING]),
+                )
+            )
+        ).scalars().all()
+        for row in generated_rows:
+            primary_id = _primary_feature_id(row)
+            if primary_id is not None and (row.anomaly_type, primary_id) in protected_keys:
+                await db.delete(row)
+        await db.flush()
+
+    # Recalculate the visible counts after resolved-point de-duplication so
+    # the run summary and map use the same persisted rows. Resolved findings
+    # retain their original red/yellow evidence color but render blue because
+    # their workflow status is resolved.
+    visible = (
+        await db.execute(
+            select(SpatialAnomaly).where(
+                SpatialAnomaly.dataset_id == dataset_id,
+                SpatialAnomaly.status != AnomalyStatus.DISMISSED,
+            )
+        )
+    ).scalars().all()
+    counts = {
+        AnomalyType.POLE_REDUNDANCY: _empty_counts(),
+        AnomalyType.DRAIN_ENCROACHMENT: _empty_counts(),
+        AnomalyType.MANHOLE_STATUS: _empty_counts(),
+    }
+    for row in visible:
+        counts[row.anomaly_type][row.color.value] += 1
+
+    await db.commit()
+    return AuditSummary(
+        pole_redundancy=counts[AnomalyType.POLE_REDUNDANCY],
+        drain_encroachment=counts[AnomalyType.DRAIN_ENCROACHMENT],
+        manhole_status=counts[AnomalyType.MANHOLE_STATUS],
     )
 
-    summary = AuditSummary(
-        pole_redundancy=await _detect_pole_redundancy(dataset_id, ward, db),
-        drain_encroachment=await _detect_drain_encroachment(dataset_id, ward, db),
-        manhole_status=await _detect_manhole_status(dataset_id, ward, db),
-        road_width_narrowing=await detect_road_width_narrowing(dataset_id, ward, db),
-    )
-    await db.commit()
-    return summary

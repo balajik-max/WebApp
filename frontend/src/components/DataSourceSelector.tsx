@@ -107,11 +107,16 @@ export function DataSourceSelector({
                 const selectable = d.status === "ready";
                 const modelMetadata = d.dataset_metadata?.model_3d;
                 // TIFF/GeoTIFF rasters (including DSM/DTM) are locked to a
-                // fixed render mode and expose no display settings — so they
-                // get no gear and no panel. RGB for ordinary GeoTIFFs,
-                // Enhanced for DSM/DTM, both enforced at the rendering layer.
-                const hasRasterControls = d.status === "ready" && Boolean(d.dataset_metadata?.raster_overlay) && !isGeoTiffDataset(d);
+                // fixed render mode and expose no display settings. RGB is used
+                // for ordinary GeoTIFFs and Enhanced for DSM/DTM.
+                const hasRasterControls =
+                  d.status === "ready"
+                  && Boolean(d.dataset_metadata?.raster_overlay)
+                  && !isGeoTiffDataset(d);
+                // Vector/GDB datasets keep the coordinate-search branch's
+                // layer styling control.
                 const hasLayerControls = layerDatasetIds.includes(d.id);
+
                 const canOpenSettings = hasRasterControls && isActive;
                 const canOpenLayer = hasLayerControls && isActive;
                 const isExpanded = canOpenSettings && expandedDatasetId === d.id;

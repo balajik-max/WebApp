@@ -5,10 +5,13 @@ import {
   useMemo,
   useRef,
   useState,
+  type ReactNode,
   type TransitionEvent,
 } from "react";
 import { NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
-import { useAuth } from "../context/AuthContext";
+import { useAuth, type AuthUser, type Role } from "../context/AuthContext";
+import { listAssignedWork, subscribeAssignedWork, type AssignedWorkRecord } from "../lib/assignedWork";
+import { NotificationBell, type NotificationItem } from "./NotificationBell";
 import type { FeatureFilter } from "../lib/types";
 import { searchFeatureFids, type FidSearchResult } from "../lib/features";
 import type { DatasetRow } from "../lib/workflow";
@@ -203,32 +206,100 @@ function FidSearch({ datasetIds }: { datasetIds: string[] }) {
   );
 }
 
-const TABS = [
-  { to: "/map", label: "Map", testId: "tab-map" },
-  { to: "/datasets", label: "Datasets", testId: "tab-datasets" },
-  { to: "/analytics", label: "Analytics", testId: "tab-analytics" },
-] as const;
-
-/** Which tab a pathname belongs to — the single mapping used both to render
- * NavLink's own `active` class (for aria-current, focus, etc.) and to
- * position the shared sliding indicator, so there's only ever one source of
- * truth for "which tab is active" (never local click state + pathname as
- * two separate answers that can disagree). */
-function tabIndexForPath(pathname: string): number {
-  const index = TABS.findIndex((tab) => pathname.startsWith(tab.to));
-  return index === -1 ? 0 : index;
+// Icons are only ever shown in the mobile bottom tab bar (see .tabs__icon
+// in mobile.css) — the desktop pill nav stays text-only, unchanged.
+interface TabDef {
+  to: string;
+  label: string;
+  testId: string;
+  icon: ReactNode;
+  /** When set, the tab is only shown to users whose role is in this list. */
+  roles?: Role[];
 }
 
+const TABS: TabDef[] = [
+  {
+    to: "/map",
+    label: "Map",
+    testId: "tab-map",
+    icon: (
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinejoin="round" aria-hidden="true">
+        <path d="M9 3 3 5v16l6-2 6 2 6-2V3l-6 2-6-2Z" />
+        <path d="M9 3v16M15 5v16" />
+      </svg>
+    ),
+  },
+  {
+    to: "/datasets",
+    label: "Datasets",
+    testId: "tab-datasets",
+    icon: (
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinejoin="round" aria-hidden="true">
+        <rect x="3" y="3" width="7.5" height="7.5" rx="1.2" />
+        <rect x="13.5" y="3" width="7.5" height="7.5" rx="1.2" />
+        <rect x="3" y="13.5" width="7.5" height="7.5" rx="1.2" />
+        <rect x="13.5" y="13.5" width="7.5" height="7.5" rx="1.2" />
+      </svg>
+    ),
+  },
+  {
+    to: "/analytics",
+    label: "Analytics",
+    testId: "tab-analytics",
+    icon: (
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" aria-hidden="true">
+        <path d="M4 20V11M12 20V4M20 20v-7" />
+      </svg>
+    ),
+  },
+  {
+    to: "/tasks",
+    label: "Tasks",
+    testId: "tab-tasks",
+    roles: ["ae"],
+    icon: (
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+        <path d="M9 11.5l2 2 4-4.5" />
+        <rect x="3" y="3" width="18" height="18" rx="2.2" />
+      </svg>
+    ),
+  },
+  {
+    to: "/activity",
+    label: "Activity",
+    testId: "tab-activity",
+    roles: ["aee"],
+    icon: (
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+        <path d="M22 12h-4l-3 9L9 3l-3 9H2" />
+      </svg>
+    ),
+  },
+];
+
 /**
- * MAP / DATASETS / ANALYTICS tabs with one shared green sliding indicator
- * (Google-Earth-Pro-nav-style, not per-tab backgrounds). The indicator is a
- * single absolutely-positioned element measured against whichever tab is
- * active and moved with a CSS transform — nothing is ever removed/recreated
- * on route change, so it can never flash grey or disappear-and-reappear the
- * way stacking two independent `.active` backgrounds on different DOM nodes
- * would.
+ * MAP / DATASETS / ANALYTICS (+ TASKS for AE, + ACTIVITY for AEE) tabs with
+ * one shared green sliding indicator (Google-Earth-Pro-nav-style, not
+ * per-tab backgrounds).
+ * The indicator is a single absolutely-positioned element measured against
+ * whichever tab is active and moved with a CSS transform — nothing is ever
+ * removed/recreated on route change, so it can never flash grey or
+ * disappear-and-reappear the way stacking two independent `.active`
+ * backgrounds on different DOM nodes would.
+ *
+ * Tabs are filtered by the current user's role so role-restricted entries
+ * (e.g. ACTIVITY → AEE) appear only for authorized users; measurement and
+ * rendering always operate on the same filtered list so the indicator stays
+ * aligned with what's actually visible.
  */
-function TabsNav({ pathname }: { pathname: string }) {
+function TabsNav({ pathname, user }: { pathname: string; user: AuthUser | null }) {
+  const tabs = useMemo(
+    () =>
+      TABS.filter(
+        (tab) => !tab.roles || (user?.role !== undefined && tab.roles.includes(user.role)),
+      ),
+    [user?.role],
+  );
   const tabRefs = useRef<(HTMLAnchorElement | null)[]>([]);
   const listRef = useRef<HTMLDivElement | null>(null);
   const [indicator, setIndicator] = useState<{ left: number; width: number } | null>(null);
@@ -243,11 +314,12 @@ function TabsNav({ pathname }: { pathname: string }) {
   // visualActiveIndex additionally lets a click move the indicator the
   // instant it happens, without waiting for the router's re-render —
   // synced back to the real route below the moment pathname changes.
-  const activeIndex = tabIndexForPath(pathname);
-  const [visualActiveIndex, setVisualActiveIndex] = useState(activeIndex);
+  const activeIndex = tabs.findIndex((tab) => pathname.startsWith(tab.to));
+  const resolvedActiveIndex = activeIndex === -1 ? 0 : activeIndex;
+  const [visualActiveIndex, setVisualActiveIndex] = useState(resolvedActiveIndex);
   useEffect(() => {
-    setVisualActiveIndex(activeIndex);
-  }, [activeIndex]);
+    setVisualActiveIndex(resolvedActiveIndex);
+  }, [resolvedActiveIndex]);
 
   const measure = useCallback(() => {
     const el = tabRefs.current[visualActiveIndex];
@@ -294,7 +366,7 @@ function TabsNav({ pathname }: { pathname: string }) {
             style={{ width: `${indicator.width}px`, transform: `translate3d(${indicator.left}px, 0, 0)` }}
           />
         )}
-        {TABS.map((tab, index) => (
+        {tabs.map((tab, index) => (
           <NavLink
             key={tab.to}
             to={tab.to}
@@ -302,9 +374,10 @@ function TabsNav({ pathname }: { pathname: string }) {
             ref={(el) => { tabRefs.current[index] = el; }}
             onClick={() => setVisualActiveIndex(index)}
             className={({ isActive }) => (isActive ? "active" : undefined)}
-            aria-current={index === activeIndex ? "page" : undefined}
+            aria-current={index === resolvedActiveIndex ? "page" : undefined}
           >
-            {tab.label}
+            <span className="tabs__icon">{tab.icon}</span>
+            <span className="tabs__label">{tab.label}</span>
           </NavLink>
         ))}
       </div>
@@ -326,23 +399,74 @@ export function WorkspaceLayout() {
   const location = useLocation();
   const navigate = useNavigate();
 
+  const roleLabel =
+    user
+      ? ({
+          commissioner: "Commissioner",
+          aee: "AEE",
+          ae: "AE",
+          admin: "Administrator",
+        } as Record<string, string>)[user.role] ?? user.role
+      : "";
+
+  const [assignedWorkRecords, setAssignedWorkRecords] = useState<AssignedWorkRecord[]>([]);
+  useEffect(() => {
+    if (user?.role !== "ae") {
+      setAssignedWorkRecords([]);
+      return;
+    }
+    setAssignedWorkRecords(listAssignedWork());
+    return subscribeAssignedWork(() => setAssignedWorkRecords(listAssignedWork()));
+  }, [user?.role]);
+
+  const workerNotifications = useMemo<NotificationItem[]>(() => {
+    if (user?.role !== "ae") return [];
+    return [...assignedWorkRecords]
+      .sort((a, b) => (a.assignedAt < b.assignedAt ? 1 : -1))
+      .slice(0, 4)
+      .map((record) => ({
+        id: record.id,
+        title: `${record.serial} · ${record.issueName}`,
+        body: `Deadline: ${record.deadline || "—"}${record.road ? ` · ${record.road}` : ""}`,
+        timestamp: new Date(record.assignedAt).toLocaleString(),
+      }));
+  }, [assignedWorkRecords, user?.role]);
+
   const [selectedDatasets, setSelectedDatasets] = useState<DatasetRow[]>([]);
   const selectedDatasetIds = useMemo(() => selectedDatasets.map((dataset) => dataset.id), [selectedDatasets]);
+  // Drives the Data Sources drawer on the mobile Map page — lifted up here
+  // (rather than living inside MapCanvas) so the topbar's menu button can
+  // open it, the same way Gmail's hamburger opens its nav drawer from the
+  // search bar.
+  const [commandCenterMobileOpen, setCommandCenterMobileOpen] = useState(false);
 
   const showSearch = location.pathname.startsWith("/map");
+
+  // MapCanvas (unlike this layout) unmounts on every tab switch, which used
+  // to reset its drawer state for free. Now that the state lives up here,
+  // it survives navigation on its own — reset it explicitly so leaving the
+  // Map page and coming back always starts with the drawer closed.
+  useEffect(() => {
+    if (!showSearch) setCommandCenterMobileOpen(false);
+  }, [showSearch]);
 
   const outletContext = useMemo(
     () => ({
       filter: EMPTY_FILTER,
       selectedDatasets,
       setSelectedDatasets,
+      commandCenterMobileOpen,
+      setCommandCenterMobileOpen,
     }),
-    [selectedDatasets]
+    [selectedDatasets, commandCenterMobileOpen]
   );
 
   return (
     <div className="workspace" data-testid="workspace">
-      <header className="workspace__topbar" data-testid="topbar">
+      <header
+        className={`workspace__topbar${showSearch ? " workspace__topbar--search-mode" : ""}`}
+        data-testid="topbar"
+      >
         <NavLink to="/map" className="workspace__brand" data-testid="brand-home">
           <span className="workspace__mark" aria-hidden="true">
             <svg viewBox="0 0 24 24" fill="none">
@@ -361,21 +485,39 @@ export function WorkspaceLayout() {
           <div className="workspace__title">Urban Intelligence</div>
         </NavLink>
 
-        <TabsNav pathname={location.pathname} />
+        <TabsNav pathname={location.pathname} user={user} />
 
         {showSearch && (
-          <div className="workspace__search">
-            <FidSearch datasetIds={selectedDatasetIds} />
-          </div>
+          <>
+            {/* Mobile-only (see .workspace__menu-btn in mobile.css) — desktop
+               keeps the Data Sources sidebar permanently visible, so it has
+               no need for a drawer toggle. */}
+            <button
+              type="button"
+              className="workspace__menu-btn"
+              onClick={() => setCommandCenterMobileOpen(true)}
+              aria-label="Open data sources"
+              data-testid="mobile-menu-btn"
+            >
+              <svg viewBox="0 0 24 24" aria-hidden="true" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+                <path d="M4 6h16M4 12h16M4 18h16" />
+              </svg>
+            </button>
+            <div className="workspace__search">
+              <FidSearch datasetIds={selectedDatasetIds} />
+            </div>
+          </>
         )}
 
         <div className="workspace__right">
+          <NotificationBell notifications={workerNotifications} unreadCount={workerNotifications.length} />
+
           <button
             type="button"
             className="user-avatar"
             onClick={() => navigate("/profile")}
             data-testid="topbar-user"
-            title={user ? `${user.name} · ${user.role}` : "Profile"}
+            title={user ? `${user.name} · ${roleLabel}` : "Profile"}
             aria-label={user ? `Open profile for ${user.name}` : "Open profile"}
           >
             {(user?.name ?? "?").trim().charAt(0).toUpperCase()}
@@ -399,11 +541,15 @@ export function useTabTitle(base = "Davangere Urban Survey") {
         ? "Map"
         : location.pathname.startsWith("/datasets")
           ? "Datasets"
-          : location.pathname.startsWith("/analytics")
+            : location.pathname.startsWith("/analytics")
             ? "Analytics"
-            : location.pathname.startsWith("/profile")
-              ? "Profile"
-              : "";
+            : location.pathname.startsWith("/tasks")
+              ? "Tasks"
+              : location.pathname.startsWith("/activity")
+                ? "Activity"
+                : location.pathname.startsWith("/profile")
+                  ? "Profile"
+                  : "";
     document.title = label ? `${label} · ${base}` : base;
   }, [location.pathname, base]);
 }
