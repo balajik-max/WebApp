@@ -30,6 +30,7 @@ declare global {
 
 interface Official {
   name: string;
+  nameKn: string;
   designation: string;
   phone: string;
 }
@@ -54,8 +55,8 @@ const CITY_OFFICIALS: Department[] = [
     email: "commissioner_davanagere@yahoo.com",
     office: "City Corporation, Davanagere",
     officials: [
-      { name: "Mohamed Tanvir", designation: "Health Inspector", phone: "7022474799" },
-      { name: "Shivrajappa B", designation: "Sanitary Supervisor", phone: "8867867600" },
+      { name: "Mohamed Tanvir", nameKn: "ಮೊಹಮ್ಮದ್ ತನ್ವೀರ್", designation: "Health Inspector", phone: "7022474799" },
+      { name: "Shivrajappa B", nameKn: "ಶಿವರಾಜಪ್ಪ ಬಿ", designation: "Sanitary Supervisor", phone: "8867867600" },
     ],
   },
   {
@@ -66,9 +67,9 @@ const CITY_OFFICIALS: Department[] = [
     email: "commissioner_davanagere@yahoo.com",
     office: "City Corporation, Davanagere",
     officials: [
-      { name: "Veeresh B", designation: "Waterman", phone: "8880485103" },
-      { name: "Veeresh B", designation: "Water Supply Maintenance", phone: "8880485103" },
-      { name: "Sunil Kumar C", designation: "Water Supply Bill Collector", phone: "7676042048" },
+      { name: "Veeresh B", nameKn: "ವೀರೇಶ್ ಬಿ", designation: "Waterman", phone: "8880485103" },
+      { name: "Veeresh B", nameKn: "ವೀರೇಶ್ ಬಿ", designation: "Water Supply Maintenance", phone: "8880485103" },
+      { name: "Sunil Kumar C", nameKn: "ಸುನಿಲ್ ಕುಮಾರ್ ಸಿ", designation: "Water Supply Bill Collector", phone: "7676042048" },
     ],
   },
   {
@@ -79,11 +80,11 @@ const CITY_OFFICIALS: Department[] = [
     email: "commissioner_davanagere@yahoo.com",
     office: "City Corporation, Davanagere",
     officials: [
-      { name: "Prathibha B R", designation: "Junior Engineer (JE)", phone: "9113048826" },
-      { name: "Shruthi H", designation: "Asst-Exe Engineer (AEE)", phone: "9113270974" },
-      { name: "Abishek KR", designation: "Exe-Engineer (EE)", phone: "7892198334" },
-      { name: "Dandeppa", designation: "UGD Maintenance", phone: "9611250996" },
-      { name: "Manjunath", designation: "UGD Maintenance", phone: "9945745133" },
+      { name: "Prathibha B R", nameKn: "ಪ್ರತಿಭಾ ಬಿ ಆರ್", designation: "Junior Engineer (JE)", phone: "9113048826" },
+      { name: "Shruthi H", nameKn: "ಶ್ರುತಿ ಎಚ್", designation: "Asst-Exe Engineer (AEE)", phone: "9113270974" },
+      { name: "Abishek KR", nameKn: "ಅಭಿಷೇಕ್ ಕೆಆರ್", designation: "Exe-Engineer (EE)", phone: "7892198334" },
+      { name: "Dandeppa", nameKn: "ದಂಡೇಪ್ಪ", designation: "UGD Maintenance", phone: "9611250996" },
+      { name: "Manjunath", nameKn: "ಮಂಜುನಾಥ್", designation: "UGD Maintenance", phone: "9945745133" },
     ],
   },
   {
@@ -94,7 +95,7 @@ const CITY_OFFICIALS: Department[] = [
     email: "commissioner_davanagere@yahoo.com",
     office: "City Corporation, Davanagere",
     officials: [
-      { name: "Shoheb", designation: "Electrical Engineer", phone: "8660852374" },
+      { name: "Shoheb", nameKn: "ಶೋಹೇಬ್", designation: "Electrical Engineer", phone: "8660852374" },
     ],
   },
   {
@@ -105,8 +106,8 @@ const CITY_OFFICIALS: Department[] = [
     email: "commissioner_davanagere@yahoo.com",
     office: "City Corporation, Davanagere",
     officials: [
-      { name: "Umesh M", designation: "Revenue Inspector", phone: "9740292929" },
-      { name: "Yamunesh M", designation: "Property Tax Bill collector", phone: "9611915076" },
+      { name: "Umesh M", nameKn: "ಉಮೇಶ್ ಎಂ", designation: "Revenue Inspector", phone: "9740292929" },
+      { name: "Yamunesh M", nameKn: "ಯಮುನೇಶ್ ಎಂ", designation: "Property Tax Bill collector", phone: "9611915076" },
     ],
   },
   {
@@ -117,7 +118,7 @@ const CITY_OFFICIALS: Department[] = [
     email: "commissioner_davanagere@yahoo.com",
     office: "City Corporation, Davanagere",
     officials: [
-      { name: "Jagadeesh S R", designation: "Asst-Exe Engineer (AEE) Environment", phone: "9632983527" },
+      { name: "Jagadeesh S R", nameKn: "ಜಗದೀಶ್ ಎಸ್ ಆರ್", designation: "Asst-Exe Engineer (AEE) Environment", phone: "9632983527" },
     ],
   },
   {
@@ -128,7 +129,7 @@ const CITY_OFFICIALS: Department[] = [
     email: "ka.davanagere.cc@gmail.com",
     office: "City Corporation, Davanagere",
     officials: [
-      { name: "Dr. N.Mahantesh", designation: "Commissioner", phone: "8050061112" },
+      { name: "Dr. N.Mahantesh", nameKn: "ಡಾ. ಎನ್.ಮಹಂತೇಶ್", designation: "Commissioner", phone: "8050061112" },
     ],
   },
   {
@@ -139,7 +140,7 @@ const CITY_OFFICIALS: Department[] = [
     email: "—",
     office: "—",
     officials: [
-      { name: "To be elected", designation: "Corporator", phone: "—" },
+      { name: "To be elected", nameKn: "ಚುನಾಯಿತರಾಗಬೇಕು", designation: "Corporator", phone: "—" },
     ],
   },
   {
@@ -150,7 +151,7 @@ const CITY_OFFICIALS: Department[] = [
     email: "—",
     office: "Home Office",
     officials: [
-      { name: "Samarth Mallikarjun", designation: "MLA", phone: "080-22255023" },
+      { name: "Samarth Mallikarjun", nameKn: "ಸಮರ್ಥ ಮಲ್ಲಿಕಾರ್ಜುನ್", designation: "MLA", phone: "080-22255023" },
     ],
   },
   {
@@ -161,7 +162,7 @@ const CITY_OFFICIALS: Department[] = [
     email: "prabhamallikarjun76@gmail.com",
     office: "Home Office",
     officials: [
-      { name: "Dr. Prabha Mallikarjun", designation: "MP", phone: "9964070830" },
+      { name: "Dr. Prabha Mallikarjun", nameKn: "ಡಾ. ಪ್ರಭಾ ಮಲ್ಲಿಕಾರ್ಜುನ್", designation: "MP", phone: "9964070830" },
     ],
   },
 ];
@@ -423,7 +424,7 @@ function getFileIcon(type: string): React.ReactNode {
 }
 
 export function DatasetsView() {
-  const { t } = useLanguage();
+  const { t, lang } = useLanguage();
   const [rows, setRows] = useState<DatasetRow[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [mounted, setMounted] = useState(false);
@@ -762,7 +763,7 @@ export function DatasetsView() {
       return;
     }
     if (!uploadName.trim()) {
-      setUploadError("Give the dataset a name.");
+      setUploadError(t("datasets.nameRequired"));
       return;
     }
     setUploadBusy(true);
@@ -792,7 +793,7 @@ export function DatasetsView() {
       setUploadName("");
       setUploadWard("");
       if (fileInputRef.current) fileInputRef.current.value = "";
-      setUploadNotice(`Queued: ${body.dataset?.name ?? uploadName} → processing in background.`);
+      setUploadNotice(`${t("datasets.queueMsg")} ${body.dataset?.name ?? uploadName} → ${t("datasets.processingNote")}`);
       window.setTimeout(() => setUploadNotice(null), 5000);
       void refresh();
     } catch (err) {
@@ -835,8 +836,10 @@ export function DatasetsView() {
               </div>
             )}
             <div className="ds-stat ds-stat--storage">
-              <span className="ds-stat__value">{formatBytes(totalSize)}</span>
-              <span className="ds-stat__label">{t("datasets.stat.totalsize")}</span>
+              <div className="ds-stat__top">
+                <span className="ds-stat__value">{formatBytes(totalSize)}</span>
+                {storage && <span className="ds-stat__used">{storage.used_percent}% {t("common.used")}</span>}
+              </div>
               {storage && (
                 <div className="ds-storage">
                   <div className="ds-storage__bar">
@@ -851,12 +854,13 @@ export function DatasetsView() {
                       }}
                     />
                   </div>
-                  <div className="ds-storage__meta">
-                    <span>{formatBytes(storage.free_bytes)} {t("common.free")}</span>
-                    <span>{storage.used_percent}% {t("common.used")}</span>
-                  </div>
+                  <span className="ds-stat__label ds-stat__label--bottom">
+                    <span className="ds-stat__label-side">{t("datasets.stat.totalsize")}</span>
+                    <span className="ds-stat__label-side">{formatBytes(storage.total_bytes)}</span>
+                  </span>
                 </div>
               )}
+              {!storage && <span className="ds-stat__label">{t("datasets.stat.totalsize")}</span>}
             </div>
           </div>
         )}
@@ -962,8 +966,8 @@ export function DatasetsView() {
 
             {zipping ? (
               <div className="ds-dropzone__content">
-                <span className="ds-dropzone__label">Validating and bundling files in your browser...</span>
-                <span className="ds-dropzone__hint">Shapefiles, large .gdb folders, and photo batches may take a few seconds.</span>
+                <span className="ds-dropzone__label">{t("datasets.validating")}</span>
+                <span className="ds-dropzone__hint">{t("datasets.validatingHint")}</span>
               </div>
             ) : !uploadFile ? (
               <label htmlFor="dz-file" className="ds-dropzone__content">
@@ -974,10 +978,10 @@ export function DatasetsView() {
                   </svg>
                 </div>
                 <span className="ds-dropzone__label">
-                  {dragOver ? "Drop file(s) or a folder here" : "Drag & drop data, all shapefile components, or a supported folder here"}
+                  {dragOver ? t("datasets.dropHere") : t("datasets.dropzone")}
                 </span>
                 <span className="ds-dropzone__hint">
-                  or <span className="ds-dropzone__browse">browse files</span>
+                  {t("datasets.or")} <span className="ds-dropzone__browse">{t("datasets.browse")}</span>
                   {" · "}
                   <span
                     className="ds-dropzone__browse"
@@ -987,7 +991,7 @@ export function DatasetsView() {
                       folderInputRef.current?.click();
                     }}
                   >
-                    browse a folder (.shp, .gdb, or photos)
+                    {t("datasets.browseFolder")}
                   </span>
                   {" · "}
                   <span
@@ -1058,14 +1062,14 @@ export function DatasetsView() {
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" width="14" height="14">
                   <path d="M7 7h.01M7 3h5c.512 0 1.024.195 1.414.586l7 7a2 2 0 010 2.828l-7 7a2 2 0 01-2.828 0l-7-7A1.994 1.994 0 013 12V7a4 4 0 014-4z" strokeLinecap="round" strokeLinejoin="round" />
                 </svg>
-                Dataset Name
+                {t("datasets.datasetName")}
               </span>
               <input
                 className="ds-field__input"
                 data-testid="upload-name"
                 value={uploadName}
                 onChange={(e) => setUploadName(e.target.value)}
-                placeholder="e.g. Ward 12 streetlights survey"
+                placeholder={t("datasets.placeholderName")}
                 disabled={uploadBusy}
               />
             </label>
@@ -1075,14 +1079,14 @@ export function DatasetsView() {
                   <path d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z" strokeLinecap="round" strokeLinejoin="round" />
                   <path d="M15 11a3 3 0 11-6 0 3 3 0 016 0z" strokeLinecap="round" strokeLinejoin="round" />
                 </svg>
-                Ward (Optional)
+                {t("datasets.wardOptional")}
               </span>
               <input
                 className="ds-field__input"
                 data-testid="upload-ward"
                 value={uploadWard}
                 onChange={(e) => setUploadWard(e.target.value)}
-                placeholder="e.g. Gandinagar"
+                placeholder={t("datasets.placeholderWard")}
                 disabled={uploadBusy}
               />
             </label>
@@ -1117,14 +1121,14 @@ export function DatasetsView() {
             {uploadBusy ? (
               <>
                 <span className="ds-upload-btn__spinner" />
-                Uploading & Ingesting...
+                {t("datasets.uploading")}
               </>
             ) : (
               <>
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="18" height="18">
                   <path d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" strokeLinecap="round" strokeLinejoin="round" />
                 </svg>
-                Upload & Ingest Dataset
+                {t("datasets.uploadBtn")}
               </>
             )}
           </button>
@@ -1161,7 +1165,7 @@ export function DatasetsView() {
                 {dept.officials.map((o, i) => (
                   <li className="ds-official" key={`${o.name}-${i}`}>
                     <div className="ds-official__main">
-                      <span className="ds-official__name">{o.name}</span>
+                      <span className="ds-official__name">{lang === "kn" ? o.nameKn : o.name}</span>
                       <span className="ds-official__desg">{o.designation}</span>
                     </div>
                     {o.phone && o.phone !== "—" && (
@@ -1190,13 +1194,13 @@ export function DatasetsView() {
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" width="20" height="20">
                 <path d="M4 7v10c0 2.21 3.582 4 8 4s8-1.79 8-4V7M4 7c0 2.21 3.582 4 8 4s8-1.79 8-4M4 7c0-2.21 3.582-4 8-4s8 1.79 8 4m0 5c0 2.21-3.582 4-8 4s-8-1.79-8-4" strokeLinecap="round" strokeLinejoin="round" />
               </svg>
-              Uploaded Datasets
+              {t("datasets.uploadedDatasets")}
             </h2>
             <span className="ds-table-header__count" data-testid="dataset-count">
-              {rows ? `${rows.length} dataset${rows.length === 1 ? "" : "s"}` : "Loading..."}
+              {rows ? `${rows.length}` : t("datasets.loading")}
             </span>
           </div>
-          <button className="ds-refresh-btn" onClick={() => void refresh()} title="Refresh list">
+          <button className="ds-refresh-btn" onClick={() => void refresh()} title={t("datasets.refresh")}>
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="16" height="16">
               <path d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" strokeLinecap="round" strokeLinejoin="round" />
             </svg>
@@ -1214,13 +1218,13 @@ export function DatasetsView() {
 
         <div className="ds-table" data-testid="dataset-grid" role="table">
           <div className="ds-table__head" role="row">
-            <div className="ds-table__th ds-table__th--name">Dataset</div>
-            <div className="ds-table__th">Ward</div>
-            <div className="ds-table__th">Type</div>
-            <div className="ds-table__th">Size</div>
-            <div className="ds-table__th">Status</div>
-            <div className="ds-table__th">Uploaded</div>
-            <div className="ds-table__th ds-table__th--actions">Actions</div>
+            <div className="ds-table__th ds-table__th--name">{t("datasets.colName")}</div>
+            <div className="ds-table__th">{t("datasets.colWard")}</div>
+            <div className="ds-table__th">{t("datasets.colType")}</div>
+            <div className="ds-table__th">{t("datasets.colSize")}</div>
+            <div className="ds-table__th">{t("datasets.colStatus")}</div>
+            <div className="ds-table__th">{t("datasets.colUploaded")}</div>
+            <div className="ds-table__th ds-table__th--actions">{t("datasets.colActions")}</div>
           </div>
 
           <div className="ds-table__scroll" role="rowgroup">
@@ -1259,7 +1263,7 @@ export function DatasetsView() {
                       </button>
                     </div>
                   ) : (
-                    <button type="button" className="ds-table__ward-btn" onClick={() => startEditWard(d)} title="Click to edit ward">
+                      <button type="button" className="ds-table__ward-btn" onClick={() => startEditWard(d)} title={t("datasets.editWardTitle")}>
                       {d.ward ? (
                         <>
                           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" width="12" height="12">
@@ -1268,7 +1272,7 @@ export function DatasetsView() {
                           {d.ward}
                         </>
                       ) : (
-                        <span className="ds-table__ward-empty">Assign ward</span>
+                        <span className="ds-table__ward-empty">{t("datasets.assignWard")}</span>
                       )}
                     </button>
                   )}
@@ -1282,10 +1286,10 @@ export function DatasetsView() {
                   </span>
                 </div>
                 <div className="ds-table__td ds-table__td--mono">{formatBytes(d.size_bytes ?? 0)}</div>
-                <div className="ds-table__td">
+                 <div className="ds-table__td">
                   <span className={`ds-table__status ds-table__status--${d.status}`}>
                     {d.status === "ready" && <span className="ds-table__status-dot" />}
-                    {d.status}
+                    {t(`datasets.status.${d.status === "queued" ? "queued" : d.status === "processing" ? "processing" : d.status === "failed" ? "failed" : "ready"}`)}
                   </span>
                 </div>
                 <div className="ds-table__td ds-table__td--mono ds-table__td--muted">{formatDate(d.created_at)}</div>
@@ -1296,12 +1300,12 @@ export function DatasetsView() {
                     data-testid={`view-attrs-${d.id}`}
                     disabled={d.status !== "ready"}
                     onClick={() => setOpenTableFor(d)}
-                    title="View attribute table"
+                    title={t("datasets.viewTable")}
                   >
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="14" height="14">
                       <path d="M4 7v10c0 2.21 3.582 4 8 4s8-1.79 8-4V7M4 7c0 2.21 3.582 4 8 4s8-1.79 8-4M4 7c0-2.21 3.582-4 8-4s8 1.79 8 4m0 5c0 2.21-3.582 4-8 4s-8-1.79-8-4" strokeLinecap="round" strokeLinejoin="round" />
                     </svg>
-                    Attributes
+                    {t("datasets.attributes")}
                   </button>
                   <button
                     type="button"
@@ -1309,7 +1313,7 @@ export function DatasetsView() {
                     data-testid={`remove-${d.id}`}
                     disabled={removingId === d.id}
                     onClick={() => void removeDataset(d.id, d.name)}
-                    title="Remove dataset"
+                    title={t("datasets.removeDataset")}
                   >
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="14" height="14">
                       <path d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" strokeLinecap="round" strokeLinejoin="round" />
@@ -1321,7 +1325,7 @@ export function DatasetsView() {
           ) : rows === null ? (
             <div className="ds-table__empty">
               <div className="ds-table__empty-spinner" />
-              <span>Loading datasets...</span>
+              <span>{t("datasets.loading")}</span>
             </div>
           ) : (
             <div className="ds-table__empty">
@@ -1329,8 +1333,8 @@ export function DatasetsView() {
                 <rect x="4" y="4" width="40" height="40" rx="8" stroke="currentColor" strokeWidth="2" strokeDasharray="4 4" />
                 <path d="M24 16v16M16 24h16" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
               </svg>
-              <span>No datasets uploaded yet</span>
-              <span className="ds-table__empty-hint">Upload your first survey dataset above to get started</span>
+              <span>{t("datasets.noDatasets")}</span>
+              <span className="ds-table__empty-hint">{t("datasets.noDatasetsHint")}</span>
             </div>
           )}
           </div>

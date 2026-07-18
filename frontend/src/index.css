@@ -4752,7 +4752,7 @@ body {
 .ds-stat--storage {
   align-items: stretch;
   justify-content: center;
-  min-width: 150px;
+  min-width: 80px;
 }
 .ds-stat__value {
   font-size: 20px;
@@ -4777,6 +4777,35 @@ body {
 .ds-stat--warn .ds-stat__value { color: var(--warn); }
 
 /* System storage bar (under stats row) */
+.ds-stat__top {
+  display: flex;
+  align-items: baseline;
+  justify-content: center;
+  gap: 6px;
+}
+.ds-stat__used {
+  font-size: 9px;
+  font-weight: 700;
+  color: var(--accent);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+.ds-stat__label--bottom {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 4px;
+}
+.ds-stat__label-side:first-child {
+  text-align: left;
+}
+.ds-stat__label-side:last-child {
+  text-align: right;
+  font-family: var(--font-mono);
+  color: var(--ink-dim);
+}
 .ds-storage {
   width: 100%;
   margin-top: 8px;

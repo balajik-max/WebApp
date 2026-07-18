@@ -6,6 +6,7 @@ import {
   resolveRasterSettings,
   type RasterDisplaySettings,
 } from "./MapCanvas";
+import { useLanguage } from "../context/LanguageContext";
 
 interface DataSourceSelectorProps {
   datasets: DatasetRow[];
@@ -64,6 +65,7 @@ export function DataSourceSelector({
   onOpenLayer,
   flyError,
 }: DataSourceSelectorProps) {
+  const { t } = useLanguage();
   const selectedCount = activeDatasetIds.length;
   const hasSelectedDataSources = selectedCount > 0;
 
@@ -73,15 +75,15 @@ export function DataSourceSelector({
   return (
     <div className="dss" role="group" aria-label="Data sources">
       <div className="dss-header">
-        <div className="dss-heading" data-testid="data-source-heading">Data Sources</div>
+        <div className="dss-heading" data-testid="data-source-heading">{t("map.dataSources")}</div>
         {hasSelectedDataSources ? (
           <button
             type="button"
             className="dss-clear"
             onClick={handleClear}
-            aria-label="Clear selected data sources"
+            aria-label={t("datasources.clear")}
           >
-            Clear
+            {t("datasources.clear")}
           </button>
         ) : (
           <label className="dss-selectall">
@@ -91,16 +93,16 @@ export function DataSourceSelector({
               checked={false}
               onChange={handleSelectAll}
               disabled={datasets.length === 0}
-              aria-label="Select all data sources"
+              aria-label={t("datasources.selectAll")}
             />
-            <span>Select All</span>
+            <span>{t("datasources.selectAll")}</span>
           </label>
         )}
       </div>
 
           <div className="dss-panel__list">
             {datasets.length === 0 ? (
-              <div className="dss-empty">No data sources available</div>
+              <div className="dss-empty">{t("datasources.empty")}</div>
             ) : (
               datasets.map((d) => {
                 const isActive = activeDatasetIds.includes(d.id);
@@ -179,9 +181,9 @@ export function DataSourceSelector({
                             if (!canOpenLayer) return;
                             onOpenLayer(d.id, event.currentTarget);
                           }}
-                        >
-                          Layer
-                        </button>
+                          >
+                            {t("datasources.layer")}
+                          </button>
                       ) : (
                         <span className={`dataset-card__status dataset-card__status--${d.status}`}>{d.status}</span>
                       )}
@@ -190,21 +192,21 @@ export function DataSourceSelector({
                       <div className="dataset-card__settings" onClick={(event) => event.stopPropagation()}>
                         <div className="dataset-card__settings-head">
                           <div>
-                            <div className="dataset-card__settings-title">Display Settings</div>
+                            <div className="dataset-card__settings-title">{t("datasources.displaySettings")}</div>
                             <div className="dataset-card__settings-copy">
-                              Default preview already looks correct. Use these only when you need a manual adjustment.
+                              {t("datasources.displayCopy")}
                             </div>
                           </div>
                           <button
                             type="button"
                             className="dataset-card__reset"
                             onClick={() => onChangeRasterSettings(d.id, DEFAULT_RASTER_SETTINGS)}
-                          >
-                            Reset
-                          </button>
+                            >
+                              {t("datasources.reset")}
+                            </button>
                         </div>
                         <div className="dataset-card__settings-group">
-                          <div className="dataset-card__settings-label">Color Type</div>
+                          <div className="dataset-card__settings-label">{t("datasources.colorType")}</div>
                           <div className="dataset-card__mode-row">
                             {COLOR_MODE_OPTIONS.map((option) => (
                               <button
@@ -220,7 +222,7 @@ export function DataSourceSelector({
                         </div>
                         <div className="dataset-card__settings-group">
                           <div className="dataset-card__slider-head">
-                            <span className="dataset-card__settings-label">Edge Clarity</span>
+                            <span className="dataset-card__settings-label">{t("datasources.edgeClarity")}</span>
                             <span className="dataset-card__slider-value">
                               {rasterSettings.clarity.toFixed(2)}
                             </span>
