@@ -22,10 +22,10 @@ type SpatialAuditStatus = "idle" | "running" | "success" | "error";
 
 // Single source of truth for the left sidebar's width — desktop only (the
 // mobile drawer keeps its own fixed width from index.css, see
-// `.command-center` under the 768px breakpoint). Widened slightly from the
-// previous 300px fixed value so geometry-group and datasource names have
-// more room before truncating.
-const DEFAULT_SIDEBAR_WIDTH = 340;
+// `.command-center` under the 768px breakpoint). Widened from the previous
+// 340px value to 357px so geometry-group and datasource names have more room
+// before truncating.
+const DEFAULT_SIDEBAR_WIDTH = 357;
 const MIN_SIDEBAR_WIDTH = 280;
 const MAX_SIDEBAR_WIDTH = 520;
 const SIDEBAR_KEYBOARD_STEP = 16;

@@ -75,7 +75,7 @@
      must be kept in sync with that constant. Not a colour token, so it is
      intentionally defined only here and inherited unchanged by
      [data-theme="light"]. */
-  --map-sidebar-width: 340px;
+  --map-sidebar-width: 357px;
 
   /* Bottom offset shared by every map-footer-row overlay (the coordinate/
      status bar and the feature-count pill) so they always sit on the same
@@ -2086,6 +2086,7 @@ body.is-resizing-sidebar {
   white-space:nowrap;
   letter-spacing:0.02em;
   text-transform:capitalize;
+  font-size:12px;
 }
 
 .layer-group__chevron {
@@ -2640,7 +2641,7 @@ body.is-resizing-sidebar {
    or page) is what scrolls when many datasets exist. */
 
 .dss-panel__list {
-  --dss-row-gap: 4px;
+  --dss-row-gap: 2px;
   display: flex;
   flex-direction: column;
   gap: var(--dss-row-gap);
@@ -2693,12 +2694,12 @@ body.is-resizing-sidebar {
   display: flex;
   align-items: center;
   gap: 10px;
-  height: 53px;
-  min-height: 53px;
-  max-height: 53px;
-  flex: 0 0 53px;
+  height: 46px;
+  min-height: 46px;
+  max-height: 46px;
+  flex: 0 0 46px;
   box-sizing: border-box;
-  padding: 8px 10px;
+  padding: 6px 10px;
   border: 1px solid transparent;
   border-radius: var(--radius-md);
   cursor: pointer;
