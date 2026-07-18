@@ -164,6 +164,42 @@ class SpatialAnomalyOut(BaseModel):
     created_at: datetime
 
 
+class RoadAssetCounts(BaseModel):
+    """Surveyed roadside assets assigned to one real road centerline."""
+
+    poles: int = 0
+    drains: int = 0
+    manholes: int = 0
+
+
+class RoadInspectionFeatureOut(BaseModel):
+    """One real surveyed feature rendered in a road inspection view."""
+
+    id: uuid.UUID
+    dataset_id: uuid.UUID
+    label: str | None
+    category: str | None
+    severity: float
+    canonical_class: str
+    attributes: dict[str, Any]
+    geometry: dict[str, Any]
+    audit_color: str | None = None
+
+
+class RoadInspectionOut(BaseModel):
+    """Current unresolved audit findings for one selected road."""
+
+    road_id: uuid.UUID
+    dataset_id: uuid.UUID
+    road_label: str | None
+    road_category: str | None
+    road_length_m: float
+    roadside_corridor_m: float
+    assets: RoadAssetCounts
+    features: list[RoadInspectionFeatureOut]
+    issues: list[SpatialAnomalyOut]
+
+
 class AnomalyExplainResponse(BaseModel):
     id: uuid.UUID
     explanation_text: str

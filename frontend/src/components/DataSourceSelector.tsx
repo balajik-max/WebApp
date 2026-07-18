@@ -10,6 +10,8 @@ import {
 interface DataSourceSelectorProps {
   datasets: DatasetRow[];
   activeDatasetIds: string[];
+  open: boolean;
+  onToggleOpen: () => void;
   onSelectDataset: (d: DatasetRow) => void;
   onSelectAllDatasets: (active: boolean) => void;
   expandedDatasetId: string | null;
@@ -53,6 +55,8 @@ function DatasetTypeIcon({ fileType, isModel3d = false }: { fileType: string; is
 export function DataSourceSelector({
   datasets,
   activeDatasetIds,
+  open,
+  onToggleOpen,
   onSelectDataset,
   onSelectAllDatasets,
   expandedDatasetId,
@@ -73,7 +77,19 @@ export function DataSourceSelector({
   return (
     <div className="dss" role="group" aria-label="Data sources">
       <div className="dss-header">
-        <div className="dss-heading" data-testid="data-source-heading">Data Sources</div>
+        <button
+          type="button"
+          className="dss-heading"
+          data-testid="data-source-heading"
+          onClick={onToggleOpen}
+          aria-expanded={open}
+          aria-controls="data-sources-panel"
+        >
+          <svg className={`dss-heading__chevron${open ? " dss-heading__chevron--open" : ""}`} viewBox="0 0 24 24" aria-hidden="true">
+            <path d="m8 10 4 4 4-4" />
+          </svg>
+          Data Sources
+        </button>
         {hasSelectedDataSources ? (
           <button
             type="button"
@@ -98,7 +114,7 @@ export function DataSourceSelector({
         )}
       </div>
 
-          <div className="dss-panel__list">
+          {open && <div id="data-sources-panel" className="dss-panel__list">
             {datasets.length === 0 ? (
               <div className="dss-empty">No data sources available</div>
             ) : (
@@ -236,9 +252,9 @@ export function DataSourceSelector({
                 );
               })
             )}
-          </div>
+          </div>}
 
-          {flyError && (
+          {open && flyError && (
             <div className="dss-panel__error">{flyError}</div>
           )}
     </div>

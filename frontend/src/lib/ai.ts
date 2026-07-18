@@ -28,6 +28,9 @@ export interface PipeRoute {
    * whether a direction was actually confirmed vs just drawn. */
   elevation_source?: string | null;
   flow_confirmed?: boolean | null;
+  /** Network-mode only: this connection needs closure/attention because of
+   * a recorded poor condition, local-low-point risk, or unconfirmed flow. */
+  rainy_season_closed?: boolean | null;
   /** network-mode only: "sewage_line" (real surveyed pipe), "concrete_road"
    * (no pipe path existed, followed the road network instead), or "bridge"
    * (neither graph spanned the gap, a direct building-checked line was used

@@ -16,6 +16,8 @@ export function MapView() {
   const { filter, selectedDatasets, setSelectedDatasets } = useOutletContext<LayoutCtx>();
   const [selected, setSelected] = useState<UrbanFeature | null>(null);
   const [aiHighlights, setAiHighlights] = useState<AiHighlight[]>([]);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [quickAnalysisActive, setQuickAnalysisActive] = useState(false);
   const mapRef = useRef<MapCanvasHandle | null>(null);
   const [searchParams, setSearchParams] = useSearchParams();
   const locateFeatureId = searchParams.get("locateFeature") ?? undefined;
@@ -31,7 +33,7 @@ export function MapView() {
   }, [searchParams, setSearchParams]);
 
   return (
-    <div className="map-page map-page--dual" data-testid="map-page">
+    <div className={`map-page map-page--dual${sidebarCollapsed ? " map-page--sidebar-collapsed" : ""}`} data-testid="map-page">
       <MapCanvas
         ref={mapRef}
         filter={filter}
@@ -41,13 +43,18 @@ export function MapView() {
         aiHighlights={aiHighlights}
         focusFeatureId={locateFeatureId}
         onFocusHandled={handleFeatureLocated}
+        sidebarCollapsed={sidebarCollapsed}
+        onToggleSidebar={() => setSidebarCollapsed((current) => !current)}
+        onQuickAnalysisActiveChange={setQuickAnalysisActive}
       />
-      <ReportGenerator datasets={selectedDatasets} />
-      <AiAssistant
-        filter={filter}
-        selectedFeature={selected}
-        onAiHighlights={setAiHighlights}
-      />
+      {!quickAnalysisActive && <ReportGenerator datasets={selectedDatasets} />}
+      {!quickAnalysisActive && (
+        <AiAssistant
+          filter={filter}
+          selectedFeature={selected}
+          onAiHighlights={setAiHighlights}
+        />
+      )}
     </div>
   );
 }

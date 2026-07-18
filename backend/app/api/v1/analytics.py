@@ -16,7 +16,7 @@ import json
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
-from sqlalchemy import case, func, select
+from sqlalchemy import case, func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import require_any
@@ -27,6 +27,9 @@ from app.schemas.workflow import (
     AnalyticsFeatureRow,
     AnalyticsOverview,
     AnalyticsQualityReport,
+    DrainEncroachmentBuildingOut,
+    DrainEncroachmentDrainOut,
+    DrainEncroachmentReport,
     ManholeReadinessFieldResult,
     ManholeReadinessReport,
     CategoryBreakdown,
@@ -455,6 +458,133 @@ async def manhole_readiness_features(
         "limit": limit,
         "truncated": total > limit,
     }
+
+
+@router.get(
+    "/drain-encroachment",
+    response_model=DrainEncroachmentReport,
+    dependencies=[Depends(require_any)],
+    summary="Exact surveyed drain/building intersections",
+)
+async def drain_encroachment_report(
+    dataset_id: list[uuid.UUID] = Query(..., description="One or more active survey datasets."),
+    db: AsyncSession = Depends(get_db),
+) -> DrainEncroachmentReport:
+    dataset_ids = list(dict.fromkeys(dataset_id))
+    if not dataset_ids:
+        raise HTTPException(status_code=400, detail="At least one dataset_id is required")
+
+    params = {"dataset_ids": dataset_ids}
+    common_cte = (
+        "WITH drains AS ("
+        "  SELECT id, dataset_id, attributes, ST_MakeValid(geom) AS geom "
+        "  FROM features "
+        "  WHERE dataset_id = ANY(:dataset_ids) "
+        "    AND attributes->>'_canonical_class' = 'Drainage_Asset'"
+        "), buildings AS ("
+        "  SELECT id, dataset_id, ST_MakeValid(geom) AS geom "
+        "  FROM features "
+        "  WHERE dataset_id = ANY(:dataset_ids) "
+        "    AND attributes->>'_canonical_class' = 'Building'"
+        "), pairs AS ("
+        "  SELECT d.id AS drain_id, b.id AS building_id, b.geom AS building_geom, "
+        "         ST_CollectionExtract(ST_Intersection(d.geom, b.geom), 2) AS crossing_geom, "
+        "         ST_Length(ST_Intersection(d.geom, b.geom)::geography) AS crossing_length_m, "
+        "         ST_Perimeter(b.geom::geography) / 4.0 AS building_span_m "
+        "  FROM drains d JOIN buildings b ON b.dataset_id = d.dataset_id "
+        "    AND ST_Intersects(d.geom, b.geom) "
+        "  WHERE ST_Length(ST_Intersection(d.geom, b.geom)::geography) > 0.01"
+        ") "
+    )
+
+    building_rows = (
+        await db.execute(
+            text(
+                common_cte
+                + "SELECT building_id, array_agg(DISTINCT drain_id) AS drain_ids, "
+                "       SUM(crossing_length_m) AS crossing_length_m, "
+                "       MAX(building_span_m) AS building_span_m, "
+                "       ST_AsGeoJSON(ST_Union(building_geom), 6) AS geometry_json, "
+                "       ST_AsGeoJSON(ST_UnaryUnion(ST_Collect(crossing_geom)), 6) AS crossing_json "
+                "FROM pairs GROUP BY building_id ORDER BY SUM(crossing_length_m) DESC"
+            ),
+            params,
+        )
+    ).mappings().all()
+
+    drain_rows = (
+        await db.execute(
+            text(
+                common_cte
+                + "SELECT d.id AS drain_id, d.attributes->>'FID' AS fid, "
+                "       COUNT(DISTINCT p.building_id) AS affected_buildings, "
+                "       COALESCE(SUM(p.crossing_length_m), 0) AS crossing_length_m "
+                "FROM drains d LEFT JOIN pairs p ON p.drain_id = d.id "
+                "GROUP BY d.id, d.attributes "
+                "ORDER BY affected_buildings DESC, crossing_length_m DESC"
+            ),
+            params,
+        )
+    ).mappings().all()
+
+    buildings: list[DrainEncroachmentBuildingOut] = []
+    major_crossings = 0
+    partial_clips = 0
+    crossing_length_m = 0.0
+    intersection_pairs = 0
+    for row in building_rows:
+        length_m = float(row["crossing_length_m"] or 0.0)
+        span_m = float(row["building_span_m"] or 0.0)
+        crossing_ratio_pct = min(100.0, (length_m / span_m) * 100.0) if span_m > 0 else 0.0
+        classification = "major_crossing" if crossing_ratio_pct > 50.0 else "partial_clip"
+        if classification == "major_crossing":
+            major_crossings += 1
+        else:
+            partial_clips += 1
+        drain_ids = list(row["drain_ids"] or [])
+        intersection_pairs += len(drain_ids)
+        crossing_length_m += length_m
+        buildings.append(
+            DrainEncroachmentBuildingOut(
+                building_id=row["building_id"],
+                drain_ids=drain_ids,
+                classification=classification,
+                crossing_length_m=round(length_m, 2),
+                crossing_ratio_pct=round(crossing_ratio_pct, 1),
+                geometry=json.loads(row["geometry_json"]),
+                crossing_geometry=json.loads(row["crossing_json"]),
+            )
+        )
+
+    drains = [
+        DrainEncroachmentDrainOut(
+            drain_id=row["drain_id"],
+            fid=row["fid"],
+            affected_buildings=int(row["affected_buildings"] or 0),
+            crossing_length_m=round(float(row["crossing_length_m"] or 0.0), 2),
+        )
+        for row in drain_rows
+    ]
+    affected_drains = sum(1 for row in drains if row.affected_buildings > 0)
+
+    return DrainEncroachmentReport(
+        total_drains=len(drains),
+        affected_drains=affected_drains,
+        clear_drains=max(0, len(drains) - affected_drains),
+        affected_buildings=len(buildings),
+        major_crossings=major_crossings,
+        partial_clips=partial_clips,
+        intersection_pairs=intersection_pairs,
+        crossing_length_m=round(crossing_length_m, 2),
+        buildings=buildings,
+        drains=drains,
+        methodology=(
+            "Deterministic PostGIS analysis using zero-tolerance ST_Intersects against the raw "
+            "surveyed Drainage_Asset centerlines. Exact line portions inside each Building footprint "
+            "are returned from ST_Intersection; no AI inference or proximity buffer creates a finding."
+        ),
+        generated_at=datetime.now(timezone.utc),
+    )
 
 
 @router.get(

@@ -115,6 +115,21 @@ bcrypt hashes without touching any other user.
 
 ---
 
+## Official cadastral sources
+
+`CADASTRAL` mode now supports both:
+
+- the surveyed ward overlay already ingested into this platform
+- an optional official parcel/cadastral tile service configured in `.env`
+
+See [docs/official-cadastral-integration.md](docs/official-cadastral-integration.md) for:
+
+- service URL integration (`XYZ`, `WMTS`, `ArcGIS tile`, tiled `WMS`)
+- official `GDB` / `Shapefile` upload workflow
+- the recommended path when a department gives portal-only access
+
+---
+
 ## 4. Daily operation cheat-sheet
 
 ```bash

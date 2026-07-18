@@ -33,6 +33,7 @@ from app.schemas.ai import (
     PipeSpecOut,
     RecommendRequest,
     ReportRequest,
+    RoadInspectionOut,
     SpacingRequest,
     SpatialAnomalyOut,
 )
@@ -61,6 +62,7 @@ from app.services.manhole_recommend import (
     scan_all_manhole_recommendations,
 )
 from app.services.spatial_audit import run_spatial_audit
+from app.services.road_inspection import build_road_inspection
 
 log = logging.getLogger("davangere.api.ai")
 router = APIRouter()
@@ -960,6 +962,21 @@ async def list_anomalies(
         stmt = stmt.where(SpatialAnomaly.status == status_filter)
     rows = (await db.execute(stmt)).all()
     return [_anomaly_out(row, lon, lat) for row, lon, lat in rows]
+
+
+@router.get(
+    "/audit/roads/{road_id}",
+    response_model=RoadInspectionOut,
+    dependencies=[Depends(require_any)],
+    summary="List unresolved spatial-audit findings for one surveyed road centerline",
+)
+async def inspect_road(
+    road_id: uuid.UUID, db: AsyncSession = Depends(get_db)
+) -> RoadInspectionOut:
+    report = await build_road_inspection(road_id, db)
+    if report is None:
+        raise HTTPException(status_code=404, detail="Road centerline not found")
+    return RoadInspectionOut.model_validate(report)
 
 
 async def _manhole_pipe_suggestion_facts(row: SpatialAnomaly, db: AsyncSession) -> str:

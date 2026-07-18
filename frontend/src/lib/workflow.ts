@@ -1,7 +1,7 @@
 /** Analytics + workflow API helpers. */
 
 import { apiDelete, apiDownload, apiGet, apiPatch, apiPost } from "./api";
-import type { FeatureCollectionResponse } from "./types";
+import type { FeatureCollectionResponse, FeatureGeometry } from "./types";
 
 export type AnalyticsSeverityBucket = "low" | "medium" | "high";
 export type SeverityVisualizationType = "bar" | "pie" | "treemap";
@@ -292,6 +292,44 @@ export function fetchAnalyticsFeatures(
   params.set("bbox", "-180,-90,180,90");
   params.set("exclude_internal", "true");
   return apiGet<FeatureCollectionResponse>(`/api/v1/features?${params.toString()}`, signal);
+}
+
+export interface DrainEncroachmentBuilding {
+  building_id: string;
+  drain_ids: string[];
+  classification: "major_crossing" | "partial_clip";
+  crossing_length_m: number;
+  crossing_ratio_pct: number;
+  geometry: FeatureGeometry;
+  crossing_geometry: FeatureGeometry;
+}
+
+export interface DrainEncroachmentDrain {
+  drain_id: string;
+  fid: string | null;
+  affected_buildings: number;
+  crossing_length_m: number;
+}
+
+export interface DrainEncroachmentReport {
+  total_drains: number;
+  affected_drains: number;
+  clear_drains: number;
+  affected_buildings: number;
+  major_crossings: number;
+  partial_clips: number;
+  intersection_pairs: number;
+  crossing_length_m: number;
+  buildings: DrainEncroachmentBuilding[];
+  drains: DrainEncroachmentDrain[];
+  methodology: string;
+  generated_at: string;
+}
+
+export function fetchDrainEncroachment(datasetIds: string[], signal?: AbortSignal) {
+  const params = new URLSearchParams();
+  datasetIds.forEach((id) => params.append("dataset_id", id));
+  return apiGet<DrainEncroachmentReport>(`/api/v1/analytics/drain-encroachment?${params.toString()}`, signal);
 }
 
 export function fetchAnalyticsFeatureTable(
@@ -706,6 +744,36 @@ export interface SpatialAnomaly {
   created_at: string;
 }
 
+export interface RoadAssetCounts {
+  poles: number;
+  drains: number;
+  manholes: number;
+}
+
+export interface RoadInspectionFeature {
+  id: string;
+  dataset_id: string;
+  label: string | null;
+  category: string | null;
+  severity: number;
+  canonical_class: string;
+  attributes: Record<string, unknown>;
+  geometry: FeatureGeometry;
+  audit_color: "red" | "yellow" | "green" | null;
+}
+
+export interface RoadInspection {
+  road_id: string;
+  dataset_id: string;
+  road_label: string | null;
+  road_category: string | null;
+  road_length_m: number;
+  roadside_corridor_m: number;
+  assets: RoadAssetCounts;
+  features: RoadInspectionFeature[];
+  issues: SpatialAnomaly[];
+}
+
 export interface AnomalyExplanation {
   id: string;
   explanation_text: string;
@@ -721,6 +789,9 @@ export const fetchAnomalies = (datasetId: string, statusFilter?: AnomalyStatus, 
   if (statusFilter) qs.set("status_filter", statusFilter);
   return apiGet<SpatialAnomaly[]>(`/api/v1/ai/audit/anomalies?${qs.toString()}`, signal);
 };
+
+export const fetchRoadInspection = (roadId: string, signal?: AbortSignal) =>
+  apiGet<RoadInspection>(`/api/v1/ai/audit/roads/${encodeURIComponent(roadId)}`, signal);
 
 export const explainAnomaly = (anomalyId: string, signal?: AbortSignal) =>
   apiPost<AnomalyExplanation>(`/api/v1/ai/audit/anomalies/${anomalyId}/explain`, {}, signal);
