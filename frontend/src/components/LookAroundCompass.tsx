@@ -61,7 +61,7 @@ function CompassGlyph({ bearing }: { bearing: number }) {
       style={{ transform: `rotate(${-bearing}deg)` }}
     >
       <span className="look-around-compass__north-label" aria-hidden="true">N</span>
-      <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="1.6" aria-hidden="true">
+      <svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" strokeWidth="1.6" aria-hidden="true">
         <circle cx="12" cy="12" r="9" />
         <path d="M12 6l2.4 5.6L12 18l-2.4-6.4L12 6z" fill="currentColor" stroke="none" />
       </svg>
