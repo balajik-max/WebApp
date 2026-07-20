@@ -5226,6 +5226,8 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
           onToggleCoordinateSearch={toggleCoordinateSearch}
           referenceLayers={referenceLayers}
           onToggleReferenceLayer={handleToggleReferenceLayer}
+          measureActive={measureActive}
+          onToggleMeasure={toggleMeasureActive}
         />
         <HoverTooltip hover={hover} />
         {selectedAnomaly && (
@@ -5327,22 +5329,6 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
             onToggleLookAround={toggleLookAround}
             onResetCamera={resetLookAroundCamera}
           />
-          <button
-            type="button"
-            className={`map-measure-btn${measureActive ? " map-measure-btn--active" : ""}`}
-            onClick={toggleMeasureActive}
-            title="Measure"
-            aria-label="Open Measure tools"
-            aria-pressed={measureActive}
-            data-testid="topbar-measure"
-          >
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-              <rect x="2.5" y="8" width="19" height="8" rx="1.5" transform="rotate(-45 12 12)" />
-              <g transform="rotate(-45 12 12)">
-                <path d="M6 8v3M9.5 8v2M13 8v3M16.5 8v2" />
-              </g>
-            </svg>
-          </button>
           <button
             type="button"
             className="map-measure-btn"
@@ -6426,6 +6412,8 @@ function MapControls({
   onToggleCoordinateSearch,
   referenceLayers,
   onToggleReferenceLayer,
+  measureActive,
+  onToggleMeasure,
 }: {
   basemap: Basemap;
   onChangeBasemap: (b: Basemap) => void;
@@ -6449,6 +6437,8 @@ function MapControls({
   onToggleCoordinateSearch: () => void;
   referenceLayers: ReferenceLayerVisibility;
   onToggleReferenceLayer: (key: keyof ReferenceLayerVisibility, visible: boolean) => void;
+  measureActive: boolean;
+  onToggleMeasure: () => void;
 }) {
   const [activeToolsSection, setActiveToolsSection] = useState<"map" | "location" | null>(null);
   const [menuPos, setMenuPos] = useState<{ top: number; left: number } | null>(null);
@@ -6464,8 +6454,41 @@ function MapControls({
   const [showDetectionList, setShowDetectionList] = useState(false);
   const [showDetectionStatus, setShowDetectionStatus] = useState(false);
   const [aiOffsetY, setAiOffsetY] = useState(0);
+  // Location Tools child strip: `locationOpen` is the logical state
+  // (mutually exclusive with the Map View section via activeToolsSection).
+  // `locationMounted` keeps the strip in the DOM through the close
+  // animation so children can slide back before unmount; `locationShown`
+  // toggles the `is-open` class that drives the staggered transition.
+  // A single timer (locationCloseTimer) guards unmount; it is cleared on
+  // reopen and on unmount to avoid stale close callbacks/race conditions.
+  const locationOpen = activeToolsSection === "location";
+  const [locationMounted, setLocationMounted] = useState(locationOpen);
+  const [locationShown, setLocationShown] = useState(locationOpen);
+  const locationCloseTimer = useRef<number | null>(null);
+  const LOCATION_EXIT_MS = 460;
+  useEffect(() => {
+    if (locationCloseTimer.current !== null) {
+      clearTimeout(locationCloseTimer.current);
+      locationCloseTimer.current = null;
+    }
+    if (locationOpen) {
+      setLocationMounted(true);
+      const raf = requestAnimationFrame(() => {
+        requestAnimationFrame(() => setLocationShown(true));
+      });
+      return () => cancelAnimationFrame(raf);
+    }
+    setLocationShown(false);
+    locationCloseTimer.current = window.setTimeout(() => setLocationMounted(false), LOCATION_EXIT_MS);
+  }, [locationOpen]);
+  useEffect(() => () => {
+    if (locationCloseTimer.current !== null) clearTimeout(locationCloseTimer.current);
+  }, []);
   const toolsControlRef = useRef<HTMLDivElement | null>(null);
   const toolsPanelsRef = useRef<HTMLDivElement | null>(null);
+  const categoryRailRef = useRef<HTMLDivElement | null>(null);
+  const mapCategoryBtnRef = useRef<HTMLButtonElement | null>(null);
+  const locationCategoryBtnRef = useRef<HTMLButtonElement | null>(null);
   const aiWrapRef = useRef<HTMLDivElement | null>(null);
   const portalMenuRef = useRef<HTMLDivElement | null>(null);
   const isMobile = useIsMobile();
@@ -6610,9 +6633,11 @@ function MapControls({
           role="toolbar"
           aria-label="Map tools"
         >
-          <div className="map-tools__category-rail" aria-label="Tool categories">
+          <div className="map-tools__category-rail" ref={categoryRailRef} aria-label="Tool categories">
+            <div className="map-tools__map-view-anchor">
             <button
               type="button"
+              ref={mapCategoryBtnRef}
               className={`map-tools__category-btn${activeToolsSection === "map" ? " map-tools__category-btn--active" : ""}`}
               onClick={() => {
                 setActiveToolsSection((current) => current === "map" ? null : "map");
@@ -6622,132 +6647,148 @@ function MapControls({
               title="Map view"
               data-testid="map-tools-category-map"
             >
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" width="19" height="19" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" width="16" height="16" aria-hidden="true">
                 <path d="m3 6 5-3 8 3 5-3v15l-5 3-8-3-5 3V6Z" />
                 <path d="M8 3v15M16 6v15" />
               </svg>
-            </button>
+             </button>
 
-            <button
-              type="button"
-              className={`map-tools__category-btn${activeToolsSection === "location" ? " map-tools__category-btn--active" : ""}${(streetPickMode || placemarkMode || myPlacesOpen || coordinateSearchOpen || Object.values(referenceLayers).some(Boolean)) ? " map-tools__category-btn--has-active" : ""}`}
-              onClick={() => {
-                setActiveToolsSection((current) => current === "location" ? null : "location");
-              }}
-              aria-label="Location and map tools"
-              aria-expanded={activeToolsSection === "location"}
-              title="Location tools"
-              data-testid="map-tools-category-location"
-            >
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" width="19" height="19" aria-hidden="true">
-                <path d="M12 22s7-6.1 7-13a7 7 0 1 0-14 0c0 6.9 7 13 7 13Z" />
-                <circle cx="12" cy="9" r="2.2" />
-              </svg>
-              {(streetPickMode || placemarkMode || myPlacesOpen || coordinateSearchOpen || Object.values(referenceLayers).some(Boolean)) && <span className="map-tools__category-dot" aria-hidden="true" />}
-            </button>
-          </div>
-
-          <div className="map-tools__content">
-          {activeToolsSection === "map" && (
-          <div className="map-tools__floating-panel map-tools__floating-panel--map" data-testid="map-view-panel">
-            <div className="map-controls map-controls--floating-panel">
-              <div className="map-controls__group" data-testid="basemap-toggle">
-          <button className={`map-controls__btn${basemap === "street" ? " map-controls__btn--active" : ""}`} onClick={() => onChangeBasemap("street")} data-testid="basemap-street">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="14" height="14" style={{ marginRight: 4, verticalAlign: -2 }}>
-              <path d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-4 0h4" />
-            </svg>
-            <span className="map-controls__btn-label">Map</span>
-          </button>
-          <button className={`map-controls__btn${basemap === "satellite" ? " map-controls__btn--active" : ""}`} onClick={() => onChangeBasemap("satellite")} data-testid="basemap-satellite">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="14" height="14" style={{ marginRight: 4, verticalAlign: -2 }}>
-              <circle cx="12" cy="12" r="10" />
-              <path d="M2 12h20M12 2a15.3 15.3 0 014 10 15.3 15.3 0 01-4 10 15.3 15.3 0 01-4-10 15.3 15.3 0 014-10z" />
-            </svg>
-            <span className="map-controls__btn-label">Satellite</span>
-          </button>
-          <button
-            className={`map-controls__btn${basemap === "off" ? " map-controls__btn--active" : ""}`}
-            onClick={() => onChangeBasemap("off")}
-            data-testid="basemap-off"
-            title="Hide the basemap so raster overlays/vector data aren't limited by its tile resolution when zooming in close"
-          >
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="14" height="14" style={{ marginRight: 4, verticalAlign: -2 }}>
-              <path d="M3 3l18 18M10.58 10.58a2 2 0 002.83 2.83M9.88 4.24A9.4 9.4 0 0112 4c5 0 8.5 4 10 8-.46 1.3-1.13 2.6-2 3.79M6.6 6.6C4.7 8 3.2 10 2 12c1.5 4 5 8 10 8 1.35 0 2.63-.28 3.8-.78" />
-            </svg>
-            <span className="map-controls__btn-label">Off</span>
-          </button>
+              {activeToolsSection === "map" && (
+              <div className="map-tools__map-view-options" id="map-view-options" role="toolbar" aria-label="Map view options">
+                <div className="map-controls__group" data-testid="basemap-toggle">
+              <button className={`map-controls__btn${basemap === "street" ? " map-controls__btn--active" : ""}`} onClick={() => onChangeBasemap("street")} data-testid="basemap-street" aria-pressed={basemap === "street"} aria-label="Map basemap">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="14" height="14" style={{ marginRight: 4, verticalAlign: -2 }}>
+                  <path d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-4 0h4" />
+                </svg>
+                <span className="map-controls__btn-label">Map</span>
+              </button>
+              <button className={`map-controls__btn${basemap === "satellite" ? " map-controls__btn--active" : ""}`} onClick={() => onChangeBasemap("satellite")} data-testid="basemap-satellite" aria-pressed={basemap === "satellite"} aria-label="Satellite basemap">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="14" height="14" style={{ marginRight: 4, verticalAlign: -2 }}>
+                  <circle cx="12" cy="12" r="10" />
+                  <path d="M2 12h20M12 2a15.3 15.3 0 014 10 15.3 15.3 0 01-4 10 15.3 15.3 0 01-4-10 15.3 15.3 0 014-10z" />
+                </svg>
+                <span className="map-controls__btn-label">Satellite</span>
+              </button>
+              <button
+                className={`map-controls__btn${basemap === "off" ? " map-controls__btn--active" : ""}`}
+                onClick={() => onChangeBasemap("off")}
+                data-testid="basemap-off"
+                aria-pressed={basemap === "off"}
+                aria-label="Hide basemap"
+                title="Hide the basemap so raster overlays/vector data aren't limited by its tile resolution when zooming in close"
+              >
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="14" height="14" style={{ marginRight: 4, verticalAlign: -2 }}>
+                  <path d="M3 3l18 18M10.58 10.58a2 2 0 002.83 2.83M9.88 4.24A9.4 9.4 0 0112 4c5 0 8.5 4 10 8-.46 1.3-1.13 2.6-2 3.79M6.6 6.6C4.7 8 3.2 10 2 12c1.5 4 5 8 10 8 1.35 0 2.63-.28 3.8-.78" />
+                </svg>
+                <span className="map-controls__btn-label">Off</span>
+              </button>
+                </div>
               </div>
+              )}
+
             </div>
-          </div>
-          )}
 
-          {activeToolsSection === "location" && (
-          <div className="map-tools__floating-panel map-tools__floating-panel--location" data-testid="location-tools-panel">
-            <div className="map-controls map-controls--floating-panel map-controls--location-panel">
-              <div className="map-controls__group map-controls__group--annotations" data-testid="annotation-controls">
-          <button
-            type="button"
-            className={`map-controls__btn${placemarkMode ? " map-controls__btn--active" : ""}`}
-            onClick={onTogglePlacemark}
-            data-testid="placemark-tool"
-            aria-pressed={placemarkMode}
-            title="Place a saved placemark on the map"
-          >
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" width="15" height="15" style={{ marginRight: 4, verticalAlign: -2 }} aria-hidden="true">
-              <path d="M12 22s7-6.1 7-13a7 7 0 1 0-14 0c0 6.9 7 13 7 13Z" />
-              <circle cx="12" cy="9" r="2.2" />
-            </svg>
-            <span className="map-controls__btn-label">Placemark</span>
-          </button>
-          <button
-            type="button"
-            className={`map-controls__btn${myPlacesOpen ? " map-controls__btn--active" : ""}`}
-            onClick={onToggleMyPlaces}
-            data-testid="my-places-toggle"
-            aria-pressed={myPlacesOpen}
-            title="Search and manage saved placemarks"
-          >
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" width="15" height="15" style={{ marginRight: 4, verticalAlign: -2 }} aria-hidden="true">
-              <path d="M4 5.5A2.5 2.5 0 0 1 6.5 3H18a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6.5A2.5 2.5 0 0 1 4 18.5v-13Z" />
-              <path d="M8 3v18M12 8h5M12 12h5" />
-            </svg>
-            <span className="map-controls__btn-label">My Places{placemarkCount > 0 ? ` · ${placemarkCount}` : ""}</span>
-          </button>
-          <button
-            type="button"
-            className={`map-controls__btn${coordinateSearchOpen ? " map-controls__btn--active" : ""}`}
-            onClick={onToggleCoordinateSearch}
-            data-testid="coordinate-search-toggle"
-            aria-pressed={coordinateSearchOpen}
-            title="Enter latitude and longitude and fly to the exact location"
-          >
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" width="15" height="15" style={{ marginRight: 4, verticalAlign: -2 }} aria-hidden="true">
-              <circle cx="12" cy="12" r="6" />
-              <path d="M12 2v4M12 18v4M2 12h4M18 12h4" />
-              <circle cx="12" cy="12" r="1.5" fill="currentColor" stroke="none" />
-            </svg>
-            Coordinate Search
-          </button>
-          <ReferenceLayersMenu value={referenceLayers} onChange={onToggleReferenceLayer} />
+            <div className="map-tools__location-anchor">
+              <button
+                type="button"
+                ref={locationCategoryBtnRef}
+                className={`map-tools__category-btn${activeToolsSection === "location" ? " map-tools__category-btn--active" : ""}${(streetPickMode || placemarkMode || myPlacesOpen || coordinateSearchOpen || Object.values(referenceLayers).some(Boolean)) ? " map-tools__category-btn--has-active" : ""}`}
+                onClick={() => {
+                  setActiveToolsSection((current) => current === "location" ? null : "location");
+                }}
+                aria-label="Location and map tools"
+                aria-expanded={activeToolsSection === "location"}
+                aria-controls="location-tools-options"
+                title="Location tools"
+                data-testid="map-tools-category-location"
+              >
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" width="16" height="16" aria-hidden="true">
+                  <path d="M12 22s7-6.1 7-13a7 7 0 1 0-14 0c0 6.9 7 13 7 13Z" />
+                  <circle cx="12" cy="9" r="2.2" />
+                </svg>
+                {(streetPickMode || placemarkMode || myPlacesOpen || coordinateSearchOpen || Object.values(referenceLayers).some(Boolean)) && <span className="map-tools__category-dot" aria-hidden="true" />}
+              </button>
+
+              {locationMounted && (
+              <div className={`map-tools__location-options${locationShown ? " is-open" : ""}`} id="location-tools-options" role="toolbar" aria-label="Location tools" aria-hidden={!locationOpen}>
+                <div className="map-controls__group map-controls__group--annotations" data-testid="annotation-controls">
+              <button
+                type="button"
+                className={`map-controls__btn${placemarkMode ? " map-controls__btn--active" : ""}`}
+                onClick={onTogglePlacemark}
+                data-testid="placemark-tool"
+                aria-pressed={placemarkMode}
+                aria-label="Placemark"
+                title="Place a saved placemark on the map"
+              >
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" width="16" height="16" aria-hidden="true">
+                  <path d="M12 22s7-6.1 7-13a7 7 0 1 0-14 0c0 6.9 7 13 7 13Z" />
+                  <circle cx="12" cy="9" r="2.2" />
+                </svg>
+              </button>
+              <button
+                type="button"
+                className={`map-controls__btn${myPlacesOpen ? " map-controls__btn--active" : ""}`}
+                onClick={onToggleMyPlaces}
+                data-testid="my-places-toggle"
+                aria-pressed={myPlacesOpen}
+                aria-label={`My Places${placemarkCount > 0 ? ` · ${placemarkCount}` : ""}`}
+                title={`My Places${placemarkCount > 0 ? ` · ${placemarkCount}` : ""}`}
+              >
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" width="16" height="16" aria-hidden="true">
+                  <path d="M4 5.5A2.5 2.5 0 0 1 6.5 3H18a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6.5A2.5 2.5 0 0 1 4 18.5v-13Z" />
+                  <path d="M8 3v18M12 8h5M12 12h5" />
+                </svg>
+              </button>
+              <button
+                type="button"
+                className={`map-controls__btn${coordinateSearchOpen ? " map-controls__btn--active" : ""}`}
+                onClick={onToggleCoordinateSearch}
+                data-testid="coordinate-search-toggle"
+                aria-pressed={coordinateSearchOpen}
+                aria-label="Coordinate Search"
+                title="Enter latitude and longitude and fly to the exact location"
+              >
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" width="16" height="16" aria-hidden="true">
+                  <circle cx="12" cy="12" r="6" />
+                  <path d="M12 2v4M12 18v4M2 12h4M18 12h4" />
+                  <circle cx="12" cy="12" r="1.5" fill="currentColor" stroke="none" />
+                </svg>
+              </button>
+              <ReferenceLayersMenu value={referenceLayers} onChange={onToggleReferenceLayer} />
+              <button
+                className={`map-controls__btn map-controls__btn--street-view${streetPickMode ? " map-controls__btn--active" : ""}`}
+                onClick={onToggleStreetView}
+                data-testid="street-view-picker"
+                title="Select a map location and open the nearest Google Street View panorama"
+                aria-pressed={streetPickMode}
+                aria-label="Street View"
+              >
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" width="16" height="16" aria-hidden="true">
+                  <circle cx="12" cy="5" r="2.5" fill="currentColor" stroke="none" />
+                  <path d="M8 10c1.2-1.2 2.5-1.8 4-1.8s2.8.6 4 1.8M9.2 10.2 8 16m6.8-5.8L16 16M9.3 13h5.4M10.5 16v5m3-5v5" />
+                </svg>
+              </button>
+              <button
+                type="button"
+                className={`map-controls__btn${measureActive ? " map-controls__btn--active" : ""}`}
+                onClick={onToggleMeasure}
+                data-testid="location-tools-measure"
+                aria-pressed={measureActive}
+                aria-label="Measure"
+                title="Measure"
+              >
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" width="16" height="16" aria-hidden="true">
+                  <rect x="2.5" y="8" width="19" height="8" rx="1.5" transform="rotate(-45 12 12)" />
+                  <g transform="rotate(-45 12 12)">
+                    <path d="M6 8v3M9.5 8v2M13 8v3M16.5 8v2" />
+                  </g>
+                </svg>
+              </button>
+                </div>
               </div>
-              <div className="map-controls__group map-controls__group--street-view">
-          <button
-            className={`map-controls__btn map-controls__btn--street-view${streetPickMode ? " map-controls__btn--active" : ""}`}
-            onClick={onToggleStreetView}
-            data-testid="street-view-picker"
-            title="Select a map location and open the nearest Google Street View panorama"
-            aria-pressed={streetPickMode}
-          >
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" width="15" height="15" style={{ marginRight: 4, verticalAlign: -2 }}>
-              <circle cx="12" cy="5" r="2.5" fill="currentColor" stroke="none" />
-              <path d="M8 10c1.2-1.2 2.5-1.8 4-1.8s2.8.6 4 1.8M9.2 10.2 8 16m6.8-5.8L16 16M9.3 13h5.4M10.5 16v5m3-5v5" />
-            </svg>
-            <span className="map-controls__btn-label">Street View</span>
-          </button>
-              </div>
+              )}
             </div>
-          </div>
-          )}
           </div>
         </div>
         {/* AI Detection: an independent floating control, not a tools-menu
@@ -6770,7 +6811,7 @@ function MapControls({
             title="AI detection"
             data-testid="map-tools-category-ai"
           >
-            <svg viewBox="0 0 24 24" fill="currentColor" width="19" height="19" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16" aria-hidden="true">
               <path d="M12 2l1.8 5.2L19 9l-5.2 1.8L12 16l-1.8-5.2L5 9l5.2-1.8L12 2Z" />
               <path d="m19 13 .9 2.1L22 16l-2.1.9L19 19l-.9-2.1L16 16l2.1-.9L19 13Z" />
             </svg>

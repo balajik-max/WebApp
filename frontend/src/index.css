@@ -3559,10 +3559,9 @@ body.is-resizing-sidebar {
 }
 
 /* ── LOOK AROUND COMPASS (Google Earth Pro-style, original design) ─────── */
-/* Stacks the Look Around compass and the round Measure button in a single
-   column at the map's top-right corner — a shared wrapper (rather than each
-   control positioning itself independently) so Measure always sits flush
-   below the compass whether it's expanded or collapsed. */
+/* Stacks the Look Around compass and the round 3D viewer control in
+   a single column at the map's top-right corner. (The Measure
+   trigger was consolidated into Location Tools.) */
 .map-side-controls {
 
   position: absolute;
@@ -3802,9 +3801,10 @@ body.is-resizing-sidebar {
   pointer-events: none;
 }
 
-/* Round Measure toggle, stacked directly below the compass via
-   .map-side-controls — same glass-pill treatment as the collapsed compass
-   button so the two read as one control cluster. */
+/* Round map-side control (compass, 3D viewer, …), stacked below the
+   compass via .map-side-controls — shared glass-pill round treatment.
+   NOTE: the Measure trigger was consolidated into Location Tools, so this
+   class is no longer the Measure button; the 3D viewer reuses it. */
 .map-measure-btn {
   width: 36px;
   height: 36px;
@@ -3824,13 +3824,6 @@ body.is-resizing-sidebar {
 .map-measure-btn svg { width: 16px; height: 16px; }
 
 .map-measure-btn:hover { border-color: var(--accent); color: var(--ink); }
-
-.map-measure-btn--active {
-  background: var(--accent);
-  border-color: var(--accent);
-  color: var(--accent-ink);
-  box-shadow: var(--shadow-glow), var(--shadow-md);
-}
 
 @media (prefers-reduced-motion: reduce) {
   .look-around-compass__ring,
@@ -6007,7 +6000,6 @@ body.is-resizing-sidebar {
 }
 
 /* Street View location picker and full-screen Google panorama. */
-.map-controls__group--street-view { width: max-content; }
 .map-controls__btn--street-view { color: #c47b08; }
 .map-controls__btn--street-view.map-controls__btn--active {
   background: #f5a623;
@@ -13087,10 +13079,6 @@ body.is-dragging-map-panel * {
   box-shadow: var(--shadow-md);
 }
 
-.map-tools__floating-panel--location {
-  width: min(630px, calc(100vw - 26px));
-}
-
 .map-controls.map-controls--floating-panel {
   position: static;
   z-index: auto;
@@ -13099,10 +13087,6 @@ body.is-dragging-map-panel * {
   gap: 7px;
   max-width: none;
   isolation: auto;
-}
-
-.map-controls.map-controls--location-panel {
-  flex-wrap: wrap;
 }
 
 .map-tools__floating-panel .map-controls__group {
@@ -13118,15 +13102,6 @@ body.is-dragging-map-panel * {
   white-space: nowrap;
 }
 
-.map-tools__floating-panel--location .map-controls__group--annotations {
-  flex: 1 1 430px;
-}
-
-.map-tools__floating-panel--location .map-controls__group--street-view {
-  flex: 0 0 auto;
-  width: max-content;
-}
-
 @media (max-width: 700px) {
   .map-tools {
     top: 8px;
@@ -13139,8 +13114,7 @@ body.is-dragging-map-panel * {
     max-height: calc(100vh - 58px);
   }
 
-  .map-tools__floating-panel,
-  .map-tools__floating-panel--location {
+  .map-tools__floating-panel {
     width: calc(100vw - 18px);
   }
 
@@ -13159,50 +13133,6 @@ body.is-dragging-map-panel * {
 }
 
 /* ======================================================================
-   THREE FLOATING TOOLS PANELS V4 COMPACT LOCATION FIX
-   Fixes only Panel 3 sizing. Existing tool handlers remain unchanged.
-   ====================================================================== */
-.map-tools__floating-panel--location {
-  width: max-content;
-  max-width: min(100%, calc(100vw - 26px));
-}
-
-.map-controls.map-controls--location-panel {
-  flex-direction: row;
-  flex-wrap: wrap;
-  align-items: stretch;
-  width: max-content;
-  max-width: 100%;
-}
-
-.map-tools__floating-panel--location .map-controls__group--annotations {
-  flex: 0 1 auto;
-  width: max-content;
-  max-width: 100%;
-}
-
-.map-tools__floating-panel--location .map-controls__group--street-view {
-  flex: 0 0 auto;
-  width: max-content;
-}
-
-@media (max-width: 700px) {
-  .map-tools__floating-panel--location {
-    width: calc(100vw - 18px);
-    max-width: calc(100vw - 18px);
-  }
-
-  .map-controls.map-controls--location-panel {
-    width: 100%;
-  }
-
-  .map-tools__floating-panel--location .map-controls__group--annotations {
-    flex: 1 1 100%;
-    width: 100%;
-  }
-}
-
-/* ======================================================================
    ICON CATEGORY TOOLBAR V5
    Permanent vertical icon stack (no hamburger gate) — each category icon
    opens its own tool panel. Existing tool buttons and handlers unchanged.
@@ -13216,7 +13146,7 @@ body.is-dragging-map-panel * {
 
 .map-tools__panels {
   display: grid;
-  grid-template-columns: 42px minmax(0, auto);
+  grid-template-columns: 36px minmax(0, auto);
   align-items: start;
   gap: 8px;
   max-width: calc(100vw - 24px);
@@ -13233,15 +13163,15 @@ body.is-dragging-map-panel * {
 
 .map-tools__category-btn {
   position: relative;
-  width: 42px;
-  min-width: 42px;
-  height: 42px;
+  width: 36px;
+  min-width: 36px;
+  height: 36px;
   padding: 0;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   border: 1px solid var(--edge);
-  border-radius: 12px;
+  border-radius: 50%;
   background: var(--glass-strong);
   backdrop-filter: blur(16px) saturate(1.4);
   box-shadow: var(--shadow-md);
@@ -13300,8 +13230,8 @@ body.is-dragging-map-panel * {
    map's right-side controls rather than the rounded-square rail buttons. */
 .map-tools__ai-standalone {
   position: relative;
-  width: 42px;
-  height: 42px;
+  width: 36px;
+  height: 36px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -13334,11 +13264,6 @@ body.is-dragging-map-panel * {
   color: var(--accent);
 }
 
-.map-tools__content {
-  min-width: 0;
-  max-width: calc(100vw - 82px);
-}
-
 .map-tools__floating-panel {
   width: max-content;
   max-width: calc(100vw - 82px);
@@ -13367,32 +13292,150 @@ body.is-dragging-map-panel * {
   box-shadow: none;
 }
 
-.map-tools__floating-panel--location {
-  width: max-content;
-  max-width: min(560px, calc(100vw - 82px));
-}
-
-.map-controls.map-controls--location-panel {
-  width: max-content;
-  max-width: 100%;
+/* Location tools — a horizontal strip of individual round icon buttons
+   anchored directly to the right of (and vertically centered on) the
+   Location category icon. No shared background box; only the independent
+   circular buttons remain. All option handlers/active-states preserved. */
+.map-tools__location-anchor {
+  position: relative;
   display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 7px;
+  align-items: center;
 }
 
-.map-tools__floating-panel--location .map-controls__group--annotations {
-  width: auto;
-  max-width: min(535px, calc(100vw - 94px));
-  flex: 0 1 auto;
-  flex-wrap: wrap;
+/* Map View tools — restored compact selector (Map / Satellite / Off)
+   anchored directly to the right of (and vertically centered on) the
+   Map View category icon. Reuses the existing .map-controls__group
+   glass box + .map-controls__btn pill styling; only the Map
+   category icon stays fixed and does not move or animate. */
+.map-tools__map-view-anchor {
+  position: relative;
+  display: flex;
+  align-items: center;
 }
 
-.map-tools__floating-panel--location .map-controls__group--street-view {
-  width: max-content;
-  flex: 0 0 auto;
+.map-tools__map-view-options {
+  position: absolute;
+  left: calc(100% + 8px);
+  top: 50%;
+  transform: translateY(-50%);
+  display: flex;
+  align-items: center;
+  background: transparent;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  animation: map-tools-panel-in 140ms ease-out;
 }
 
+.map-tools__map-view-options .map-controls__group {
+  flex-direction: row;
+  gap: 4px;
+}
+
+.map-tools__location-options {
+  position: absolute;
+  left: calc(100% + 8px);
+  top: 50%;
+  transform: translateY(-50%);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  overflow: visible;
+}
+
+/* Staggered rightward slide-out for the Location child icons.
+   Each child starts hidden, translated left toward the Location icon,
+   and slides to translateX(0) one after another when the strip
+   gains `is-open`. Closing reverses the order (last child
+   leaves first) so the icons retract back into the Location icon.
+   Only the Location children participate — the parent icon and every
+   other toolbar control are untouched. */
+.map-tools__location-options .map-controls__group--annotations > * {
+  display: inline-flex;
+  opacity: 0;
+  transform: translateX(-18px);
+  pointer-events: none;
+  transition:
+    transform 240ms cubic-bezier(0.22, 1, 0.36, 1),
+    opacity 160ms ease;
+}
+
+.map-tools__location-options.is-open .map-controls__group--annotations > * {
+  opacity: 1;
+  transform: translateX(0);
+  pointer-events: auto;
+}
+
+/* Open: forward stagger (Option 1 first). */
+.map-tools__location-options.is-open .map-controls__group--annotations > *:nth-child(1) { transition-delay: 0ms; }
+.map-tools__location-options.is-open .map-controls__group--annotations > *:nth-child(2) { transition-delay: 45ms; }
+.map-tools__location-options.is-open .map-controls__group--annotations > *:nth-child(3) { transition-delay: 90ms; }
+.map-tools__location-options.is-open .map-controls__group--annotations > *:nth-child(4) { transition-delay: 135ms; }
+.map-tools__location-options.is-open .map-controls__group--annotations > *:nth-child(5) { transition-delay: 180ms; }
+.map-tools__location-options.is-open .map-controls__group--annotations > *:nth-child(6) { transition-delay: 225ms; }
+
+/* Close: reverse stagger (Option 6 leaves first, Option 1 last). */
+.map-tools__location-options:not(.is-open) .map-controls__group--annotations > *:nth-last-child(1) { transition-delay: 0ms; }
+.map-tools__location-options:not(.is-open) .map-controls__group--annotations > *:nth-last-child(2) { transition-delay: 30ms; }
+.map-tools__location-options:not(.is-open) .map-controls__group--annotations > *:nth-last-child(3) { transition-delay: 60ms; }
+.map-tools__location-options:not(.is-open) .map-controls__group--annotations > *:nth-last-child(4) { transition-delay: 90ms; }
+.map-tools__location-options:not(.is-open) .map-controls__group--annotations > *:nth-last-child(5) { transition-delay: 120ms; }
+.map-tools__location-options:not(.is-open) .map-controls__group--annotations > *:nth-last-child(6) { transition-delay: 150ms; }
+
+
+.map-tools__location-options .map-controls__group {
+  background: transparent;
+  border: none;
+  box-shadow: none;
+  overflow: visible;
+  gap: 8px;
+}
+
+.map-tools__location-options .map-controls__btn,
+.map-tools__location-options .map-controls__group--annotations > .map-controls__btn:first-child,
+.map-tools__location-options .map-controls__group--annotations > .map-controls__btn:last-child {
+  width: 36px;
+  min-width: 36px;
+  height: 36px;
+  min-height: 36px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  background: var(--glass-strong);
+  backdrop-filter: blur(16px) saturate(1.4);
+  border: 1px solid var(--edge);
+  box-shadow: var(--shadow-md);
+  white-space: nowrap;
+  transition: all var(--transition-fast);
+}
+
+.map-tools__location-options .map-controls__btn svg {
+  margin: 0 !important;
+}
+
+.map-tools__location-options .map-controls__btn:hover:not(.map-controls__btn--street-view) {
+  border-color: var(--accent);
+  color: var(--ink);
+}
+
+.map-tools__location-options .map-controls__btn--active:not(.map-controls__btn--street-view) {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-ink);
+  box-shadow: var(--shadow-glow), var(--shadow-md);
+}
+
+/* Generic floating-panel button sizing kept for the other (non-location)
+   tool panels. */
 .map-tools__floating-panel .map-controls__btn {
   min-height: 36px;
   padding: 8px 11px;
@@ -13406,44 +13449,44 @@ body.is-dragging-map-panel * {
   }
 
   .map-tools__panels {
-    grid-template-columns: 40px minmax(0, 1fr);
+    grid-template-columns: 36px minmax(0, 1fr);
     gap: 6px;
     max-width: calc(100vw - 16px);
   }
 
   .map-tools__category-btn,
   .map-tools__ai-standalone {
-    width: 40px;
-    min-width: 40px;
-    height: 40px;
-    min-height: 40px;
+    width: 36px;
+    min-width: 36px;
+    height: 36px;
+    min-height: 36px;
   }
 
-  .map-tools__content {
-    max-width: calc(100vw - 62px);
-  }
-
-  .map-tools__floating-panel,
-  .map-tools__floating-panel--location {
+  .map-tools__floating-panel {
     width: auto;
     max-width: calc(100vw - 62px);
   }
 
-  .map-controls.map-controls--floating-panel,
-  .map-controls.map-controls--location-panel {
+  .map-controls.map-controls--floating-panel {
     width: 100%;
     max-width: 100%;
   }
 
-  .map-tools__floating-panel .map-controls__group,
-  .map-tools__floating-panel--location .map-controls__group--annotations {
+  .map-tools__floating-panel .map-controls__group {
     width: 100%;
     max-width: 100%;
   }
 
   .map-tools__floating-panel .map-controls__btn {
-    flex: 1 1 auto;
+    flex:1 1 auto;
     font-size: 9px;
+  }
+
+  /* Location tools stay fixed 36px round icons on mobile too — the
+     generic rule above (sized for the text-label pill buttons in the
+     other panels) would otherwise stretch these into ovals. */
+  .map-tools__location-options .map-controls__btn {
+    flex: 0 0 auto;
   }
 
   .ai-detection-menu {
