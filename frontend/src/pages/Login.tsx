@@ -1,8 +1,6 @@
 import { Suspense, lazy, useEffect, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
-import { useTheme } from "../context/ThemeContext";
-import { useLanguage } from "../context/LanguageContext";
 import { ApiError } from "../lib/api";
 import { resolvePostLoginPath, debugAuthRedirect } from "../lib/authRedirect";
 import { UrbanPlanningFallback } from "../components/auth/UrbanPlanningFallback";
@@ -34,8 +32,6 @@ function isWebGLAvailable(): boolean {
 
 export function LoginPage() {
   const { user, login } = useAuth();
-  const { theme, toggle: toggleTheme } = useTheme();
-  const { lang, t, toggle } = useLanguage();
   const navigate = useNavigate();
 
   const [email, setEmail] = useState("");
