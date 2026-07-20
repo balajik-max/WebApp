@@ -21,6 +21,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.deps import require_any
 from app.db.session import get_db
 from app.models import User, UserRole
+from app.models.feature import Feature
 from app.models.spatial_anomaly import AnomalyStatus, SpatialAnomaly
 from app.schemas.ai import (
     AiAnswer,
@@ -48,6 +49,7 @@ from app.services.ai_context import (
     build_recommend_context,
     build_report_facts,
 )
+from app.services.manhole_recommend import recommend_pipe_spec
 from app.services.spatial_audit import run_spatial_audit
 
 log = logging.getLogger("davangere.api.ai")
@@ -675,6 +677,39 @@ async def list_anomalies(
     return [_anomaly_out(row, lon, lat) for row, lon, lat in rows]
 
 
+async def _manhole_pipe_suggestion_facts(row: SpatialAnomaly, db: AsyncSession) -> str | None:
+    """Same-manhole-only pipe material/diameter suggestion, grounded in
+    THIS manhole's own surveyed Pipe_Type/Diameter attributes — no routing,
+    no other manhole or drain involved (that connectivity engine was
+    removed once real Sewage Line data made it unnecessary). Only relevant
+    for a real or borderline finding; a green (no-problem) manhole gets no
+    suggestion since there's nothing to fix."""
+    if row.color.value == "green":
+        return None
+    manhole_id = row.anomaly_metadata.get("manhole_id")
+    if not manhole_id:
+        return None
+    feature = (
+        await db.execute(select(Feature).where(Feature.id == uuid.UUID(manhole_id)))
+    ).scalar_one_or_none()
+    if feature is None:
+        return None
+    spec = recommend_pipe_spec(feature.attributes or {})
+    if spec is None:
+        return None
+    material, diameter_mm, existing_diameter_mm = spec
+    lines = [
+        "PIPE_SUGGESTION (real, computed from this manhole's own surveyed attributes — cite these exact values):",
+        f"  material: {material}",
+        f"  diameter_mm: {diameter_mm:.0f}",
+    ]
+    if existing_diameter_mm is not None:
+        lines.append(f"  existing_surveyed_diameter_mm: {existing_diameter_mm:.0f}")
+    else:
+        lines.append("  existing_surveyed_diameter_mm: not recorded (smallest standard size proposed)")
+    return "\n".join(lines)
+
+
 def _manhole_status_explain_prompt(row: SpatialAnomaly, crib: str) -> str:
     """manhole_status gets its own structured prompt (Issue / Required /
     How to fix) rather than the generic drain/pole one below — the generic
@@ -690,8 +725,11 @@ def _manhole_status_explain_prompt(row: SpatialAnomaly, crib: str) -> str:
             "parts on their own lines: 'Issue:' (the exact problem from FACTS — quote "
             "the real condition/level/distance figures given), 'Required:' (what must "
             "be done — desilting, cover/frame replacement, structural repair, or "
-            "re-routing, whichever fits FACTS), and 'How to fix:' (the concrete field "
-            "steps an engineer or contractor would take, in order)."
+            "pipe replacement, whichever fits FACTS), and 'How to fix:' (the concrete "
+            "field steps an engineer or contractor would take, in order). If FACTS "
+            "includes a PIPE_SUGGESTION, your 'How to fix:' MUST cite that exact "
+            "material and diameter as the pipe to use for any replacement — never "
+            "invent a different size or material."
         )
     elif color == "yellow":
         guidance = (
@@ -701,7 +739,9 @@ def _manhole_status_explain_prompt(row: SpatialAnomaly, crib: str) -> str:
             "'Required:' (what should be checked or monitored — typically a field "
             "inspection to confirm actual condition), and 'How to fix:' (the "
             "preventive/monitoring step to take now so this does not become a red "
-            "finding)."
+            "finding). If FACTS includes a PIPE_SUGGESTION, mention it in 'How to "
+            "fix:' as the pipe already identified for this manhole should it need "
+            "replacement later."
         )
     else:
         guidance = (
@@ -746,6 +786,9 @@ async def explain_anomaly(anomaly_id: uuid.UUID, db: AsyncSession = Depends(get_
 
     crib = _anomaly_fact_sheet(row)
     if row.anomaly_type.value == "manhole_status":
+        pipe_facts = await _manhole_pipe_suggestion_facts(row, db)
+        if pipe_facts:
+            crib = f"{crib}\n{pipe_facts}"
         prompt = _manhole_status_explain_prompt(row, crib)
     else:
         prompt = (
