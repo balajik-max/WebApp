@@ -1,5 +1,6 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { ApiError } from "../lib/api";
+import { urbanPlanningSolution, type AiAnswer } from "../lib/ai";
 import { useAuth } from "../context/AuthContext";
 import { explainAnomaly, type AnomalyStatus, type SpatialAnomaly } from "../lib/workflow";
 
@@ -43,6 +44,43 @@ export function AnomalyAlertCard({ anomaly, onClose, onStatusChange, onStale }: 
   const [explanation, setExplanation] = useState<string | null>(anomaly.explanation_text);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  const [solutionOpen, setSolutionOpen] = useState(false);
+  const [solutionText, setSolutionText] = useState("");
+  const [solutionFiles, setSolutionFiles] = useState<File[]>([]);
+  const [solutionGenerating, setSolutionGenerating] = useState(false);
+  const [solutionResult, setSolutionResult] = useState<AiAnswer | null>(null);
+  const [solutionError, setSolutionError] = useState<string | null>(null);
+
+  const handleSolutionFilesChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+    const selected = Array.from(e.target.files ?? []);
+    setSolutionFiles((prev) => [...prev, ...selected]);
+  }, []);
+
+  const removeSolutionFile = useCallback((index: number) => {
+    setSolutionFiles((prev) => prev.filter((_, i) => i !== index));
+  }, []);
+
+  async function generateSolution() {
+    const featureId = anomaly.feature_ids[0];
+    if (!featureId || (!solutionText.trim() && solutionFiles.length === 0)) return;
+    setSolutionGenerating(true);
+    setSolutionError(null);
+    setSolutionResult(null);
+    try {
+      const result = await urbanPlanningSolution(featureId, solutionText, solutionFiles);
+      setSolutionResult(result);
+    } catch (reason) {
+      if (reason instanceof ApiError && typeof reason.body === "object" && reason.body) {
+        const detail = (reason.body as { detail?: unknown }).detail;
+        setSolutionError(typeof detail === "string" ? detail : reason.message);
+      } else {
+        setSolutionError(reason instanceof Error ? reason.message : "Unexpected error");
+      }
+    } finally {
+      setSolutionGenerating(false);
+    }
+  }
 
   useEffect(() => {
     setExplanation(anomaly.explanation_text);
@@ -89,6 +127,67 @@ export function AnomalyAlertCard({ anomaly, onClose, onStatusChange, onStale }: 
             </div>
           ))}
         </div>
+
+        <button type="button" className="anomaly-card__toggle-solution" onClick={() => setSolutionOpen((o) => !o)}>
+          {solutionOpen ? "−" : "+"} Urban Planning Solution
+        </button>
+
+        {solutionOpen && (
+          <div className="anomaly-card__solution">
+            <textarea
+              className="anomaly-card__solution-input"
+              value={solutionText}
+              onChange={(e) => setSolutionText(e.target.value)}
+              maxLength={50000}
+              rows={3}
+              placeholder="Describe your proposed solution for this manhole issue…"
+            />
+            <div className="anomaly-card__solution-upload">
+              <label className="anomaly-card__solution-file-label">
+                <span>Upload files</span>
+                <input type="file" accept=".txt,.pdf,.docx" multiple onChange={handleSolutionFilesChange} />
+              </label>
+              {solutionFiles.length > 0 && (
+                <ul className="anomaly-card__solution-file-list">
+                  {solutionFiles.map((f, i) => (
+                    <li key={i}>
+                      <small>{f.name}</small>
+                      <button type="button" className="anomaly-card__solution-file-remove" onClick={() => removeSolutionFile(i)}>×</button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+            <button
+              type="button"
+              className="anomaly-card__solution-generate"
+              onClick={generateSolution}
+              disabled={solutionGenerating || (!solutionText.trim() && solutionFiles.length === 0)}
+            >
+              {solutionGenerating ? "Generating…" : "Generate AI Explanation"}
+            </button>
+            {solutionError && <div className="anomaly-card__error">{solutionError}</div>}
+            {solutionGenerating && <div className="anomaly-card__loading">AI is analyzing your solution…</div>}
+            {solutionResult && (
+              <div className="anomaly-card__solution-result">
+                <div className="anomaly-card__solution-result-head">
+                  <strong>AI Generated Explanation</strong>
+                  <small>{solutionResult.model}</small>
+                </div>
+                <div className="anomaly-card__solution-result-body">
+                  {solutionResult.answer_markdown.split("\n").map((line, i) => {
+                    if (line.startsWith("## ")) return <h5 key={i} style={{ margin: "8px 0 3px" }}>{line.slice(3)}</h5>;
+                    if (line.startsWith("### ")) return <h6 key={i} style={{ margin: "6px 0 2px" }}>{line.slice(4)}</h6>;
+                    if (line.match(/^- /)) return <li key={i} style={{ marginLeft: 12 }}>{line.slice(2)}</li>;
+                    if (line.match(/^\d+\. /)) return <li key={i} style={{ marginLeft: 12 }}>{line}</li>;
+                    if (line.trim() === "") return <br key={i} />;
+                    return <p key={i} style={{ margin: "2px 0", lineHeight: 1.4 }}>{line}</p>;
+                  })}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
       </div>
 
       <footer className="anomaly-card__actions">
