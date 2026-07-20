@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState, useCallback, useImperativeHandle, useMemo, forwardRef } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, useCallback, useImperativeHandle, useMemo, forwardRef, type MutableRefObject } from "react";
 import { createPortal } from "react-dom";
 import maplibregl, { Map as MLMap, MapMouseEvent, GeoJSONSource } from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
@@ -11,7 +11,8 @@ import {
   fetchDatasets, fetchDatasetBounds, fetchVisualizationManifest,
   type DatasetBounds, type DatasetRow,
   type FeatureTableRow, type LayerFeatureTableFilter,
-  type VisualizationFieldProfile, type VisualizationLayerManifest, type VisualizationManifest,
+  type VisualizationFieldGroupTree, type VisualizationFieldProfile, type VisualizationLayerGroupNode,
+  type VisualizationLayerManifest, type VisualizationManifest,
   fetchAnomalies, runSpatialAudit, updateAnomalyStatus, fetchAllClassMappings,
   type SpatialAnomaly, type AnomalyStatus,
 } from "../lib/workflow";
@@ -37,6 +38,7 @@ import {
 } from "../lib/placemarks";
 import { ManholeRecommendCard } from "./ManholeRecommendCard";
 import { Map3DViewer } from "./Map3DViewer";
+import { GroupedFieldList } from "./GroupedFieldList";
 import { aiManholeRecommend, type AiAnswer } from "../lib/ai";
 
 // .obj datasets are persisted with file_type "other" (the enum has no
@@ -104,6 +106,16 @@ interface Props {
    * desktop, where the sidebar is always visible. */
   commandCenterMobileOpen: boolean;
   onCommandCenterMobileOpenChange: (open: boolean) => void;
+
+  /** Session-scoped Spatial Audit trigger guard — owned by WorkspaceLayout
+   * (like the props above) so it survives this component unmounting on tab
+   * navigation. `spatialAuditRequestedRef` flips true the instant the AI
+   * Detection icon is first clicked; `spatialAuditExecutedRef` flips true
+   * once the audit has actually been kicked off for an active dataset. */
+  spatialAuditRequestedRef: MutableRefObject<boolean>;
+  spatialAuditExecutedRef: MutableRefObject<boolean>;
+  spatialAuditStatus: "idle" | "running" | "success" | "error";
+  onSpatialAuditStatusChange: (status: "idle" | "running" | "success" | "error") => void;
 }
 
 const DAVANGERE_CENTER: [number, number] = [75.9218, 14.4644];
@@ -619,6 +631,14 @@ function aggregateVisualizationFields(
     numeric: true,
   }));
 }
+
+/**
+ * Geometry-based attribute groups arrive pre-built on the manifest
+ * (`manifest.field_groups`) — three groups named "{source} - Points/Lines/
+ * Polygon" with their fields already aggregated. No client-side aggregation
+ * across layers is needed; the panel simply renders them (or falls back to the
+ * flat <select> when absent).
+ */
 
 function defaultVisualizationField(
   fields: VisualizationFieldProfile[],
@@ -1383,6 +1403,8 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     onFocusHandled,
     refreshToken = 0,
     commandCenterMobileOpen, onCommandCenterMobileOpenChange,
+    spatialAuditRequestedRef, spatialAuditExecutedRef,
+    spatialAuditStatus, onSpatialAuditStatusChange,
   },
   ref
 ) {
@@ -1456,8 +1478,6 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
   // dataset(s), plus which one (if any) is open in the AI Alert card.
   const [anomalies, setAnomalies] = useState<SpatialAnomaly[]>([]);
   const [selectedAnomalyId, setSelectedAnomalyId] = useState<string | null>(null);
-  const [auditRunning, setAuditRunning] = useState(false);
-  const [auditError, setAuditError] = useState<string | null>(null);
 
   // AI Manhole Recommendation Engine — computed fresh per click/plan-run
   // (not pre-persisted like the spatial audit engine above), so its own
@@ -1892,39 +1912,44 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     ));
   }, [activeVectorDatasets]);
 
-  // Load styling metadata only after the user explicitly opens Layer for a
-  // vector dataset. Merely checking a GDB on the map must not activate the
-  // styling workflow or add an avoidable backend request.
+  // Load styling metadata (which also carries the per-source-layer attribute
+  // tree) for every active vector dataset. This is required so the map's
+  // layer/attribute panel can group source layers by geometry — not just when a
+  // user opens Layer styling. Each dataset is fetched at most once; results are
+  // cached in `visualizationManifests`, so repeated renders are cheap.
   useEffect(() => {
-    if (!selectedVisualizationDatasetId) return;
-    const dataset = activeVectorDatasets.find((candidate) => candidate.id === selectedVisualizationDatasetId);
-    if (!dataset || visualizationManifests[dataset.id]) return;
+    const pending = activeVectorDatasets.filter(
+      (dataset) => !visualizationManifests[dataset.id]
+    );
+    if (pending.length === 0) return;
 
     const controller = new AbortController();
-    setVisualizationLoadingIds((current) => new Set(current).add(dataset.id));
+    for (const dataset of pending) {
+      setVisualizationLoadingIds((current) => new Set(current).add(dataset.id));
 
-    void fetchVisualizationManifest(dataset.id, controller.signal).then((manifest) => {
-      if (controller.signal.aborted) return;
-      setVisualizationManifests((current) => ({ ...current, [dataset.id]: manifest }));
-      setVisualizationErrors((current) => {
-        const next = { ...current };
-        delete next[dataset.id];
-        return next;
+      void fetchVisualizationManifest(dataset.id, controller.signal).then((manifest) => {
+        if (controller.signal.aborted) return;
+        setVisualizationManifests((current) => ({ ...current, [dataset.id]: manifest }));
+        setVisualizationErrors((current) => {
+          const next = { ...current };
+          delete next[dataset.id];
+          return next;
+        });
+      }).catch((error: Error) => {
+        if (error.name === "AbortError") return;
+        setVisualizationErrors((current) => ({ ...current, [dataset.id]: error.message }));
+      }).finally(() => {
+        if (controller.signal.aborted) return;
+        setVisualizationLoadingIds((current) => {
+          const next = new Set(current);
+          next.delete(dataset.id);
+          return next;
+        });
       });
-    }).catch((error: Error) => {
-      if (error.name === "AbortError") return;
-      setVisualizationErrors((current) => ({ ...current, [dataset.id]: error.message }));
-    }).finally(() => {
-      if (controller.signal.aborted) return;
-      setVisualizationLoadingIds((current) => {
-        const next = new Set(current);
-        next.delete(dataset.id);
-        return next;
-      });
-    });
+    }
 
     return () => controller.abort();
-  }, [activeVectorDatasets, selectedVisualizationDatasetId, visualizationManifests]);
+  }, [activeVectorDatasets, visualizationManifests]);
 
   const selectedVisualizationManifest = selectedVisualizationDatasetId
     ? visualizationManifests[selectedVisualizationDatasetId] ?? null
@@ -3183,6 +3208,34 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     setHiddenCategories(visible ? new Set() : new Set(categoryStats.map((c) => c.category)));
   }, [categoryStats]);
 
+  // Batched visibility update for a subset of categories (used by the
+  // geometry-group checkbox). Reuses the exact same single-source-of-truth
+  // state as the individual layer checkboxes — `hiddenCategories` in the
+  // normal map and `extraVisibleCategories` in a detection mode — so a
+  // group toggle never forks into parallel state.
+  const setCategoriesVisible = useCallback((categories: string[], visible: boolean) => {
+    if (detectionMode) {
+      setExtraVisibleCategories((prev) => {
+        const next = new Set(prev);
+        for (const category of categories) {
+          if (DETECTION_MODE_TARGET_CLASSES[detectionMode].includes(classMap[category])) continue;
+          if (visible) next.add(category);
+          else next.delete(category);
+        }
+        return next;
+      });
+    } else {
+      setHiddenCategories((prev) => {
+        const next = new Set(prev);
+        for (const category of categories) {
+          if (visible) next.delete(category);
+          else next.add(category);
+        }
+        return next;
+      });
+    }
+  }, [detectionMode, classMap]);
+
   const openLayerAttributeTable = useCallback((category: string) => {
     const currentFilter = filterRef.current;
     const datasetIds = currentFilter.datasetIds?.length ? [...currentFilter.datasetIds] : undefined;
@@ -3716,16 +3769,22 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     setAiOverlayEnabled((v) => !v);
   }, []);
 
+  // Marks "the user asked for the one-time Spatial Audit" — synchronous, so
+  // rapid repeated icon clicks can only ever set this true once in effect;
+  // the actual run is gated separately (see the effect above) on
+  // spatialAuditExecutedRef, which this deliberately does not touch.
+  const requestSpatialAuditOnce = useCallback(() => {
+    spatialAuditRequestedRef.current = true;
+  }, [spatialAuditRequestedRef]);
+
   // The Data Sources panel is explicitly multi-select ("multiple can be
   // shown together"), so the audit must run for every currently-active
   // dataset, not just the first one — otherwise a second/duplicate dataset
   // toggled on alongside an already-audited one silently never gets its
   // own spatial_anomalies rows (AI Detection then looks "broken" for it,
   // when really its audit was simply never triggered).
-  const runAudit = useCallback(async (datasetIds: string[]) => {
-    if (datasetIds.length === 0) return;
-    setAuditRunning(true);
-    setAuditError(null);
+  const runAudit = useCallback(async (datasetIds: string[]): Promise<boolean> => {
+    if (datasetIds.length === 0) return true;
     // One dataset failing (e.g. a stale id left over from a deleted+
     // re-uploaded dataset) must not stop the rest of the batch from being
     // audited — collect failures and surface them together at the end
@@ -3740,9 +3799,28 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
         failures.push((e as Error).message);
       }
     }
-    if (failures.length > 0) setAuditError(failures.join("; "));
-    setAuditRunning(false);
+    if (failures.length > 0) {
+      console.error("Spatial Audit failed", failures);
+    }
+    return failures.length === 0;
   }, []);
+
+  // Fires once per fresh app load, on the first AI Detection icon click —
+  // see WorkspaceLayout for why the guard refs live outside this component.
+  // `spatialAuditRequestedRef` is set synchronously on that click; this
+  // effect is what actually runs the (reused, unmodified) audit function
+  // once a dataset is active, so a click before any dataset is selected
+  // isn't wasted and doesn't need a second click to take effect.
+  const hasActiveDatasets = activeDatasetIds.length > 0;
+  useEffect(() => {
+    if (!spatialAuditRequestedRef.current || spatialAuditExecutedRef.current) return;
+    if (!hasActiveDatasets) return;
+    spatialAuditExecutedRef.current = true;
+    onSpatialAuditStatusChange("running");
+    void runAudit(activeDatasetIds).then((ok) => {
+      onSpatialAuditStatusChange(ok ? "success" : "error");
+    });
+  }, [hasActiveDatasets, activeDatasetIds, runAudit, onSpatialAuditStatusChange, spatialAuditRequestedRef, spatialAuditExecutedRef]);
 
   const runManholeFeatureRecommend = useCallback(async (datasetId: string, featureId: string) => {
     setManholeFeatureOpen(true);
@@ -4720,6 +4798,21 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // MapLibre's own `trackResize` only reacts to the window's resize event,
+  // not to its container div changing size on its own (e.g. the sidebar
+  // being dragged wider/narrower) — without this, the canvas keeps its old
+  // dimensions until the window itself is resized. A ResizeObserver on the
+  // container is the direct, self-contained fix: it doesn't care *why* the
+  // container changed size, so it also covers any future resizable-layout
+  // change, not just this one.
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container || !mapReady || typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(() => mapRef.current?.resize());
+    observer.observe(container);
+    return () => observer.disconnect();
+  }, [mapReady]);
+
   useEffect(() => {
     const map = mapRef.current;
     if (!map || !mapReady) return;
@@ -5337,9 +5430,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
         hiddenCategories={hiddenCategories}
         onToggleCategory={toggleCategoryVisibility}
         onSetAllCategoriesVisible={setAllCategoriesVisible}
-        onRunAudit={runAudit}
-        auditRunning={auditRunning}
-        auditError={auditError}
+        spatialAuditStatus={spatialAuditStatus}
         onOpenAttributeTable={openLayerAttributeTable}
         status={status}
         visualization={{
@@ -5376,6 +5467,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
         extraVisibleCategories={extraVisibleCategories}
         onToggleExtraVisibleCategory={toggleExtraVisibleCategory}
         onSetAllExtraVisibleCategories={setAllExtraVisibleCategories}
+        onSetCategoriesVisible={setCategoriesVisible}
       />
       <div className="map-canvas" data-testid="map-canvas">
         <div ref={containerRef} className="map-canvas__map" data-testid="map-gl" />
@@ -5387,6 +5479,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
           onToggleDetectionMode={toggleDetectionMode}
           aiOverlayEnabled={aiOverlayEnabled}
           onToggleAiOverlay={toggleAiOverlay}
+          onAiIconClick={requestSpatialAuditOnce}
           streetPickMode={streetPickMode}
           onToggleStreetView={toggleStreetPickMode}
           placemarkMode={placemarkMode}
@@ -5654,13 +5747,37 @@ interface VisualizationPanelProps {
   onResetStyle: () => void;
 }
 
+// Dedicated POLES geometry group: an explicit allowlist (not a substring
+// match like `name.includes("pole")`, which could sweep in unrelated
+// layers) matched against the normalized category name so case, whitespace,
+// and underscore/hyphen variants don't break grouping.
+function normalizeLayerName(value: string): string {
+  return value
+    .trim()
+    .replace(/[_-]+/g, " ")
+    .replace(/\s+/g, " ")
+    .toLowerCase();
+}
+
+const POLE_LAYER_NAMES = new Set([
+  "power pole with light",
+  "power pole",
+  "light pole",
+  "solar light",
+]);
+
+function isPoleLayer(layerName: string): boolean {
+  return POLE_LAYER_NAMES.has(normalizeLayerName(layerName));
+}
+
 function CommandCenter({
   isMobile, open, onRequestClose,
   datasets, activeDatasetIds, flyError, onSelectDataset, onSelectAllDatasets, expandedDatasetId, onToggleDatasetSettings,
   rasterSettingsById, onChangeRasterSettings, categoryStats, hiddenCategories, onToggleCategory,
-  onSetAllCategoriesVisible, onRunAudit, auditRunning, auditError, onOpenAttributeTable, status: _status, visualization,
+  onSetAllCategoriesVisible, spatialAuditStatus, onOpenAttributeTable, status: _status, visualization,
   detectionMode, onRunManholeNetwork, manholeRecommendLoading,
   classMap, extraVisibleCategories, onToggleExtraVisibleCategory, onSetAllExtraVisibleCategories,
+  onSetCategoriesVisible,
 }: {
   isMobile: boolean; open: boolean; onRequestClose: () => void;
   datasets: DatasetRow[]; activeDatasetIds: string[]; flyError: string | null; onSelectDataset: (d: DatasetRow) => void;
@@ -5673,9 +5790,7 @@ function CommandCenter({
   hiddenCategories: Set<string>;
   onToggleCategory: (category: string) => void;
   onSetAllCategoriesVisible: (visible: boolean) => void;
-  onRunAudit: (datasetIds: string[]) => void;
-  auditRunning: boolean;
-  auditError: string | null;
+  spatialAuditStatus: "idle" | "running" | "success" | "error";
   onOpenAttributeTable: (category: string) => void;
   status: ViewportStatus;
   visualization: VisualizationPanelProps;
@@ -5686,11 +5801,12 @@ function CommandCenter({
   extraVisibleCategories: Set<string>;
   onToggleExtraVisibleCategory: (category: string) => void;
   onSetAllExtraVisibleCategories: (categories: string[]) => void;
+  onSetCategoriesVisible: (categories: string[], visible: boolean) => void;
 }) {
   const [layerQuery, setLayerQuery] = useState("");
   const [layerMenu, setLayerMenu] = useState<{ category: string; x: number; y: number } | null>(null);
   const [visualizationOpen, setVisualizationOpen] = useState(false);
-  const visualizationAnchorRef = useRef<HTMLButtonElement | null>(null);
+  const visualizationAnchorRef = useRef<HTMLElement | null>(null);
   const visualizationPopupRef = useRef<HTMLDivElement | null>(null);
   const [visualizationPopupPosition, setVisualizationPopupPosition] = useState<{
     top: number;
@@ -5714,6 +5830,136 @@ function CommandCenter({
       .filter((layer) => !normalizedLayerQuery || layer.category.toLocaleLowerCase().includes(normalizedLayerQuery)),
     [categoryStats, normalizedLayerQuery]
   );
+
+  // Optional 3-level grouping for the layer/attribute panel: Geometry group
+  // → original source layer → that layer's own attributes. Built from the
+  // visualization manifest's `field_groups` tree (one per active vector
+  // dataset) joined with `categoryStats` for colour/count/visibility. When no
+  // active dataset exposes a tree (e.g. raster, legacy uploads) this is null
+  // and the panel falls back to the classic flat category list.
+  const GEOMETRY_ORDER = ["Points", "Lines", "Polygon"] as const;
+  const [expandedCategoryLayers, setExpandedCategoryLayers] = useState<Set<string>>(() => new Set());
+  // Geometry-group expansion is independent of each layer's own checkbox.
+  // Everything starts collapsed; we only reset on an actual datasource switch.
+  const [expandedGroups, setExpandedGroups] = useState<Set<string>>(() => new Set());
+  useEffect(() => {
+    setExpandedGroups(new Set());
+  }, [activeDatasetIds]);
+
+  // Active vector (e.g. GDB) datasets — derived from CommandCenter's own
+  // props so the tree can be built without reaching into the parent scope.
+  const activeVectorDatasets = useMemo(
+    () => datasets.filter((dataset) => activeDatasetIds.includes(dataset.id) && isVectorVisualizationDataset(dataset)),
+    [datasets, activeDatasetIds]
+  );
+
+  const groupedCategoryView = useMemo(() => {
+    const matchesQuery = (name: string) =>
+      !normalizedLayerQuery || name.toLocaleLowerCase().includes(normalizedLayerQuery);
+
+    // One entry per active vector dataset that has a manifest. `ownCategories`
+    // is that dataset's full layer list (VisualizationManifest.layers) — the
+    // only reliable per-dataset attribution for POLES/Other, since those
+    // categories never appear in `field_groups` (which only covers layers the
+    // backend classified as Points/Lines/Polygon).
+    interface DatasetInfo {
+      dataset: DatasetRow;
+      tree: VisualizationFieldGroupTree | null;
+      ownCategories: Set<string>;
+    }
+    const datasetInfos: DatasetInfo[] = activeVectorDatasets.flatMap((dataset) => {
+      const manifest = visualization.manifests[dataset.id];
+      if (!manifest) return [];
+      const ownCategories = new Set(
+        manifest.layers.map((layer) => layer.display_name || layer.source_layer_name)
+      );
+      return [{ dataset, tree: manifest.field_groups ?? null, ownCategories }];
+    });
+
+    const hasUsableTree = datasetInfos.some((info) => info.tree && info.tree.geometry_groups.length > 0);
+    if (!hasUsableTree) return null;
+
+    const legendByCat = new Map(categoryStats.map((entry) => [entry.category, entry]));
+    const groups: Array<{
+      name: string;
+      layers: Array<{ node: VisualizationLayerGroupNode; legend?: LegendEntry }>;
+    }> = [];
+    const covered = new Set<string>();
+
+    for (const { dataset, tree, ownCategories } of datasetInfos) {
+      // `tree.datasource` is the backend's already-cleaned source name (no
+      // `.gdb` extension or upload timestamp suffix); fall back to the raw
+      // dataset name for datasets with no tree at all.
+      const prefix = `${tree?.datasource ?? dataset.name} - `;
+      const findLayerNode = (name: string): VisualizationLayerGroupNode | undefined => {
+        if (!tree) return undefined;
+        for (const geomGroup of tree.geometry_groups) {
+          const found = geomGroup.layers.find((node) => node.name === name);
+          if (found) return found;
+        }
+        return undefined;
+      };
+
+      // POLES first, ahead of this dataset's own geometry-tree classification
+      // and its Other fallback below, so the allowlisted layers land there
+      // regardless of how (or whether) the tree would otherwise place them.
+      const poleLayers: Array<{ node: VisualizationLayerGroupNode; legend?: LegendEntry }> = [];
+      for (const category of ownCategories) {
+        if (covered.has(category) || !isPoleLayer(category)) continue;
+        covered.add(category);
+        if (!matchesQuery(category)) continue;
+        poleLayers.push({ node: findLayerNode(category) ?? { name: category, fields: [] }, legend: legendByCat.get(category) });
+      }
+
+      if (tree) {
+        for (const geom of GEOMETRY_ORDER) {
+          const geomGroup = tree.geometry_groups.find((candidate) => candidate.name === geom);
+          if (!geomGroup) continue;
+          const layers: Array<{ node: VisualizationLayerGroupNode; legend?: LegendEntry }> = [];
+          for (const node of geomGroup.layers) {
+            if (covered.has(node.name)) continue;
+            covered.add(node.name);
+            if (!matchesQuery(node.name)) continue;
+            layers.push({ node, legend: legendByCat.get(node.name) });
+          }
+          if (layers.length > 0) groups.push({ name: `${prefix}${geom}`, layers });
+        }
+      }
+
+      // Omit POLES entirely when this dataset has no matching layers, rather
+      // than showing an empty "<Dataset> - Poles 0" row.
+      if (poleLayers.length > 0) groups.push({ name: `${prefix}Poles`, layers: poleLayers });
+
+      // This dataset's own remaining categories (unrecognised / mixed-
+      // geometry layers the tree doesn't classify) go under its own Other.
+      const otherLayers: Array<{ node: VisualizationLayerGroupNode; legend?: LegendEntry }> = [];
+      for (const category of ownCategories) {
+        if (covered.has(category)) continue;
+        covered.add(category);
+        if (!matchesQuery(category)) continue;
+        otherLayers.push({ node: { name: category, fields: [] }, legend: legendByCat.get(category) });
+      }
+      if (otherLayers.length > 0) groups.push({ name: `${prefix}Other`, layers: otherLayers });
+    }
+
+    // Safety net: any category still unattributed (e.g. an active dataset
+    // with no manifest yet) is kept under a shared "Other" so nothing
+    // silently disappears from the panel.
+    const leftover = categoryStats.filter(
+      (entry) => !covered.has(entry.category) && matchesQuery(entry.category)
+    );
+    if (leftover.length > 0) {
+      groups.push({
+        name: "Other",
+        layers: leftover.map((entry) => ({
+          node: { name: entry.category, fields: [] },
+          legend: entry,
+        })),
+      });
+    }
+
+    return { groups };
+  }, [activeVectorDatasets, visualization.manifests, categoryStats, normalizedLayerQuery]);
 
   useEffect(() => {
     if (!layerMenu) return;
@@ -5750,7 +5996,7 @@ function CommandCenter({
     });
   }, []);
 
-  const openVisualizationForDataset = useCallback((datasetId: string, anchor: HTMLButtonElement) => {
+  const openVisualizationForDataset = useCallback((datasetId: string, anchor: HTMLElement) => {
     visualizationAnchorRef.current = anchor;
     visualization.onDatasetChange(datasetId);
     setVisualizationOpen(true);
@@ -5827,7 +6073,6 @@ function CommandCenter({
             rasterSettingsById={rasterSettingsById}
             onChangeRasterSettings={onChangeRasterSettings}
             layerDatasetIds={visualization.availableDatasetIds}
-            selectedLayerDatasetId={visualizationOpen ? visualization.selectedDatasetId : null}
             onOpenLayer={openVisualizationForDataset}
             flyError={flyError}
           />
@@ -5862,7 +6107,7 @@ function CommandCenter({
           document.body
         )}
 
-        {activeDatasetIds.length > 0 && (
+        {activeDatasetIds.length > 0 && detectionMode === "manholes" && (
           <div className="command-center__section">
             <div className="command-center__section-head">
               <span className="command-center__section-title">Spatial Audit</span>
@@ -5870,31 +6115,14 @@ function CommandCenter({
             <button
               type="button"
               className="command-center__audit-btn"
-              disabled={auditRunning}
-              onClick={() => onRunAudit(activeDatasetIds)}
-              data-testid="run-spatial-audit"
+              disabled={manholeRecommendLoading}
+              onClick={() => onRunManholeNetwork(activeDatasetIds)}
+              data-testid="run-manhole-network"
+              title="Build the complete manhole-to-manhole drainage network, with flow direction grounded in real surveyed levels / DTM / contour elevation"
               style={{ marginTop: 8 }}
             >
-              {auditRunning ? "Running Spatial Audit…" : "Run Spatial Audit"}
+              {manholeRecommendLoading ? "Building…" : "Full Drainage Network"}
             </button>
-            {activeDatasetIds.length > 0 && detectionMode === "manholes" && (
-              <button
-                type="button"
-                className="command-center__audit-btn"
-                disabled={manholeRecommendLoading}
-                onClick={() => onRunManholeNetwork(activeDatasetIds)}
-                data-testid="run-manhole-network"
-                title="Build the complete manhole-to-manhole drainage network, with flow direction grounded in real surveyed levels / DTM / contour elevation"
-                style={{ marginTop: 8 }}
-              >
-                {manholeRecommendLoading ? "Building…" : "Full Drainage Network"}
-              </button>
-            )}
-            {auditError && (
-              <div style={{ marginTop: 8, padding: "8px 10px", background: "var(--danger-muted)", borderRadius: "var(--radius-sm)", color: "var(--danger)", fontSize: 11 }}>
-                {auditError}
-              </div>
-            )}
           </div>
         )}
 
@@ -5948,66 +6176,241 @@ function CommandCenter({
               )}
             </div>
             <div className="layer-list">
-              {displayedLayers.map((c) => {
-                // While a detection mode owns the map, a category already in
-                // the mode's own asset family is always shown (its checkbox
-                // just reflects that, clicking it is a no-op); any OTHER
-                // category is off by default and toggles via the separate
-                // extraVisibleCategories allowlist instead of the ordinary
-                // hiddenCategories blacklist, since the mode ignores that one.
-                const inModeFamily = detectionMode
-                  ? DETECTION_MODE_TARGET_CLASSES[detectionMode].includes(classMap[c.category])
-                  : false;
-                const visible = detectionMode
-                  ? inModeFamily || extraVisibleCategories.has(c.category)
-                  : !hiddenCategories.has(c.category);
-                return (
-                  <div
-                    key={c.category}
-                    className={`layer-row${visible ? "" : " layer-row--hidden"}`}
-                    onClick={() => {
-                      if (detectionMode) {
-                        if (!inModeFamily) onToggleExtraVisibleCategory(c.category);
-                      } else {
-                        onToggleCategory(c.category);
-                      }
-                    }}
-                    onContextMenu={(event) => {
-                      event.preventDefault();
-                      event.stopPropagation();
-                      setLayerMenu({
-                        category: c.category,
-                        x: Math.max(8, Math.min(event.clientX, window.innerWidth - 224)),
-                        y: Math.max(8, Math.min(event.clientY, window.innerHeight - 96)),
-                      });
-                    }}
-                    title={
-                      detectionMode
-                        ? (inModeFamily
-                          ? "Always shown in this AI Detection mode"
-                          : "Click to also show this category alongside the AI Detection view")
-                        : "Click to show or hide. Right-click for the attribute table."
-                    }
-                    data-testid={`layer-row-${c.category}`}
-                  >
-                    <div className={`layer-row__checkbox${visible ? " layer-row__checkbox--checked" : ""}`}>
-                      <svg className="layer-row__checkbox-mark" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3">
-                        <path d="M5 13l4 4L19 7" strokeLinecap="round" strokeLinejoin="round" />
-                      </svg>
+              {groupedCategoryView ? (
+                groupedCategoryView.groups.map((group) => {
+                  const eligible = group.layers.filter((layer) => layer.legend);
+                  const toggleable = eligible.filter((layer) => {
+                    const inModeFamily = detectionMode
+                      ? DETECTION_MODE_TARGET_CLASSES[detectionMode].includes(classMap[layer.node.name])
+                      : false;
+                    return !inModeFamily;
+                  });
+                  const isLayerSelected = (category: string) => {
+                    const inModeFamily = detectionMode
+                      ? DETECTION_MODE_TARGET_CLASSES[detectionMode].includes(classMap[category])
+                      : false;
+                    return detectionMode
+                      ? (inModeFamily || extraVisibleCategories.has(category))
+                      : !hiddenCategories.has(category);
+                  };
+                  const selectedToggleable = toggleable.filter((layer) => isLayerSelected(layer.node.name)).length;
+                  const allSelected = toggleable.length > 0 && selectedToggleable === toggleable.length;
+                  const indeterminate = selectedToggleable > 0 && selectedToggleable < toggleable.length;
+                  const groupExpanded = expandedGroups.has(group.name);
+
+                  const setGroupVisible = (visible: boolean) => {
+                    onSetCategoriesVisible(toggleable.map((layer) => layer.node.name), visible);
+                  };
+
+                  const toggleGroup = () => {
+                    setExpandedGroups((current) => {
+                      const next = new Set(current);
+                      if (next.has(group.name)) next.delete(group.name);
+                      else next.add(group.name);
+                      return next;
+                    });
+                  };
+
+                  return (
+                  <div key={group.name} className="layer-group">
+                    <div className="layer-group__head" onClick={toggleGroup}>
+                      <input
+                        type="checkbox"
+                        className="layer-group__check"
+                        aria-label={`Select all layers in ${group.name}`}
+                        checked={allSelected}
+                        ref={(el) => { if (el) el.indeterminate = indeterminate; }}
+                        onClick={(event) => event.stopPropagation()}
+                        onChange={(event) => {
+                          event.stopPropagation();
+                          setGroupVisible(event.target.checked);
+                        }}
+                      />
+                      <button
+                        type="button"
+                        className="layer-group__toggle"
+                        aria-expanded={groupExpanded}
+                        aria-controls={`layer-group-body-${group.name}`}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          toggleGroup();
+                        }}
+                      >
+                        <span className="layer-group__name" title={group.name}>{group.name}</span>
+                        <span className="layer-group__count">{group.layers.length}</span>
+                        <span className="grouped-field-list__chevron layer-group__chevron" aria-hidden="true" />
+                      </button>
                     </div>
-                    <span className="layer-row__swatch" style={{ background: c.color }} />
-                    <span className="layer-row__name">{c.category}</span>
-                    <span className="layer-row__count">{c.count}</span>
+                    {groupExpanded && (
+                    <div className="layer-group__body" id={`layer-group-body-${group.name}`}>
+                      {group.layers.map(({ node, legend }) => {
+                        const category = node.name;
+                        const inModeFamily = detectionMode
+                          ? DETECTION_MODE_TARGET_CLASSES[detectionMode].includes(classMap[category])
+                          : false;
+                        const visible = detectionMode
+                          ? inModeFamily || extraVisibleCategories.has(category)
+                          : !hiddenCategories.has(category);
+                        const expandKey = `${group.name}::${category}`;
+                        const open = expandedCategoryLayers.has(expandKey);
+                        const toggleVisibility = () => {
+                          if (detectionMode) {
+                            if (!inModeFamily) onToggleExtraVisibleCategory(category);
+                          } else {
+                            onToggleCategory(category);
+                          }
+                        };
+                        return (
+                          <div
+                            key={category}
+                            className={`layer-row layer-row--grouped${visible ? "" : " layer-row--hidden"}`}
+                            data-testid={`layer-row-${category}`}
+                          >
+                            <button
+                              type="button"
+                              className="layer-row__chevron"
+                              aria-label={`${open ? "Hide" : "Show"} attributes of ${category}`}
+                              aria-expanded={open}
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                setExpandedCategoryLayers((current) => {
+                                  const next = new Set(current);
+                                  if (next.has(expandKey)) next.delete(expandKey);
+                                  else next.add(expandKey);
+                                  return next;
+                                });
+                              }}
+                            >
+                              <span className="grouped-field-list__chevron" aria-hidden="true" />
+                            </button>
+                            <div
+                              className={`layer-row__checkbox${visible ? " layer-row__checkbox--checked" : ""}`}
+                              onClick={toggleVisibility}
+                            >
+                              <svg className="layer-row__checkbox-mark" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3">
+                                <path d="M5 13l4 4L19 7" strokeLinecap="round" strokeLinejoin="round" />
+                              </svg>
+                            </div>
+                            <span
+                              className="layer-row__name"
+                              onClick={toggleVisibility}
+                              onContextMenu={(event) => {
+                                event.preventDefault();
+                                event.stopPropagation();
+                                setLayerMenu({
+                                  category,
+                                  x: Math.max(8, Math.min(event.clientX, window.innerWidth - 224)),
+                                  y: Math.max(8, Math.min(event.clientY, window.innerHeight - 96)),
+                                });
+                              }}
+                              title={
+                                detectionMode
+                                  ? (inModeFamily
+                                    ? "Always shown in this AI Detection mode"
+                                    : "Click to also show this category alongside the AI Detection view")
+                                  : "Click to show or hide. Right-click for the attribute table."
+                              }
+                            >
+                              {legend && <span className="layer-row__swatch" style={{ background: legend.color }} />}
+                              {category}
+                              <span className="layer-row__count">{legend?.count ?? node.fields.length}</span>
+                            </span>
+                            {open && (
+                              <ul className="layer-attributes">
+                                {node.fields.length === 0 ? (
+                                  <li className="layer-attributes__empty">No attributes</li>
+                                ) : (
+                                  node.fields.map((field) => (
+                                    <li key={field.name} className="layer-attributes__item" title={field.name}>
+                                      <span className="layer-attributes__name">{field.name}</span>
+                                      <span className="layer-attributes__type">{field.detected_type}</span>
+                                    </li>
+                                  ))
+                                )}
+                              </ul>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                    )}
                   </div>
                 );
-              })}
-              {displayedLayers.length === 0 && (
-                <div className="layer-list__empty">No matching layers</div>
+              })
+              ) : (
+                displayedLayers.map((c) => {
+                  // While a detection mode owns the map, a category already in
+                  // the mode's own asset family is always shown (its checkbox
+                  // just reflects that, clicking it is a no-op); any OTHER
+                  // category is off by default and toggles via the separate
+                  // extraVisibleCategories allowlist instead of the ordinary
+                  // hiddenCategories blacklist, since the mode ignores that one.
+                  const inModeFamily = detectionMode
+                    ? DETECTION_MODE_TARGET_CLASSES[detectionMode].includes(classMap[c.category])
+                    : false;
+                  const visible = detectionMode
+                    ? inModeFamily || extraVisibleCategories.has(c.category)
+                    : !hiddenCategories.has(c.category);
+                  return (
+                    <div
+                      key={c.category}
+                      className={`layer-row${visible ? "" : " layer-row--hidden"}`}
+                      onClick={() => {
+                        if (detectionMode) {
+                          if (!inModeFamily) onToggleExtraVisibleCategory(c.category);
+                        } else {
+                          onToggleCategory(c.category);
+                        }
+                      }}
+                      onContextMenu={(event) => {
+                        event.preventDefault();
+                        event.stopPropagation();
+                        setLayerMenu({
+                          category: c.category,
+                          x: Math.max(8, Math.min(event.clientX, window.innerWidth - 224)),
+                          y: Math.max(8, Math.min(event.clientY, window.innerHeight - 96)),
+                        });
+                      }}
+                      title={
+                        detectionMode
+                          ? (inModeFamily
+                            ? "Always shown in this AI Detection mode"
+                            : "Click to also show this category alongside the AI Detection view")
+                          : "Click to show or hide. Right-click for the attribute table."
+                      }
+                      data-testid={`layer-row-${c.category}`}
+                    >
+                      <div className={`layer-row__checkbox${visible ? " layer-row__checkbox--checked" : ""}`}>
+                        <svg className="layer-row__checkbox-mark" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3">
+                          <path d="M5 13l4 4L19 7" strokeLinecap="round" strokeLinejoin="round" />
+                        </svg>
+                      </div>
+                      <span className="layer-row__swatch" style={{ background: c.color }} />
+                      <span className="layer-row__name">{c.category}</span>
+                      <span className="layer-row__count">{c.count}</span>
+                    </div>
+                  );
+                })
               )}
+              {groupedCategoryView
+                ? groupedCategoryView.groups.reduce((sum, g) => sum + g.layers.length, 0) === 0 && (
+                  <div className="layer-list__empty">No matching layers</div>
+                )
+                : displayedLayers.length === 0 && (
+                  <div className="layer-list__empty">No matching layers</div>
+                )}
             </div>
           </div>
         )}
       </div>
+      {spatialAuditStatus === "success" && (
+        <div className="command-center__audit-success" role="status" aria-live="polite">
+          <svg viewBox="0 0 24 24" aria-hidden="true" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M5 13l4 4L19 7" />
+          </svg>
+          <span>Spatial Audit run success</span>
+        </div>
+      )}
       <div className="command-center__footer">
         <SupportingFilesImport />
       </div>
@@ -6107,6 +6510,30 @@ function VisualizationPanel({
     if (mode === "missing-data") return candidate.missing_count > 0;
     return false;
   });
+
+  // The hierarchical attribute tree arrives pre-built on the manifest
+  // (`field_groups`): datasource → geometry groups (Points/Lines/Polygon) →
+  // source layers → attributes. When present and non-empty we render the
+  // 3-level tree; otherwise we keep the flat <select> — fully backward
+  // compatible with datasets that expose no tree.
+  const manifestGroups = useMemo(
+    () => (manifest?.field_groups && manifest.field_groups.geometry_groups.length > 0
+      ? manifest.field_groups
+      : null),
+    [manifest]
+  );
+
+  // Map the (single-field-name) styling selection back onto its exact source
+  // layer so the tree can highlight the correct row even when the same field
+  // name exists in more than one layer (e.g. "FID" in Manhole vs Point).
+  const selectedField = useMemo(() => {
+    if (!manifestGroups || !field) return null;
+    const geomName = target === "point" ? "Points" : target === "line" ? "Lines" : "Polygon";
+    const group = manifestGroups.geometry_groups.find((candidate) => candidate.name === geomName);
+    const layer = group?.layers.find((candidate) => candidate.fields.some((f) => f.name === field));
+    if (!layer) return null;
+    return { geometryGroup: geomName, layerName: layer.name, fieldName: field };
+  }, [manifestGroups, target, field]);
 
   const modeOptions: Array<{ value: VisualizationMode; label: string; enabled: boolean }> = [
     { value: "default", label: "Default", enabled: true },
@@ -6221,14 +6648,26 @@ function VisualizationPanel({
                 {mode !== "default" && (
                   <label className="visualization-field">
                     <span>Field</span>
-                    <select value={field ?? ""} onChange={(event) => onFieldChange(event.target.value || null)} disabled={eligibleFields.length === 0}>
-                      {eligibleFields.length === 0 && <option value="">No compatible field</option>}
-                      {eligibleFields.map((candidate) => (
-                        <option key={candidate.name} value={candidate.name}>
-                          {candidate.name} · {candidate.populated_count.toLocaleString()} populated
-                        </option>
-                      ))}
-                    </select>
+                    {manifestGroups ? (
+                      <GroupedFieldList
+                        tree={manifestGroups}
+                        selected={selectedField}
+                        onSelect={(selection) => onFieldChange(selection.fieldName)}
+                        renderFieldMeta={(candidate) =>
+                          `${candidate.populated_count.toLocaleString()} populated`
+                        }
+                        emptyLabel="No compatible field"
+                      />
+                    ) : (
+                      <select value={field ?? ""} onChange={(event) => onFieldChange(event.target.value || null)} disabled={eligibleFields.length === 0}>
+                        {eligibleFields.length === 0 && <option value="">No compatible field</option>}
+                        {eligibleFields.map((candidate) => (
+                          <option key={candidate.name} value={candidate.name}>
+                            {candidate.name} · {candidate.populated_count.toLocaleString()} populated
+                          </option>
+                        ))}
+                      </select>
+                    )}
                   </label>
                 )}
 
@@ -6280,6 +6719,7 @@ function MapControls({
   onToggleDetectionMode,
   aiOverlayEnabled,
   onToggleAiOverlay,
+  onAiIconClick,
   streetPickMode,
   onToggleStreetView,
   placemarkMode,
@@ -6299,6 +6739,10 @@ function MapControls({
   onToggleDetectionMode: (mode: Exclude<DetectionMode, null>) => void;
   aiOverlayEnabled: boolean;
   onToggleAiOverlay: () => void;
+  /** Fires on every AI Detection icon click (not just the first) — the
+   * caller owns the one-time-per-session gating; this is just a
+   * notification. */
+  onAiIconClick?: () => void;
   streetPickMode: boolean;
   onToggleStreetView: () => void;
   placemarkMode: boolean;
@@ -6422,6 +6866,7 @@ function MapControls({
   // The priority is exactly: (1) close status card if visible, (2) close
   // list if visible, (3) otherwise open the list.
   const handleAiIconClick = () => {
+    onAiIconClick?.();
     if (showDetectionStatus) {
       setShowDetectionStatus(false);
       return;

@@ -17,7 +17,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Dataset
 from app.schemas.visualization import (
+    VisualizationFieldGroupTree,
     VisualizationFieldProfile,
+    VisualizationGeometryGroup,
+    VisualizationLayerGroup,
     VisualizationLayerManifest,
     VisualizationManifest,
 )
@@ -225,6 +228,91 @@ def _recommended_modes(
     return modes
 
 
+# Fixed display order for the three geometry-based groups. The UI always
+# renders them in this sequence regardless of how the layers were loaded.
+_GEOMETRY_GROUP_ORDER = ("Points", "Lines", "Polygon")
+
+
+def _geometry_label_for_layer(layer: VisualizationLayerManifest) -> str | None:
+    """Map a manifest layer to its geometry group label, or ``None`` to skip.
+
+    Honours the same Point/MultiPoint → Points, LineString/MultiLineString →
+    Lines, Polygon/MultiPolygon → Polygon mapping the renderer uses, and
+    ignores unknown/mixed (``generic``) geometries.
+    """
+    renderer = layer.recommended_renderer
+    if renderer == "point":
+        return "Points"
+    if renderer == "line":
+        return "Lines"
+    if renderer == "polygon":
+        return "Polygon"
+    return None
+
+
+def _clean_source_name(name: str) -> str:
+    """Derive a friendly data-source name from a raw dataset filename.
+
+    Strips the upload artifacts the client/backend add (``.gdb-<timestamp>-…``,
+    file extensions) so group labels read naturally, e.g.
+    ``Davangere Ghandinagar Ward.gdb-20260708T103425Z-3-001.zip`` →
+    ``Davangere Ghandinagar Ward``. Never hardcodes a name — always derived.
+    """
+    cleaned = re.sub(r"\.(gdb|zip|shp|geojson|json|gpkg|kml)$", "", name, flags=re.IGNORECASE)
+    cleaned = re.sub(r"-[0-9]{8}T[0-9]{6}Z(?:-[0-9]+)+$", "", cleaned)
+    cleaned = re.sub(r"\.gdb$", "", cleaned, flags=re.IGNORECASE)
+    return cleaned.strip() or name
+
+
+def build_field_group_tree(
+    layers: list[VisualizationLayerManifest],
+    source_name: str,
+) -> VisualizationFieldGroupTree | None:
+    """Build the hierarchical attribute tree: geometry → layer → fields.
+
+    Every layer is placed under its geometry group (Points / Lines /
+    Polygon) and contributes its own ``VisualizationLayerGroup`` containing its
+    attributes *verbatim* — fields are never merged or flattened across layers,
+    so each attribute stays inside its original layer exactly as it exists in
+    the source GDB. Geometry groups with no matching layers are omitted, and
+    the surviving groups keep the fixed ``Points → Lines → Polygon`` order.
+    Returns ``None`` when no usable layers exist, so the UI falls back to the
+    flat attribute list.
+    """
+    source_name = _clean_source_name(source_name)
+    bucketed: dict[str, list[VisualizationLayerGroup]] = {
+        label: [] for label in _GEOMETRY_GROUP_ORDER
+    }
+
+    for layer in layers:
+        label = _geometry_label_for_layer(layer)
+        if label is None:
+            continue
+        # Preserve the original field order from the source layer.
+        bucketed[label].append(
+            VisualizationLayerGroup(
+                name=layer.display_name or layer.layer_key,
+                fields=list(layer.fields),
+            )
+        )
+
+    geometry_groups: list[VisualizationGeometryGroup] = []
+    for label in _GEOMETRY_GROUP_ORDER:
+        layer_groups = bucketed[label]
+        if not layer_groups:
+            continue
+        geometry_groups.append(
+            VisualizationGeometryGroup(name=label, layers=layer_groups)
+        )
+
+    if not geometry_groups:
+        return None
+    return VisualizationFieldGroupTree(
+        datasource=source_name,
+        geometry_groups=geometry_groups,
+    )
+
+
 async def build_visualization_manifest(
     dataset_id: uuid.UUID,
     db: AsyncSession,
@@ -345,5 +433,6 @@ async def build_visualization_manifest(
         bounds=_bounds_from_row(dataset_bounds_row),
         total_features=total_features,
         layers=layers,
+        field_groups=build_field_group_tree(layers, dataset.name),
         warnings=manifest_warnings,
     )

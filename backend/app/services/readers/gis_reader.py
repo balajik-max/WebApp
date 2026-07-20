@@ -430,4 +430,8 @@ class GISReader:
             skipped,
             source_crs,
         )
-        return ReaderResult(inserted=inserted, skipped=skipped, source_crs=source_crs)
+        return ReaderResult(
+            inserted=inserted,
+            skipped=skipped,
+            source_crs=source_crs,
+        )

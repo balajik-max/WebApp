@@ -172,6 +172,32 @@ export interface VisualizationFieldProfile {
   unique_count: number | null;
 }
 
+export interface VisualizationFieldProfile {
+  name: string;
+  detected_type: VisualizationFieldType;
+  populated_count: number;
+  missing_count: number;
+  unique_count: number | null;
+}
+
+// Hierarchical attribute tree: datasource → geometryGroups → layers → fields.
+// Fields always stay on their original source layer; they are never merged or
+// flattened into a single list.
+export interface VisualizationLayerGroupNode {
+  name: string;
+  fields: VisualizationFieldProfile[];
+}
+
+export interface VisualizationGeometryGroupNode {
+  name: string; // "Points" | "Lines" | "Polygon"
+  layers: VisualizationLayerGroupNode[];
+}
+
+export interface VisualizationFieldGroupTree {
+  datasource: string;
+  geometry_groups: VisualizationGeometryGroupNode[];
+}
+
 export interface VisualizationLayerManifest {
   layer_key: string;
   source_layer_name: string;
@@ -194,6 +220,10 @@ export interface VisualizationManifest {
   bounds: [number, number, number, number] | null;
   total_features: number;
   layers: VisualizationLayerManifest[];
+  // Hierarchical attribute tree (geometry → layer → fields) generated from the
+  // data source's layers. Present and non-empty → the UI renders a 3-level
+  // tree; absent/empty → the flat attribute list is used as a fallback.
+  field_groups?: VisualizationFieldGroupTree | null;
   warnings: string[];
 }
 
