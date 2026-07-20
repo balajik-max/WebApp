@@ -6754,7 +6754,6 @@ function MapControls({
   referenceLayers: ReferenceLayerVisibility;
   onToggleReferenceLayer: (key: keyof ReferenceLayerVisibility, visible: boolean) => void;
 }) {
-  const [toolsMenuOpen, setToolsMenuOpen] = useState(false);
   const [activeToolsSection, setActiveToolsSection] = useState<"map" | "location" | null>(null);
   const [menuPos, setMenuPos] = useState<{ top: number; left: number } | null>(null);
   // AI Detection is an independent floating control, not a tools-menu
@@ -6770,7 +6769,6 @@ function MapControls({
   const [showDetectionStatus, setShowDetectionStatus] = useState(false);
   const [aiOffsetY, setAiOffsetY] = useState(0);
   const toolsControlRef = useRef<HTMLDivElement | null>(null);
-  const toolsToggleRef = useRef<HTMLButtonElement | null>(null);
   const toolsPanelsRef = useRef<HTMLDivElement | null>(null);
   const aiWrapRef = useRef<HTMLDivElement | null>(null);
   const portalMenuRef = useRef<HTMLDivElement | null>(null);
@@ -6797,27 +6795,26 @@ function MapControls({
     setMenuPos({ top: rect.top, left: rect.right + 8 });
   }, [showDetectionList]);
 
+  // Closes an open category panel (basemap/location) on an outside click or
+  // Escape. The category rail itself is always visible now (no hamburger
+  // gate), so this only ever needs to collapse activeToolsSection back to
+  // null — it never hides the rail.
   useEffect(() => {
-    if (!toolsMenuOpen) {
-      setActiveToolsSection(null);
-      return;
-    }
+    if (!activeToolsSection) return;
 
     const onToolsOutside = (event: MouseEvent) => {
       const target = event.target as Node;
       if (toolsControlRef.current?.contains(target)) return;
       // The AI mode-picker dropdown is portaled to document.body (outside
-      // toolsControlRef) — a click inside it is unrelated to this menu and
-      // must not close it, since AI Detection is now fully independent.
+      // toolsControlRef) — a click inside it is unrelated to this panel and
+      // must not close it, since AI Detection is fully independent.
       if (portalMenuRef.current?.contains(target)) return;
       if (target instanceof Element && target.closest(".reference-layers-menu")) return;
-      setToolsMenuOpen(false);
       setActiveToolsSection(null);
     };
 
     const onToolsEscape = (event: KeyboardEvent) => {
       if (event.key !== "Escape") return;
-      setToolsMenuOpen(false);
       setActiveToolsSection(null);
     };
 
@@ -6827,7 +6824,7 @@ function MapControls({
       document.removeEventListener("mousedown", onToolsOutside);
       document.removeEventListener("keydown", onToolsEscape);
     };
-  }, [toolsMenuOpen]);
+  }, [activeToolsSection]);
 
   // AI Detection's own outside-click/escape handling — fully independent of
   // the tools menu's. The dropdown is portaled to document.body, so it's
@@ -6877,24 +6874,20 @@ function MapControls({
     setShowDetectionList(true);
   };
 
-  // Keeps the AI icon flush under the toggle when the tools menu is closed,
-  // and dynamically pushes it below the expanded panel's real rendered
-  // height when the menu opens — measured from actual DOM rects and the
-  // container's own CSS gap (not a hardcoded offset), so it stays correct
-  // regardless of which tool category's content is showing.
+  // Keeps the AI icon flush under the always-visible category rail, and
+  // dynamically pushes it further down when a category panel expands —
+  // measured from the actual rendered rail+panel rect and the container's
+  // own CSS gap (not a hardcoded offset), so it stays correct regardless of
+  // which tool category's content is showing.
   const measureAiOffset = useCallback(() => {
     const container = toolsControlRef.current;
-    const toggleEl = toolsToggleRef.current;
-    if (!container || !toggleEl) return;
+    const panelsEl = toolsPanelsRef.current;
+    if (!container || !panelsEl) return;
     const gap = parseFloat(getComputedStyle(container).rowGap || getComputedStyle(container).gap || "0") || 0;
     const containerTop = container.getBoundingClientRect().top;
-    let referenceBottom = toggleEl.getBoundingClientRect().bottom;
-    if (toolsMenuOpen && toolsPanelsRef.current) {
-      const panelsBottom = toolsPanelsRef.current.getBoundingClientRect().bottom;
-      if (panelsBottom > referenceBottom) referenceBottom = panelsBottom;
-    }
+    const referenceBottom = panelsEl.getBoundingClientRect().bottom;
     setAiOffsetY(referenceBottom - containerTop + gap);
-  }, [toolsMenuOpen]);
+  }, []);
 
   useLayoutEffect(() => {
     measureAiOffset();
@@ -6908,50 +6901,18 @@ function MapControls({
     return () => observer.disconnect();
   }, [measureAiOffset]);
 
-  const hasActiveTool = Boolean(
-    detectionMode ||
-    streetPickMode ||
-    placemarkMode ||
-    myPlacesOpen ||
-    coordinateSearchOpen ||
-    Object.values(referenceLayers).some(Boolean)
-  );
-
   return (
     <>
       <div className="feature-count" data-testid="viewport-status">
         {status.loading ? "loading..." : `${status.count} features`}
       </div>
       <div className="map-tools" ref={toolsControlRef}>
-        <button
-          type="button"
-          ref={toolsToggleRef}
-          className={`map-tools__toggle${toolsMenuOpen ? " map-tools__toggle--open" : ""}${hasActiveTool ? " map-tools__toggle--has-active" : ""}`}
-          onClick={() => {
-            const nextOpen = !toolsMenuOpen;
-            setToolsMenuOpen(nextOpen);
-            if (!nextOpen) {
-              setActiveToolsSection(null);
-            }
-          }}
-          aria-expanded={toolsMenuOpen}
-          aria-controls="map-tools-panels"
-          aria-label={toolsMenuOpen ? "Close map tools" : "Open map tools"}
-          data-testid="map-tools-toggle"
-          title={toolsMenuOpen ? "Close tools" : "Open tools"}
-        >
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="18" height="18" aria-hidden="true">
-            <path d="M4 7h16M4 12h16M4 17h16" />
-          </svg>
-          {hasActiveTool && <span className="map-tools__active-dot" aria-hidden="true" />}
-        </button>
-
         <div
           id="map-tools-panels"
           ref={toolsPanelsRef}
-          className={`map-tools__panels${toolsMenuOpen ? " map-tools__panels--open" : ""}`}
+          className="map-tools__panels"
+          role="toolbar"
           aria-label="Map tools"
-          aria-hidden={!toolsMenuOpen}
         >
           <div className="map-tools__category-rail" aria-label="Tool categories">
             <button
@@ -7094,10 +7055,10 @@ function MapControls({
           </div>
         </div>
         {/* AI Detection: an independent floating control, not a tools-menu
-            category. It sits directly below the toggle and dynamically
-            slides down (via aiOffsetY, see measureAiOffset) when the tools
-            menu expands, but its own panel opens to the right and is never
-            gated by toolsMenuOpen/activeToolsSection. */}
+            category. It sits directly below the permanent category rail and
+            dynamically slides down (via aiOffsetY, see measureAiOffset) when
+            a category panel expands, but its own panel opens to the right
+            and is never gated by activeToolsSection. */}
         <div
           className="map-tools__ai-wrap"
           ref={aiWrapRef}
