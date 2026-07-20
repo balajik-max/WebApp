@@ -1,7 +1,146 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { useLanguage } from "../context/LanguageContext";
 
 const NAMMADVG_URL = "https://nammadvg.com";
+
+interface Official {
+  name: string;
+  nameKn: string;
+  designation: string;
+  phone: string;
+}
+
+interface Department {
+  id: string;
+  name: string;
+  scope: string;
+  helpline: string;
+  email: string;
+  office: string;
+  officials: Official[];
+}
+
+// Source: Namma Davanagere — Connect Officials (Gandhinagar-1 ward directory).
+const CITY_OFFICIALS: Department[] = [
+  {
+    id: "health",
+    name: "Health and Sanitation",
+    scope: "Garbage, Sweeping, Dustbin, Septic Tank, Toilet, Mosquito control",
+    helpline: "8277234444",
+    email: "commissioner_davanagere@yahoo.com",
+    office: "City Corporation, Davanagere",
+    officials: [
+      { name: "Mohamed Tanvir", nameKn: "ಮೊಹಮ್ಮದ್ ತನ್ವೀರ್", designation: "Health Inspector", phone: "7022474799" },
+      { name: "Shivrajappa B", nameKn: "ಶಿವರಾಜಪ್ಪ ಬಿ", designation: "Sanitary Supervisor", phone: "8867867600" },
+    ],
+  },
+  {
+    id: "water",
+    name: "Water Supply Department",
+    scope: "Water supply, Leakage, Dirty water, New connection, Borewell, Meter",
+    helpline: "8277234444",
+    email: "commissioner_davanagere@yahoo.com",
+    office: "City Corporation, Davanagere",
+    officials: [
+      { name: "Veeresh B", nameKn: "ವೀರೇಶ್ ಬಿ", designation: "Waterman", phone: "8880485103" },
+      { name: "Veeresh B", nameKn: "ವೀರೇಶ್ ಬಿ", designation: "Water Supply Maintenance", phone: "8880485103" },
+      { name: "Sunil Kumar C", nameKn: "ಸುನಿಲ್ ಕುಮಾರ್ ಸಿ", designation: "Water Supply Bill Collector", phone: "7676042048" },
+    ],
+  },
+  {
+    id: "engineering",
+    name: "Engineering Department",
+    scope: "Pothole, Footpath, Drainage, Manhole, Water stagnation, Debris",
+    helpline: "8277234444",
+    email: "commissioner_davanagere@yahoo.com",
+    office: "City Corporation, Davanagere",
+    officials: [
+      { name: "Prathibha B R", nameKn: "ಪ್ರತಿಭಾ ಬಿ ಆರ್", designation: "Junior Engineer (JE)", phone: "9113048826" },
+      { name: "Shruthi H", nameKn: "ಶ್ರುತಿ ಎಚ್", designation: "Asst-Exe Engineer (AEE)", phone: "9113270974" },
+      { name: "Abishek KR", nameKn: "ಅಭಿಷೇಕ್ ಕೆಆರ್", designation: "Exe-Engineer (EE)", phone: "7892198334" },
+      { name: "Dandeppa", nameKn: "ದಂಡೇಪ್ಪ", designation: "UGD Maintenance", phone: "9611250996" },
+      { name: "Manjunath", nameKn: "ಮಂಜುನಾಥ್", designation: "UGD Maintenance", phone: "9945745133" },
+    ],
+  },
+  {
+    id: "electrical",
+    name: "Electrical Department",
+    scope: "Street lights, Park lights, Tree obstruction",
+    helpline: "8277234444",
+    email: "commissioner_davanagere@yahoo.com",
+    office: "City Corporation, Davanagere",
+    officials: [
+      { name: "Shoheb", nameKn: "ಶೋಹೇಬ್", designation: "Electrical Engineer", phone: "8660852374" },
+    ],
+  },
+  {
+    id: "revenue",
+    name: "Revenue Services",
+    scope: "Property tax, Revenue collection, Land records",
+    helpline: "8277234444",
+    email: "commissioner_davanagere@yahoo.com",
+    office: "City Corporation, Davanagere",
+    officials: [
+      { name: "Umesh M", nameKn: "ಉಮೇಶ್ ಎಂ", designation: "Revenue Inspector", phone: "9740292929" },
+      { name: "Yamunesh M", nameKn: "ಯಮುನೇಶ್ ಎಂ", designation: "Property Tax Bill collector", phone: "9611915076" },
+    ],
+  },
+  {
+    id: "animal",
+    name: "Animal Husbandry",
+    scope: "Stray dogs, Stray cattle, Stray pigs, Dead animals, Snakes",
+    helpline: "8277234444",
+    email: "commissioner_davanagere@yahoo.com",
+    office: "City Corporation, Davanagere",
+    officials: [
+      { name: "Jagadeesh S R", nameKn: "ಜಗದೀಶ್ ಎಸ್ ಆರ್", designation: "Asst-Exe Engineer (AEE) Environment", phone: "9632983527" },
+    ],
+  },
+  {
+    id: "corporation",
+    name: "Davanagere City Corporation",
+    scope: "Municipal governance, civic services, urban planning and city administration",
+    helpline: "8050061112",
+    email: "ka.davanagere.cc@gmail.com",
+    office: "City Corporation, Davanagere",
+    officials: [
+      { name: "Dr. N.Mahantesh", nameKn: "ಡಾ. ಎನ್.ಮಹಂತೇಶ್", designation: "Commissioner", phone: "8050061112" },
+    ],
+  },
+  {
+    id: "ward",
+    name: "Ward Corporator",
+    scope: "Davanagere Municipal Corporation",
+    helpline: "—",
+    email: "—",
+    office: "—",
+    officials: [
+      { name: "To be elected", nameKn: "ಚುನಾಯಿತರಾಗಬೇಕು", designation: "Corporator", phone: "—" },
+    ],
+  },
+  {
+    id: "mla",
+    name: "MLA Information",
+    scope: "Member of Legislative Assembly",
+    helpline: "080-22255023",
+    email: "—",
+    office: "Home Office",
+    officials: [
+      { name: "Samarth Mallikarjun", nameKn: "ಸಮರ್ಥ ಮಲ್ಲಿಕಾರ್ಜುನ್", designation: "MLA", phone: "080-22255023" },
+    ],
+  },
+  {
+    id: "mp",
+    name: "MP Information",
+    scope: "Member of Parliament",
+    helpline: "9964070830",
+    email: "prabhamallikarjun76@gmail.com",
+    office: "Home Office",
+    officials: [
+      { name: "Dr. Prabha Mallikarjun", nameKn: "ಡಾ. ಪ್ರಭಾ ಮಲ್ಲಿಕಾರ್ಜುನ್", designation: "MP", phone: "9964070830" },
+    ],
+  },
+];
 
 /**
  * Grievance tab — mirrors the Samarth Shamanur campaign grievance page.
@@ -11,6 +150,7 @@ const NAMMADVG_URL = "https://nammadvg.com";
  */
 export function GrievanceView() {
   const { lang } = useLanguage();
+  const [activeDeptId, setActiveDeptId] = useState<string>(CITY_OFFICIALS[0].id);
   useEffect(() => {}, []);
 
   return (
@@ -43,6 +183,55 @@ export function GrievanceView() {
 
           <p className="grievance-trust">ಕೆಲಸ ಕಂಡಿದ್ದೇವೆ… ನಂಬಿಕೆ ಇದೆ…<br />Seen the work. Trust the system.</p>
         </div>
+
+        {/* ── CONNECT OFFICIALS DIRECTORY ─────────────────────────── */}
+        <section className="ds-officials ds-officials--grievance">
+          <div className="ds-officials__header">
+            <div className="ds-officials__title-wrap">
+              <h2 className="ds-officials__title">{lang === "kn" ? "ಅಧಿಕಾರಿಗಳನ್ನು ಸಂಪರ್ಕಿಸಿ" : "Connect Officials"}</h2>
+              <p className="ds-officials__sub">{lang === "kn" ? "ನಿಮ್ಮ ಸಮಸ್ಯೆಗೆ ಸರಿಯಾದ ಇಲಾಖೆಯನ್ನು ಆಯ್ಕೆಮಾಡಿ" : "Pick the right department for your concern"}</p>
+            </div>
+          </div>
+
+          <div className="ds-officials__tabs" role="tablist" aria-label="Department">
+            {CITY_OFFICIALS.map((dept) => (
+              <button
+                key={dept.id}
+                type="button"
+                role="tab"
+                aria-selected={activeDeptId === dept.id}
+                className={`ds-officials__tab ${activeDeptId === dept.id ? "is-active" : ""}`}
+                onClick={() => setActiveDeptId(dept.id)}
+              >
+                {dept.name}
+              </button>
+            ))}
+          </div>
+
+          {CITY_OFFICIALS.filter((d) => d.id === activeDeptId).map((dept) => (
+            <div className="ds-officials__panel" key={dept.id} role="tabpanel">
+              <p className="ds-officials__scope">{dept.scope}</p>
+              <ul className="ds-officials__list">
+                {dept.officials.map((o, i) => (
+                  <li className="ds-official" key={`${o.name}-${i}`}>
+                    <div className="ds-official__main">
+                      <span className="ds-official__name">{lang === "kn" ? o.nameKn : o.name}</span>
+                      <span className="ds-official__desg">{o.designation}</span>
+                    </div>
+                    {o.phone && o.phone !== "—" && (
+                      <a className="ds-official__phone" href={`tel:${o.phone}`}>{o.phone}</a>
+                    )}
+                  </li>
+                ))}
+              </ul>
+              <div className="ds-officials__meta">
+                <div><span>Office</span>{dept.office}</div>
+                <div><span>Helpline</span>{dept.helpline}</div>
+                <div><span>Email</span>{dept.email}</div>
+              </div>
+            </div>
+          ))}
+        </section>
       </div>
     </div>
   );

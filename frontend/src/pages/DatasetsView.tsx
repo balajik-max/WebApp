@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useRef, useState } from "react";
+﻿import React, { useCallback, useEffect, useRef, useState } from "react";
 import JSZip from "jszip";
 import { deleteDataset, fetchDatasets, updateDataset, type DatasetRow } from "../lib/workflow";
 import { AttributeTable } from "../components/AttributeTable";
@@ -17,7 +17,7 @@ const IMAGE_EXTENSIONS = [".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp"];
 const SHAPEFILE_EXTENSIONS = [".shp", ".dbf", ".shx", ".prj", ".cpg"];
 const REQUIRED_SHAPEFILE_EXTENSIONS = [".shp", ".dbf", ".shx", ".prj"];
 
-// File System Access API — not yet in TS's DOM lib. Only Chromium ships it;
+// File System Access API â€” not yet in TS's DOM lib. Only Chromium ships it;
 // callers must feature-detect `window.showDirectoryPicker` before use.
 declare global {
   interface FileSystemDirectoryHandle {
@@ -27,146 +27,6 @@ declare global {
     showDirectoryPicker?: (options?: { mode?: "read" | "readwrite" }) => Promise<FileSystemDirectoryHandle>;
   }
 }
-
-interface Official {
-  name: string;
-  nameKn: string;
-  designation: string;
-  phone: string;
-}
-
-interface Department {
-  id: string;
-  name: string;
-  scope: string;
-  helpline: string;
-  email: string;
-  office: string;
-  officials: Official[];
-}
-
-// Source: Namma Davanagere — Connect Officials (Gandhinagar-1 ward directory).
-const CITY_OFFICIALS: Department[] = [
-  {
-    id: "health",
-    name: "Health and Sanitation",
-    scope: "Garbage, Sweeping, Dustbin, Septic Tank, Toilet, Mosquito control",
-    helpline: "8277234444",
-    email: "commissioner_davanagere@yahoo.com",
-    office: "City Corporation, Davanagere",
-    officials: [
-      { name: "Mohamed Tanvir", nameKn: "ಮೊಹಮ್ಮದ್ ತನ್ವೀರ್", designation: "Health Inspector", phone: "7022474799" },
-      { name: "Shivrajappa B", nameKn: "ಶಿವರಾಜಪ್ಪ ಬಿ", designation: "Sanitary Supervisor", phone: "8867867600" },
-    ],
-  },
-  {
-    id: "water",
-    name: "Water Supply Department",
-    scope: "Water supply, Leakage, Dirty water, New connection, Borewell, Meter",
-    helpline: "8277234444",
-    email: "commissioner_davanagere@yahoo.com",
-    office: "City Corporation, Davanagere",
-    officials: [
-      { name: "Veeresh B", nameKn: "ವೀರೇಶ್ ಬಿ", designation: "Waterman", phone: "8880485103" },
-      { name: "Veeresh B", nameKn: "ವೀರೇಶ್ ಬಿ", designation: "Water Supply Maintenance", phone: "8880485103" },
-      { name: "Sunil Kumar C", nameKn: "ಸುನಿಲ್ ಕುಮಾರ್ ಸಿ", designation: "Water Supply Bill Collector", phone: "7676042048" },
-    ],
-  },
-  {
-    id: "engineering",
-    name: "Engineering Department",
-    scope: "Pothole, Footpath, Drainage, Manhole, Water stagnation, Debris",
-    helpline: "8277234444",
-    email: "commissioner_davanagere@yahoo.com",
-    office: "City Corporation, Davanagere",
-    officials: [
-      { name: "Prathibha B R", nameKn: "ಪ್ರತಿಭಾ ಬಿ ಆರ್", designation: "Junior Engineer (JE)", phone: "9113048826" },
-      { name: "Shruthi H", nameKn: "ಶ್ರುತಿ ಎಚ್", designation: "Asst-Exe Engineer (AEE)", phone: "9113270974" },
-      { name: "Abishek KR", nameKn: "ಅಭಿಷೇಕ್ ಕೆಆರ್", designation: "Exe-Engineer (EE)", phone: "7892198334" },
-      { name: "Dandeppa", nameKn: "ದಂಡೇಪ್ಪ", designation: "UGD Maintenance", phone: "9611250996" },
-      { name: "Manjunath", nameKn: "ಮಂಜುನಾಥ್", designation: "UGD Maintenance", phone: "9945745133" },
-    ],
-  },
-  {
-    id: "electrical",
-    name: "Electrical Department",
-    scope: "Street lights, Park lights, Tree obstruction",
-    helpline: "8277234444",
-    email: "commissioner_davanagere@yahoo.com",
-    office: "City Corporation, Davanagere",
-    officials: [
-      { name: "Shoheb", nameKn: "ಶೋಹೇಬ್", designation: "Electrical Engineer", phone: "8660852374" },
-    ],
-  },
-  {
-    id: "revenue",
-    name: "Revenue Services",
-    scope: "Property tax, Revenue collection, Land records",
-    helpline: "8277234444",
-    email: "commissioner_davanagere@yahoo.com",
-    office: "City Corporation, Davanagere",
-    officials: [
-      { name: "Umesh M", nameKn: "ಉಮೇಶ್ ಎಂ", designation: "Revenue Inspector", phone: "9740292929" },
-      { name: "Yamunesh M", nameKn: "ಯಮುನೇಶ್ ಎಂ", designation: "Property Tax Bill collector", phone: "9611915076" },
-    ],
-  },
-  {
-    id: "animal",
-    name: "Animal Husbandry",
-    scope: "Stray dogs, Stray cattle, Stray pigs, Dead animals, Snakes",
-    helpline: "8277234444",
-    email: "commissioner_davanagere@yahoo.com",
-    office: "City Corporation, Davanagere",
-    officials: [
-      { name: "Jagadeesh S R", nameKn: "ಜಗದೀಶ್ ಎಸ್ ಆರ್", designation: "Asst-Exe Engineer (AEE) Environment", phone: "9632983527" },
-    ],
-  },
-  {
-    id: "corporation",
-    name: "Davanagere City Corporation",
-    scope: "Municipal governance, civic services, urban planning and city administration",
-    helpline: "8050061112",
-    email: "ka.davanagere.cc@gmail.com",
-    office: "City Corporation, Davanagere",
-    officials: [
-      { name: "Dr. N.Mahantesh", nameKn: "ಡಾ. ಎನ್.ಮಹಂತೇಶ್", designation: "Commissioner", phone: "8050061112" },
-    ],
-  },
-  {
-    id: "ward",
-    name: "Ward Corporator",
-    scope: "Davanagere Municipal Corporation",
-    helpline: "—",
-    email: "—",
-    office: "—",
-    officials: [
-      { name: "To be elected", nameKn: "ಚುನಾಯಿತರಾಗಬೇಕು", designation: "Corporator", phone: "—" },
-    ],
-  },
-  {
-    id: "mla",
-    name: "MLA Information",
-    scope: "Member of Legislative Assembly",
-    helpline: "080-22255023",
-    email: "—",
-    office: "Home Office",
-    officials: [
-      { name: "Samarth Mallikarjun", nameKn: "ಸಮರ್ಥ ಮಲ್ಲಿಕಾರ್ಜುನ್", designation: "MLA", phone: "080-22255023" },
-    ],
-  },
-  {
-    id: "mp",
-    name: "MP Information",
-    scope: "Member of Parliament",
-    helpline: "9964070830",
-    email: "prabhamallikarjun76@gmail.com",
-    office: "Home Office",
-    officials: [
-      { name: "Dr. Prabha Mallikarjun", nameKn: "ಡಾ. ಪ್ರಭಾ ಮಲ್ಲಿಕಾರ್ಜುನ್", designation: "MP", phone: "9964070830" },
-    ],
-  },
-];
-
 
 
 const FILE_TYPE_INFO: Record<string, { icon: React.ReactNode; label: string }> = {
@@ -226,12 +86,12 @@ function guessWardFromFilename(filename: string): string | null {
   return null;
 }
 
-// A raw .gdb (File Geodatabase) is a *folder*, not a single file — the
+// A raw .gdb (File Geodatabase) is a *folder*, not a single file â€” the
 // browser file APIs only ever hand us a placeholder for a dropped/selected
 // directory, never its contents, unless we explicitly walk it. These
 // helpers read every file inside an unzipped .gdb folder and zip it
 // client-side into the exact structure the backend's zipped-GDB reader
-// already knows how to open (a <name>.gdb/ directory at the zip root) —
+// already knows how to open (a <name>.gdb/ directory at the zip root) â€”
 // no backend change needed, it just never sees the difference.
 interface WebkitFileEntry {
   isFile: true;
@@ -256,7 +116,7 @@ async function readEntriesBatch(reader: {
 async function readAllDirEntries(dirEntry: WebkitDirEntry): Promise<WebkitEntry[]> {
   const reader = dirEntry.createReader();
   const all: WebkitEntry[] = [];
-  // readEntries() only returns a batch at a time — must keep calling until empty.
+  // readEntries() only returns a batch at a time â€” must keep calling until empty.
   let batch = await readEntriesBatch(reader);
   while (batch.length > 0) {
     all.push(...batch);
@@ -295,7 +155,7 @@ function collectPickedFolder(fileList: FileList): { name: string; files: { path:
 }
 
 // Thrown when a granted folder is too big to walk automatically (e.g. the
-// user picked a whole drive by mistake) — distinct from AbortError/
+// user picked a whole drive by mistake) â€” distinct from AbortError/
 // SecurityError so the caller can give an actionable message instead of
 // treating it like a declined prompt.
 class FolderScanLimitError extends Error {}
@@ -310,11 +170,11 @@ async function walkDirectoryHandle(
   out: { path: string; file: File }[]
 ): Promise<void> {
   if (depth > MAX_SCAN_DEPTH) {
-    throw new FolderScanLimitError("That folder is nested too deep to scan automatically — choose the folder that directly contains the .obj (or its parent, if it has a metadata.xml).");
+    throw new FolderScanLimitError("That folder is nested too deep to scan automatically â€” choose the folder that directly contains the .obj (or its parent, if it has a metadata.xml).");
   }
   for await (const entry of dirHandle.values()) {
     if (out.length > MAX_SCAN_ENTRIES) {
-      throw new FolderScanLimitError("That folder has too many files to scan automatically — choose a smaller folder, ideally the one that directly contains the .obj.");
+      throw new FolderScanLimitError("That folder has too many files to scan automatically â€” choose a smaller folder, ideally the one that directly contains the .obj.");
     }
     const path = `${basePath}${entry.name}`;
     if (entry.kind === "directory") {
@@ -326,11 +186,11 @@ async function walkDirectoryHandle(
 }
 
 // A ContextCapture/Bentley-style tiled mesh export (what the drone survey
-// pipeline behind this platform produces) carries its real-world anchor —
-// SRS + the point the OBJ's local meter offsets are measured from — in a
+// pipeline behind this platform produces) carries its real-world anchor â€”
+// SRS + the point the OBJ's local meter offsets are measured from â€” in a
 // `metadata.xml` file. That file conventionally sits *next to* the tile
 // folder, not inside it (e.g. "3D MODEL/metadata.xml" alongside
-// "3D MODEL/Block0/Block0.obj") — sniff by content, not name, since the
+// "3D MODEL/Block0/Block0.obj") â€” sniff by content, not name, since the
 // convention isn't universal, and it may not be present at all.
 async function isGeoMetadataFile(file: File): Promise<boolean> {
   if (extensionOf(file.name) !== ".xml" || file.size > 65_536) return false;
@@ -342,14 +202,14 @@ async function isGeoMetadataFile(file: File): Promise<boolean> {
 }
 
 // A single bare .obj (picked via the plain file input, or dropped as one
-// file) carries no path info a browser will ever hand us — there is no API
+// file) carries no path info a browser will ever hand us â€” there is no API
 // that goes from a File back to its siblings on disk. The only way to pull
 // in its .mtl/textures/geo-referencing without the user hand-picking them
 // is to ask for a folder via the File System Access API and read it
-// ourselves — walking subfolders too, since the geo-reference file is
+// ourselves â€” walking subfolders too, since the geo-reference file is
 // often one level above wherever the .obj itself lives.
 async function collectObjCompanionsFromDisk(objFile: File): Promise<{ path: string; file: File }[]> {
-  // Deliberately not caught here — the picker throws "AbortError" when the
+  // Deliberately not caught here â€” the picker throws "AbortError" when the
   // user dismisses the dialog, and "SecurityError"/"NotAllowedError" when
   // Chromium decided this call isn't tied to a fresh-enough user gesture
   // (can happen chaining straight off an <input> change event). Callers
@@ -424,7 +284,7 @@ function getFileIcon(type: string): React.ReactNode {
 }
 
 export function DatasetsView() {
-  const { t, lang } = useLanguage();
+  const { t } = useLanguage();
   const [rows, setRows] = useState<DatasetRow[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [mounted, setMounted] = useState(false);
@@ -451,7 +311,6 @@ export function DatasetsView() {
   const [wardDraft, setWardDraft] = useState("");
   const [wardSaving, setWardSaving] = useState(false);
   const [zipping, setZipping] = useState(false);
-  const [activeDeptId, setActiveDeptId] = useState<string>(CITY_OFFICIALS[0].id);
 
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const folderInputRef = useRef<HTMLInputElement | null>(null);
@@ -509,7 +368,7 @@ export function DatasetsView() {
     if (f && !uploadName.trim()) setUploadName(f.name.replace(/\.[^.]+$/, ""));
     // Best-effort ward suggestion from the filename (e.g. "Davangere
     // Ghandinagar Ward.gdb-...zip" -> "Ghandinagar") so re-uploading the
-    // same survey doesn't silently drop its ward again — never overrides
+    // same survey doesn't silently drop its ward again â€” never overrides
     // a ward the user already typed.
     if (f && !uploadWard.trim()) {
       const guess = guessWardFromFilename(f.name);
@@ -551,7 +410,7 @@ export function DatasetsView() {
     }
     if (files.length === 1 && extensionOf(files[0].name) === ".obj") {
       // A bare .obj needs its .mtl/textures/metadata.xml pulled in from
-      // disk automatically — see pickObjWithAutoCompanions for why this
+      // disk automatically â€” see pickObjWithAutoCompanions for why this
       // can't just be pickFile(files[0]).
       await pickObjWithAutoCompanions(files[0]);
       return;
@@ -583,7 +442,7 @@ export function DatasetsView() {
 
   // Several individually selected/dropped photos are bundled into one zip
   // client-side (same JSZip mechanism the .gdb folder path already uses)
-  // so they upload and ingest as a single dataset — the backend's
+  // so they upload and ingest as a single dataset â€” the backend's
   // ImageReader unpacks the zip and geo-tags each photo from its own EXIF.
   async function pickMultiplePhotos(files: File[]) {
     setUploadError(null);
@@ -602,15 +461,15 @@ export function DatasetsView() {
   }
 
   // A bare .obj arriving alone (single browse-select or single drag/drop)
-  // never carries its .mtl/textures/metadata.xml — the browser hands us
+  // never carries its .mtl/textures/metadata.xml â€” the browser hands us
   // exactly the one File and nothing else. Rather than making the user
   // hunt down and multi-select the companion files themselves, immediately
   // ask for a folder (one native prompt) and pull the matching files in
-  // ourselves. Falls back to the bare file — with an explanation — when the
+  // ourselves. Falls back to the bare file â€” with an explanation â€” when the
   // API isn't supported, the user declines the prompt, or nothing is found.
   //
   // Shared by the automatic first attempt and the manual retry button below
-  // — the retry button exists because Chromium sometimes refuses to open a
+  // â€” the retry button exists because Chromium sometimes refuses to open a
   // second native picker chained off an <input> change event (no fresh
   // enough user gesture), in which case a real click is the only way to
   // get a valid one.
@@ -621,7 +480,7 @@ export function DatasetsView() {
       const companions = await collectObjCompanionsFromDisk(file);
       if (companions.length <= 1) {
         pickFile(file);
-        setObjAutoNotice("⚠️ No .mtl or texture files were found next to this .obj — it will upload without materials.");
+        setObjAutoNotice("âš ï¸ No .mtl or texture files were found next to this .obj â€” it will upload without materials.");
         return;
       }
       const hasGeoMeta = companions.some((c) => extensionOf(c.file.name) === ".xml");
@@ -629,30 +488,30 @@ export function DatasetsView() {
       const zipped = await zipCollectedFiles(name, companions);
       pickFile(zipped);
       if (hasGeoMeta) {
-        setObjAutoNotice("✓ Textures and geo-referencing (metadata.xml) loaded automatically.");
+        setObjAutoNotice("âœ“ Textures and geo-referencing (metadata.xml) loaded automatically.");
       } else {
-        // Don't just warn and hope they know what to do — the metadata.xml
+        // Don't just warn and hope they know what to do â€” the metadata.xml
         // (when it exists) is conventionally one level *above* wherever the
         // .obj itself lives, so the folder they just granted was very
         // plausibly the wrong one. Offer the retry button right here
         // instead of making them notice a warning and manually reselect.
         setObjAutoRetryFile(file);
         setObjAutoNotice(
-          "⚠️ Textures loaded, but no metadata.xml was found, so this model's map position may be approximate. If the export has one, click below and pick the PARENT of the folder you just chose."
+          "âš ï¸ Textures loaded, but no metadata.xml was found, so this model's map position may be approximate. If the export has one, click below and pick the PARENT of the folder you just chose."
         );
       }
     } catch (err) {
       pickFile(file);
       if (err instanceof FolderScanLimitError) {
         setObjAutoRetryFile(file);
-        setObjAutoNotice(`⚠️ ${err.message}`);
+        setObjAutoNotice(`âš ï¸ ${err.message}`);
       } else if ((err as Error).name === "AbortError") {
         setObjAutoNotice(
-          "⚠️ Folder access was declined, so textures can't be auto-loaded. Reselect the .obj to try again, or use \"browse a folder\"."
+          "âš ï¸ Folder access was declined, so textures can't be auto-loaded. Reselect the .obj to try again, or use \"browse a folder\"."
         );
       } else {
         setObjAutoRetryFile(file);
-        setObjAutoNotice("⚠️ Couldn't open the folder picker automatically — click below to grant folder access and load textures.");
+        setObjAutoNotice("âš ï¸ Couldn't open the folder picker automatically â€” click below to grant folder access and load textures.");
       }
     } finally {
       setZipping(false);
@@ -663,7 +522,7 @@ export function DatasetsView() {
     if (typeof window.showDirectoryPicker !== "function") {
       pickFile(file);
       setObjAutoNotice(
-        "⚠️ This browser can't auto-load companion files for a single .obj (Chrome/Edge only). Use \"browse a folder\" below, or drag the whole folder in, to include the .mtl and textures."
+        "âš ï¸ This browser can't auto-load companion files for a single .obj (Chrome/Edge only). Use \"browse a folder\" below, or drag the whole folder in, to include the .mtl and textures."
       );
       return;
     }
@@ -673,7 +532,7 @@ export function DatasetsView() {
   // A dropped/browsed folder is supported if it's a File Geodatabase (by
   // name), a shapefile bundle, a folder full of photos (checked by content,
   // since a photo folder has no special naming convention), or a 3D model
-  // folder/tree (contains an .obj somewhere) — the latter is what makes a
+  // folder/tree (contains an .obj somewhere) â€” the latter is what makes a
   // folder one level up from the .obj (i.e. containing a metadata.xml
   // geo-reference sibling to the model's own folder) work, since these
   // collectors already walk subfolders and grab everything, unfiltered.
@@ -690,7 +549,7 @@ export function DatasetsView() {
       const isShapefile = files.length > 0 && files.every(({ file }) => SHAPEFILE_EXTENSIONS.includes(extensionOf(file.name)));
       if (!isGdb && !isAllImages && !isShapefile && !isObjModel) {
         setUploadError(
-          `"${name}" doesn't look like a File Geodatabase (.gdb), a shapefile folder, a folder of photos, or a 3D model folder — other folder types aren't supported, only individual files.`
+          `"${name}" doesn't look like a File Geodatabase (.gdb), a shapefile folder, a folder of photos, or a 3D model folder â€” other folder types aren't supported, only individual files.`
         );
         return;
       }
@@ -714,8 +573,8 @@ export function DatasetsView() {
         }
         setObjAutoNotice(
           hasGeoMeta
-            ? "✓ Textures and geo-referencing (metadata.xml) loaded automatically."
-            : "⚠️ No metadata.xml found in that folder — if this model uses local/tiled coordinates, its map position may be approximate."
+            ? "âœ“ Textures and geo-referencing (metadata.xml) loaded automatically."
+            : "âš ï¸ No metadata.xml found in that folder â€” if this model uses local/tiled coordinates, its map position may be approximate."
         );
       }
     } catch (err) {
@@ -793,7 +652,7 @@ export function DatasetsView() {
       setUploadName("");
       setUploadWard("");
       if (fileInputRef.current) fileInputRef.current.value = "";
-      setUploadNotice(`${t("datasets.queueMsg")} ${body.dataset?.name ?? uploadName} → ${t("datasets.processingNote")}`);
+      setUploadNotice(`${t("datasets.queueMsg")} ${body.dataset?.name ?? uploadName} â†’ ${t("datasets.processingNote")}`);
       window.setTimeout(() => setUploadNotice(null), 5000);
       void refresh();
     } catch (err) {
@@ -811,7 +670,7 @@ export function DatasetsView() {
   return (
     <div className={`datasets-page ${mounted ? "datasets-page--mounted" : ""}`} data-testid="datasets-page">
 
-      {/* ── HEADER ──────────────────────────────────────────────────── */}
+      {/* â”€â”€ HEADER â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */}
       <header className="ds-header">
         <div className="ds-header__left">
           <h1 className="ds-header__title">{t("datasets.title")}</h1>
@@ -819,7 +678,7 @@ export function DatasetsView() {
         </div>
         {rows && rows.length > 0 && (
           <div className="ds-stats">
-            <div className="ds-stat ds-stat--accent">
+            <div className="ds-stat">
               <span className="ds-stat__value">{rows.length}</span>
               <span className="ds-stat__label">{t("datasets.stat.total")}</span>
             </div>
@@ -866,12 +725,12 @@ export function DatasetsView() {
         )}
       </header>
 
-      {/* ── MAIN GRID ───────────────────────────────────────────────── */}
+      {/* â”€â”€ MAIN GRID â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */}
       <div className="ds-grid">
-      <div className="ds-grid__row">
+      <div className="ds-grid__row ds-grid__row--split">
 
         {/* ── UPLOAD SECTION ────────────────────────────────────────── */}
-        <section className="ds-upload-card ds-grid__upload-compact">
+        <section className="ds-upload-card ds-grid__half">
           <div className="ds-upload-card__header">
             <div className="ds-upload-card__icon">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" width="24" height="24">
@@ -894,7 +753,7 @@ export function DatasetsView() {
 
               // A dropped folder (e.g. an unzipped .gdb) arrives as a
               // FileSystemEntry via dataTransfer.items, not as a normal
-              // File — read it via webkitGetAsEntry() and zip it in the
+              // File â€” read it via webkitGetAsEntry() and zip it in the
               // browser before handing it to the normal upload flow.
               const item = e.dataTransfer.items?.[0];
               const entry = (item as unknown as { webkitGetAsEntry?: () => WebkitEntry | null })
@@ -928,7 +787,7 @@ export function DatasetsView() {
               id="dz-folder"
               ref={folderInputRef}
               type="file"
-              // @ts-expect-error — webkitdirectory isn't in the standard DOM typings
+              // @ts-expect-error â€” webkitdirectory isn't in the standard DOM typings
               webkitdirectory=""
               directory=""
               multiple
@@ -982,7 +841,7 @@ export function DatasetsView() {
                 </span>
                 <span className="ds-dropzone__hint">
                   {t("datasets.or")} <span className="ds-dropzone__browse">{t("datasets.browse")}</span>
-                  {" · "}
+                  {" Â· "}
                   <span
                     className="ds-dropzone__browse"
                     onClick={(e) => {
@@ -993,7 +852,7 @@ export function DatasetsView() {
                   >
                     {t("datasets.browseFolder")}
                   </span>
-                  {" · "}
+                  {" Â· "}
                   <span
                     className="ds-dropzone__browse"
                     onClick={(e) => {
@@ -1006,7 +865,7 @@ export function DatasetsView() {
                   </span>
                 </span>
                 <span className="ds-dropzone__formats">
-                  GeoJSON · Shapefile · GeoPackage · KML · GeoTIFF · OBJ · CSV · Excel · Photos (JPG/PNG/GIF/BMP/WEBP)
+                  GeoJSON Â· Shapefile Â· GeoPackage Â· KML Â· GeoTIFF Â· OBJ Â· CSV Â· Excel Â· Photos (JPG/PNG/GIF/BMP/WEBP)
                 </span>
               </label>
             ) : (
@@ -1016,8 +875,8 @@ export function DatasetsView() {
                   <span className="ds-dropzone__file-name">{uploadFile.name}</span>
                   <span className="ds-dropzone__file-size">{formatBytes(uploadFile.size)}</span>
                   {(extensionOf(uploadFile.name) === ".obj" || objAutoNotice) && (
-                    <span className="ds-dropzone__warning" style={{ color: objAutoNotice?.startsWith("✓") ? "#4ade80" : "#eab308", fontSize: "0.8rem", marginTop: "4px", display: "block" }}>
-                      {objAutoNotice ?? "⚠️ Bare .obj file — it will upload without materials."}
+                    <span className="ds-dropzone__warning" style={{ color: objAutoNotice?.startsWith("âœ“") ? "#4ade80" : "#eab308", fontSize: "0.8rem", marginTop: "4px", display: "block" }}>
+                      {objAutoNotice ?? "âš ï¸ Bare .obj file â€” it will upload without materials."}
                       {objAutoRetryFile && (
                         <button
                           type="button"
@@ -1055,7 +914,7 @@ export function DatasetsView() {
             )}
           </form>
 
-          {/* ── FORM FIELDS ─────────────────────────────────────────── */}
+          {/* â”€â”€ FORM FIELDS â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */}
           <div className="ds-fields">
             <label className="ds-field">
               <span className="ds-field__label">
@@ -1092,7 +951,7 @@ export function DatasetsView() {
             </label>
           </div>
 
-          {/* ── MESSAGES ────────────────────────────────────────────── */}
+          {/* â”€â”€ MESSAGES â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */}
           {uploadError && (
             <div className="ds-message ds-message--error" data-testid="upload-error">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="16" height="16">
@@ -1134,60 +993,8 @@ export function DatasetsView() {
           </button>
         </section>
 
-        {/* ── CITY OFFICIALS DIRECTORY ──────────────────────────────── */}
-        <section className="ds-officials ds-grid__officials">
-          <div className="ds-officials__header">
-            <div className="ds-officials__title-wrap">
-              <h2 className="ds-officials__title">{t("datasets.officials")}</h2>
-              <p className="ds-officials__sub">{t("datasets.officialsSub")}</p>
-            </div>
-          </div>
-
-          <div className="ds-officials__tabs" role="tablist" aria-label="Department">
-            {CITY_OFFICIALS.map((dept) => (
-              <button
-                key={dept.id}
-                type="button"
-                role="tab"
-                aria-selected={activeDeptId === dept.id}
-                className={`ds-officials__tab ${activeDeptId === dept.id ? "is-active" : ""}`}
-                onClick={() => setActiveDeptId(dept.id)}
-              >
-                {dept.name}
-              </button>
-            ))}
-          </div>
-
-          {CITY_OFFICIALS.filter((d) => d.id === activeDeptId).map((dept) => (
-            <div className="ds-officials__panel" key={dept.id} role="tabpanel">
-              <p className="ds-officials__scope">{dept.scope}</p>
-              <ul className="ds-officials__list">
-                {dept.officials.map((o, i) => (
-                  <li className="ds-official" key={`${o.name}-${i}`}>
-                    <div className="ds-official__main">
-                      <span className="ds-official__name">{lang === "kn" ? o.nameKn : o.name}</span>
-                      <span className="ds-official__desg">{o.designation}</span>
-                    </div>
-                    {o.phone && o.phone !== "—" && (
-                      <a className="ds-official__phone" href={`tel:${o.phone}`}>{o.phone}</a>
-                    )}
-                  </li>
-                ))}
-              </ul>
-              <div className="ds-officials__meta">
-                <div><span>Office</span>{dept.office}</div>
-                <div><span>Helpline</span>{dept.helpline}</div>
-                <div><span>Email</span>{dept.email}</div>
-              </div>
-            </div>
-          ))}
-        </section>
-
-      </div>
-      <div className="ds-grid__row">
-
-      {/* ── DATASETS TABLE ──────────────────────────────────────────── */}
-      <section className="ds-table-section ds-grid__uploaded">
+        {/* ── DATASETS TABLE ──────────────────────────────────────────── */}
+        <section className="ds-table-section ds-grid__half">
         <div className="ds-table-header">
           <div className="ds-table-header__left">
             <h2 className="ds-table-header__title">
@@ -1259,7 +1066,7 @@ export function DatasetsView() {
                         autoFocus
                       />
                       <button type="button" className="ds-table__ward-save" disabled={wardSaving} onClick={() => void saveWard(d.id)}>
-                        {wardSaving ? "..." : "✓"}
+                        {wardSaving ? "..." : "âœ“"}
                       </button>
                     </div>
                   ) : (
@@ -1346,7 +1153,7 @@ export function DatasetsView() {
       {/* ── UNCLASSIFIED CATEGORIES (spatial audit classifier review) ── */}
       <UnclassifiedCategoriesPanel />
 
-      {/* ── ATTRIBUTE TABLE OVERLAY ─────────────────────────────────── */}
+      {/* â”€â”€ ATTRIBUTE TABLE OVERLAY â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */}
       {openTableFor && (
         <AttributeTable
           datasetId={openTableFor.id}
@@ -1359,7 +1166,7 @@ export function DatasetsView() {
 }
 
 function formatBytes(bytes: number): string {
-  if (!bytes) return "—";
+  if (!bytes) return "â€”";
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
   return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
@@ -1377,3 +1184,5 @@ function formatDate(iso: string): string {
     return iso;
   }
 }
+
+

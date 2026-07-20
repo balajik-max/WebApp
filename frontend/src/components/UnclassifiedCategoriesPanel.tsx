@@ -19,8 +19,13 @@ export function UnclassifiedCategoriesPanel() {
   const [savingCategory, setSavingCategory] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
+  // Only these raw categories are surfaced for manual classification.
+  const ALLOWED_CATEGORIES = ["inlet", "pipe", "overhead tank", "shed temple"];
+
   const refresh = () => {
-    void fetchUnclassifiedCategories().then(setRows).catch((e: Error) => setError(e.message));
+    void fetchUnclassifiedCategories()
+      .then((all) => setRows(all.filter((r) => ALLOWED_CATEGORIES.includes(r.raw_category.toLowerCase()))))
+      .catch((e: Error) => setError(e.message));
   };
 
   useEffect(() => {

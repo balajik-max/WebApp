@@ -71,7 +71,7 @@ export const STRINGS: Dict = {
   "datasets.colUploaded": { en: "Uploaded", kn: "ಅಪ್‌ಲೋಡ್ ಆದದ್ದು" },
   "datasets.colFeatures": { en: "Features", kn: "ವೈಶಿಷ್ಟ್ಯಗಳು" },
   "datasets.colActions": { en: "Actions", kn: "ಕ್ರಿಯೆಗಳು" },
-  "datasets.uploadedDatasets": { en: "Uploaded Datasets", kn: "ಅಪ್‌ಲೋಡ್ ಆದ ಡೇಟಾಸೆಟ್‌ಗಳು" },
+  "datasets.uploadedDatasets": { en: "Uploaded Documents", kn: "ಅಪ್‌ಲೋಡ್ ಆದ ಡಾಕ್ಯುಮೆಂಟ್‌ಗಳು" },
   "datasets.refresh": { en: "Refresh list", kn: "ಪಟ್ಟಿಯನ್ನು ರಿಫ್ರೆಶ್ ಮಾಡಿ" },
   "datasets.status.processing": { en: "Processing", kn: "ಸಂಸ್ಕರಣೆ" },
   "datasets.status.ready": { en: "Ready", kn: "ಸಿದ್ಧ" },

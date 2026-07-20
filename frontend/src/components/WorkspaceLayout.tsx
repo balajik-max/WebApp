@@ -259,18 +259,6 @@ const TABS: TabDef[] = [
     ),
   },
   {
-    to: "/grievance",
-    label: "Grievance",
-    tKey: "nav.grievance",
-    testId: "tab-grievance",
-    icon: (
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-        <path d="M21 11.5a8.38 8.38 0 0 1-9 8.4 9 9 0 0 1-3.5-.7L3 21l1.8-5.5A8.38 8.38 0 0 1 12 3a8.5 8.5 0 0 1 9 8.5Z" />
-        <path d="M12 8v5M12 16h.01" />
-      </svg>
-    ),
-  },
-  {
     to: "/tasks",
     label: "Tasks",
     tKey: "nav.tasks",
@@ -336,13 +324,14 @@ function TabsNav({ pathname, user }: { pathname: string; user: AuthUser | null }
   // instant it happens, without waiting for the router's re-render —
   // synced back to the real route below the moment pathname changes.
   const activeIndex = tabs.findIndex((tab) => pathname.startsWith(tab.to));
-  const resolvedActiveIndex = activeIndex === -1 ? 0 : activeIndex;
+  const resolvedActiveIndex = activeIndex === -1 ? -1 : activeIndex;
   const [visualActiveIndex, setVisualActiveIndex] = useState(resolvedActiveIndex);
   useEffect(() => {
     setVisualActiveIndex(resolvedActiveIndex);
   }, [resolvedActiveIndex]);
 
   const measure = useCallback(() => {
+    if (visualActiveIndex === -1) { setIndicator(null); return; }
     const el = tabRefs.current[visualActiveIndex];
     const list = listRef.current;
     if (!el || !list) return;
@@ -417,7 +406,7 @@ function TabsNav({ pathname, user }: { pathname: string; user: AuthUser | null }
  */
 export function WorkspaceLayout() {
   const { user } = useAuth();
-  const { lang, toggle } = useLanguage();
+  const { t, lang, toggle } = useLanguage();
   const location = useLocation();
   const navigate = useNavigate();
 
@@ -462,13 +451,13 @@ export function WorkspaceLayout() {
   // never again after leaving/returning to the Map tab. MapCanvas (like
   // selectedDatasets above) unmounts on every tab switch, so this guard has
   // to live up here to survive that; only a hard page reload resets it.
-  // `spatialAuditRequestedRef` records "the user asked for it" the instant
+  // `spatialAuditRequested` records "the user asked for it" the instant
   // the icon is clicked (synchronous, so rapid double-clicks can't race);
   // `spatialAuditExecutedRef` records "we actually started it" once a
   // dataset is active — kept separate so a click before any dataset is
   // selected isn't wasted, it just runs as soon as one becomes active.
-  const spatialAuditRequestedRef = useRef(false);
   const spatialAuditExecutedRef = useRef(false);
+  const [spatialAuditRequested, setSpatialAuditRequested] = useState(false);
   const [spatialAuditStatus, setSpatialAuditStatus] =
     useState<"idle" | "running" | "success" | "error">("idle");
   // Drives the Data Sources drawer on the mobile Map page — lifted up here
@@ -494,12 +483,13 @@ export function WorkspaceLayout() {
       setSelectedDatasets,
       commandCenterMobileOpen,
       setCommandCenterMobileOpen,
-      spatialAuditRequestedRef,
+      spatialAuditRequested,
+      setSpatialAuditRequested,
       spatialAuditExecutedRef,
       spatialAuditStatus,
       setSpatialAuditStatus,
     }),
-    [selectedDatasets, commandCenterMobileOpen, spatialAuditStatus]
+    [selectedDatasets, commandCenterMobileOpen, spatialAuditStatus, spatialAuditRequested]
   );
 
   return (
@@ -551,6 +541,13 @@ export function WorkspaceLayout() {
         )}
 
         <div className="workspace__right">
+          <NavLink
+            to="/grievance"
+            data-testid="tab-grievance"
+            className={({ isActive }) => `tabs__single${isActive ? " active" : ""}`}
+          >
+            <span>{t("nav.grievance")}</span>
+          </NavLink>
           <button
             type="button"
             className="lang-toggle"

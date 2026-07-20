@@ -109,10 +109,11 @@ interface Props {
 
   /** Session-scoped Spatial Audit trigger guard — owned by WorkspaceLayout
    * (like the props above) so it survives this component unmounting on tab
-   * navigation. `spatialAuditRequestedRef` flips true the instant the AI
+   * navigation. `spatialAuditRequested` flips true the instant the AI
    * Detection icon is first clicked; `spatialAuditExecutedRef` flips true
    * once the audit has actually been kicked off for an active dataset. */
-  spatialAuditRequestedRef: MutableRefObject<boolean>;
+  spatialAuditRequested: boolean;
+  setSpatialAuditRequested: (v: boolean) => void;
   spatialAuditExecutedRef: MutableRefObject<boolean>;
   spatialAuditStatus: "idle" | "running" | "success" | "error";
   onSpatialAuditStatusChange: (status: "idle" | "running" | "success" | "error") => void;
@@ -1403,7 +1404,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     onFocusHandled,
     refreshToken = 0,
     commandCenterMobileOpen, onCommandCenterMobileOpenChange,
-    spatialAuditRequestedRef, spatialAuditExecutedRef,
+    spatialAuditRequested, setSpatialAuditRequested, spatialAuditExecutedRef,
     spatialAuditStatus, onSpatialAuditStatusChange,
   },
   ref
@@ -3774,8 +3775,9 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
   // the actual run is gated separately (see the effect above) on
   // spatialAuditExecutedRef, which this deliberately does not touch.
   const requestSpatialAuditOnce = useCallback(() => {
-    spatialAuditRequestedRef.current = true;
-  }, [spatialAuditRequestedRef]);
+    console.log("[SpatialAudit] requestSpatialAuditOnce called");
+    setSpatialAuditRequested(true);
+  }, [setSpatialAuditRequested]);
 
   // The Data Sources panel is explicitly multi-select ("multiple can be
   // shown together"), so the audit must run for every currently-active
@@ -3806,21 +3808,24 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
   }, []);
 
   // Fires once per fresh app load, on the first AI Detection icon click —
-  // see WorkspaceLayout for why the guard refs live outside this component.
-  // `spatialAuditRequestedRef` is set synchronously on that click; this
+  // see WorkspaceLayout for why the guard lives outside this component.
+  // `spatialAuditRequested` is set synchronously on that click; this
   // effect is what actually runs the (reused, unmodified) audit function
   // once a dataset is active, so a click before any dataset is selected
   // isn't wasted and doesn't need a second click to take effect.
   const hasActiveDatasets = activeDatasetIds.length > 0;
   useEffect(() => {
-    if (!spatialAuditRequestedRef.current || spatialAuditExecutedRef.current) return;
+    console.log("[SpatialAudit] effect fired:", { spatialAuditRequested, executed: spatialAuditExecutedRef.current, hasActiveDatasets, datasetCount: activeDatasetIds.length });
+    if (!spatialAuditRequested || spatialAuditExecutedRef.current) return;
     if (!hasActiveDatasets) return;
+    console.log("[SpatialAudit] starting audit for datasets:", activeDatasetIds);
     spatialAuditExecutedRef.current = true;
     onSpatialAuditStatusChange("running");
     void runAudit(activeDatasetIds).then((ok) => {
+      console.log("[SpatialAudit] audit completed:", { ok });
       onSpatialAuditStatusChange(ok ? "success" : "error");
     });
-  }, [hasActiveDatasets, activeDatasetIds, runAudit, onSpatialAuditStatusChange, spatialAuditRequestedRef, spatialAuditExecutedRef]);
+  }, [hasActiveDatasets, activeDatasetIds, runAudit, onSpatialAuditStatusChange, spatialAuditRequested, spatialAuditExecutedRef]);
 
   const runManholeFeatureRecommend = useCallback(async (datasetId: string, featureId: string) => {
     setManholeFeatureOpen(true);
