@@ -76,6 +76,7 @@ from app.models.dataset import Dataset
 from app.models.point_verification import PointVerification, PointVerificationStatus
 from app.models.spatial_anomaly import AnomalyColor, AnomalyStatus, AnomalyType, SpatialAnomaly
 from app.services.manhole_recommend import classify_manhole_issue, is_bad_condition, is_good_condition, parse_level_m
+from app.services.road_width import detect_road_width_narrowing
 
 # Per-class DBSCAN epsilon (meters). Only Illumination_Asset is clustered in
 # Phase 1; other classes can get their own entry here later without touching
