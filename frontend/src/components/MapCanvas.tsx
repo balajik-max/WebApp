@@ -36,10 +36,8 @@ import {
   bulkDeletePlacemarks, createPlacemark, deletePlacemark, fetchElevationSample, fetchPlacemarks,
   updatePlacemark, type ElevationSample, type Placemark, type PlacemarkDraft,
 } from "../lib/placemarks";
-import { ManholeRecommendCard } from "./ManholeRecommendCard";
 import { Map3DViewer } from "./Map3DViewer";
 import { GroupedFieldList } from "./GroupedFieldList";
-import { aiManholeRecommend, type AiAnswer } from "../lib/ai";
 
 // .obj datasets are persisted with file_type "other" (the enum has no
 // dedicated OBJ value), so detect them from the stored filename instead.
@@ -702,18 +700,12 @@ const AI_NEEDED_COLOR = "#22c55e";    // green
 const ANOMALY_SOURCE = "spatial-anomalies";
 const LAYER_ANOMALIES = "spatial-anomalies-points";
 
-// AI Manhole Recommendation Engine — proposed/rehab pipe routes, its own
-// source/layer so it never touches the anomaly/highlight layers above.
-const MANHOLE_ROUTES_SOURCE = "manhole-recommend-routes";
-const LAYER_MANHOLE_ROUTES = "manhole-recommend-routes-line";
-const LAYER_MANHOLE_FLOW_ARROWS = "manhole-recommend-routes-flow-arrows";
-const FLOW_ARROW_ICON_ID = "manhole-flow-arrow-icon";
-const MANHOLE_POINTS_SOURCE = "manhole-recommend-points";
-const LAYER_MANHOLE_POINTS = "manhole-recommend-points-circle";
-const MANHOLE_UNCONNECTED_SOURCE = "manhole-recommend-unconnected";
-const LAYER_MANHOLE_UNCONNECTED = "manhole-recommend-unconnected-circle";
-const MANHOLE_ROUTE_COLOR = "#3aa1ff";
-const MANHOLE_UNCONNECTED_COLOR = "#9b59b6";
+// Manhole heatmap — condition-audit density shown in "manholes" AI detection
+// mode instead of the individual red/yellow/green anomaly dots above.
+const MANHOLE_HEATMAP_SOURCE = "manhole-heatmap-source";
+const LAYER_MANHOLE_HEATMAP = "manhole-heatmap-layer";
+const LAYER_MANHOLE_HEATMAP_POINTS = "manhole-heatmap-points";
+
 const ANOMALY_COLOR_EXPR: maplibregl.ExpressionSpecification = [
   "case",
   ["==", ["get", "status"], "resolved"], "#2563eb",
@@ -986,29 +978,6 @@ function buildPhotoIconImageData(): ImageData {
   return ctx.getImageData(0, 0, w, h);
 }
 
-/** Small right-pointing triangle used as the flow-direction arrow along
- * manhole-recommend route lines. Icon-based rather than text-field, since
- * this map style has no "glyphs" endpoint configured (text-field symbol
- * layers fail validation without one). */
-function buildFlowArrowImageData(): ImageData {
-  const w = 24, h = 24;
-  const canvas = document.createElement("canvas");
-  canvas.width = w;
-  canvas.height = h;
-  const ctx = canvas.getContext("2d")!;
-  ctx.beginPath();
-  ctx.moveTo(2, 3);
-  ctx.lineTo(22, 12);
-  ctx.lineTo(2, 21);
-  ctx.closePath();
-  ctx.fillStyle = MANHOLE_ROUTE_COLOR;
-  ctx.strokeStyle = "#0b1013";
-  ctx.lineWidth = 2;
-  ctx.lineJoin = "round";
-  ctx.fill();
-  ctx.stroke();
-  return ctx.getImageData(0, 0, w, h);
-}
 
 function decodeFeature(raw: {
   id?: string | number;
@@ -1480,25 +1449,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
   const [anomalies, setAnomalies] = useState<SpatialAnomaly[]>([]);
   const [selectedAnomalyId, setSelectedAnomalyId] = useState<string | null>(null);
 
-  // AI Manhole Recommendation Engine — computed fresh per click/plan-run
-  // (not pre-persisted like the spatial audit engine above), so its own
-  // loading/error/answer state lives separately from the anomaly card's.
-  const [manholeRecommendAnswer, setManholeRecommendAnswer] = useState<AiAnswer | null>(null);
-  const [manholeRecommendLoading, setManholeRecommendLoading] = useState(false);
-  const [manholeRecommendError, setManholeRecommendError] = useState<string | null>(null);
-  const [manholeRecommendOpen, setManholeRecommendOpen] = useState(false);
-  // Single-manhole click ("feature" mode: real pipe suggestion — material,
-  // diameter, RLs, route) — deliberately its OWN state, separate from the
-  // network-mode state above. The map's drawn network (MANHOLE_ROUTES_SOURCE)
-  // reads only manholeRecommendAnswer, never this one, so clicking a manhole
-  // to see its pipe suggestion can never clear an already-drawn network.
-  const [manholeFeatureAnswer, setManholeFeatureAnswer] = useState<AiAnswer | null>(null);
-  const [manholeFeatureLoading, setManholeFeatureLoading] = useState(false);
-  const [manholeFeatureError, setManholeFeatureError] = useState<string | null>(null);
-  const [manholeFeatureOpen, setManholeFeatureOpen] = useState(false);
-  // Phase C — 3D subsurface view, opened from the same recommend result
-  // (or on its own, showing real terrain/buildings/manholes with no plan
-  // run yet) so it never shows a fact the 2D view didn't already show.
+  // Phase C — 3D subsurface view, showing real terrain/buildings/manholes.
   const [show3DPlan, setShow3DPlan] = useState(false);
 
   // Which AI Detection focus mode is active (null = normal full view).
@@ -3502,154 +3453,6 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     });
   }, [mapReady, anomalies]);
 
-  // Push the current manhole-recommend answer's routes into their own map
-  // source whenever the answer changes (including clearing to [] on close).
-  //
-  // Dedup strategy — segment-level union:
-  //   Two manholes rarely share the *exact* same line, but many edges route
-  //   along the SAME road segments (several manholes converge on a common
-  //   downstream node, so their paths overlap on the shared approach). That
-  //   overlap is what renders as "parallel / double lines". Pair-key dedup
-  //   can't catch it, so instead we walk every route as a sequence of small
-  //   directed segments and only ever draw each UNDIRECTED segment once. The
-  //   first route to claim a segment keeps it; later routes that re-trace it
-  //   simply skip that segment (the earlier route already covers it on the
-  //   map). Confirmed-flow edges are processed first so they own the shared
-  //   "trunk" segments and the arrows stay correct. The result: every road
-  //   segment is painted exactly once — no duplicate lines.
-  useEffect(() => {
-    const map = mapRef.current;
-    if (!mapReady || !map) return;
-    const src = map.getSource(MANHOLE_ROUTES_SOURCE) as GeoJSONSource | undefined;
-    if (!src) return;
-    const routes = manholeRecommendAnswer?.routes ?? [];
-
-    // Priority: confirmed-flow edges first (they own shared trunk segments
-    // and keep their arrows), then longer edges (trunks) before short spurs.
-    const ordered = [...routes].sort((a, b) => {
-      const ac = a.flow_confirmed ? 1 : 0;
-      const bc = b.flow_confirmed ? 1 : 0;
-      if (ac !== bc) return bc - ac;
-      return (b.coordinates?.length ?? 0) - (a.coordinates?.length ?? 0);
-    });
-
-    // Coordinate snapping to a coarse ~3m grid. Two paths that run 1-3m apart
-    // for a shared stretch (e.g. two genuine edges sharing a hub manhole and
-    // converging on the same corridor, computed independently and snapped to
-    // slightly different road points) collapse onto the same lattice grid, so
-    // their segments resolve to identical keys and merge into ONE drawn line
-    // instead of rendering as near-parallel duplicates. Snapping every
-    // coordinate *before* segmenting also handles the case where the two paths
-    // have different point densities — their consecutive-segment endpoints will
-    // now coincide on the grid regardless.
-    const GRID = 0.00006; // ~3m at typical latitudes
-    const snap = (v: number): number => Math.round(v / GRID) * GRID;
-    const snapPt = (p: number[]): [number, number] => [snap(p[0]), snap(p[1])];
-    const segKey = (a: number[], b: number[]): string => {
-      const ra = `${a[0].toFixed(5)},${a[1].toFixed(5)}`;
-      const rb = `${b[0].toFixed(5)},${b[1].toFixed(5)}`;
-      return ra < rb ? `${ra}|${rb}` : `${rb}|${ra}`;
-    };
-    // Two snapped points count as the SAME node if they share a grid cell.
-    const sameNode = (a: number[], b: number[]): boolean =>
-      a[0] === b[0] && a[1] === b[1];
-
-    const drawn = new Set<string>();
-    const features: GeoJSON.Feature[] = [];
-
-    for (const route of ordered) {
-      const raw = route.coordinates;
-      if (!raw || raw.length < 2) continue;
-
-      // 1) Snap every coordinate to the grid, then collapse consecutive
-      //    duplicate grid-nodes (this removes a single route's own tiny
-      //    zig-zag / double-back so one path never renders as two lines).
-      const snapped: number[][] = [];
-      for (const p of raw) {
-        const s = snapPt(p);
-        const last = snapped[snapped.length - 1];
-        if (!last || !sameNode(last, s)) snapped.push(s);
-      }
-      if (snapped.length < 2) continue;
-
-      // Group consecutive UN-drawn segments into contiguous runs so the
-      // dashed line style stays continuous; a drawn (shared) segment becomes
-      // a gap that the owning route already covers.
-      let run: number[][] = [snapped[0]];
-      const flush = () => {
-        if (run.length >= 2) {
-          features.push({
-            type: "Feature",
-            geometry: { type: "LineString", coordinates: run },
-            properties: {
-              from_id: route.from_id,
-              to_id: route.to_id,
-              flow_confirmed: route.flow_confirmed ?? false,
-            },
-          } as GeoJSON.Feature);
-        }
-        run = [];
-      };
-
-      let prev = snapped[0];
-      run = [prev];
-      for (let i = 1; i < snapped.length; i++) {
-        const cur = snapped[i];
-        const key = segKey(prev, cur);
-        if (drawn.has(key)) {
-          flush();          // gap: start a fresh run after the shared segment
-          run = [cur];
-        } else {
-          drawn.add(key);
-          run.push(cur);
-        }
-        prev = cur;
-      }
-      flush();
-    }
-
-    src.setData({ type: "FeatureCollection", features });
-  }, [mapReady, manholeRecommendAnswer]);
-
-  // Push the current manhole-recommend answer's proposed manhole locations
-  // (coverage gaps / disconnected manholes) into their own point layer.
-  useEffect(() => {
-    const map = mapRef.current;
-    if (!mapReady || !map) return;
-    const src = map.getSource(MANHOLE_POINTS_SOURCE) as GeoJSONSource | undefined;
-    if (!src) return;
-    const locs = manholeRecommendAnswer?.needed_locations ?? [];
-    src.setData({
-      type: "FeatureCollection",
-      features: locs.map((loc, idx) => ({
-        type: "Feature",
-        id: idx,
-        geometry: { type: "Point", coordinates: [loc.lon, loc.lat] },
-        properties: { id: loc.id, reason: loc.reason },
-      })),
-    });
-  }, [mapReady, manholeRecommendAnswer]);
-
-  // Push manholes with no real sewage/drain pipe within reach (network
-  // mode) into their own point layer, so "not connected to the sewage
-  // line" is a visible fact on the map, not just hidden absence of a line.
-  useEffect(() => {
-    const map = mapRef.current;
-    if (!mapReady || !map) return;
-    const src = map.getSource(MANHOLE_UNCONNECTED_SOURCE) as GeoJSONSource | undefined;
-    if (!src) return;
-    const locs = manholeRecommendAnswer?.unconnected_manholes ?? [];
-    src.setData({
-      type: "FeatureCollection",
-      features: locs.map((loc, idx) => ({
-        type: "Feature",
-        id: idx,
-        geometry: { type: "Point", coordinates: [loc.lon, loc.lat] },
-        properties: { id: loc.id, reason: loc.reason },
-      })),
-    });
-  }, [mapReady, manholeRecommendAnswer]);
-
   // Keep the ref mirror in sync so applyFeatureCollection (a stable
   // useCallback) always reads the current mode on the next fetch.
   useEffect(() => { detectionModeRef.current = detectionMode; }, [detectionMode]);
@@ -3736,7 +3539,10 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
       );
     }
     if (map.getLayer(LAYER_ANOMALIES)) {
-      const anomalyType = aiOn && detectionMode !== "drains" ? DETECTION_MODE_ANOMALY_TYPE[detectionMode] : null;
+      // Manholes mode hides the individual red/green/yellow anomaly dots —
+      // the heatmap overlay replaces them (see the heatmap effect below).
+      const showAnomalies = aiOn && detectionMode !== "drains" && detectionMode !== "manholes";
+      const anomalyType = showAnomalies ? DETECTION_MODE_ANOMALY_TYPE[detectionMode] : null;
       map.setFilter(LAYER_ANOMALIES, anomalyType ? ["==", ["get", "anomaly_type"], anomalyType] : ["==", ["get", "anomaly_type"], "__none__"]);
     }
 
@@ -3745,6 +3551,44 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mapReady, detectionMode, anomalies, aiOverlayEnabled]);
+
+  // Manhole heatmap — populate from the real, persisted manhole_status audit
+  // findings (the same red/yellow/green results the individual anomaly
+  // points would otherwise show), weighted so red hotspots dominate the
+  // density and resolved findings fade out. Visible only in "manholes" AI
+  // detection mode; hidden (and cleared) otherwise.
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!mapReady || !map) return;
+    const isManholes = aiOverlayEnabled && detectionMode === "manholes";
+    const visibility = isManholes ? "visible" : "none";
+    if (map.getLayer(LAYER_MANHOLE_HEATMAP)) {
+      map.setLayoutProperty(LAYER_MANHOLE_HEATMAP, "visibility", visibility);
+    }
+    if (map.getLayer(LAYER_MANHOLE_HEATMAP_POINTS)) {
+      map.setLayoutProperty(LAYER_MANHOLE_HEATMAP_POINTS, "visibility", visibility);
+    }
+    const src = map.getSource(MANHOLE_HEATMAP_SOURCE) as GeoJSONSource | undefined;
+    if (!src) return;
+    if (!isManholes) {
+      src.setData({ type: "FeatureCollection", features: [] });
+      return;
+    }
+    const weightForAnomaly = (color: string, status: string): number => {
+      if (status === "resolved") return 0.1;
+      if (color === "red") return 1;
+      if (color === "yellow") return 0.55;
+      return 0.2; // green
+    };
+    const features: GeoJSON.Feature[] = anomalies
+      .filter((a) => a.anomaly_type === "manhole_status")
+      .map((a) => ({
+        type: "Feature",
+        geometry: { type: "Point", coordinates: [a.lon, a.lat] },
+        properties: { id: a.id, severity: weightForAnomaly(a.color, a.status), color: a.color, status: a.status },
+      }));
+    src.setData({ type: "FeatureCollection", features });
+  }, [mapReady, detectionMode, aiOverlayEnabled, anomalies]);
 
   // Manholes mode is only useful alongside the geotagged photo evidence —
   // auto-include the image dataset so its site-photo pins appear without
@@ -3826,49 +3670,6 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
       onSpatialAuditStatusChange(ok ? "success" : "error");
     });
   }, [hasActiveDatasets, activeDatasetIds, runAudit, onSpatialAuditStatusChange, spatialAuditRequested, spatialAuditExecutedRef]);
-
-  const runManholeFeatureRecommend = useCallback(async (datasetId: string, featureId: string) => {
-    setManholeFeatureOpen(true);
-    setManholeFeatureLoading(true);
-    setManholeFeatureError(null);
-    setManholeFeatureAnswer(null);
-    try {
-      const answer = await aiManholeRecommend({ mode: "feature", dataset_id: datasetId, feature_id: featureId });
-      setManholeFeatureAnswer(answer);
-    } catch (e) {
-      setManholeFeatureError((e as Error).message);
-    } finally {
-      setManholeFeatureLoading(false);
-    }
-  }, []);
-
-  const closeManholeFeature = useCallback(() => {
-    setManholeFeatureOpen(false);
-    setManholeFeatureAnswer(null);
-    setManholeFeatureError(null);
-  }, []);
-
-  const runManholeNetwork = useCallback(async (datasetIds: string[]) => {
-    if (datasetIds.length === 0) return;
-    setManholeRecommendOpen(true);
-    setManholeRecommendLoading(true);
-    setManholeRecommendError(null);
-    setManholeRecommendAnswer(null);
-    try {
-      const answer = await aiManholeRecommend({ mode: "network", dataset_id: datasetIds[0] });
-      setManholeRecommendAnswer(answer);
-    } catch (e) {
-      setManholeRecommendError((e as Error).message);
-    } finally {
-      setManholeRecommendLoading(false);
-    }
-  }, []);
-
-  const closeManholeRecommend = useCallback(() => {
-    setManholeRecommendOpen(false);
-    setManholeRecommendAnswer(null);
-    setManholeRecommendError(null);
-  }, []);
 
   const selectedAnomaly = anomalies.find((a) => a.id === selectedAnomalyId) ?? null;
 
@@ -4352,110 +4153,11 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
         },
       });
 
-      // AI Manhole Recommendation Engine — proposed/rehab pipe routes.
-      map.addSource(MANHOLE_ROUTES_SOURCE, {
-        type: "geojson",
-        data: { type: "FeatureCollection", features: [] },
-      });
-      map.addLayer({
-        id: LAYER_MANHOLE_ROUTES,
-        type: "line",
-        source: MANHOLE_ROUTES_SOURCE,
-        layout: { "line-cap": "round", "line-join": "round" },
-        paint: {
-          "line-color": MANHOLE_ROUTE_COLOR,
-          "line-width": ["interpolate", ["linear"], ["zoom"], 12, 3, 18, 6],
-          "line-dasharray": [0.2, 1.5],
-        },
-      });
-      // Flow-direction arrows drawn along each route line, only where the
-      // direction is actually grounded in real elevation evidence
-      // (flow_confirmed) — an unconfirmed route still shows as a plain line,
-      // never with an arrow asserting a direction we don't have evidence for.
-      if (!map.hasImage(FLOW_ARROW_ICON_ID)) {
-        map.addImage(FLOW_ARROW_ICON_ID, buildFlowArrowImageData(), { pixelRatio: 2 });
-      }
-      map.addLayer({
-        id: LAYER_MANHOLE_FLOW_ARROWS,
-        type: "symbol",
-        source: MANHOLE_ROUTES_SOURCE,
-        filter: ["==", ["get", "flow_confirmed"], true],
-        layout: {
-          "symbol-placement": "line",
-          "symbol-spacing": 60,
-          "icon-image": FLOW_ARROW_ICON_ID,
-          "icon-size": ["interpolate", ["linear"], ["zoom"], 12, 0.6, 18, 1.1],
-          "icon-rotation-alignment": "map",
-          "icon-keep-upright": false,
-          "icon-allow-overlap": true,
-          "icon-ignore-placement": true,
-        },
-      });
-
-      // AI Manhole Recommendation Engine — proposed new manhole locations
-      // (coverage gaps / disconnected manholes), drawn as points on top.
-      map.addSource(MANHOLE_POINTS_SOURCE, {
-        type: "geojson",
-        data: { type: "FeatureCollection", features: [] },
-      });
-      map.addLayer({
-        id: LAYER_MANHOLE_POINTS,
-        type: "circle",
-        source: MANHOLE_POINTS_SOURCE,
-        paint: {
-          "circle-radius": ["interpolate", ["linear"], ["zoom"], 12, 6, 18, 11],
-          "circle-color": MANHOLE_ROUTE_COLOR,
-          "circle-stroke-color": "#0b1013",
-          "circle-stroke-width": 1.5,
-          "circle-opacity": 0.9,
-        },
-      });
-
-      // AI Manhole Recommendation Engine — manholes with no real sewage/
-      // drain pipe within reach. Drawn as a distinct ring rather than left
-      // silently unconnected, so it reads as "flagged" rather than "missing".
-      map.addSource(MANHOLE_UNCONNECTED_SOURCE, {
-        type: "geojson",
-        data: { type: "FeatureCollection", features: [] },
-      });
-      map.addLayer({
-        id: LAYER_MANHOLE_UNCONNECTED,
-        type: "circle",
-        source: MANHOLE_UNCONNECTED_SOURCE,
-        paint: {
-          "circle-radius": ["interpolate", ["linear"], ["zoom"], 12, 8, 18, 14],
-          "circle-color": "rgba(0,0,0,0)",
-          "circle-stroke-color": MANHOLE_UNCONNECTED_COLOR,
-          "circle-stroke-width": 3,
-        },
-      });
-
-      map.on("mousemove", LAYER_MANHOLE_UNCONNECTED, (e: MapMouseEvent) => {
-        const hit = map.queryRenderedFeatures(e.point, { layers: [LAYER_MANHOLE_UNCONNECTED] });
-        if (!hit.length) return;
-        map.getCanvas().style.cursor = "pointer";
-        const reason = (hit[0].properties?.reason as string | undefined) ?? "Not connected to the sewage line";
-        setHover({
-          x: e.point.x,
-          y: e.point.y,
-          label: "Unconnected Manhole",
-          category: "Not connected to sewage line",
-          severity: 1,
-          color: MANHOLE_UNCONNECTED_COLOR,
-          attributes: { reason },
-        });
-      });
-      map.on("mouseleave", LAYER_MANHOLE_UNCONNECTED, () => {
-        map.getCanvas().style.cursor = "";
-        setHover(null);
-      });
-
-      map.on("click", LAYER_ANOMALIES, (e: MapMouseEvent) => {
-        const hit = map.queryRenderedFeatures(e.point, { layers: [LAYER_ANOMALIES] });
-        if (!hit.length) return;
-        const id = hit[0].properties?.id as string | undefined;
-        if (!id) return;
-
+      // Shared by both the plain anomaly-points layer and the manhole
+      // heatmap's invisible click layer — same finding, same AI Alert card,
+      // just a different visual treatment for manholes (heatmap density
+      // instead of individual red/yellow/green dots).
+      const openAnomalyFinding = (id: string) => {
         const anomaly = anomalyByIdRef.current[id];
         const activeMode = detectionModeRef.current;
         const context = aiOverlayEnabledRef.current
@@ -4463,9 +4165,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
           : null;
         const primaryFeatureId = anomaly ? primaryFeatureIdForAnomaly(anomaly) : null;
 
-        // Preserve the previous AI UI: Poles/Drains still open the AI Alert
-        // card; Manholes still use their richer recommendation card.
-        if (activeMode !== "manholes") setSelectedAnomalyId(id);
+        setSelectedAnomalyId(id);
         if (!context || !primaryFeatureId) return;
 
         aiAnomalyClickConsumedRef.current = true;
@@ -4473,15 +4173,70 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
         void fetchFeatureById(primaryFeatureId)
           .then((feature) => {
             onFeatureSelect(feature, context);
-            if (context.detectionMode === "manholes" && feature.properties.dataset_id) {
-              setManholeRecommendOpen(false);
-              void runManholeFeatureRecommend(feature.properties.dataset_id, feature.properties.id);
-            }
           })
           .catch(() => {});
+      };
+
+      map.on("click", LAYER_ANOMALIES, (e: MapMouseEvent) => {
+        const hit = map.queryRenderedFeatures(e.point, { layers: [LAYER_ANOMALIES] });
+        if (!hit.length) return;
+        const id = hit[0].properties?.id as string | undefined;
+        if (!id) return;
+        openAnomalyFinding(id);
       });
       map.on("mouseenter", LAYER_ANOMALIES, () => (map.getCanvas().style.cursor = "pointer"));
       map.on("mouseleave", LAYER_ANOMALIES, () => (map.getCanvas().style.cursor = ""));
+
+      // Manhole heatmap — density visualization for condition-audit findings,
+      // shown instead of the plain dots above when in "manholes" mode.
+      map.addSource(MANHOLE_HEATMAP_SOURCE, {
+        type: "geojson",
+        data: { type: "FeatureCollection", features: [] },
+      });
+      map.addLayer({
+        id: LAYER_MANHOLE_HEATMAP,
+        type: "heatmap",
+        source: MANHOLE_HEATMAP_SOURCE,
+        layout: { visibility: "none" },
+        paint: {
+          "heatmap-weight": ["interpolate", ["linear"], ["coalesce", ["get", "severity"], 0], 0, 0, 0.5, 0.5, 1, 1],
+          "heatmap-intensity": ["interpolate", ["linear"], ["zoom"], 0, 1, 22, 3],
+          "heatmap-color": [
+            "interpolate", ["linear"], ["heatmap-density"],
+            0, "rgba(0, 0, 255, 0)",
+            0.2, "#3b82f6",
+            0.4, "#22c55e",
+            0.6, "#eab308",
+            0.8, "#f97316",
+            1, "#ef4444",
+          ],
+          "heatmap-radius": ["interpolate", ["linear"], ["zoom"], 0, 8, 22, 30],
+          "heatmap-opacity": 0.8,
+        },
+      });
+      // Invisible-but-clickable points on top of the heatmap so users can
+      // still click individual manholes while the heatmap overlay is active
+      // — radius must stay non-zero (opacity 0 makes it invisible) since a
+      // zero-radius circle has no rendered pixels for hit-testing to find.
+      map.addLayer({
+        id: LAYER_MANHOLE_HEATMAP_POINTS,
+        type: "circle",
+        source: MANHOLE_HEATMAP_SOURCE,
+        layout: { visibility: "none" },
+        paint: {
+          "circle-radius": ["interpolate", ["linear"], ["zoom"], 12, 8, 18, 14],
+          "circle-opacity": 0,
+        },
+      });
+      map.on("click", LAYER_MANHOLE_HEATMAP_POINTS, (e: MapMouseEvent) => {
+        const hit = map.queryRenderedFeatures(e.point, { layers: [LAYER_MANHOLE_HEATMAP_POINTS] });
+        if (!hit.length) return;
+        const id = hit[0].properties?.id as string | undefined;
+        if (!id) return;
+        openAnomalyFinding(id);
+      });
+      map.on("mouseenter", LAYER_MANHOLE_HEATMAP_POINTS, () => (map.getCanvas().style.cursor = "pointer"));
+      map.on("mouseleave", LAYER_MANHOLE_HEATMAP_POINTS, () => (map.getCanvas().style.cursor = ""));
 
       // A separate, top-most source keeps an attribute-table selection
       // visible even while the regular dataset source is being refreshed.
@@ -4548,23 +4303,6 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
             if (verificationContext) onFeatureSelect(selected, verificationContext);
             return;
           }
-        }
-        if (
-          aiOverlayEnabledRef.current &&
-          detectionModeRef.current === "manholes" &&
-          classMapRef.current[selected.properties.category ?? ""] === "Access_Point" &&
-          selected.properties.dataset_id
-        ) {
-          // The real pipe-suggestion card (material/diameter/RL/slope/route)
-          // — kept in its OWN state (manholeFeatureAnswer), never touching
-          // manholeRecommendAnswer/routes, so a "Full Drainage Network"
-          // already drawn on the map stays exactly as-is. Same courtesy as
-          // Poles/Drains: only hide the network SUMMARY PANEL (not its
-          // data) so the two cards don't visually stack in the same corner.
-          setManholeRecommendOpen(false);
-          if (verificationContext) onFeatureSelect(selected, verificationContext);
-          void runManholeFeatureRecommend(selected.properties.dataset_id, selected.properties.id);
-          return;
         }
         if (selected.properties.category === "site_photo") {
           setPhotoViewer({
@@ -5466,8 +5204,6 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
           onResetStyle: resetVisualizationStyle,
         }}
         detectionMode={detectionMode}
-        onRunManholeNetwork={runManholeNetwork}
-        manholeRecommendLoading={manholeRecommendLoading}
         classMap={classMap}
         extraVisibleCategories={extraVisibleCategories}
         onToggleExtraVisibleCategory={toggleExtraVisibleCategory}
@@ -5496,6 +5232,8 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
           onToggleCoordinateSearch={toggleCoordinateSearch}
           referenceLayers={referenceLayers}
           onToggleReferenceLayer={handleToggleReferenceLayer}
+          measureActive={measureActive}
+          onToggleMeasure={toggleMeasureActive}
         />
         <HoverTooltip hover={hover} />
         {selectedAnomaly && (
@@ -5599,22 +5337,6 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
           />
           <button
             type="button"
-            className={`map-measure-btn${measureActive ? " map-measure-btn--active" : ""}`}
-            onClick={toggleMeasureActive}
-            title="Measure"
-            aria-label="Open Measure tools"
-            aria-pressed={measureActive}
-            data-testid="topbar-measure"
-          >
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-              <rect x="2.5" y="8" width="19" height="8" rx="1.5" transform="rotate(-45 12 12)" />
-              <g transform="rotate(-45 12 12)">
-                <path d="M6 8v3M9.5 8v2M13 8v3M16.5 8v2" />
-              </g>
-            </svg>
-          </button>
-          <button
-            type="button"
             className="map-measure-btn"
             onClick={() => setShow3DPlan(true)}
             title="3D Viewer"
@@ -5627,24 +5349,6 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
             </svg>
           </button>
         </div>
-        {manholeRecommendOpen && (
-          <ManholeRecommendCard
-            answer={manholeRecommendAnswer}
-            loading={manholeRecommendLoading}
-            error={manholeRecommendError}
-            onClose={closeManholeRecommend}
-            onView3D={() => setShow3DPlan(true)}
-          />
-        )}
-        {manholeFeatureOpen && (
-          <ManholeRecommendCard
-            answer={manholeFeatureAnswer}
-            loading={manholeFeatureLoading}
-            error={manholeFeatureError}
-            onClose={closeManholeFeature}
-            onView3D={() => setShow3DPlan(true)}
-          />
-        )}
         {measureActive && (
           <RulerPanel
             tab={measureTab}
@@ -5701,7 +5405,6 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
           features={loadedFeatures}
           classMap={classMap}
           anomalies={anomalies}
-          manholeAnswer={manholeFeatureOpen ? manholeFeatureAnswer : manholeRecommendAnswer}
           datasets={datasets}
           activeDatasetIds={activeDatasetIds}
           onClose={() => setShow3DPlan(false)}
@@ -5780,7 +5483,7 @@ function CommandCenter({
   datasets, activeDatasetIds, flyError, onSelectDataset, onSelectAllDatasets, expandedDatasetId, onToggleDatasetSettings,
   rasterSettingsById, onChangeRasterSettings, categoryStats, hiddenCategories, onToggleCategory,
   onSetAllCategoriesVisible, spatialAuditStatus, onOpenAttributeTable, status: _status, visualization,
-  detectionMode, onRunManholeNetwork, manholeRecommendLoading,
+  detectionMode,
   classMap, extraVisibleCategories, onToggleExtraVisibleCategory, onSetAllExtraVisibleCategories,
   onSetCategoriesVisible,
 }: {
@@ -5800,8 +5503,6 @@ function CommandCenter({
   status: ViewportStatus;
   visualization: VisualizationPanelProps;
   detectionMode: DetectionMode;
-  onRunManholeNetwork: (datasetIds: string[]) => void;
-  manholeRecommendLoading: boolean;
   classMap: Record<string, string>;
   extraVisibleCategories: Set<string>;
   onToggleExtraVisibleCategory: (category: string) => void;
@@ -6110,25 +5811,6 @@ function CommandCenter({
             <VisualizationPanel {...visualization} />
           </div>,
           document.body
-        )}
-
-        {activeDatasetIds.length > 0 && detectionMode === "manholes" && (
-          <div className="command-center__section">
-            <div className="command-center__section-head">
-              <span className="command-center__section-title">Spatial Audit</span>
-            </div>
-            <button
-              type="button"
-              className="command-center__audit-btn"
-              disabled={manholeRecommendLoading}
-              onClick={() => onRunManholeNetwork(activeDatasetIds)}
-              data-testid="run-manhole-network"
-              title="Build the complete manhole-to-manhole drainage network, with flow direction grounded in real surveyed levels / DTM / contour elevation"
-              style={{ marginTop: 8 }}
-            >
-              {manholeRecommendLoading ? "Building…" : "Full Drainage Network"}
-            </button>
-          </div>
         )}
 
         {categoryStats.length > 0 && (
@@ -6736,6 +6418,8 @@ function MapControls({
   onToggleCoordinateSearch,
   referenceLayers,
   onToggleReferenceLayer,
+  measureActive,
+  onToggleMeasure,
 }: {
   basemap: Basemap;
   onChangeBasemap: (b: Basemap) => void;
@@ -6759,8 +6443,9 @@ function MapControls({
   onToggleCoordinateSearch: () => void;
   referenceLayers: ReferenceLayerVisibility;
   onToggleReferenceLayer: (key: keyof ReferenceLayerVisibility, visible: boolean) => void;
+  measureActive: boolean;
+  onToggleMeasure: () => void;
 }) {
-  const [toolsMenuOpen, setToolsMenuOpen] = useState(false);
   const [activeToolsSection, setActiveToolsSection] = useState<"map" | "location" | null>(null);
   const [menuPos, setMenuPos] = useState<{ top: number; left: number } | null>(null);
   // AI Detection is an independent floating control, not a tools-menu
@@ -6775,9 +6460,41 @@ function MapControls({
   const [showDetectionList, setShowDetectionList] = useState(false);
   const [showDetectionStatus, setShowDetectionStatus] = useState(false);
   const [aiOffsetY, setAiOffsetY] = useState(0);
+  // Location Tools child strip: `locationOpen` is the logical state
+  // (mutually exclusive with the Map View section via activeToolsSection).
+  // `locationMounted` keeps the strip in the DOM through the close
+  // animation so children can slide back before unmount; `locationShown`
+  // toggles the `is-open` class that drives the staggered transition.
+  // A single timer (locationCloseTimer) guards unmount; it is cleared on
+  // reopen and on unmount to avoid stale close callbacks/race conditions.
+  const locationOpen = activeToolsSection === "location";
+  const [locationMounted, setLocationMounted] = useState(locationOpen);
+  const [locationShown, setLocationShown] = useState(locationOpen);
+  const locationCloseTimer = useRef<number | null>(null);
+  const LOCATION_EXIT_MS = 460;
+  useEffect(() => {
+    if (locationCloseTimer.current !== null) {
+      clearTimeout(locationCloseTimer.current);
+      locationCloseTimer.current = null;
+    }
+    if (locationOpen) {
+      setLocationMounted(true);
+      const raf = requestAnimationFrame(() => {
+        requestAnimationFrame(() => setLocationShown(true));
+      });
+      return () => cancelAnimationFrame(raf);
+    }
+    setLocationShown(false);
+    locationCloseTimer.current = window.setTimeout(() => setLocationMounted(false), LOCATION_EXIT_MS);
+  }, [locationOpen]);
+  useEffect(() => () => {
+    if (locationCloseTimer.current !== null) clearTimeout(locationCloseTimer.current);
+  }, []);
   const toolsControlRef = useRef<HTMLDivElement | null>(null);
-  const toolsToggleRef = useRef<HTMLButtonElement | null>(null);
   const toolsPanelsRef = useRef<HTMLDivElement | null>(null);
+  const categoryRailRef = useRef<HTMLDivElement | null>(null);
+  const mapCategoryBtnRef = useRef<HTMLButtonElement | null>(null);
+  const locationCategoryBtnRef = useRef<HTMLButtonElement | null>(null);
   const aiWrapRef = useRef<HTMLDivElement | null>(null);
   const portalMenuRef = useRef<HTMLDivElement | null>(null);
   const isMobile = useIsMobile();
@@ -6803,27 +6520,26 @@ function MapControls({
     setMenuPos({ top: rect.top, left: rect.right + 8 });
   }, [showDetectionList]);
 
+  // Closes an open category panel (basemap/location) on an outside click or
+  // Escape. The category rail itself is always visible now (no hamburger
+  // gate), so this only ever needs to collapse activeToolsSection back to
+  // null — it never hides the rail.
   useEffect(() => {
-    if (!toolsMenuOpen) {
-      setActiveToolsSection(null);
-      return;
-    }
+    if (!activeToolsSection) return;
 
     const onToolsOutside = (event: MouseEvent) => {
       const target = event.target as Node;
       if (toolsControlRef.current?.contains(target)) return;
       // The AI mode-picker dropdown is portaled to document.body (outside
-      // toolsControlRef) — a click inside it is unrelated to this menu and
-      // must not close it, since AI Detection is now fully independent.
+      // toolsControlRef) — a click inside it is unrelated to this panel and
+      // must not close it, since AI Detection is fully independent.
       if (portalMenuRef.current?.contains(target)) return;
       if (target instanceof Element && target.closest(".reference-layers-menu")) return;
-      setToolsMenuOpen(false);
       setActiveToolsSection(null);
     };
 
     const onToolsEscape = (event: KeyboardEvent) => {
       if (event.key !== "Escape") return;
-      setToolsMenuOpen(false);
       setActiveToolsSection(null);
     };
 
@@ -6833,7 +6549,7 @@ function MapControls({
       document.removeEventListener("mousedown", onToolsOutside);
       document.removeEventListener("keydown", onToolsEscape);
     };
-  }, [toolsMenuOpen]);
+  }, [activeToolsSection]);
 
   // AI Detection's own outside-click/escape handling — fully independent of
   // the tools menu's. The dropdown is portaled to document.body, so it's
@@ -6883,24 +6599,20 @@ function MapControls({
     setShowDetectionList(true);
   };
 
-  // Keeps the AI icon flush under the toggle when the tools menu is closed,
-  // and dynamically pushes it below the expanded panel's real rendered
-  // height when the menu opens — measured from actual DOM rects and the
-  // container's own CSS gap (not a hardcoded offset), so it stays correct
-  // regardless of which tool category's content is showing.
+  // Keeps the AI icon flush under the always-visible category rail, and
+  // dynamically pushes it further down when a category panel expands —
+  // measured from the actual rendered rail+panel rect and the container's
+  // own CSS gap (not a hardcoded offset), so it stays correct regardless of
+  // which tool category's content is showing.
   const measureAiOffset = useCallback(() => {
     const container = toolsControlRef.current;
-    const toggleEl = toolsToggleRef.current;
-    if (!container || !toggleEl) return;
+    const panelsEl = toolsPanelsRef.current;
+    if (!container || !panelsEl) return;
     const gap = parseFloat(getComputedStyle(container).rowGap || getComputedStyle(container).gap || "0") || 0;
     const containerTop = container.getBoundingClientRect().top;
-    let referenceBottom = toggleEl.getBoundingClientRect().bottom;
-    if (toolsMenuOpen && toolsPanelsRef.current) {
-      const panelsBottom = toolsPanelsRef.current.getBoundingClientRect().bottom;
-      if (panelsBottom > referenceBottom) referenceBottom = panelsBottom;
-    }
+    const referenceBottom = panelsEl.getBoundingClientRect().bottom;
     setAiOffsetY(referenceBottom - containerTop + gap);
-  }, [toolsMenuOpen]);
+  }, []);
 
   useLayoutEffect(() => {
     measureAiOffset();
@@ -6914,54 +6626,24 @@ function MapControls({
     return () => observer.disconnect();
   }, [measureAiOffset]);
 
-  const hasActiveTool = Boolean(
-    detectionMode ||
-    streetPickMode ||
-    placemarkMode ||
-    myPlacesOpen ||
-    coordinateSearchOpen ||
-    Object.values(referenceLayers).some(Boolean)
-  );
-
   return (
     <>
       <div className="feature-count" data-testid="viewport-status">
         {status.loading ? "loading..." : `${status.count} features`}
       </div>
       <div className="map-tools" ref={toolsControlRef}>
-        <button
-          type="button"
-          ref={toolsToggleRef}
-          className={`map-tools__toggle${toolsMenuOpen ? " map-tools__toggle--open" : ""}${hasActiveTool ? " map-tools__toggle--has-active" : ""}`}
-          onClick={() => {
-            const nextOpen = !toolsMenuOpen;
-            setToolsMenuOpen(nextOpen);
-            if (!nextOpen) {
-              setActiveToolsSection(null);
-            }
-          }}
-          aria-expanded={toolsMenuOpen}
-          aria-controls="map-tools-panels"
-          aria-label={toolsMenuOpen ? "Close map tools" : "Open map tools"}
-          data-testid="map-tools-toggle"
-          title={toolsMenuOpen ? "Close tools" : "Open tools"}
-        >
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="18" height="18" aria-hidden="true">
-            <path d="M4 7h16M4 12h16M4 17h16" />
-          </svg>
-          {hasActiveTool && <span className="map-tools__active-dot" aria-hidden="true" />}
-        </button>
-
         <div
           id="map-tools-panels"
           ref={toolsPanelsRef}
-          className={`map-tools__panels${toolsMenuOpen ? " map-tools__panels--open" : ""}`}
+          className="map-tools__panels"
+          role="toolbar"
           aria-label="Map tools"
-          aria-hidden={!toolsMenuOpen}
         >
-          <div className="map-tools__category-rail" aria-label="Tool categories">
+          <div className="map-tools__category-rail" ref={categoryRailRef} aria-label="Tool categories">
+            <div className="map-tools__map-view-anchor">
             <button
               type="button"
+              ref={mapCategoryBtnRef}
               className={`map-tools__category-btn${activeToolsSection === "map" ? " map-tools__category-btn--active" : ""}`}
               onClick={() => {
                 setActiveToolsSection((current) => current === "map" ? null : "map");
@@ -6971,139 +6653,155 @@ function MapControls({
               title="Map view"
               data-testid="map-tools-category-map"
             >
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" width="19" height="19" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" width="16" height="16" aria-hidden="true">
                 <path d="m3 6 5-3 8 3 5-3v15l-5 3-8-3-5 3V6Z" />
                 <path d="M8 3v15M16 6v15" />
               </svg>
-            </button>
+             </button>
 
-            <button
-              type="button"
-              className={`map-tools__category-btn${activeToolsSection === "location" ? " map-tools__category-btn--active" : ""}${(streetPickMode || placemarkMode || myPlacesOpen || coordinateSearchOpen || Object.values(referenceLayers).some(Boolean)) ? " map-tools__category-btn--has-active" : ""}`}
-              onClick={() => {
-                setActiveToolsSection((current) => current === "location" ? null : "location");
-              }}
-              aria-label="Location and map tools"
-              aria-expanded={activeToolsSection === "location"}
-              title="Location tools"
-              data-testid="map-tools-category-location"
-            >
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" width="19" height="19" aria-hidden="true">
-                <path d="M12 22s7-6.1 7-13a7 7 0 1 0-14 0c0 6.9 7 13 7 13Z" />
-                <circle cx="12" cy="9" r="2.2" />
-              </svg>
-              {(streetPickMode || placemarkMode || myPlacesOpen || coordinateSearchOpen || Object.values(referenceLayers).some(Boolean)) && <span className="map-tools__category-dot" aria-hidden="true" />}
-            </button>
-          </div>
-
-          <div className="map-tools__content">
-          {activeToolsSection === "map" && (
-          <div className="map-tools__floating-panel map-tools__floating-panel--map" data-testid="map-view-panel">
-            <div className="map-controls map-controls--floating-panel">
-              <div className="map-controls__group" data-testid="basemap-toggle">
-          <button className={`map-controls__btn${basemap === "street" ? " map-controls__btn--active" : ""}`} onClick={() => onChangeBasemap("street")} data-testid="basemap-street">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="14" height="14" style={{ marginRight: 4, verticalAlign: -2 }}>
-              <path d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-4 0h4" />
-            </svg>
-            <span className="map-controls__btn-label">Map</span>
-          </button>
-          <button className={`map-controls__btn${basemap === "satellite" ? " map-controls__btn--active" : ""}`} onClick={() => onChangeBasemap("satellite")} data-testid="basemap-satellite">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="14" height="14" style={{ marginRight: 4, verticalAlign: -2 }}>
-              <circle cx="12" cy="12" r="10" />
-              <path d="M2 12h20M12 2a15.3 15.3 0 014 10 15.3 15.3 0 01-4 10 15.3 15.3 0 01-4-10 15.3 15.3 0 014-10z" />
-            </svg>
-            <span className="map-controls__btn-label">Satellite</span>
-          </button>
-          <button
-            className={`map-controls__btn${basemap === "off" ? " map-controls__btn--active" : ""}`}
-            onClick={() => onChangeBasemap("off")}
-            data-testid="basemap-off"
-            title="Hide the basemap so raster overlays/vector data aren't limited by its tile resolution when zooming in close"
-          >
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="14" height="14" style={{ marginRight: 4, verticalAlign: -2 }}>
-              <path d="M3 3l18 18M10.58 10.58a2 2 0 002.83 2.83M9.88 4.24A9.4 9.4 0 0112 4c5 0 8.5 4 10 8-.46 1.3-1.13 2.6-2 3.79M6.6 6.6C4.7 8 3.2 10 2 12c1.5 4 5 8 10 8 1.35 0 2.63-.28 3.8-.78" />
-            </svg>
-            <span className="map-controls__btn-label">Off</span>
-          </button>
+              {activeToolsSection === "map" && (
+              <div className="map-tools__map-view-options" id="map-view-options" role="toolbar" aria-label="Map view options">
+                <div className="map-controls__group" data-testid="basemap-toggle">
+              <button className={`map-controls__btn${basemap === "street" ? " map-controls__btn--active" : ""}`} onClick={() => onChangeBasemap("street")} data-testid="basemap-street" aria-pressed={basemap === "street"} aria-label="Map basemap">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="14" height="14" style={{ marginRight: 4, verticalAlign: -2 }}>
+                  <path d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-4 0h4" />
+                </svg>
+                <span className="map-controls__btn-label">Map</span>
+              </button>
+              <button className={`map-controls__btn${basemap === "satellite" ? " map-controls__btn--active" : ""}`} onClick={() => onChangeBasemap("satellite")} data-testid="basemap-satellite" aria-pressed={basemap === "satellite"} aria-label="Satellite basemap">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="14" height="14" style={{ marginRight: 4, verticalAlign: -2 }}>
+                  <circle cx="12" cy="12" r="10" />
+                  <path d="M2 12h20M12 2a15.3 15.3 0 014 10 15.3 15.3 0 01-4 10 15.3 15.3 0 01-4-10 15.3 15.3 0 014-10z" />
+                </svg>
+                <span className="map-controls__btn-label">Satellite</span>
+              </button>
+              <button
+                className={`map-controls__btn${basemap === "off" ? " map-controls__btn--active" : ""}`}
+                onClick={() => onChangeBasemap("off")}
+                data-testid="basemap-off"
+                aria-pressed={basemap === "off"}
+                aria-label="Hide basemap"
+                title="Hide the basemap so raster overlays/vector data aren't limited by its tile resolution when zooming in close"
+              >
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="14" height="14" style={{ marginRight: 4, verticalAlign: -2 }}>
+                  <path d="M3 3l18 18M10.58 10.58a2 2 0 002.83 2.83M9.88 4.24A9.4 9.4 0 0112 4c5 0 8.5 4 10 8-.46 1.3-1.13 2.6-2 3.79M6.6 6.6C4.7 8 3.2 10 2 12c1.5 4 5 8 10 8 1.35 0 2.63-.28 3.8-.78" />
+                </svg>
+                <span className="map-controls__btn-label">Off</span>
+              </button>
+                </div>
               </div>
+              )}
+
             </div>
-          </div>
-          )}
 
-          {activeToolsSection === "location" && (
-          <div className="map-tools__floating-panel map-tools__floating-panel--location" data-testid="location-tools-panel">
-            <div className="map-controls map-controls--floating-panel map-controls--location-panel">
-              <div className="map-controls__group map-controls__group--annotations" data-testid="annotation-controls">
-          <button
-            type="button"
-            className={`map-controls__btn${placemarkMode ? " map-controls__btn--active" : ""}`}
-            onClick={onTogglePlacemark}
-            data-testid="placemark-tool"
-            aria-pressed={placemarkMode}
-            title="Place a saved placemark on the map"
-          >
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" width="15" height="15" style={{ marginRight: 4, verticalAlign: -2 }} aria-hidden="true">
-              <path d="M12 22s7-6.1 7-13a7 7 0 1 0-14 0c0 6.9 7 13 7 13Z" />
-              <circle cx="12" cy="9" r="2.2" />
-            </svg>
-            <span className="map-controls__btn-label">Placemark</span>
-          </button>
-          <button
-            type="button"
-            className={`map-controls__btn${myPlacesOpen ? " map-controls__btn--active" : ""}`}
-            onClick={onToggleMyPlaces}
-            data-testid="my-places-toggle"
-            aria-pressed={myPlacesOpen}
-            title="Search and manage saved placemarks"
-          >
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" width="15" height="15" style={{ marginRight: 4, verticalAlign: -2 }} aria-hidden="true">
-              <path d="M4 5.5A2.5 2.5 0 0 1 6.5 3H18a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6.5A2.5 2.5 0 0 1 4 18.5v-13Z" />
-              <path d="M8 3v18M12 8h5M12 12h5" />
-            </svg>
-            <span className="map-controls__btn-label">My Places{placemarkCount > 0 ? ` · ${placemarkCount}` : ""}</span>
-          </button>
-          <button
-            type="button"
-            className={`map-controls__btn${coordinateSearchOpen ? " map-controls__btn--active" : ""}`}
-            onClick={onToggleCoordinateSearch}
-            data-testid="coordinate-search-toggle"
-            aria-pressed={coordinateSearchOpen}
-            title="Enter latitude and longitude and fly to the exact location"
-          >
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" width="15" height="15" style={{ marginRight: 4, verticalAlign: -2 }} aria-hidden="true">
-              <circle cx="12" cy="12" r="6" />
-              <path d="M12 2v4M12 18v4M2 12h4M18 12h4" />
-              <circle cx="12" cy="12" r="1.5" fill="currentColor" stroke="none" />
-            </svg>
-            Coordinate Search
-          </button>
-          <ReferenceLayersMenu value={referenceLayers} onChange={onToggleReferenceLayer} />
+            <div className="map-tools__location-anchor">
+              <button
+                type="button"
+                ref={locationCategoryBtnRef}
+                className={`map-tools__category-btn${activeToolsSection === "location" ? " map-tools__category-btn--active" : ""}${(streetPickMode || placemarkMode || myPlacesOpen || coordinateSearchOpen || Object.values(referenceLayers).some(Boolean)) ? " map-tools__category-btn--has-active" : ""}`}
+                onClick={() => {
+                  setActiveToolsSection((current) => current === "location" ? null : "location");
+                }}
+                aria-label="Location and map tools"
+                aria-expanded={activeToolsSection === "location"}
+                aria-controls="location-tools-options"
+                title="Location tools"
+                data-testid="map-tools-category-location"
+              >
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" width="16" height="16" aria-hidden="true">
+                  <path d="M12 22s7-6.1 7-13a7 7 0 1 0-14 0c0 6.9 7 13 7 13Z" />
+                  <circle cx="12" cy="9" r="2.2" />
+                </svg>
+                {(streetPickMode || placemarkMode || myPlacesOpen || coordinateSearchOpen || Object.values(referenceLayers).some(Boolean)) && <span className="map-tools__category-dot" aria-hidden="true" />}
+              </button>
+
+              {locationMounted && (
+              <div className={`map-tools__location-options${locationShown ? " is-open" : ""}`} id="location-tools-options" role="toolbar" aria-label="Location tools" aria-hidden={!locationOpen}>
+                <div className="map-controls__group map-controls__group--annotations" data-testid="annotation-controls">
+              <button
+                type="button"
+                className={`map-controls__btn${placemarkMode ? " map-controls__btn--active" : ""}`}
+                onClick={onTogglePlacemark}
+                data-testid="placemark-tool"
+                aria-pressed={placemarkMode}
+                aria-label="Placemark"
+                title="Place a saved placemark on the map"
+              >
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" width="16" height="16" aria-hidden="true">
+                  <path d="M12 22s7-6.1 7-13a7 7 0 1 0-14 0c0 6.9 7 13 7 13Z" />
+                  <circle cx="12" cy="9" r="2.2" />
+                </svg>
+              </button>
+              <button
+                type="button"
+                className={`map-controls__btn${myPlacesOpen ? " map-controls__btn--active" : ""}`}
+                onClick={onToggleMyPlaces}
+                data-testid="my-places-toggle"
+                aria-pressed={myPlacesOpen}
+                aria-label={`My Places${placemarkCount > 0 ? ` · ${placemarkCount}` : ""}`}
+                title={`My Places${placemarkCount > 0 ? ` · ${placemarkCount}` : ""}`}
+              >
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" width="16" height="16" aria-hidden="true">
+                  <path d="M4 5.5A2.5 2.5 0 0 1 6.5 3H18a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6.5A2.5 2.5 0 0 1 4 18.5v-13Z" />
+                  <path d="M8 3v18M12 8h5M12 12h5" />
+                </svg>
+              </button>
+              <button
+                type="button"
+                className={`map-controls__btn${coordinateSearchOpen ? " map-controls__btn--active" : ""}`}
+                onClick={onToggleCoordinateSearch}
+                data-testid="coordinate-search-toggle"
+                aria-pressed={coordinateSearchOpen}
+                aria-label="Coordinate Search"
+                title="Enter latitude and longitude and fly to the exact location"
+              >
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" width="16" height="16" aria-hidden="true">
+                  <circle cx="12" cy="12" r="6" />
+                  <path d="M12 2v4M12 18v4M2 12h4M18 12h4" />
+                  <circle cx="12" cy="12" r="1.5" fill="currentColor" stroke="none" />
+                </svg>
+              </button>
+              <ReferenceLayersMenu value={referenceLayers} onChange={onToggleReferenceLayer} />
+              <button
+                className={`map-controls__btn map-controls__btn--street-view${streetPickMode ? " map-controls__btn--active" : ""}`}
+                onClick={onToggleStreetView}
+                data-testid="street-view-picker"
+                title="Select a map location and open the nearest Google Street View panorama"
+                aria-pressed={streetPickMode}
+                aria-label="Street View"
+              >
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" width="16" height="16" aria-hidden="true">
+                  <circle cx="12" cy="5" r="2.5" fill="currentColor" stroke="none" />
+                  <path d="M8 10c1.2-1.2 2.5-1.8 4-1.8s2.8.6 4 1.8M9.2 10.2 8 16m6.8-5.8L16 16M9.3 13h5.4M10.5 16v5m3-5v5" />
+                </svg>
+              </button>
+              <button
+                type="button"
+                className={`map-controls__btn${measureActive ? " map-controls__btn--active" : ""}`}
+                onClick={onToggleMeasure}
+                data-testid="location-tools-measure"
+                aria-pressed={measureActive}
+                aria-label="Measure"
+                title="Measure"
+              >
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" width="16" height="16" aria-hidden="true">
+                  <rect x="2.5" y="8" width="19" height="8" rx="1.5" transform="rotate(-45 12 12)" />
+                  <g transform="rotate(-45 12 12)">
+                    <path d="M6 8v3M9.5 8v2M13 8v3M16.5 8v2" />
+                  </g>
+                </svg>
+              </button>
+                </div>
               </div>
-              <div className="map-controls__group map-controls__group--street-view">
-          <button
-            className={`map-controls__btn map-controls__btn--street-view${streetPickMode ? " map-controls__btn--active" : ""}`}
-            onClick={onToggleStreetView}
-            data-testid="street-view-picker"
-            title="Select a map location and open the nearest Google Street View panorama"
-            aria-pressed={streetPickMode}
-          >
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" width="15" height="15" style={{ marginRight: 4, verticalAlign: -2 }}>
-              <circle cx="12" cy="5" r="2.5" fill="currentColor" stroke="none" />
-              <path d="M8 10c1.2-1.2 2.5-1.8 4-1.8s2.8.6 4 1.8M9.2 10.2 8 16m6.8-5.8L16 16M9.3 13h5.4M10.5 16v5m3-5v5" />
-            </svg>
-            <span className="map-controls__btn-label">Street View</span>
-          </button>
-              </div>
+              )}
             </div>
-          </div>
-          )}
           </div>
         </div>
         {/* AI Detection: an independent floating control, not a tools-menu
-            category. It sits directly below the toggle and dynamically
-            slides down (via aiOffsetY, see measureAiOffset) when the tools
-            menu expands, but its own panel opens to the right and is never
-            gated by toolsMenuOpen/activeToolsSection. */}
+            category. It sits directly below the permanent category rail and
+            dynamically slides down (via aiOffsetY, see measureAiOffset) when
+            a category panel expands, but its own panel opens to the right
+            and is never gated by activeToolsSection. */}
         <div
           className="map-tools__ai-wrap"
           ref={aiWrapRef}
@@ -7119,7 +6817,7 @@ function MapControls({
             title="AI detection"
             data-testid="map-tools-category-ai"
           >
-            <svg viewBox="0 0 24 24" fill="currentColor" width="19" height="19" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16" aria-hidden="true">
               <path d="M12 2l1.8 5.2L19 9l-5.2 1.8L12 16l-1.8-5.2L5 9l5.2-1.8L12 2Z" />
               <path d="m19 13 .9 2.1L22 16l-2.1.9L19 19l-.9-2.1L16 16l2.1-.9L19 13Z" />
             </svg>
