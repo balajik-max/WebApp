@@ -5,6 +5,11 @@ import type { UrbanFeature } from "../lib/types";
 import type { DatasetRow, SpatialAnomaly } from "../lib/workflow";
 import { fetchDemGrid, fetchBuildingHeights, type DemGrid, type DemBounds } from "../lib/dem";
 import { colorForCategory } from "../lib/categoryColors";
+import {
+  type DetectionMode,
+  DETECTION_MODE_TARGET_CLASSES,
+  DETECTION_MODE_LABEL,
+} from "../lib/detectionMode";
 
 interface Props {
   features: UrbanFeature[];
@@ -42,6 +47,36 @@ function classifyIlluminationSubtype(rawCategory: string | null): "light" | "sol
   if (norm.includes("power") && norm.includes("light")) return "power-light";
   if (norm.includes("power")) return "power";
   return "light";
+}
+
+// Standard 2D segment-intersection test, used to find exactly where a
+// flagged drain's centerline actually crosses a building's own footprint
+// ring — so the encroachment finding can be marked at that real point
+// instead of tinting the whole building.
+function segmentIntersection(
+  a1: [number, number], a2: [number, number], b1: [number, number], b2: [number, number]
+): [number, number] | null {
+  const [x1, y1] = a1, [x2, y2] = a2, [x3, y3] = b1, [x4, y4] = b2;
+  const d = (x1 - x2) * (y3 - y4) - (y1 - y2) * (x3 - x4);
+  if (Math.abs(d) < 1e-14) return null;
+  const t = ((x1 - x3) * (y3 - y4) - (y1 - y3) * (x3 - x4)) / d;
+  const u = ((x1 - x3) * (y1 - y2) - (y1 - y3) * (x1 - x2)) / d;
+  if (t < 0 || t > 1 || u < 0 || u > 1) return null;
+  return [x1 + t * (x2 - x1), y1 + t * (y2 - y1)];
+}
+
+function ringCrossingPoints(ring: [number, number][], line: [number, number][]): [number, number][] {
+  const closed = ring.length && (ring[0][0] !== ring[ring.length - 1][0] || ring[0][1] !== ring[ring.length - 1][1])
+    ? [...ring, ring[0]]
+    : ring;
+  const points: [number, number][] = [];
+  for (let i = 0; i < closed.length - 1; i++) {
+    for (let j = 0; j < line.length - 1; j++) {
+      const pt = segmentIntersection(closed[i], closed[i + 1], line[j], line[j + 1]);
+      if (pt) points.push(pt);
+    }
+  }
+  return points;
 }
 
 function makeProjector(centerLon: number, centerLat: number): Projector {
@@ -742,6 +777,82 @@ function buildTerrainMesh(grid: DemGrid, projector: Projector, baseElevation: nu
   return mesh;
 }
 
+// A Google-Maps-style floating teardrop pin — a sphere over a downward
+// cone meeting at a point — used to flag an audit finding from normal
+// viewing distance/angle, where a ground-level ring or ring color alone is
+// too small to notice at a glance.
+function buildPin(x: number, y: number, z: number, color: number): THREE.Group {
+  const group = new THREE.Group();
+  // Separate material instances per mesh — sharing one instance between
+  // head and tip would make the select-highlight's per-mesh restore closure
+  // capture the WRONG "original" color for the second mesh it visits
+  // (the first mesh's traversal has already mutated the shared material by
+  // then), so deselecting would leave the pin stuck on the highlight tint.
+  const head = new THREE.Mesh(
+    new THREE.SphereGeometry(0.34, 16, 16),
+    new THREE.MeshStandardMaterial({ color, emissive: color, emissiveIntensity: 0.5, roughness: 0.3 })
+  );
+  group.add(head);
+  const tip = new THREE.Mesh(
+    new THREE.ConeGeometry(0.34, 0.55, 16),
+    new THREE.MeshStandardMaterial({ color, emissive: color, emissiveIntensity: 0.5, roughness: 0.3 })
+  );
+  tip.position.y = -0.42;
+  tip.rotation.x = Math.PI;
+  group.add(tip);
+  group.position.set(x, y, z);
+  return group;
+}
+
+// A small always-visible floating label (canvas-drawn text on a
+// camera-facing sprite) anchored next to a pin — shows the finding live in
+// the 3D scene itself, without needing to click the pin and read the
+// separate side panel.
+function buildLabelSprite(lines: string[], color: number): THREE.Sprite {
+  const padding = 14;
+  const fontSize = 26;
+  const lineHeight = fontSize * 1.25;
+  const canvas = document.createElement("canvas");
+  const ctx = canvas.getContext("2d")!;
+  ctx.font = `600 ${fontSize}px system-ui, sans-serif`;
+  const textWidth = Math.max(...lines.map((l) => ctx.measureText(l).width));
+  canvas.width = Math.ceil(textWidth + padding * 2);
+  canvas.height = Math.ceil(lineHeight * lines.length + padding * 2);
+  // Re-set font after resizing the canvas (canvas resets context state).
+  ctx.font = `600 ${fontSize}px system-ui, sans-serif`;
+  ctx.textBaseline = "top";
+
+  const hex = `#${color.toString(16).padStart(6, "0")}`;
+  const radius = 10;
+  const w = canvas.width, h = canvas.height;
+  ctx.beginPath();
+  ctx.moveTo(radius, 0);
+  ctx.arcTo(w, 0, w, h, radius);
+  ctx.arcTo(w, h, 0, h, radius);
+  ctx.arcTo(0, h, 0, 0, radius);
+  ctx.arcTo(0, 0, w, 0, radius);
+  ctx.closePath();
+  ctx.fillStyle = "rgba(15, 18, 22, 0.88)";
+  ctx.fill();
+  ctx.lineWidth = 3;
+  ctx.strokeStyle = hex;
+  ctx.stroke();
+
+  ctx.fillStyle = "#ffffff";
+  lines.forEach((line, i) => ctx.fillText(line, padding, padding + i * lineHeight));
+
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.needsUpdate = true;
+  const material = new THREE.SpriteMaterial({ map: texture, depthTest: false, depthWrite: false });
+  const sprite = new THREE.Sprite(material);
+  // Scale so the label reads at a fixed real-world size regardless of its
+  // pixel resolution, and renders on top of nearby geometry.
+  const worldHeight = 1.5;
+  sprite.scale.set((canvas.width / canvas.height) * worldHeight, worldHeight, 1);
+  sprite.renderOrder = 999;
+  return sprite;
+}
+
 // Build a building volume whose BASE follows the real terrain at every
 // footprint vertex (using elevAt), so the building sits exactly on the ground
 // the pipes are routed against — no centroid-only lift that makes pipes look
@@ -811,13 +922,15 @@ function buildManholeMarker(
   kind: string,
   id: string,
   chamberH: number = MANHOLE_TOTAL_H,
-  ringColor: number = bodyColor
+  ringColor: number = bodyColor,
+  issue?: { primaryIssue?: string | null; showDisconnectedStub?: boolean }
 ): THREE.Group {
   const group = new THREE.Group();
   const concrete = new THREE.MeshStandardMaterial({ color: 0xb8b2a6, roughness: 0.95 });
   // Chamber wall/lid use this manhole's real category color, matching the 2D
   // Layers panel.
   const wall = new THREE.MeshStandardMaterial({ color: bodyColor, roughness: 0.7 });
+  const primaryIssue = issue?.primaryIssue;
 
   const CHAMBER_R = 1.4;
   const SHAFT_R = 0.6;
@@ -854,13 +967,64 @@ function buildManholeMarker(
   shaft.position.y = 0.3 + chamberH + SHAFT_H / 2;
   group.add(shaft);
 
-  // Cast-iron lid at the top
-  const lid = new THREE.Mesh(
-    new THREE.CylinderGeometry(SHAFT_R + 0.15, SHAFT_R + 0.15, 0.18, 24),
-    new THREE.MeshStandardMaterial({ color: 0x33373b, roughness: 0.4, metalness: 0.6 })
-  );
-  lid.position.y = 0.3 + chamberH + SHAFT_H + 0.09;
-  group.add(lid);
+  // Cast-iron lid at the top — a structural-damage or cover-issue finding
+  // renders the ACTUAL defect: two displaced, gapped half-covers instead of
+  // one intact disc, so "the cover is broken/displaced" is something you
+  // see, not just a status ring color.
+  const lidY = 0.3 + chamberH + SHAFT_H + 0.09;
+  const lidR = SHAFT_R + 0.15;
+  const lidMat = new THREE.MeshStandardMaterial({ color: 0x33373b, roughness: 0.5, metalness: 0.5 });
+  if (primaryIssue === "structural_damage" || primaryIssue === "cover_issue") {
+    const halves: [number, number, number, number][] = [
+      [0, 0.14, 0.06, 0.2],
+      [Math.PI, -0.11, -0.08, -0.14],
+    ];
+    for (const [thetaStart, dx, dz, tilt] of halves) {
+      const half = new THREE.Mesh(
+        new THREE.CylinderGeometry(lidR, lidR, 0.18, 16, 1, false, thetaStart, Math.PI - 0.18),
+        lidMat
+      );
+      half.position.set(dx, lidY, dz);
+      half.rotation.z = tilt;
+      group.add(half);
+    }
+  } else {
+    const lid = new THREE.Mesh(new THREE.CylinderGeometry(lidR, lidR, 0.18, 24), lidMat);
+    lid.position.y = lidY;
+    group.add(lid);
+  }
+
+  // Blockage / siltation / garbage findings get a real debris pile inside
+  // the visible chamber instead of an abstract color — the manhole's own
+  // model tells the story.
+  if (primaryIssue === "blockage" || primaryIssue === "siltation" || primaryIssue === "garbage") {
+    const pileColor = primaryIssue === "garbage" ? 0x52514a : 0x6b5535;
+    const pileGeo = new THREE.IcosahedronGeometry(CHAMBER_R * 0.6, 0);
+    pileGeo.scale(1, 0.32, 1);
+    const pile = new THREE.Mesh(pileGeo, new THREE.MeshStandardMaterial({ color: pileColor, roughness: 1 }));
+    pile.position.y = 0.3 + CHAMBER_R * 0.18;
+    pile.rotation.y = 0.6;
+    group.add(pile);
+  }
+
+  // Not connected to a real surveyed sewage line — a short pipe stub that
+  // visibly dangles in open air near the chamber wall instead of connecting
+  // to anything, the literal fact rendered instead of stated.
+  if (issue?.showDisconnectedStub) {
+    const stubLen = 0.9;
+    const stubMat = new THREE.MeshStandardMaterial({ color: 0x7c6a58, roughness: 0.75 });
+    const stub = new THREE.Mesh(new THREE.CylinderGeometry(0.22, 0.22, stubLen, 12), stubMat);
+    stub.rotation.z = Math.PI / 2;
+    stub.position.set(CHAMBER_R + stubLen / 2 - 0.1, 0.3 + chamberH * 0.4, 0);
+    group.add(stub);
+    const cap = new THREE.Mesh(
+      new THREE.CircleGeometry(0.22, 12),
+      new THREE.MeshStandardMaterial({ color: 0x1f2937, roughness: 0.9 })
+    );
+    cap.rotation.y = Math.PI / 2;
+    cap.position.set(CHAMBER_R + stubLen - 0.1, 0.3 + chamberH * 0.4, 0);
+    group.add(cap);
+  }
 
   // Status ring around the lid (colored by anomaly when one exists, else the
   // same category color as the chamber) so the audit state reads separately
@@ -910,6 +1074,13 @@ export function Map3DViewer({ features, classMap, anomalies, datasets, activeDat
   const [colorMode, setColorMode] = useState<"default" | "realworld">("default");
   const sceneColor = (raw: string | null | undefined) =>
     colorMode === "realworld" ? realWorldColorFor(raw) : colorForCategory(raw);
+  // Same "Poles / Drains / Manholes" AI Detection focus as the 2D Map
+  // Canvas — picking one both narrows the Layers list below to that asset
+  // family (matching 2D's category filter) and switches on the matching
+  // audit-defect visualization (pole fade+connector / drain-through-building
+  // glow / manhole defect geometry), so the 3D view never shows all three
+  // finding types' extra geometry cluttered together.
+  const [detectionMode3D, setDetectionMode3D] = useState<DetectionMode>(null);
   // Per-category visibility toggles (shown as chips beside the Underground
   // button). Each category lives in its own THREE.Group so toggling is a live
   // show/hide with no scene rebuild.
@@ -985,6 +1156,28 @@ export function Map3DViewer({ features, classMap, anomalies, datasets, activeDat
       try {
         const buildings = features.filter((f) => classMap[f.properties.category ?? ""] === "Building");
         const manholes = features.filter((f) => classMap[f.properties.category ?? ""] === "Access_Point");
+
+        // Drain encroachment — the literal "this drain runs through this
+        // building" fact, rendered instead of stated: the flagged building
+        // becomes semi-transparent and tinted by severity so the drain
+        // segment glowing red/yellow through it is actually visible.
+        const drainAnomalyByBuildingId = new Map(
+          anomalies
+            .filter((a) => a.anomaly_type === "drain_encroachment" && a.anomaly_metadata?.building_id)
+            .map((a) => [String(a.anomaly_metadata.building_id), a])
+        );
+        const flaggedDrainColor = new Map<string, "red" | "yellow">();
+        for (const a of anomalies) {
+          if (a.anomaly_type !== "drain_encroachment") continue;
+          const ids = (a.anomaly_metadata.drain_ids as string[] | undefined) ?? [];
+          for (const id of ids) {
+            // A drain touching more than one flagged building keeps the
+            // worse (red) severity rather than whichever anomaly is seen last.
+            if (a.color === "red" || flaggedDrainColor.get(id) !== "red") {
+              flaggedDrainColor.set(id, a.color as "red" | "yellow");
+            }
+          }
+        }
 
         if (features.length === 0) {
           setError("No features loaded for the active dataset(s) — select a dataset on the map first.");
@@ -1151,6 +1344,13 @@ export function Map3DViewer({ features, classMap, anomalies, datasets, activeDat
         };
 
         for (const b of buildings) {
+          // Drain encroachment finding for THIS building, if any. In the
+          // "drains" AI focus, ONLY encroached buildings are shown at all —
+          // every unaffected building is skipped so the finding isn't lost
+          // in a sea of ordinary buildings.
+          const drainAnomaly = detectionMode3D === "drains" ? drainAnomalyByBuildingId.get(b.properties.id) : undefined;
+          if (detectionMode3D === "drains" && !drainAnomaly) continue;
+
           const geom = b.geometry;
           // Collect EVERY footprint polygon (MultiPolygon can have several
           // parts — using only coordinates[0][0] previously dropped the rest
@@ -1172,6 +1372,20 @@ export function Map3DViewer({ features, classMap, anomalies, datasets, activeDat
             attrHeight ?? (floors ? floors * 3.2 : h?.height_m ?? DEFAULT_BUILDING_HEIGHT_M);
           const estimated = !(attrHeight || floors) && h ? h.estimated : !(attrHeight || floors);
           const bColor = sceneColor(b.properties.category);
+          // The flagged drain's own geometry, looked up once per building —
+          // used below to find exactly where it crosses THIS building's
+          // footprint, so only that real crossing point gets marked red/
+          // yellow instead of tinting the whole building volume.
+          const encroachingDrainLines: [number, number][][] = [];
+          if (drainAnomaly) {
+            const drainIds = (drainAnomaly.anomaly_metadata.drain_ids as string[] | undefined) ?? [];
+            for (const df of features) {
+              if (!drainIds.includes(df.properties.id)) continue;
+              const dgeom = df.geometry;
+              if (dgeom.type === "LineString") encroachingDrainLines.push(dgeom.coordinates as [number, number][]);
+              else if (dgeom.type === "MultiLineString") encroachingDrainLines.push(...(dgeom.coordinates as [number, number][][]));
+            }
+          }
           for (const ring of rings) {
             if (ring.length < 3) continue;
             const mesh = buildBuildingMesh(ring, heightM, projector, elevAt, estimated, bColor);
@@ -1184,11 +1398,31 @@ export function Map3DViewer({ features, classMap, anomalies, datasets, activeDat
                 attributes: {
                   ...detail.attributes,
                   "Height (m)": `${heightM.toFixed(1)}${estimated ? " (estimated)" : ""}`,
+                  ...(drainAnomaly ? { "Drain encroachment": `${drainAnomaly.color} — drain runs through this building` } : {}),
                 },
               };
               gfor(b).add(mesh);
               clickable.push(mesh);
               surfaceMeshes.push(mesh);
+
+              // Mark the ACTUAL crossing point(s) with a glowing vertical
+              // scar the height of the building — the real "this pipe runs
+              // through here" fact, not a whole-building recolor.
+              if (drainAnomaly) {
+                const scarColor = ANOMALY_COLOR[drainAnomaly.color];
+                const scarMat = new THREE.MeshStandardMaterial({
+                  color: scarColor, emissive: scarColor, emissiveIntensity: 0.6, roughness: 0.4,
+                });
+                for (const line of encroachingDrainLines) {
+                  for (const [clon, clat] of ringCrossingPoints(ring, line)) {
+                    const [cx, cz] = projector.toLocal(clon, clat);
+                    const cGround = elevAt(clon, clat);
+                    const scar = new THREE.Mesh(new THREE.BoxGeometry(0.7, heightM, 0.7), scarMat);
+                    scar.position.set(cx, cGround + heightM / 2, cz);
+                    gfor(b).add(scar);
+                  }
+                }
+              }
             }
           }
         }
@@ -1217,7 +1451,17 @@ export function Map3DViewer({ features, classMap, anomalies, datasets, activeDat
           const chamberH = attrDepth ?? MANHOLE_TOTAL_H;
           // Seat the chamber so its cast-iron lid reaches ground level.
           const baseY = ground - chamberH;
-          const mesh = buildManholeMarker(x, baseY, z, manholeColor, "manhole", m.properties.id, chamberH, ringColor);
+          const showDefects = detectionMode3D === "manholes";
+          const primaryIssue = showDefects ? (anomaly?.anomaly_metadata?.primary_issue as string | null | undefined) : undefined;
+          // Only render the dangling-pipe-stub fact for a real, flagged
+          // problem — every manhole with no drain in range would otherwise
+          // also read "disconnected," which is true but not useful to show.
+          const showDisconnectedStub =
+            showDefects && !!anomaly && anomaly.color !== "green" && anomaly.anomaly_metadata?.connected_to_sewage === false;
+          const mesh = buildManholeMarker(
+            x, baseY, z, manholeColor, "manhole", m.properties.id, chamberH, ringColor,
+            { primaryIssue, showDisconnectedStub }
+          );
           const statusTxt = anomaly ? `Audit: ${anomaly.color}` : "Audit: no finding";
           const detail = featureDetail(m, "manhole", catColorHex, lon, lat);
           mesh.userData = {
@@ -1233,7 +1477,16 @@ export function Map3DViewer({ features, classMap, anomalies, datasets, activeDat
         // Real surveyed drainage assets (lines/polylines) drawn at terrain or
         // their surveyed invert, colored with the same category palette as the
         // 2D map. These are the existing drain lines from the GDO vector layer.
-        const drains = features.filter((f) => classMap[f.properties.category ?? ""] === "Drainage_Asset");
+        // In the "drains" AI focus, only closed drains (the type the audit
+        // actually treats as a risk) and any drain directly named in an
+        // encroachment finding are shown — an open, unflagged drain adds
+        // nothing to that specific story and only clutters the view.
+        const drains = features.filter((f) => {
+          if (classMap[f.properties.category ?? ""] !== "Drainage_Asset") return false;
+          if (detectionMode3D !== "drains") return true;
+          const isClosed = (f.properties.category ?? "").toLowerCase().includes("closed");
+          return isClosed || flaggedDrainColor.has(f.properties.id);
+        });
         for (const d of drains) {
           const geom = d.geometry;
           const lines: [number, number][][] =
@@ -1243,11 +1496,18 @@ export function Map3DViewer({ features, classMap, anomalies, datasets, activeDat
               ? (geom.coordinates as [number, number][][])
               : [];
           const attrs = d.properties.attributes ?? {};
-          const dR = Math.max(0.15, (readAttr(attrs, "diameter") ?? 300) / 2000);
+          // A drain flagged as the actual culprit in a building-encroachment
+          // finding renders thicker and glowing red/yellow instead of its
+          // normal category color — the literal "this pipe runs through a
+          // building" fact, visible instead of only stated in the audit card.
+          const encroachColor = detectionMode3D === "drains" ? flaggedDrainColor.get(d.properties.id) : undefined;
+          const dR = Math.max(0.15, (readAttr(attrs, "diameter") ?? 300) / 2000) * (encroachColor ? 1.6 : 1);
           // This drain's OWN raw category color (e.g. "Closed Drain" vs "Open
           // Drain" can be different raw categories under one canonical class)
           // — matches whatever the 2D Map Canvas Layers panel shows for it.
-          const drainColor = new THREE.Color(sceneColor(d.properties.category));
+          const drainColor = encroachColor
+            ? new THREE.Color(ANOMALY_COLOR[encroachColor])
+            : new THREE.Color(sceneColor(d.properties.category));
           for (const line of lines) {
             if (line.length < 2) continue;
             const ys = line.map(([lon, lat]) => elevAt(lon, lat) - 2.2);
@@ -1257,7 +1517,12 @@ export function Map3DViewer({ features, classMap, anomalies, datasets, activeDat
             });
             const curve = new THREE.CatmullRomCurve3(pts);
             const geo = new THREE.TubeGeometry(curve, Math.max(2, pts.length * 3), dR, 8, false);
-            const mat = new THREE.MeshStandardMaterial({ color: drainColor, roughness: 0.5, metalness: 0.2 });
+            const mat = new THREE.MeshStandardMaterial({
+              color: drainColor,
+              roughness: 0.5,
+              metalness: 0.2,
+              ...(encroachColor ? { emissive: drainColor, emissiveIntensity: 0.6 } : {}),
+            });
             const mesh = new THREE.Mesh(geo, mat);
             const [firstLon, firstLat] = line[0];
             const detail = featureDetail(d, "drain", sceneColor(d.properties.category), firstLon, firstLat);
@@ -1266,6 +1531,7 @@ export function Map3DViewer({ features, classMap, anomalies, datasets, activeDat
               attributes: {
                 ...detail.attributes,
                 ...(readAttr(attrs, "diameter") ? { "Diameter (mm)": readAttr(attrs, "diameter")!.toFixed(0) } : {}),
+                ...(encroachColor ? { "Encroachment": `${encroachColor} — runs through a building` } : {}),
               },
             };
             gfor(d).add(mesh);
@@ -1329,6 +1595,25 @@ export function Map3DViewer({ features, classMap, anomalies, datasets, activeDat
         // (the line geometry and the pole points are two separately-surveyed
         // layers, so their coordinates don't line up on their own).
         const polePositions: { x: number; z: number; topY: number }[] = [];
+
+        // Pole redundancy — real-evidence visualization: a redundant (red)
+        // pole is drawn faded/see-through with a dashed line back to
+        // whichever pole in its cluster was actually kept, so the "why"
+        // (poles bunched too close together) reads visually instead of
+        // just a colored dot. The kept pole and any borderline (yellow)
+        // pole get a small ground ring accent instead.
+        const poleAnomalyById = new Map(
+          anomalies
+            .filter((a) => a.anomaly_type === "pole_redundancy" && a.anomaly_metadata?.this_feature_id)
+            .map((a) => [String(a.anomaly_metadata.this_feature_id), a])
+        );
+        const polePointById = new Map<string, [number, number]>();
+        for (const f of features) {
+          const cls = classMap[f.properties.category ?? ""];
+          if ((cls === "Illumination_Asset" || cls === "Utility_Pole") && f.geometry.type === "Point") {
+            polePointById.set(f.properties.id, f.geometry.coordinates as [number, number]);
+          }
+        }
 
         // Precompute road sample points (local coords) so each lamp-bearing pole
         // can aim its arm + lamp at the carriageway instead of the building side.
@@ -1453,6 +1738,96 @@ export function Map3DViewer({ features, classMap, anomalies, datasets, activeDat
               bracket.position.set(0.22, ground + poleH + 0.08, 0);
               g.add(bracket);
               addGlowLamp(g, 0.45, ground + poleH + 0.15, 0, 0.2);
+            }
+          }
+
+          // Pole redundancy — show the finding on the pole itself, not just
+          // a colored dot: a floating Google-Maps-style pin above every
+          // flagged pole (visible from normal viewing distance, unlike a
+          // ground-level ring), red/green/yellow by status. A redundant
+          // (red) pole also fades near-transparent and gets a dashed line
+          // back to the pole its cluster actually kept, so the "why" reads
+          // visually too.
+          const poleAnomaly = detectionMode3D === "poles" ? poleAnomalyById.get(p.properties.id) : undefined;
+          if (poleAnomaly) {
+            const pinColor = poleAnomaly.color === "red" ? 0xef4444 : poleAnomaly.color === "green" ? 0x22c55e : 0xf59e0b;
+            const pinHex = `#${pinColor.toString(16).padStart(6, "0")}`;
+            const pin = buildPin(x, ground + poleH + 1.7, z, pinColor);
+            const pm = poleAnomaly.anomaly_metadata;
+            const pinAttrs: Record<string, unknown> =
+              poleAnomaly.color === "red"
+                ? {
+                    Finding: "Redundant pole — recommend removal",
+                    "Cluster size": pm.cluster_size,
+                    Category: pm.this_category,
+                    "Kept pole category": pm.kept_category,
+                  }
+                : poleAnomaly.color === "green"
+                ? {
+                    Finding: "Kept as the representative pole for this cluster",
+                    "Cluster size": pm.cluster_size,
+                    Category: pm.this_category,
+                  }
+                : {
+                    Finding: "Borderline — close to another pole but not clustered",
+                    "Nearest neighbor (m)": pm.nearest_neighbor_m,
+                    "Cluster threshold (m)": pm.eps_m,
+                    "Borderline band (m)": pm.yellow_band_m,
+                  };
+            pin.userData = {
+              kind: "pole-redundancy-finding",
+              id: `${p.properties.id}-finding`,
+              label: `Pole redundancy — ${poleAnomaly.color}`,
+              category: "Pole Redundancy Finding",
+              color: pinHex,
+              attributes: pinAttrs,
+              lon,
+              lat,
+            } satisfies Object3DDetail;
+            group.add(pin);
+            clickable.push(pin);
+
+            // The finding shown live, right on the pin, so it reads at a
+            // glance without needing to click it and check the side panel.
+            const labelLines =
+              poleAnomaly.color === "red"
+                ? [`Redundant (cluster of ${pm.cluster_size})`, `Keep: ${pm.kept_category}`]
+                : poleAnomaly.color === "green"
+                ? [`Kept (cluster of ${pm.cluster_size})`]
+                : [`Borderline — ${pm.nearest_neighbor_m}m away`];
+            const label = buildLabelSprite(labelLines.map(String), pinColor);
+            label.position.set(x, ground + poleH + 2.7, z);
+            group.add(label);
+            if (poleAnomaly.color === "red") {
+              g.traverse((child) => {
+                const mesh = child as THREE.Mesh;
+                if (!(mesh as unknown as { isMesh?: boolean }).isMesh) return;
+                const materials = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+                for (const m of materials) {
+                  const std = m as THREE.MeshStandardMaterial;
+                  if (!std) continue;
+                  std.transparent = true;
+                  std.opacity = 0.3;
+                  if ("emissiveIntensity" in std) std.emissiveIntensity = Math.min(std.emissiveIntensity, 0.15);
+                }
+              });
+              const keptId = poleAnomaly.anomaly_metadata.kept_feature_id as string | undefined;
+              const keptCoord = keptId ? polePointById.get(keptId) : undefined;
+              if (keptCoord) {
+                const [klon, klat] = keptCoord;
+                const [kx, kz] = projector.toLocal(klon, klat);
+                const kGround = elevAt(klon, klat);
+                const lineGeo = new THREE.BufferGeometry().setFromPoints([
+                  new THREE.Vector3(x, ground + 0.12, z),
+                  new THREE.Vector3(kx, kGround + 0.12, kz),
+                ]);
+                const line = new THREE.Line(
+                  lineGeo,
+                  new THREE.LineDashedMaterial({ color: 0xef4444, dashSize: 0.6, gapSize: 0.4 })
+                );
+                line.computeLineDistances();
+                group.add(line);
+              }
             }
           }
 
@@ -2048,20 +2423,37 @@ export function Map3DViewer({ features, classMap, anomalies, datasets, activeDat
       sceneRef.current = null;
       tintRestoreRef.current = null;
     };
-    // colorMode is intentionally the only extra dependency here — every
-    // color in the scene is baked into materials at build time, so toggling
-    // Default/Real-world rebuilds the whole scene from scratch to repaint it.
+    // colorMode/detectionMode3D are intentionally the only extra
+    // dependencies here — every color and every audit-defect mesh in the
+    // scene is baked into materials/geometry at build time, so toggling
+    // Default/Real-world or the AI Detection focus rebuilds the whole scene
+    // from scratch to repaint/re-decorate it.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [colorMode]);
+  }, [colorMode, detectionMode3D]);
 
   // Live category visibility — toggle each group's shown state with no scene
   // rebuild. Terrain + buildings are the "surface" that the Underground view
   // fades to a translucent shell so the network reads as the subject.
+  //
+  // While an AI Detection focus is active, this ALSO narrows the visible
+  // groups down to that mode's target classes (+ terrain) — exactly like
+  // the 2D Map Canvas's own category filter — layered on top of the user's
+  // own manual per-category toggles, which are preserved for when the mode
+  // is cleared again.
   useEffect(() => {
+    const allowed = detectionMode3D ? DETECTION_MODE_TARGET_CLASSES[detectionMode3D] : null;
     Object.entries(groupRefs.current).forEach(([k, g]) => {
-      if (g) g.visible = visible[k] !== false;
+      if (!g) return;
+      const manuallyOn = visible[k] !== false;
+      if (!allowed || k === "terrain") {
+        g.visible = manuallyOn;
+        return;
+      }
+      const category = k.startsWith("cat:") ? k.slice(4) : null;
+      const cls = category ? classMap[category] : undefined;
+      g.visible = manuallyOn && !!cls && allowed.includes(cls);
     });
-  }, [visible]);
+  }, [visible, detectionMode3D, classMap]);
 
   // Underground view: fade the surface (terrain + buildings) to a translucent
   // shell and re-frame the camera down onto the pipe network, so the manholes
@@ -2096,8 +2488,13 @@ export function Map3DViewer({ features, classMap, anomalies, datasets, activeDat
   }, [underground]);
 
   const displayedLayers = (() => {
+    let list = categoryList;
+    if (detectionMode3D) {
+      const allowed = DETECTION_MODE_TARGET_CLASSES[detectionMode3D];
+      list = list.filter((c) => allowed.includes(classMap[c.category]));
+    }
     const q = layerQuery.trim().toLowerCase();
-    return q ? categoryList.filter((c) => c.category.toLowerCase().includes(q)) : categoryList;
+    return q ? list.filter((c) => c.category.toLowerCase().includes(q)) : list;
   })();
 
   return (
@@ -2132,6 +2529,21 @@ export function Map3DViewer({ features, classMap, anomalies, datasets, activeDat
           >
             Real world color
           </button>
+        </div>
+        <div className="manhole-3d-overlay__colormode" role="radiogroup" aria-label="AI detection focus">
+          {(["poles", "drains", "manholes"] as const).map((mode) => (
+            <button
+              key={mode}
+              type="button"
+              role="radio"
+              aria-checked={detectionMode3D === mode}
+              className={`manhole-3d-overlay__colormode-btn${detectionMode3D === mode ? " is-active" : ""}`}
+              onClick={() => setDetectionMode3D((cur) => (cur === mode ? null : mode))}
+              title={`Focus the 3D view on ${DETECTION_MODE_LABEL[mode]} and show that audit finding on the geometry itself`}
+            >
+              {DETECTION_MODE_LABEL[mode]}
+            </button>
+          ))}
         </div>
         <div className="command-center__section">
           <div className="command-center__section-head">

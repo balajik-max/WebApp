@@ -8,6 +8,12 @@ import type { AiHighlight, FeatureFilter, UrbanFeature, FeatureCollectionRespons
 import { ApiError } from "../lib/api";
 import { colorForCategory, UNCATEGORIZED_COLOR } from "../lib/categoryColors";
 import {
+  type DetectionMode,
+  DETECTION_MODE_TARGET_CLASSES,
+  DETECTION_MODE_ANOMALY_TYPE,
+  DETECTION_MODE_LABEL,
+} from "../lib/detectionMode";
+import {
   fetchDatasets, fetchDatasetBounds, fetchVisualizationManifest,
   type DatasetBounds, type DatasetRow,
   type FeatureTableRow, type LayerFeatureTableFilter,
@@ -1058,21 +1064,6 @@ function buildCategoryColorExpression(
   return ["match", ["coalesce", ["get", "category"], "uncategorized"], ...pairs, UNCATEGORIZED_COLOR] as unknown as maplibregl.ExpressionSpecification;
 }
 
-/** AI Detection focus modes — each isolates the map to one asset family and
- * one anomaly type, instead of showing every layer/finding at once. */
-export type DetectionMode = "poles" | "drains" | "manholes" | null;
-
-const DETECTION_MODE_TARGET_CLASSES: Record<Exclude<DetectionMode, null>, string[]> = {
-  poles: ["Illumination_Asset"],
-  drains: ["Building", "Drainage_Asset"],
-  manholes: ["Access_Point"],
-};
-
-const DETECTION_MODE_ANOMALY_TYPE: Record<Exclude<DetectionMode, null>, string> = {
-  poles: "pole_redundancy",
-  drains: "drain_encroachment",
-  manholes: "manhole_status",
-};
 
 // Deliberately darker/more saturated than the category-color palette used
 // elsewhere — these need to read clearly as a choropleth at a glance, not
@@ -6398,12 +6389,6 @@ const MEASURE_TAB_HINTS: Record<MeasureTab, string> = {
   path: "Click to add points, right-click to finish",
   polygon: "Click to add points, right-click to finish",
   circle: "Measure the radius, perimeter, and area of a circle on the ground",
-};
-
-const DETECTION_MODE_LABEL: Record<Exclude<DetectionMode, null>, string> = {
-  poles: "Poles",
-  drains: "Drains",
-  manholes: "Manholes",
 };
 
 function MapControls({
