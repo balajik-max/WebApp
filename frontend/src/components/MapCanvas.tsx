@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState, useCallback, useImperativeHandle, useMemo, forwardRef, type MutableRefObject } from "react";
+﻿import { useEffect, useLayoutEffect, useRef, useState, useCallback, useImperativeHandle, useMemo, forwardRef, type MutableRefObject } from "react";
 import { createPortal } from "react-dom";
 import maplibregl, { Map as MLMap, MapMouseEvent, GeoJSONSource } from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
@@ -38,6 +38,7 @@ import {
 } from "../lib/placemarks";
 import { Map3DViewer } from "./Map3DViewer";
 import { GroupedFieldList } from "./GroupedFieldList";
+import { useLanguage } from "../context/LanguageContext";
 
 // .obj datasets are persisted with file_type "other" (the enum has no
 // dedicated OBJ value), so detect them from the stored filename instead.
@@ -1378,6 +1379,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
   },
   ref
 ) {
+  const { t } = useLanguage();
   const containerRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<MLMap | null>(null);
   const abortRef = useRef<AbortController | null>(null);
@@ -5246,7 +5248,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
         )}
         {placemarkMode && !placemarkDraft && (
           <div className="placemark-pick-hint" data-testid="placemark-pick-hint">
-            Click the map to place a pin · right-click or Esc to cancel
+            {t("map.placemarkHint")}
           </div>
         )}
         {coordinateSearchOpen && (
@@ -5339,8 +5341,8 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
             type="button"
             className="map-measure-btn"
             onClick={() => setShow3DPlan(true)}
-            title="3D Viewer"
-            aria-label="Open 3D Viewer"
+            title={t("map.view.3dViewer")}
+            aria-label={t("map.view.3dViewer")}
             data-testid="topbar-3d-viewer"
           >
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
@@ -5369,7 +5371,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
         )}
         {streetPickMode && (
           <div className="street-pick-hint" data-testid="street-pick-hint">
-            Click a road location to open the nearest 360° Street View
+            {t("map.streetPickHint")}
           </div>
         )}
         {activeDatasetIds.length === 0 && !filter.ward && !filter.category && (filter.categories?.length ?? 0) === 0 && filter.severity === undefined && (
@@ -5380,7 +5382,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
             padding: "14px 22px", color: "var(--ink-mute)", fontSize: 13, fontWeight: 500,
             backdropFilter: "blur(4px)", border: "1px solid var(--edge)",
           }}>
-            Select a dataset from the Command Center to view it on the map
+            {t("map.view.selectDataset")}
           </div>
         )}
       </div>
@@ -5509,6 +5511,7 @@ function CommandCenter({
   onSetAllExtraVisibleCategories: (categories: string[]) => void;
   onSetCategoriesVisible: (categories: string[], visible: boolean) => void;
 }) {
+  const { t } = useLanguage();
   const [layerQuery, setLayerQuery] = useState("");
   const [layerMenu, setLayerMenu] = useState<{ category: string; x: number; y: number } | null>(null);
   const [visualizationOpen, setVisualizationOpen] = useState(false);
@@ -5759,7 +5762,7 @@ function CommandCenter({
             type="button"
             className="command-center__close"
             onClick={onRequestClose}
-            aria-label="Close data sources"
+            aria-label={t("map.cc.closeDataSources")}
             data-testid="command-center-close"
           >
             <svg viewBox="0 0 24 24" aria-hidden="true" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2">
@@ -5794,7 +5797,7 @@ function CommandCenter({
             className="visualization-popup"
             role="dialog"
             aria-modal="false"
-            aria-label="Geometry styling"
+            aria-label={t("map.viz.geometryStylingLabel")}
             style={{
               top: visualizationPopupPosition.top,
               left: visualizationPopupPosition.left,
@@ -5804,9 +5807,9 @@ function CommandCenter({
             }}
           >
             <div className="floating-map-panel__dragbar" onPointerDown={visualizationDrag.onDragStart}>
-              <span>Geometry Styling</span>
-              <small>Drag to reposition</small>
-              <button type="button" onClick={() => setVisualizationOpen(false)} aria-label="Close Geometry Styling">×</button>
+              <span>{t("map.viz.geometryStyling")}</span>
+              <small>{t("map.viz.dragToReposition")}</small>
+              <button type="button" onClick={() => setVisualizationOpen(false)} aria-label={t("map.viz.geometryStylingLabel")}>×</button>
             </div>
             <VisualizationPanel {...visualization} />
           </div>,
@@ -5816,7 +5819,7 @@ function CommandCenter({
         {categoryStats.length > 0 && (
           <div className="command-center__section">
             <div className="command-center__section-head">
-              <span className="command-center__section-title">Category Visibility</span>
+              <span className="command-center__section-title">{t("map.cc.categoryVisibility")}</span>
               <button
                 type="button"
                 className="command-center__text-btn"
@@ -5835,7 +5838,7 @@ function CommandCenter({
                   }
                 }}
               >
-                {(detectionMode ? extraVisibleCategories.size === 0 : hiddenCategories.size > 0) ? "Show all" : "Hide all"}
+                {(detectionMode ? extraVisibleCategories.size === 0 : hiddenCategories.size > 0) ? t("map.cc.showAll") : t("map.cc.hideAll")}
               </button>
             </div>
             <div className="layer-search">
@@ -5847,8 +5850,8 @@ function CommandCenter({
                 type="search"
                 value={layerQuery}
                 onChange={(event) => setLayerQuery(event.target.value)}
-                placeholder="Search layers..."
-                aria-label="Search layers"
+                placeholder={t("map.cc.searchLayersPlaceholder")}
+                aria-label={t("map.cc.searchLayersPlaceholder")}
                 data-testid="layer-search"
               />
               {layerQuery && (
@@ -6004,9 +6007,9 @@ function CommandCenter({
                             </span>
                             {open && (
                               <ul className="layer-attributes">
-                                {node.fields.length === 0 ? (
-                                  <li className="layer-attributes__empty">No attributes</li>
-                                ) : (
+                                 {node.fields.length === 0 ? (
+                                   <li className="layer-attributes__empty">{t("map.cc.noAttributes")}</li>
+                                 ) : (
                                   node.fields.map((field) => (
                                     <li key={field.name} className="layer-attributes__item" title={field.name}>
                                       <span className="layer-attributes__name">{field.name}</span>
@@ -6081,10 +6084,10 @@ function CommandCenter({
               )}
               {groupedCategoryView
                 ? groupedCategoryView.groups.reduce((sum, g) => sum + g.layers.length, 0) === 0 && (
-                  <div className="layer-list__empty">No matching layers</div>
+                  <div className="layer-list__empty">{t("map.cc.noMatchingLayers")}</div>
                 )
                 : displayedLayers.length === 0 && (
-                  <div className="layer-list__empty">No matching layers</div>
+                  <div className="layer-list__empty">{t("map.cc.noMatchingLayers")}</div>
                 )}
             </div>
           </div>
@@ -6095,7 +6098,7 @@ function CommandCenter({
           <svg viewBox="0 0 24 24" aria-hidden="true" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
             <path d="M5 13l4 4L19 7" />
           </svg>
-          <span>Spatial Audit run success</span>
+          <span>{t("map.cc.spatialAuditSuccess")}</span>
         </div>
       )}
       <div className="command-center__footer">
@@ -6106,8 +6109,8 @@ function CommandCenter({
           className="layer-context-menu"
           style={{ left: layerMenu.x, top: layerMenu.y }}
           role="menu"
-          aria-label={`${layerMenu.category} layer actions`}
-          data-testid="layer-context-menu"
+           aria-label={`${layerMenu.category} ${t("map.measure.layerActions")}`}
+           data-testid="layer-context-menu"
           onContextMenu={(event) => event.preventDefault()}
         >
           <div className="layer-context-menu__title" title={layerMenu.category}>
@@ -6125,7 +6128,7 @@ function CommandCenter({
               <rect x="3" y="4" width="18" height="16" rx="2" />
               <path d="M3 9h18M9 9v11M15 9v11" />
             </svg>
-            Open attribute table
+            {t("map.cc.openAttributeTable")}
           </button>
         </div>,
         document.body
@@ -6167,6 +6170,7 @@ function VisualizationPanel({
   onLineWidthChange,
   onResetStyle,
 }: VisualizationPanelProps) {
+  const { t } = useLanguage();
   const effectiveDatasetId = selectedDatasetId;
   const selectedDataset = datasets.find((dataset) => dataset.id === effectiveDatasetId) ?? null;
   const manifest = effectiveDatasetId ? manifests[effectiveDatasetId] ?? null : null;
@@ -6223,14 +6227,14 @@ function VisualizationPanel({
   }, [manifestGroups, target, field]);
 
   const modeOptions: Array<{ value: VisualizationMode; label: string; enabled: boolean }> = [
-    { value: "default", label: "Default", enabled: true },
-    { value: "category", label: "Category", enabled: targetFields.some((candidate) => (
+    { value: "default", label: t("map.viz.default"), enabled: true },
+    { value: "category", label: t("map.viz.category"), enabled: targetFields.some((candidate) => (
       (candidate.detected_type === "string" || candidate.detected_type === "boolean")
       && (candidate.unique_count ?? 0) > 1
       && (candidate.unique_count ?? 0) <= 50
     )) },
-    { value: "numeric", label: "Numeric", enabled: targetFields.some((candidate) => candidate.detected_type === "number") },
-    { value: "missing-data", label: "Missing", enabled: targetFields.some((candidate) => candidate.missing_count > 0) },
+    { value: "numeric", label: t("map.viz.numeric"), enabled: targetFields.some((candidate) => candidate.detected_type === "number") },
+    { value: "missing-data", label: t("map.viz.missing"), enabled: targetFields.some((candidate) => candidate.missing_count > 0) },
   ];
 
   const countFor = (renderer: "point" | "line" | "polygon") => geometryLayers[renderer]
@@ -6245,9 +6249,9 @@ function VisualizationPanel({
     label: string;
     count: number;
   }> = [
-    { value: "point", label: "Points", count: pointCount },
-    { value: "line", label: "Lines", count: lineCount },
-    { value: "polygon", label: "Polygons", count: polygonCount },
+    { value: "point", label: t("map.viz.points"), count: pointCount },
+    { value: "line", label: t("map.viz.lines"), count: lineCount },
+    { value: "polygon", label: t("map.viz.polygons"), count: polygonCount },
   ];
 
   useEffect(() => {
@@ -6260,34 +6264,34 @@ function VisualizationPanel({
     <section className="visualization-panel visualization-panel--v3" data-testid="visualization-panel">
       <div className="visualization-panel__head">
         <div>
-          <div className="visualization-panel__eyebrow">Visualization</div>
-          <div className="visualization-panel__title">Geometry Styling</div>
+          <div className="visualization-panel__eyebrow">{t("map.viz.visualization")}</div>
+          <div className="visualization-panel__title">{t("map.viz.geometryStyling")}</div>
         </div>
-        <span className="visualization-panel__live"><span aria-hidden="true" /> Live</span>
+        <span className="visualization-panel__live"><span aria-hidden="true" /> {t("map.viz.live")}</span>
       </div>
 
       {!selectedDataset ? (
         <div className="visualization-panel__empty">
-          Click Layer beside an active vector data source to open geometry styling.
+          {t("map.viz.clickLayer")}
         </div>
       ) : (
         <>
           <div className="visualization-panel__dataset" title={selectedDataset.name}>{selectedDataset.name}</div>
 
-          {loading && <div className="visualization-panel__loading"><span className="visualization-panel__spinner" />Profiling geometry and fields…</div>}
-          {error && !loading && <div className="visualization-panel__error">Could not load visualization profile: {error}</div>}
+          {loading && <div className="visualization-panel__loading"><span className="visualization-panel__spinner" />{t("map.viz.profiling")}</div>}
+          {error && !loading && <div className="visualization-panel__error">{t("map.viz.couldNotLoad")}{error}</div>}
 
           {manifest && !loading && (
             <>
               <div className="visualization-panel__summary visualization-panel__summary--v3">
-                <div><strong>{compactFeatureCount(allCount)}</strong><span>Features</span></div>
-                <div><strong>{[pointCount, lineCount, polygonCount].filter((count) => count > 0).length}</strong><span>Geometry types</span></div>
-                <div><strong>{manifest.source_format.toUpperCase()}</strong><span>Source</span></div>
+                <div><strong>{compactFeatureCount(allCount)}</strong><span>{t("map.viz.features")}</span></div>
+                <div><strong>{[pointCount, lineCount, polygonCount].filter((count) => count > 0).length}</strong><span>{t("map.viz.geometryTypes")}</span></div>
+                <div><strong>{manifest.source_format.toUpperCase()}</strong><span>{t("map.viz.source")}</span></div>
               </div>
 
               <div className="visualization-target-block">
-                <div className="visualization-target-block__label">Target geometry</div>
-                <div className="visualization-target-grid" role="group" aria-label="Target geometry">
+                <div className="visualization-target-block__label">{t("map.viz.targetGeometry")}</div>
+                <div className="visualization-target-grid" role="group" aria-label={t("map.viz.targetGeometry")}>
                   {targetOptions.map((option) => (
                     <button
                       key={option.value}

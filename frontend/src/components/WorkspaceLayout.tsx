@@ -460,6 +460,14 @@ export function WorkspaceLayout() {
   const [spatialAuditRequested, setSpatialAuditRequested] = useState(false);
   const [spatialAuditStatus, setSpatialAuditStatus] =
     useState<"idle" | "running" | "success" | "error">("idle");
+
+  // Auto-hide the "Spatial Audit run success" banner after a few seconds so
+  // it doesn't sit there permanently. Errors stay until the next attempt.
+  useEffect(() => {
+    if (spatialAuditStatus !== "success") return;
+    const timer = window.setTimeout(() => setSpatialAuditStatus("idle"), 5000);
+    return () => window.clearTimeout(timer);
+  }, [spatialAuditStatus]);
   // Drives the Data Sources drawer on the mobile Map page — lifted up here
   // (rather than living inside MapCanvas) so the topbar's menu button can
   // open it, the same way Gmail's hamburger opens its nav drawer from the
