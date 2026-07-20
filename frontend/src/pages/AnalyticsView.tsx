@@ -33,7 +33,6 @@ import { AnalyticsScopeBar } from "../components/analytics/AnalyticsScopeBar";
 import { AnalyticsCategoryMap } from "../components/analytics/AnalyticsCategoryMap";
 import { AnalyticsFeatureTable } from "../components/analytics/AnalyticsFeatureTable";
 import { AnalyticsAiSummary } from "../components/analytics/AnalyticsAiSummary";
-import { AnalyticsFilterChips } from "../components/analytics/AnalyticsFilterChips";
 import { AnalyticsQualityPanel } from "../components/analytics/AnalyticsQualityPanel";
 import { AnalyticsExportPanel } from "../components/analytics/AnalyticsExportPanel";
 import { AnalyticsManholeReadiness } from "../components/analytics/AnalyticsManholeReadiness";
@@ -81,9 +80,7 @@ function sameValues(a: string[], b: string[]) {
 
 interface StoredAnalyticsScope {
   draftDatasetIds: string[];
-  draftCategories: string[];
   appliedDatasetIds: string[];
-  appliedCategories: string[];
   activeCategory: string | null;
   activeWard: string | null;
   activeSeverityBucket: AnalyticsSeverityBucket | null;
@@ -106,9 +103,7 @@ function readStoredAnalyticsScope(fallbackDatasetIds: string[]): StoredAnalytics
     if (!parsed) throw new Error("No stored Analytics scope");
     return {
       draftDatasetIds: stringArray(parsed.draftDatasetIds),
-      draftCategories: stringArray(parsed.draftCategories),
       appliedDatasetIds: stringArray(parsed.appliedDatasetIds),
-      appliedCategories: stringArray(parsed.appliedCategories),
       activeCategory: typeof parsed.activeCategory === "string" ? parsed.activeCategory : null,
       activeWard: typeof parsed.activeWard === "string" ? parsed.activeWard : null,
       activeSeverityBucket:
@@ -138,9 +133,7 @@ function readStoredAnalyticsScope(fallbackDatasetIds: string[]): StoredAnalytics
     const datasets = stableValues(fallbackDatasetIds);
     return {
       draftDatasetIds: datasets,
-      draftCategories: [],
       appliedDatasetIds: datasets,
-      appliedCategories: [],
       activeCategory: null,
       activeWard: null,
       activeSeverityBucket: null,
@@ -171,9 +164,7 @@ export function AnalyticsView() {
   const [datasets, setDatasets] = useState<DatasetRow[]>([]);
   const [categoryOptions, setCategoryOptions] = useState<CategoryOption[]>([]);
   const [draftDatasetIds, setDraftDatasetIds] = useState<string[]>(initialScope.draftDatasetIds);
-  const [draftCategories, setDraftCategories] = useState<string[]>(initialScope.draftCategories);
   const [appliedDatasetIds, setAppliedDatasetIds] = useState<string[]>(initialScope.appliedDatasetIds);
-  const [appliedCategories, setAppliedCategories] = useState<string[]>(initialScope.appliedCategories);
   const [activeCategory, setActiveCategory] = useState<string | null>(initialScope.activeCategory);
   const [activeWard, setActiveWard] = useState<string | null>(initialScope.activeWard);
   const [activeSeverityBucket, setActiveSeverityBucket] = useState<AnalyticsSeverityBucket | null>(
@@ -187,7 +178,6 @@ export function AnalyticsView() {
   );
   const [overview, setOverview] = useState<AnalyticsOverview | null>(null);
   const [loadingDatasets, setLoadingDatasets] = useState(true);
-  const [loadingCategories, setLoadingCategories] = useState(true);
   const [analyzing, setAnalyzing] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [analysisVersion, setAnalysisVersion] = useState(0);
@@ -198,8 +188,8 @@ export function AnalyticsView() {
     [draftDatasetIds]
   );
   const effectiveCategories = useMemo(
-    () => activeCategory ? [activeCategory] : appliedCategories,
-    [activeCategory, appliedCategories]
+    () => activeCategory ? [activeCategory] : [],
+    [activeCategory]
   );
   const effectiveSeverityBuckets = useMemo<AnalyticsSeverityBucket[]>(
     () => activeSeverityBucket ? [activeSeverityBucket] : [],
@@ -225,9 +215,7 @@ export function AnalyticsView() {
     }),
     [activeReadinessField, activeReadinessStatus, activeSeverityBucket, activeWard, appliedDatasetIds, effectiveCategories]
   );
-  const scopeDirty =
-    !sameValues(draftDatasetIds, appliedDatasetIds) ||
-    !sameValues(draftCategories, appliedCategories);
+  const scopeDirty = !sameValues(draftDatasetIds, appliedDatasetIds);
 
   useEffect(() => {
     try {
@@ -235,9 +223,7 @@ export function AnalyticsView() {
         ANALYTICS_SCOPE_STORAGE_KEY,
         JSON.stringify({
           draftDatasetIds: stableValues(draftDatasetIds),
-          draftCategories: stableValues(draftCategories),
           appliedDatasetIds: stableValues(appliedDatasetIds),
-          appliedCategories: stableValues(appliedCategories),
           activeCategory,
           activeWard,
           activeSeverityBucket,
@@ -255,9 +241,7 @@ export function AnalyticsView() {
     activeCategory,
     activeSeverityBucket,
     activeWard,
-    appliedCategories,
     appliedDatasetIds,
-    draftCategories,
     draftDatasetIds,
   ]);
 
@@ -277,18 +261,10 @@ export function AnalyticsView() {
 
   useEffect(() => {
     const controller = new AbortController();
-    setLoadingCategories(true);
     fetchCategories(undefined, controller.signal, draftDatasetIds)
-      .then((options) => {
-        setCategoryOptions(options);
-        const available = new Set(options.map((option) => option.category));
-        setDraftCategories((current) => current.filter((category) => available.has(category)));
-      })
+      .then(setCategoryOptions)
       .catch((caught: Error) => {
         if (caught.name !== "AbortError") setError(`Category list unavailable: ${caught.message}`);
-      })
-      .finally(() => {
-        if (!controller.signal.aborted) setLoadingCategories(false);
       });
     return () => controller.abort();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -312,20 +288,6 @@ export function AnalyticsView() {
 
   function analyze() {
     setAppliedDatasetIds(stableValues(draftDatasetIds));
-    setAppliedCategories(stableValues(draftCategories));
-    setActiveCategory(null);
-    setActiveWard(null);
-    setActiveSeverityBucket(null);
-    setActiveReadinessField(null);
-    setActiveReadinessStatus(null);
-    setAnalysisVersion((value) => value + 1);
-  }
-
-  function resetScope() {
-    setDraftDatasetIds([]);
-    setDraftCategories([]);
-    setAppliedDatasetIds([]);
-    setAppliedCategories([]);
     setActiveCategory(null);
     setActiveWard(null);
     setActiveSeverityBucket(null);
@@ -346,14 +308,6 @@ export function AnalyticsView() {
 
   const toggleSeverityFilter = useCallback((bucket: AnalyticsSeverityBucket) => {
     setActiveSeverityBucket((current) => current === bucket ? null : bucket);
-  }, []);
-
-  const clearCrossFilters = useCallback(() => {
-    setActiveCategory(null);
-    setActiveWard(null);
-    setActiveSeverityBucket(null);
-    setActiveReadinessField(null);
-    setActiveReadinessStatus(null);
   }, []);
 
   const selectManholeReadiness = useCallback((
@@ -452,81 +406,32 @@ export function AnalyticsView() {
 
   return (
     <div className="analytics-page" data-testid="analytics-page">
-      <header className="analytics-page__head">
-        <div>
-          <div className="analytics-page__eyebrow">Analytics</div>
-          <h2 className="page-title">Dataset & Category Intelligence</h2>
-          <p className="page-sub">
-            {appliedDatasetIds.length === 0
-              ? "Analyzing all datasets"
-              : `Analyzing ${appliedDatasetNames.join(", ")}`}
-            {effectiveCategories.length === 0
-              ? " across all real categories."
-              : ` for ${effectiveCategories.length} active categor${effectiveCategories.length === 1 ? "y" : "ies"}.`}
-            {activeWard ? ` Ward ${activeWard}.` : ""}
-            {activeSeverityBucket ? ` ${activeSeverityBucket} severity only.` : ""}
-            {activeReadinessField
-              ? ` Showing ${MANHOLE_READINESS_LABELS[activeReadinessField]} readiness: ${activeReadinessStatus ?? "all"}.`
-              : ""}
-          </p>
-        </div>
-        {overview && (
-          <span className="page-timestamp" data-testid="analytics-timestamp">
-            generated {new Date(overview.generated_at).toLocaleString()}
-          </span>
-        )}
-      </header>
+      <div className="analytics-page__top">
+        <header className="analytics-page__intro">
+          <h1 className="analytics-page__intro-title">Dataset & Category Insights</h1>
+          <p className="analytics-page__intro-subtitle">Analytics for good understandings</p>
+        </header>
+
+        <section className="kpi-grid" data-testid="kpi-grid">
+          <KpiCard label="Contributing Surveys" value={overview?.total_datasets} icon="dataset" testid="kpi-total-surveys" />
+          <KpiCard label="Features Mapped" value={overview?.total_features} icon="map" tone="info" testid="kpi-features" />
+          <KpiCard label="Health Score" value={healthScore == null ? "N/A" : `${healthScore}%`} icon="health" accent testid="kpi-health" />
+          <KpiCard label="Avg Severity" value={overview ? overview.average_severity.toFixed(2) : undefined} icon="severity" testid="kpi-severity" />
+        </section>
+      </div>
 
       <AnalyticsScopeBar
         datasets={datasets}
-        categories={categoryOptions}
         draftDatasetIds={draftDatasetIds}
-        draftCategories={draftCategories}
         appliedDatasetIds={appliedDatasetIds}
-        appliedCategories={appliedCategories}
         loadingDatasets={loadingDatasets}
-        loadingCategories={loadingCategories}
         analyzing={analyzing}
         onDatasetChange={setDraftDatasetIds}
-        onCategoryChange={setDraftCategories}
         onAnalyze={analyze}
-        onReset={resetScope}
-      />
-
-      <AnalyticsFilterChips
-        category={activeCategory}
-        ward={activeWard}
-        severityBucket={activeSeverityBucket}
-        readinessFieldLabel={
-          activeReadinessField ? MANHOLE_READINESS_LABELS[activeReadinessField] : null
-        }
-        readinessStatus={activeReadinessStatus}
-        onClearCategory={() => {
-          setActiveCategory(null);
-          setActiveReadinessField(null);
-          setActiveReadinessStatus(null);
-        }}
-        onClearWard={() => setActiveWard(null)}
-        onClearSeverity={() => setActiveSeverityBucket(null)}
-        onClearReadiness={() => {
-          setActiveReadinessField(null);
-          setActiveReadinessStatus(null);
-        }}
-        onClearAll={clearCrossFilters}
       />
 
       {error && <div className="analytics-page__error">{error}</div>}
       {analyzing && <div className="analytics-page__loading">Calculating the applied scope from PostGIS…</div>}
-
-      <section className="kpi-grid" data-testid="kpi-grid">
-        <KpiCard label="Contributing Surveys" value={overview?.total_datasets} icon="dataset" testid="kpi-total-surveys" />
-        <KpiCard label="Features Mapped" value={overview?.total_features} icon="map" tone="info" testid="kpi-features" />
-        <KpiCard label="Review Items" value={overview?.total_review_items} icon="alert" tone="warn" testid="kpi-review-items" />
-        <KpiCard label="Open Reviews" value={overview?.open_reviews} icon="alert" tone="warn" testid="kpi-open-reviews" />
-        <KpiCard label="Resolved" value={overview?.resolved_reviews} icon="check" tone="ok" testid="kpi-resolved" />
-        <KpiCard label="Health Score" value={healthScore == null ? "N/A" : `${healthScore}%`} icon="health" accent testid="kpi-health" />
-        <KpiCard label="Avg Severity" value={overview ? overview.average_severity.toFixed(2) : undefined} icon="severity" testid="kpi-severity" />
-      </section>
 
       <section className="chart-grid chart-grid--2">
         <article className="chart-card" data-testid="chart-trend-card">

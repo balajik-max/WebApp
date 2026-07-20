@@ -1,30 +1,180 @@
-import { useState, useCallback, useRef } from "react";
-import { MapCanvas, type MapCanvasHandle } from "../components/MapCanvas";
+import {
+  useState, useCallback, useRef, useEffect,
+  type MutableRefObject, type CSSProperties,
+  type PointerEvent as ReactPointerEvent, type KeyboardEvent as ReactKeyboardEvent,
+} from "react";
+import { MapCanvas, type AiVerificationContext } from "../components/MapCanvas";
 import { ReportGenerator } from "../components/WardReportPanel";
 import { AiAssistant } from "../components/AiAssistant";
+import { PointVerificationPanel } from "../components/PointVerificationPanel";
+import { RemediationInbox } from "../components/RemediationInbox";
+import { RemediationUpdates } from "../components/RemediationUpdates";
 import { useOutletContext, useSearchParams } from "react-router-dom";
 import type { AiHighlight, FeatureFilter, UrbanFeature } from "../lib/types";
+import type {
+  RemediationInboxItem,
+  RemediationUpdateItem,
+} from "../lib/pointVerifications";
 import type { DatasetRow } from "../lib/workflow";
+import { useIsMobile } from "../lib/useIsMobile";
+
+type SpatialAuditStatus = "idle" | "running" | "success" | "error";
+
+// Single source of truth for the left sidebar's width — desktop only (the
+// mobile drawer keeps its own fixed width from index.css, see
+// `.command-center` under the 768px breakpoint). Widened from the previous
+// 340px value to 357px so geometry-group and datasource names have more room
+// before truncating.
+// Width of the icon rail (.sidebar-rail) that sits to the left of the
+// resizable panel in the map page's 3-column grid — see .map-page--dual.
+const SIDEBAR_RAIL_WIDTH = 48;
+const DEFAULT_SIDEBAR_WIDTH = 357;
+const MIN_SIDEBAR_WIDTH = 280;
+const MAX_SIDEBAR_WIDTH = 520;
+const SIDEBAR_KEYBOARD_STEP = 16;
+const SIDEBAR_KEYBOARD_STEP_LARGE = 32;
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, value));
+}
+
+// The sidebar must never eat most of the viewport — cap it at whichever is
+// smaller: the absolute max, or 45% of the current window width.
+function viewportLimitedMaxWidth(): number {
+  return Math.min(MAX_SIDEBAR_WIDTH, Math.round(window.innerWidth * 0.45));
+}
 
 interface LayoutCtx {
   filter: FeatureFilter;
   selectedDatasets: DatasetRow[];
   setSelectedDatasets: (rows: DatasetRow[]) => void;
+  commandCenterMobileOpen: boolean;
+  setCommandCenterMobileOpen: (open: boolean) => void;
+  spatialAuditRequestedRef: MutableRefObject<boolean>;
+  spatialAuditExecutedRef: MutableRefObject<boolean>;
+  spatialAuditStatus: SpatialAuditStatus;
+  setSpatialAuditStatus: (status: SpatialAuditStatus) => void;
 }
 
 export function MapView() {
-  const { filter, selectedDatasets, setSelectedDatasets } = useOutletContext<LayoutCtx>();
+  const {
+    filter,
+    selectedDatasets,
+    setSelectedDatasets,
+    commandCenterMobileOpen,
+    setCommandCenterMobileOpen,
+    spatialAuditRequestedRef,
+    spatialAuditExecutedRef,
+    spatialAuditStatus,
+    setSpatialAuditStatus,
+  } = useOutletContext<LayoutCtx>();
   const [selected, setSelected] = useState<UrbanFeature | null>(null);
+  const [verificationTarget, setVerificationTarget] = useState<{
+    feature: UrbanFeature;
+    ai: AiVerificationContext;
+  } | null>(null);
   const [aiHighlights, setAiHighlights] = useState<AiHighlight[]>([]);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [quickAnalysisActive, setQuickAnalysisActive] = useState(false);
-  const mapRef = useRef<MapCanvasHandle | null>(null);
+  const [pointVerificationRefresh, setPointVerificationRefresh] = useState(0);
+
+  const isMobile = useIsMobile();
+  // Deliberately not persisted (no localStorage/sessionStorage) — a manual
+  // resize only lives for as long as this component stays mounted, and a
+  // fresh app load (or a hard refresh) always starts back at the default.
+  const [sidebarWidth, setSidebarWidth] = useState(DEFAULT_SIDEBAR_WIDTH);
+  const resizeStateRef = useRef<{ pointerId: number; startX: number; startWidth: number } | null>(null);
+  const pendingWidthRef = useRef<number | null>(null);
+  const resizeRafRef = useRef<number | null>(null);
+
+  const clearResizeRaf = useCallback(() => {
+    if (resizeRafRef.current !== null) {
+      cancelAnimationFrame(resizeRafRef.current);
+      resizeRafRef.current = null;
+    }
+  }, []);
+
+  const endResize = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+    if (!resizeStateRef.current) return;
+    resizeStateRef.current = null;
+    clearResizeRaf();
+    pendingWidthRef.current = null;
+    document.body.classList.remove("is-resizing-sidebar");
+    try {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    } catch {
+      // Capture may already be gone (pointercancel, or released elsewhere) — harmless.
+    }
+  }, [clearResizeRaf]);
+
+  const handleResizeStart = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+    if (event.button !== 0) return;
+    resizeStateRef.current = {
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startWidth: sidebarWidth,
+    };
+    event.currentTarget.setPointerCapture(event.pointerId);
+    document.body.classList.add("is-resizing-sidebar");
+  }, [sidebarWidth]);
+
+  const handleResizeMove = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+    const drag = resizeStateRef.current;
+    if (!drag || event.pointerId !== drag.pointerId) return;
+    const delta = event.clientX - drag.startX;
+    const nextWidth = clamp(drag.startWidth + delta, MIN_SIDEBAR_WIDTH, viewportLimitedMaxWidth());
+    pendingWidthRef.current = nextWidth;
+    if (resizeRafRef.current === null) {
+      resizeRafRef.current = requestAnimationFrame(() => {
+        resizeRafRef.current = null;
+        if (pendingWidthRef.current !== null) setSidebarWidth(pendingWidthRef.current);
+      });
+    }
+  }, []);
+
+  // Safety net: if this component unmounts mid-drag (e.g. a route change
+  // triggered some other way), don't leave the resize cursor/no-select body
+  // class stuck or a pending RAF dangling.
+  useEffect(() => {
+    return () => {
+      clearResizeRaf();
+      document.body.classList.remove("is-resizing-sidebar");
+    };
+  }, [clearResizeRaf]);
+
+  const handleResizeKeyDown = useCallback((event: ReactKeyboardEvent<HTMLDivElement>) => {
+    const step = event.shiftKey ? SIDEBAR_KEYBOARD_STEP_LARGE : SIDEBAR_KEYBOARD_STEP;
+    const max = viewportLimitedMaxWidth();
+    if (event.key === "ArrowLeft") {
+      event.preventDefault();
+      setSidebarWidth((current) => clamp(current - step, MIN_SIDEBAR_WIDTH, max));
+    } else if (event.key === "ArrowRight") {
+      event.preventDefault();
+      setSidebarWidth((current) => clamp(current + step, MIN_SIDEBAR_WIDTH, max));
+    } else if (event.key === "Home") {
+      event.preventDefault();
+      setSidebarWidth(MIN_SIDEBAR_WIDTH);
+    } else if (event.key === "End") {
+      event.preventDefault();
+      setSidebarWidth(max);
+    }
+  }, []);
+
   const [searchParams, setSearchParams] = useSearchParams();
   const locateFeatureId = searchParams.get("locateFeature") ?? undefined;
 
-  const handleSelect = useCallback((feature: UrbanFeature | null) => {
-    setSelected(feature);
-  }, []);
+  const handleSelect = useCallback(
+    (
+      feature: UrbanFeature | null,
+      aiVerification?: AiVerificationContext | null,
+    ) => {
+      setSelected(feature);
+      setVerificationTarget(
+        feature && aiVerification ? { feature, ai: aiVerification } : null,
+      );
+    },
+    [],
+  );
 
   const handleFeatureLocated = useCallback(() => {
     const next = new URLSearchParams(searchParams);
@@ -32,10 +182,32 @@ export function MapView() {
     setSearchParams(next, { replace: true });
   }, [searchParams, setSearchParams]);
 
+  const handleRemediationLocate = useCallback(
+    (item: RemediationInboxItem) => {
+      const next = new URLSearchParams(searchParams);
+      next.set("locateFeature", item.feature_id);
+      setSearchParams(next, { replace: true });
+    },
+    [searchParams, setSearchParams],
+  );
+
+  const handleRemediationUpdateLocate = useCallback(
+    (item: RemediationUpdateItem) => {
+      if (!item.feature_id) return;
+      const next = new URLSearchParams(searchParams);
+      next.set("locateFeature", item.feature_id);
+      setSearchParams(next, { replace: true });
+    },
+    [searchParams, setSearchParams],
+  );
+
   return (
-    <div className={`map-page map-page--dual${sidebarCollapsed ? " map-page--sidebar-collapsed" : ""}`} data-testid="map-page">
+    <div
+      className={`map-page map-page--dual${sidebarCollapsed ? " map-page--sidebar-collapsed" : ""}`}
+      data-testid="map-page"
+      style={!isMobile ? ({ "--map-sidebar-width": `${sidebarWidth}px` } as CSSProperties) : undefined}
+    >
       <MapCanvas
-        ref={mapRef}
         filter={filter}
         onFeatureSelect={handleSelect}
         initialActiveDatasets={selectedDatasets}
@@ -46,7 +218,36 @@ export function MapView() {
         sidebarCollapsed={sidebarCollapsed}
         onToggleSidebar={() => setSidebarCollapsed((current) => !current)}
         onQuickAnalysisActiveChange={setQuickAnalysisActive}
+        refreshToken={pointVerificationRefresh}
+        commandCenterMobileOpen={commandCenterMobileOpen}
+        onCommandCenterMobileOpenChange={setCommandCenterMobileOpen}
+        spatialAuditRequestedRef={spatialAuditRequestedRef}
+        spatialAuditExecutedRef={spatialAuditExecutedRef}
+        spatialAuditStatus={spatialAuditStatus}
+        onSpatialAuditStatusChange={setSpatialAuditStatus}
       />
+
+      {!isMobile && !sidebarCollapsed && (
+        <div
+          className="map-page__sidebar-resize-handle"
+          style={{ left: SIDEBAR_RAIL_WIDTH + sidebarWidth }}
+          role="separator"
+          aria-orientation="vertical"
+          aria-label="Resize left sidebar"
+          aria-valuemin={MIN_SIDEBAR_WIDTH}
+          aria-valuemax={viewportLimitedMaxWidth()}
+          aria-valuenow={Math.round(sidebarWidth)}
+          tabIndex={0}
+          onPointerDown={handleResizeStart}
+          onPointerMove={handleResizeMove}
+          onPointerUp={endResize}
+          onPointerCancel={endResize}
+          onKeyDown={handleResizeKeyDown}
+          onDoubleClick={() => setSidebarWidth(DEFAULT_SIDEBAR_WIDTH)}
+          data-testid="map-sidebar-resize-handle"
+        />
+      )}
+
       {!quickAnalysisActive && <ReportGenerator datasets={selectedDatasets} />}
       {!quickAnalysisActive && (
         <AiAssistant
@@ -55,6 +256,32 @@ export function MapView() {
           onAiHighlights={setAiHighlights}
         />
       )}
+
+      <PointVerificationPanel
+        feature={verificationTarget?.feature ?? null}
+        aiVerification={verificationTarget?.ai ?? null}
+        onClose={() => setVerificationTarget(null)}
+        onUpdated={(updated) => {
+          setSelected(updated);
+          setVerificationTarget((current) =>
+            current ? { ...current, feature: updated } : null,
+          );
+          setPointVerificationRefresh((value) => value + 1);
+        }}
+        onQueueChanged={() =>
+          setPointVerificationRefresh((value) => value + 1)
+        }
+      />
+
+      <RemediationInbox
+        refreshToken={pointVerificationRefresh}
+        onLocate={handleRemediationLocate}
+      />
+
+      <RemediationUpdates
+        refreshToken={pointVerificationRefresh}
+        onLocate={handleRemediationUpdateLocate}
+      />
     </div>
   );
 }

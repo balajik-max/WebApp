@@ -16,6 +16,10 @@ type Options = {
   margin?: number;
   boundary?: Boundary;
   initialPosition?: FloatingPanelPosition | null;
+  // When true, dragging/position-tracking is skipped entirely and `style`
+  // is always undefined — used on mobile, where these panels render as
+  // fixed bottom sheets positioned by CSS instead of draggable boxes.
+  disabled?: boolean;
 };
 
 type Result<T extends HTMLElement> = {
@@ -60,6 +64,7 @@ export function useDraggableMapPanel<T extends HTMLElement>({
   margin = 12,
   boundary = "map",
   initialPosition = null,
+  disabled = false,
 }: Options): Result<T> {
   const panelRef = useRef<T>(null);
   const [position, setPosition] = useState<FloatingPanelPosition | null>(null);
@@ -123,6 +128,7 @@ export function useDraggableMapPanel<T extends HTMLElement>({
   }, [commitPosition, dock, getBoundary, initialPosition?.x, initialPosition?.y, margin, storageKey, top]);
 
   useEffect(() => {
+    if (disabled) return;
     initializePosition();
     const handleResize = () => {
       if (positionRef.current) commitPosition(positionRef.current);
@@ -130,9 +136,10 @@ export function useDraggableMapPanel<T extends HTMLElement>({
     };
     window.addEventListener("resize", handleResize);
     return () => window.removeEventListener("resize", handleResize);
-  }, [commitPosition, initializePosition]);
+  }, [commitPosition, initializePosition, disabled]);
 
   const onDragStart = useCallback((event: ReactPointerEvent<HTMLElement>) => {
+    if (disabled) return;
     if (event.button !== 0) return;
     const target = event.target as HTMLElement;
     if (target.closest("button, input, textarea, select, a, label")) return;
@@ -169,7 +176,7 @@ export function useDraggableMapPanel<T extends HTMLElement>({
     document.body.classList.add("is-dragging-map-panel");
     window.addEventListener("pointermove", handleMove, { passive: false });
     window.addEventListener("pointerup", handleUp, { once: true });
-  }, [commitPosition, getBoundary, storageKey]);
+  }, [commitPosition, getBoundary, storageKey, disabled]);
 
   const resetPosition = useCallback(() => {
     clearStoredPosition(storageKey);
@@ -180,7 +187,7 @@ export function useDraggableMapPanel<T extends HTMLElement>({
 
   return {
     panelRef,
-    style: position ? { left: position.x, top: position.y, right: "auto", bottom: "auto" } : undefined,
+    style: !disabled && position ? { left: position.x, top: position.y, right: "auto", bottom: "auto" } : undefined,
     onDragStart,
     resetPosition,
   };

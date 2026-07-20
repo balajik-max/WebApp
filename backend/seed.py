@@ -7,7 +7,7 @@ Usage (any of):
     docker compose exec backend python seed.py
 
 Idempotent:
-  * Creates the two v1 users (admin + architect) if missing.
+  * Creates the seeded users (admin, architect, commissioner) if missing.
   * Rotates their bcrypt hash if the plaintext password in `.env` has changed.
   * Leaves any other users untouched.
   * Emits an ActivityLog row (`USER_CREATED`) only for newly-inserted rows.
@@ -119,10 +119,22 @@ async def main() -> int:
             role=UserRole.ADMIN,
         ),
         SeedSpec(
-            email=settings.architect_email,
-            password=settings.architect_password,
-            name=settings.architect_name,
-            role=UserRole.ARCHITECT,
+            email=settings.commissioner_email,
+            password=settings.commissioner_password,
+            name=settings.commissioner_name,
+            role=UserRole.COMMISSIONER,
+        ),
+        SeedSpec(
+            email=settings.aee_email,
+            password=settings.aee_password,
+            name=settings.aee_name,
+            role=UserRole.AEE,
+        ),
+        SeedSpec(
+            email=settings.ae_email,
+            password=settings.ae_password,
+            name=settings.ae_name,
+            role=UserRole.AE,
         ),
     ]
 

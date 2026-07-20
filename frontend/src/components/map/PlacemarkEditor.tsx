@@ -1,5 +1,6 @@
 import type { PlacemarkDraft } from "../../lib/placemarks";
 import { useDraggableMapPanel } from "./useDraggableMapPanel";
+import { useIsMobile } from "../../lib/useIsMobile";
 
 interface Props {
   draft: PlacemarkDraft;
@@ -11,10 +12,12 @@ interface Props {
 }
 
 export function PlacemarkEditor({ draft, saving, error, onChange, onSave, onCancel }: Props) {
+  const isMobile = useIsMobile();
   const { panelRef, style, onDragStart } = useDraggableMapPanel<HTMLElement>({
     storageKey: "davangere.placemark-editor-position",
     dock: "left",
     top: 118,
+    disabled: isMobile,
   });
 
   const valid = draft.name.trim().length > 0

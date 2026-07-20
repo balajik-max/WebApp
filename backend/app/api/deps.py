@@ -63,4 +63,6 @@ def require_roles(*allowed: UserRole):
 
 require_admin = require_roles(UserRole.ADMIN)
 require_architect = require_roles(UserRole.ARCHITECT)
-require_any = require_roles(UserRole.ADMIN, UserRole.ARCHITECT)
+require_any = require_roles(
+    UserRole.COMMISSIONER, UserRole.AEE, UserRole.AE, UserRole.ADMIN, UserRole.ARCHITECT
+)
