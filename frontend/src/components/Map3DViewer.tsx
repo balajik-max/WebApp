@@ -935,6 +935,9 @@ function buildManholeMarker(
   const CHAMBER_R = 1.4;
   const SHAFT_R = 0.6;
   const SHAFT_H = Math.min(0.9, Math.max(0.4, chamberH * 0.25));
+  // Height of the concrete surround/collar sitting flush with the road surface
+  // — the bit you actually see at ground level, with the cast-iron lid in it.
+  const COLLAR_H = 0.25;
 
   // Base slab
   const slab = new THREE.Mesh(new THREE.CylinderGeometry(CHAMBER_R + 0.4, CHAMBER_R + 0.4, 0.3, 24), concrete);
@@ -967,13 +970,23 @@ function buildManholeMarker(
   shaft.position.y = 0.3 + chamberH + SHAFT_H / 2;
   group.add(shaft);
 
+  // Concrete cover collar / frame flush with the surface — the square-ish
+  // concrete surround you see around a real manhole lid at ground level.
+  const collarY = 0.3 + chamberH + SHAFT_H;
+  const collar = new THREE.Mesh(
+    new THREE.CylinderGeometry(SHAFT_R + 0.45, SHAFT_R + 0.55, COLLAR_H, 28),
+    concrete
+  );
+  collar.position.y = collarY + COLLAR_H / 2;
+  group.add(collar);
+
   // Cast-iron lid at the top — a structural-damage or cover-issue finding
   // renders the ACTUAL defect: two displaced, gapped half-covers instead of
   // one intact disc, so "the cover is broken/displaced" is something you
   // see, not just a status ring color.
-  const lidY = 0.3 + chamberH + SHAFT_H + 0.09;
+  const lidY = collarY + COLLAR_H + 0.06;
   const lidR = SHAFT_R + 0.15;
-  const lidMat = new THREE.MeshStandardMaterial({ color: 0x33373b, roughness: 0.5, metalness: 0.5 });
+  const lidMat = new THREE.MeshStandardMaterial({ color: 0x33373b, roughness: 0.45, metalness: 0.55 });
   if (primaryIssue === "structural_damage" || primaryIssue === "cover_issue") {
     const halves: [number, number, number, number][] = [
       [0, 0.14, 0.06, 0.2],
@@ -981,7 +994,7 @@ function buildManholeMarker(
     ];
     for (const [thetaStart, dx, dz, tilt] of halves) {
       const half = new THREE.Mesh(
-        new THREE.CylinderGeometry(lidR, lidR, 0.18, 16, 1, false, thetaStart, Math.PI - 0.18),
+        new THREE.CylinderGeometry(lidR, lidR, 0.16, 16, 1, false, thetaStart, Math.PI - 0.18),
         lidMat
       );
       half.position.set(dx, lidY, dz);
@@ -989,9 +1002,24 @@ function buildManholeMarker(
       group.add(half);
     }
   } else {
-    const lid = new THREE.Mesh(new THREE.CylinderGeometry(lidR, lidR, 0.18, 24), lidMat);
+    const lid = new THREE.Mesh(new THREE.CylinderGeometry(lidR, lidR, 0.16, 24), lidMat);
     lid.position.y = lidY;
     group.add(lid);
+    // Raised rim around the lid edge — the classic cast-iron manhole ring lip.
+    const rim = new THREE.Mesh(
+      new THREE.TorusGeometry(lidR, 0.07, 8, 24),
+      new THREE.MeshStandardMaterial({ color: 0x2a2e32, roughness: 0.4, metalness: 0.6 })
+    );
+    rim.rotation.x = Math.PI / 2;
+    rim.position.y = lidY + 0.08;
+    group.add(rim);
+    // Two lift-key holes in the lid — the small slots used to hook the cover.
+    const holeMat = new THREE.MeshStandardMaterial({ color: 0x15181b, roughness: 0.8 });
+    for (const ang of [Math.PI / 4, (Math.PI * 5) / 4]) {
+      const hole = new THREE.Mesh(new THREE.CylinderGeometry(0.08, 0.08, 0.18, 10), holeMat);
+      hole.position.set(Math.cos(ang) * lidR * 0.5, lidY + 0.02, Math.sin(ang) * lidR * 0.5);
+      group.add(hole);
+    }
   }
 
   // Blockage / siltation / garbage findings get a real debris pile inside
@@ -1026,17 +1054,82 @@ function buildManholeMarker(
     group.add(cap);
   }
 
-  // Status ring around the lid (colored by anomaly when one exists, else the
-  // same category color as the chamber) so the audit state reads separately
+  // Status ring around the collar (colored by anomaly when one exists, else
+  // the same category color as the chamber) so the audit state reads separately
   // from the manhole's own category color underneath it.
-  const ring = new THREE.Mesh(new THREE.TorusGeometry(SHAFT_R + 0.25, 0.1, 8, 24), new THREE.MeshStandardMaterial({ color: ringColor, roughness: 0.5 }));
+  const ring = new THREE.Mesh(
+    new THREE.TorusGeometry(SHAFT_R + 0.55, 0.1, 8, 28),
+    new THREE.MeshStandardMaterial({ color: ringColor, roughness: 0.5 })
+  );
   ring.rotation.x = Math.PI / 2;
-  ring.position.y = 0.3 + chamberH + SHAFT_H + 0.18;
+  ring.position.y = collarY + COLLAR_H + 0.02;
   group.add(ring);
 
   group.position.set(x, y, z);
   group.userData = { kind, id };
   return group;
+}
+
+// Heatmap severity helpers. Each manhole gets a 0..1 "risk" score derived from
+// its surveyed condition plus any audit anomaly severity, used to color a
+// ground-level heat blob so bad manholes read at a glance in the 3D view.
+const conditionScore = (condition: string | null | undefined): number => {
+  if (!condition) return 0.3;
+  const c = condition.toLowerCase().trim();
+  if (["good", "fine", "ok", "working", "excellent", "satisfactory"].includes(c)) return 0.1;
+  if (["moderate", "borderline", "review"].includes(c)) return 0.5;
+  if (
+    [
+      "bad", "critical", "danger", "blocked", "collapsed", "collaped", "cracked",
+      "broken", "damage", "deteriorated", "poor", "choked", "defective",
+    ].includes(c)
+  )
+    return 0.9;
+  return 0.3;
+};
+
+const anomalySeverityScore = (color?: string | null): number => {
+  if (color === "red") return 1.0;
+  if (color === "yellow") return 0.6;
+  if (color === "green") return 0.1;
+  return 0.3;
+};
+
+// Combine surveyed condition + audit severity into a single 0..1 heat value.
+const heatValue = (
+  attrs: Record<string, unknown> | undefined,
+  anomalyColor: string | null | undefined
+): number => {
+  const readCondition = () => {
+    if (!attrs) return null;
+    for (const k of ["condition", "Condition", "status", "Status"]) {
+      const v = attrs[k];
+      if (typeof v === "string" && v.trim() !== "") return v;
+    }
+    return null;
+  };
+  const base = conditionScore(readCondition());
+  const sev = anomalySeverityScore(anomalyColor);
+  // The worse of the two dominates, with a mild blend so both contribute.
+  return Math.min(1, Math.max(base, sev) * 0.7 + Math.min(base, sev) * 0.3);
+};
+
+// Soft radial sprite texture for heatmap points (white core fading to
+// transparent) so each manhole reads as a glowing blob rather than a hard dot.
+function makeHeatSprite(): THREE.Texture {
+  const size = 128;
+  const c = document.createElement("canvas");
+  c.width = c.height = size;
+  const ctx = c.getContext("2d")!;
+  const g = ctx.createRadialGradient(size / 2, size / 2, 0, size / 2, size / 2, size / 2);
+  g.addColorStop(0, "rgba(255,255,255,1)");
+  g.addColorStop(0.4, "rgba(255,255,255,0.6)");
+  g.addColorStop(1, "rgba(255,255,255,0)");
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, size, size);
+  const tex = new THREE.CanvasTexture(c);
+  tex.needsUpdate = true;
+  return tex;
 }
 
 export function Map3DViewer({ features, classMap, anomalies, datasets, activeDatasetIds, onClose }: Props) {
@@ -1064,6 +1157,9 @@ export function Map3DViewer({ features, classMap, anomalies, datasets, activeDat
   // shell so the pipes + manholes seated at their real depths show through,
   // while the buildings still read as context floating above the network.
   const [underground, setUnderground] = useState(false);
+  // Ground-level manhole condition heatmap: a soft colored blob per manhole
+  // whose color encodes its risk score (surveyed condition + audit severity).
+  const [showHeatmap, setShowHeatmap] = useState(false);
   // Search filter for the Layers panel (mirrors the 2D Map Canvas panel).
   const [layerQuery, setLayerQuery] = useState("");
   // "default" = the same hash-based GIS category color the 2D Map Canvas
@@ -1431,6 +1527,8 @@ export function Map3DViewer({ features, classMap, anomalies, datasets, activeDat
         const anomalyByManhole = new Map(
           anomalies.filter((a) => a.anomaly_type === "manhole_status").map((a) => [a.feature_ids[0], a])
         );
+        // Accumulate per-manhole heat samples for the ground-level heatmap.
+        const heatSamples: { x: number; z: number; y: number; v: number }[] = [];
         for (const m of manholes) {
           if (m.geometry.type !== "Point") continue;
           const [lon, lat] = m.geometry.coordinates;
@@ -1471,6 +1569,50 @@ export function Map3DViewer({ features, classMap, anomalies, datasets, activeDat
           gfor(m).add(mesh);
           clickable.push(mesh);
           networkDepthRef.current = Math.min(networkDepthRef.current, baseY);
+          // Heatmap sample: a blob sitting just above ground at this manhole.
+          const v = heatValue(m.properties.attributes, anomaly?.color ?? null);
+          heatSamples.push({ x, z, y: ground + 0.4, v });
+        }
+
+        // Build the ground-level manhole heatmap as a single THREE.Points
+        // cloud. Each point is drawn as a soft radial sprite colored by its
+        // risk value (green -> yellow -> red), additive-blended so overlapping
+        // hot zones glow. Lives in its own group toggled by showHeatmap.
+        if (heatSamples.length > 0) {
+          const positions = new Float32Array(heatSamples.length * 3);
+          const colors = new Float32Array(heatSamples.length * 3);
+          const tmp = new THREE.Color();
+          heatSamples.forEach((s, i) => {
+            positions[i * 3] = s.x;
+            positions[i * 3 + 1] = s.y;
+            positions[i * 3 + 2] = s.z;
+            // green (good, v=0) -> red (bad, v=1): hue 0.33 down to 0.0.
+            tmp.setHSL((1 - s.v) * 0.33, 0.95, 0.5);
+            colors[i * 3] = tmp.r;
+            colors[i * 3 + 1] = tmp.g;
+            colors[i * 3 + 2] = tmp.b;
+          });
+          const geom = new THREE.BufferGeometry();
+          geom.setAttribute("position", new THREE.BufferAttribute(positions, 3));
+          geom.setAttribute("color", new THREE.BufferAttribute(colors, 3));
+          const sprite = makeHeatSprite();
+          const mat = new THREE.PointsMaterial({
+            size: 14,
+            map: sprite,
+            vertexColors: true,
+            transparent: true,
+            depthWrite: false,
+            blending: THREE.AdditiveBlending,
+            sizeAttenuation: true,
+          });
+          const heatCloud = new THREE.Points(geom, mat);
+          heatCloud.name = "heatmap";
+          const heatGroup = new THREE.Group();
+          heatGroup.name = "group-heatmap";
+          heatGroup.add(heatCloud);
+          heatGroup.visible = showHeatmap;
+          scene.add(heatGroup);
+          groupRefs.current["heatmap"] = heatGroup;
         }
 
 
@@ -1878,7 +2020,20 @@ export function Map3DViewer({ features, classMap, anomalies, datasets, activeDat
 
         // Real surveyed concrete roads (Road_Segment centerlines) drawn as a
         // flat ribbon just above the terrain, in the map's road color.
-        const roads = features.filter((f) => classMap[f.properties.category ?? ""] === "Road_Segment");
+        const roads = features.filter((f) => {
+          if (classMap[f.properties.category ?? ""] !== "Road_Segment") return false;
+          // In manholes focus, show ONLY the sewage/pipe network (the buried
+          // tubes), not the concrete road ribbons — the manhole context is the
+          // underground sewer, not the carriageway.
+          if (detectionMode3D === "manholes") {
+            const raw = (f.properties.category ?? "").toLowerCase();
+            return (
+              raw.includes("sewage") || raw.includes("sewer") || raw.includes("pipe") ||
+              raw.includes("drain") || raw.includes("culvert")
+            );
+          }
+          return true;
+        });
         for (const r of roads) {
           // This feature's OWN raw category color ("Concrete Road" vs
           // "Sewage Line" vs "Road_Centerline" are different raw categories
@@ -2431,6 +2586,12 @@ export function Map3DViewer({ features, classMap, anomalies, datasets, activeDat
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [colorMode, detectionMode3D]);
 
+  // Live heatmap toggle — show/hide the heatmap group with no scene rebuild.
+  useEffect(() => {
+    const g = groupRefs.current["heatmap"];
+    if (g) g.visible = showHeatmap;
+  }, [showHeatmap]);
+
   // Live category visibility — toggle each group's shown state with no scene
   // rebuild. Terrain + buildings are the "surface" that the Underground view
   // fades to a translucent shell so the network reads as the subject.
@@ -2444,6 +2605,12 @@ export function Map3DViewer({ features, classMap, anomalies, datasets, activeDat
     const allowed = detectionMode3D ? DETECTION_MODE_TARGET_CLASSES[detectionMode3D] : null;
     Object.entries(groupRefs.current).forEach(([k, g]) => {
       if (!g) return;
+      // The heatmap group is governed only by showHeatmap, never by the
+      // detection-mode filter (which would otherwise hide it as a non-target).
+      if (k === "heatmap") {
+        g.visible = showHeatmap;
+        return;
+      }
       const manuallyOn = visible[k] !== false;
       if (!allowed || k === "terrain") {
         g.visible = manuallyOn;
@@ -2538,7 +2705,14 @@ export function Map3DViewer({ features, classMap, anomalies, datasets, activeDat
               role="radio"
               aria-checked={detectionMode3D === mode}
               className={`manhole-3d-overlay__colormode-btn${detectionMode3D === mode ? " is-active" : ""}`}
-              onClick={() => setDetectionMode3D((cur) => (cur === mode ? null : mode))}
+              onClick={() => {
+                const next = detectionMode3D === mode ? null : mode;
+                setDetectionMode3D(next);
+                // The heatmap is tied to the Manholes focus only: turning
+                // Manholes on shows it, leaving Manholes (for poles/drains or
+                // off) hides it so it never lingers on other modes.
+                setShowHeatmap(next === "manholes");
+              }}
               title={`Focus the 3D view on ${DETECTION_MODE_LABEL[mode]} and show that audit finding on the geometry itself`}
             >
               {DETECTION_MODE_LABEL[mode]}

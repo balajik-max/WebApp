@@ -7,7 +7,7 @@ export type DetectionMode = "poles" | "drains" | "manholes" | null;
 export const DETECTION_MODE_TARGET_CLASSES: Record<Exclude<DetectionMode, null>, string[]> = {
   poles: ["Illumination_Asset"],
   drains: ["Building", "Drainage_Asset"],
-  manholes: ["Access_Point"],
+  manholes: ["Access_Point", "Drainage_Asset", "Road_Segment"],
 };
 
 export const DETECTION_MODE_ANOMALY_TYPE: Record<Exclude<DetectionMode, null>, string> = {
