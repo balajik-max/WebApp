@@ -38,6 +38,7 @@ import { AnalyticsExportPanel } from "../components/analytics/AnalyticsExportPan
 import { AnalyticsManholeReadiness } from "../components/analytics/AnalyticsManholeReadiness";
 import { AnalyticsSeverityVisualization } from "../components/analytics/AnalyticsSeverityVisualization";
 import { AnalyticsWaterDemandPanel } from "../components/analytics/AnalyticsWaterDemandPanel";
+import { useLanguage } from "../context/LanguageContext";
 
 const STATUS_COLORS: Record<string, string> = {
   open: "#3b82f6",
@@ -54,13 +55,13 @@ const SEVERITY_COLORS: Record<string, string> = {
 };
 const ANALYTICS_SCOPE_STORAGE_KEY = "davangere.analytics.scope.v1";
 const MANHOLE_READINESS_LABELS: Record<ManholeReadinessFieldKey, string> = {
-  depth: "Depth",
-  bottom_level: "Bottom Level",
-  top_level: "Top Level",
-  condition: "Condition",
-  pipe_type: "Pipe Type",
-  diameter: "Diameter",
-  image_reference: "Image Reference",
+  depth: "analytics.readinessDepth",
+  bottom_level: "analytics.readinessBottomLevel",
+  top_level: "analytics.readinessTopLevel",
+  condition: "analytics.readinessCondition",
+  pipe_type: "analytics.readinessPipeType",
+  diameter: "analytics.readinessDiameter",
+  image_reference: "analytics.readinessImageReference",
 };
 const MANHOLE_READINESS_KEYS = new Set(Object.keys(MANHOLE_READINESS_LABELS));
 
@@ -148,6 +149,7 @@ interface LayoutCtx {
 }
 
 export function AnalyticsView() {
+  const { t } = useLanguage();
   const { selectedDatasets } = useOutletContext<LayoutCtx>();
   const initialDatasetIds = useMemo(
     () => stableValues(selectedDatasets.map((dataset) => dataset.id)),
@@ -317,7 +319,7 @@ export function AnalyticsView() {
   ) => {
     const manholeCategory =
       categoryOptions.find((option) => option.category.trim().toLowerCase() === "manhole")
-        ?.category ?? "Manhole";
+        ?.category ?? t("analytics.manhole");
     setActiveCategory(manholeCategory);
     setActiveReadinessField(field);
     setActiveReadinessStatus(status);
@@ -373,10 +375,10 @@ export function AnalyticsView() {
       avgSeverity: category.avg_severity,
       severityLevel:
         category.avg_severity >= 0.67
-          ? "High"
+          ? t("analytics.severityHigh")
           : category.avg_severity >= 0.34
-            ? "Medium"
-            : "Low",
+            ? t("analytics.severityMedium")
+            : t("analytics.severityLow"),
       color:
         category.avg_severity >= 0.67
           ? "#ef4444"
@@ -437,8 +439,8 @@ export function AnalyticsView() {
         <article className="chart-card" data-testid="chart-trend-card">
           <div className="chart-card__header">
             <div>
-              <div className="analytics-card-eyebrow">Trend</div>
-              <h3 className="chart-card__title">Scoped Ingestion Growth</h3>
+              <div className="analytics-card-eyebrow">{t("analytics.trend")}</div>
+              <h3 className="chart-card__title">{t("analytics.scopeGrowth")}</h3>
             </div>
           </div>
           <div className="chart-card__body">
@@ -460,7 +462,7 @@ export function AnalyticsView() {
                 </AreaChart>
               </ResponsiveContainer>
             ) : (
-              <EmptyState text="No ingestion history exists for the applied scope." />
+              <EmptyState text={t("analytics.emptyIngestion")} />
             )}
           </div>
         </article>
@@ -468,11 +470,11 @@ export function AnalyticsView() {
         <article className="chart-card" data-testid="chart-categories-card">
           <div className="chart-card__header">
             <div>
-              <div className="analytics-card-eyebrow">Breakdown</div>
-              <h3 className="chart-card__title">Top Categories in Scope</h3>
+              <div className="analytics-card-eyebrow">{t("analytics.breakdown")}</div>
+              <h3 className="chart-card__title">{t("analytics.topCategories")}</h3>
             </div>
             <span className="chart-card__badge">
-              {topCategories.length} of {overview?.category_breakdown.length ?? 0}
+              {topCategories.length} {t("analytics.of")} {overview?.category_breakdown.length ?? 0}
             </span>
           </div>
           <div className="chart-card__body">
@@ -484,7 +486,7 @@ export function AnalyticsView() {
                     <XAxis type="number" tick={{ fill: "var(--ink-mute)", fontSize: 11 }} axisLine={false} tickLine={false} />
                     <YAxis type="category" dataKey="category" width={130} tick={{ fill: "var(--ink-dim)", fontSize: 10 }} axisLine={false} tickLine={false} />
                     <Tooltip contentStyle={{ background: "var(--surface-2)", border: "1px solid var(--edge)", borderRadius: 8, fontSize: 12, color: "var(--ink)" }} />
-                    <Bar dataKey="count" name="Features" radius={[0, 6, 6, 0]}>
+                     <Bar dataKey="count" name={t("analytics.features")} radius={[0, 6, 6, 0]}>
                       {topCategories.map((category) => (
                         <Cell
                           key={category.category}
@@ -498,7 +500,7 @@ export function AnalyticsView() {
                 </ResponsiveContainer>
               </div>
             ) : (
-              <EmptyState text="No category data exists for the applied scope." />
+              <EmptyState text={t("analytics.emptyCategory")} />
             )}
           </div>
         </article>
@@ -508,8 +510,8 @@ export function AnalyticsView() {
         <article className="chart-card" data-testid="chart-severity-card">
           <div className="chart-card__header">
             <div>
-              <div className="analytics-card-eyebrow">Priority overview</div>
-              <h3 className="chart-card__title">Features by Severity Level</h3>
+              <div className="analytics-card-eyebrow">{t("analytics.priorityOverview")}</div>
+              <h3 className="chart-card__title">{t("analytics.featuresBySeverity")}</h3>
             </div>
           </div>
           <div className="chart-card__body">
@@ -520,7 +522,7 @@ export function AnalyticsView() {
                 onToggleBucket={toggleSeverityFilter}
               />
             ) : (
-              <EmptyState text="No severity data exists for the applied scope." />
+              <EmptyState text={t("analytics.emptySeverity")} />
             )}
           </div>
         </article>
@@ -528,8 +530,8 @@ export function AnalyticsView() {
         <article className="chart-card" data-testid="chart-status-card">
           <div className="chart-card__header">
             <div>
-              <div className="analytics-card-eyebrow">Status</div>
-              <h3 className="chart-card__title">Review Progress</h3>
+              <div className="analytics-card-eyebrow">{t("analytics.status")}</div>
+              <h3 className="chart-card__title">{t("analytics.reviewProgress")}</h3>
             </div>
           </div>
           <div className="chart-card__body">
@@ -546,7 +548,7 @@ export function AnalyticsView() {
                   </ResponsiveContainer>
                   <div className="analytics-review-donut__center">
                     <strong>{overview?.total_review_items ?? 0}</strong>
-                    <span>Total</span>
+                    <span>{t("analytics.total")}</span>
                   </div>
                 </div>
                 <div className="analytics-review-legend">
@@ -560,7 +562,7 @@ export function AnalyticsView() {
                 </div>
               </div>
             ) : (
-              <EmptyState text="No review items exist for the applied scope." />
+              <EmptyState text={t("analytics.emptyReview")} />
             )}
           </div>
         </article>
@@ -570,10 +572,10 @@ export function AnalyticsView() {
         <article className="chart-card" data-testid="chart-wards-card">
           <div className="chart-card__header">
             <div>
-              <div className="analytics-card-eyebrow">Geographic</div>
-              <h3 className="chart-card__title">Features by Ward</h3>
+              <div className="analytics-card-eyebrow">{t("analytics.geographic")}</div>
+              <h3 className="chart-card__title">{t("analytics.featuresByWard")}</h3>
             </div>
-            <span className="chart-card__badge">{wardData.length} shown</span>
+            <span className="chart-card__badge">{wardData.length} {t("analytics.shown")}</span>
           </div>
           <div className="chart-card__body">
             {wardData.length > 0 ? (
@@ -583,7 +585,7 @@ export function AnalyticsView() {
                   <XAxis type="number" tick={{ fill: "var(--ink-mute)", fontSize: 11 }} axisLine={false} tickLine={false} />
                   <YAxis type="category" dataKey="ward" tick={{ fill: "var(--ink-dim)", fontSize: 11 }} axisLine={false} tickLine={false} width={90} />
                   <Tooltip contentStyle={{ background: "var(--surface-2)", border: "1px solid var(--edge)", borderRadius: 8, fontSize: 12, color: "var(--ink)" }} />
-                  <Bar dataKey="feature_count" name="Features" fill="var(--accent)" radius={[0, 6, 6, 0]}>
+                   <Bar dataKey="feature_count" name={t("analytics.features")} fill="var(--accent)" radius={[0, 6, 6, 0]}>
                     {wardData.map((item) => (
                       <Cell
                         key={item.ward}
@@ -595,7 +597,7 @@ export function AnalyticsView() {
                 </BarChart>
               </ResponsiveContainer>
             ) : (
-              <EmptyState text="No ward assignment exists for the applied scope." />
+              <EmptyState text={t("analytics.emptyWard")} />
             )}
           </div>
         </article>
@@ -603,8 +605,8 @@ export function AnalyticsView() {
         <article className="chart-card" data-testid="chart-heatmap-card">
           <div className="chart-card__header">
             <div>
-              <div className="analytics-card-eyebrow">Risk tiles</div>
-              <h3 className="chart-card__title">Category Severity Overview</h3>
+              <div className="analytics-card-eyebrow">{t("analytics.riskTiles")}</div>
+              <h3 className="chart-card__title">{t("analytics.categorySeverity")}</h3>
             </div>
           </div>
           <div className="chart-card__body">
@@ -619,12 +621,12 @@ export function AnalyticsView() {
                   >
                     <span title={item.category}>{item.category}</span>
                     <strong style={{ color: item.color }}>{item.avgSeverity.toFixed(2)}</strong>
-                    <small>{item.severityLevel} · {item.count.toLocaleString()} features</small>
+                    <small>{item.severityLevel} · {item.count.toLocaleString()} {t("analytics.features")}</small>
                   </button>
                 ))}
               </div>
             ) : (
-              <EmptyState text="No category severity data exists for the applied scope." />
+              <EmptyState text={t("analytics.emptyCategorySeverity")} />
             )}
           </div>
         </article>
@@ -633,18 +635,16 @@ export function AnalyticsView() {
       <section className="chart-card" data-testid="chart-insights-card">
         <div className="chart-card__header">
           <div>
-            <div className="analytics-card-eyebrow">Summary</div>
-            <h3 className="chart-card__title">Verified Scope Highlights</h3>
+              <div className="analytics-card-eyebrow">{t("analytics.summary")}</div>
+              <h3 className="chart-card__title">{t("analytics.verifiedScope")}</h3>
+            </div>
           </div>
-        </div>
-        <div className="chart-card__body">
           <div className="analytics-insight-grid">
-            <InsightCard title="Most Common Category" value={topCategories[0]?.category || "N/A"} subtitle={`${topCategories[0]?.count ?? 0} matching features`} color="var(--blue)" />
-            <InsightCard title="Highest Coverage Ward" value={wardData[0]?.ward || "N/A"} subtitle={`${wardData[0]?.feature_count ?? 0} matching features`} color="var(--danger)" />
-            <InsightCard title="Resolution Rate" value={healthScore == null ? "N/A" : `${healthScore}%`} subtitle={`${overview?.resolved_reviews ?? 0} of ${overview?.total_review_items ?? 0} resolved`} color="var(--ok)" />
-            <InsightCard title="Urgent Attention" value={String(overview?.severity_breakdown.find((item) => item.bucket === "high")?.count ?? 0)} subtitle="High-severity features" color="var(--warn)" />
+            <InsightCard title={t("analytics.insightMostCommon")} value={topCategories[0]?.category || t("analytics.na")} subtitle={`${topCategories[0]?.count ?? 0} ${t("analytics.matchingFeatures")}`} color="var(--blue)" />
+            <InsightCard title={t("analytics.insightHighestWard")} value={wardData[0]?.ward || t("analytics.na")} subtitle={`${wardData[0]?.feature_count ?? 0} ${t("analytics.matchingFeatures")}`} color="var(--danger)" />
+            <InsightCard title={t("analytics.insightResolutionRate")} value={healthScore == null ? t("analytics.na") : `${healthScore}%`} subtitle={`${overview?.resolved_reviews ?? 0} ${t("analytics.of")} ${overview?.total_review_items ?? 0} resolved`} color="var(--ok)" />
+            <InsightCard title={t("analytics.insightUrgent")} value={String(overview?.severity_breakdown.find((item) => item.bucket === "high")?.count ?? 0)} subtitle={t("analytics.highSeverityFeatures")} color="var(--warn)" />
           </div>
-        </div>
       </section>
 
       <AnalyticsManholeReadiness
@@ -689,17 +689,17 @@ export function AnalyticsView() {
         datasetIds={appliedDatasetIds}
         categories={effectiveCategories}
         filters={crossFilters}
-        disabledReason={scopeDirty ? "Click Analyze to apply the draft dataset/category changes before exporting." : null}
+        disabledReason={scopeDirty ? t("analytics.exportDisabled") : null}
       />
 
       {overview && overview.category_breakdown.length > 0 && (
         <section className="chart-card" data-testid="category-table-card">
           <div className="chart-card__header">
             <div>
-              <div className="analytics-card-eyebrow">Detailed</div>
-              <h3 className="chart-card__title">Complete Category Breakdown</h3>
+              <div className="analytics-card-eyebrow">{t("analytics.detailed")}</div>
+              <h3 className="chart-card__title">{t("analytics.categoryBreakdown")}</h3>
             </div>
-            <span className="chart-card__badge">{overview.category_breakdown.length} categories</span>
+            <span className="chart-card__badge">{overview.category_breakdown.length} {t("analytics.categoriesCount")}</span>
           </div>
           <div className="chart-card__body" style={{ padding: 0 }}>
             <div style={{ maxHeight: 440, overflowY: "auto" }}>
@@ -707,11 +707,11 @@ export function AnalyticsView() {
                 <thead className="analytics-sticky-head">
                   <tr>
                     <th style={{ width: 40 }} />
-                    <th>Category</th>
-                    <th style={{ textAlign: "right" }}>Count</th>
-                    <th style={{ textAlign: "right" }}>% of Scope</th>
-                    <th style={{ textAlign: "right" }}>Avg Severity</th>
-                    <th style={{ width: 180 }}>Distribution</th>
+                    <th>{t("analytics.colCategory")}</th>
+                    <th style={{ textAlign: "right" }}>{t("analytics.colCount")}</th>
+                    <th style={{ textAlign: "right" }}>{t("analytics.colPctOfScope")}</th>
+                    <th style={{ textAlign: "right" }}>{t("analytics.colAvgSeverity")}</th>
+                    <th style={{ width: 180 }}>{t("analytics.colDistribution")}</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -760,9 +760,9 @@ export function AnalyticsView() {
         severityBuckets={effectiveSeverityBuckets}
         disabledReason={
           scopeDirty
-            ? "Apply the draft dataset/category changes before generating a new AI summary."
+            ? t("analytics.aiSummaryDisabled")
             : activeReadinessField
-              ? "Clear the Manhole readiness view before generating an AI summary; AI reports currently use dataset, category, ward, and severity scope only."
+              ? t("analytics.aiSummaryDisabledReadiness")
               : null
         }
       />

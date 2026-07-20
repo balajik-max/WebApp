@@ -24,10 +24,21 @@ CANONICAL_CLASSES: dict[str, str] = {
     ),
     "Power_Line": "Overhead or underground electrical conductor lines",
     "Utility_Pole": "Poles carrying wires, transformers, or cameras but with no light fixture",
+    "Road_Centerline": (
+        "The single spine line running down the middle of a road — used to "
+        "walk/sample a road for width and continuity checks, not the paved "
+        "edge itself"
+    ),
+    "Road_Surface": (
+        "The paved carriageway edge or footprint — concrete/asphalt road "
+        "edges, used to measure the real width of the right-of-way against "
+        "the centerline"
+    ),
     "Road_Segment": (
-        "Carriageway centerlines, road edges, footpaths, and sewage lines "
-        "— the real right-of-way a new pipe can actually be dug along "
-        "(manholes sit on these, not in the middle of a building)"
+        "Generic/ambiguous road right-of-way, footpaths, and sewage lines "
+        "— any real right-of-way a new pipe can actually be dug along "
+        "(manholes sit on these, not in the middle of a building), but not "
+        "distinguishable as specifically the centerline or the paved edge"
     ),
     "Building": "Building footprints and structures",
     "Signage": "Road signage, markers, and street signs",
@@ -61,9 +72,16 @@ CLASS_SYNONYMS: dict[str, set[str]] = {
     },
     "Power_Line": {"power line", "electric line", "overhead line"},
     "Utility_Pole": {"utility pole", "transformer pole", "cc camera pole"},
+    "Road_Centerline": {
+        "road centerline", "centerline", "center line", "carriageway centerline",
+        "road center line",
+    },
+    "Road_Surface": {
+        "concrete road", "concrete edge", "road edge", "carriageway",
+        "asphalt road", "bituminous road", "tar road", "road surface",
+    },
     "Road_Segment": {
-        "concrete road", "road", "road centerline", "concrete edge",
-        "sidewalk", "footpath", "foot path", "sewage line", "sewage_line",
+        "road", "sidewalk", "footpath", "foot path", "sewage line", "sewage_line",
         "sewerage line", "sewer line",
     },
     "Building": {"building", "building extenstions", "building extensions"},

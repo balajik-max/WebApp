@@ -89,17 +89,18 @@ class Settings(BaseSettings):
     architect_password: str = Field(validation_alias="ARCHITECT_PASSWORD")
     architect_name: str = Field(default="City Architect", validation_alias="ARCHITECT_NAME")
 
-    commissioner_email: str = Field(validation_alias="COMMISSIONER_EMAIL")
+    # --- Additional civic-engineering roles (R&D) -----------------------
+    commissioner_email: str = Field(default="commissioner@davangere.gov.in", validation_alias="COMMISSIONER_EMAIL")
     commissioner_password: str = Field(validation_alias="COMMISSIONER_PASSWORD")
-    commissioner_name: str = Field(default="Commissioner", validation_alias="COMMISSIONER_NAME")
+    commissioner_name: str = Field(default="City Commissioner", validation_alias="COMMISSIONER_NAME")
 
-    aee_email: str = Field(validation_alias="AEE_EMAIL")
+    aee_email: str = Field(default="aee@davangere.gov.in", validation_alias="AEE_EMAIL")
     aee_password: str = Field(validation_alias="AEE_PASSWORD")
-    aee_name: str = Field(default="AEE", validation_alias="AEE_NAME")
+    aee_name: str = Field(default="Assistant Executive Engineer", validation_alias="AEE_NAME")
 
-    ae_email: str = Field(validation_alias="AE_EMAIL")
+    ae_email: str = Field(default="ae@davangere.gov.in", validation_alias="AE_EMAIL")
     ae_password: str = Field(validation_alias="AE_PASSWORD")
-    ae_name: str = Field(default="AE", validation_alias="AE_NAME")
+    ae_name: str = Field(default="Assistant Engineer", validation_alias="AE_NAME")
 
 
 @lru_cache

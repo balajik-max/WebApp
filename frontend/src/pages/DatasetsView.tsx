@@ -1,8 +1,9 @@
-import React, { useCallback, useEffect, useRef, useState } from "react";
+﻿import React, { useCallback, useEffect, useRef, useState } from "react";
 import JSZip from "jszip";
 import { deleteDataset, fetchDatasets, updateDataset, type DatasetRow } from "../lib/workflow";
 import { AttributeTable } from "../components/AttributeTable";
 import { UnclassifiedCategoriesPanel } from "../components/UnclassifiedCategoriesPanel";
+import { useLanguage } from "../context/LanguageContext";
 
 const REFRESH_MS = 4000;
 
@@ -16,7 +17,7 @@ const IMAGE_EXTENSIONS = [".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp"];
 const SHAPEFILE_EXTENSIONS = [".shp", ".dbf", ".shx", ".prj", ".cpg"];
 const REQUIRED_SHAPEFILE_EXTENSIONS = [".shp", ".dbf", ".shx", ".prj"];
 
-// File System Access API — not yet in TS's DOM lib. Only Chromium ships it;
+// File System Access API â€” not yet in TS's DOM lib. Only Chromium ships it;
 // callers must feature-detect `window.showDirectoryPicker` before use.
 declare global {
   interface FileSystemDirectoryHandle {
@@ -26,6 +27,7 @@ declare global {
     showDirectoryPicker?: (options?: { mode?: "read" | "readwrite" }) => Promise<FileSystemDirectoryHandle>;
   }
 }
+
 
 const FILE_TYPE_INFO: Record<string, { icon: React.ReactNode; label: string }> = {
   shapefile: {
@@ -84,12 +86,12 @@ function guessWardFromFilename(filename: string): string | null {
   return null;
 }
 
-// A raw .gdb (File Geodatabase) is a *folder*, not a single file — the
+// A raw .gdb (File Geodatabase) is a *folder*, not a single file â€” the
 // browser file APIs only ever hand us a placeholder for a dropped/selected
 // directory, never its contents, unless we explicitly walk it. These
 // helpers read every file inside an unzipped .gdb folder and zip it
 // client-side into the exact structure the backend's zipped-GDB reader
-// already knows how to open (a <name>.gdb/ directory at the zip root) —
+// already knows how to open (a <name>.gdb/ directory at the zip root) â€”
 // no backend change needed, it just never sees the difference.
 interface WebkitFileEntry {
   isFile: true;
@@ -114,7 +116,7 @@ async function readEntriesBatch(reader: {
 async function readAllDirEntries(dirEntry: WebkitDirEntry): Promise<WebkitEntry[]> {
   const reader = dirEntry.createReader();
   const all: WebkitEntry[] = [];
-  // readEntries() only returns a batch at a time — must keep calling until empty.
+  // readEntries() only returns a batch at a time â€” must keep calling until empty.
   let batch = await readEntriesBatch(reader);
   while (batch.length > 0) {
     all.push(...batch);
@@ -153,7 +155,7 @@ function collectPickedFolder(fileList: FileList): { name: string; files: { path:
 }
 
 // Thrown when a granted folder is too big to walk automatically (e.g. the
-// user picked a whole drive by mistake) — distinct from AbortError/
+// user picked a whole drive by mistake) â€” distinct from AbortError/
 // SecurityError so the caller can give an actionable message instead of
 // treating it like a declined prompt.
 class FolderScanLimitError extends Error {}
@@ -168,11 +170,11 @@ async function walkDirectoryHandle(
   out: { path: string; file: File }[]
 ): Promise<void> {
   if (depth > MAX_SCAN_DEPTH) {
-    throw new FolderScanLimitError("That folder is nested too deep to scan automatically — choose the folder that directly contains the .obj (or its parent, if it has a metadata.xml).");
+    throw new FolderScanLimitError("That folder is nested too deep to scan automatically â€” choose the folder that directly contains the .obj (or its parent, if it has a metadata.xml).");
   }
   for await (const entry of dirHandle.values()) {
     if (out.length > MAX_SCAN_ENTRIES) {
-      throw new FolderScanLimitError("That folder has too many files to scan automatically — choose a smaller folder, ideally the one that directly contains the .obj.");
+      throw new FolderScanLimitError("That folder has too many files to scan automatically â€” choose a smaller folder, ideally the one that directly contains the .obj.");
     }
     const path = `${basePath}${entry.name}`;
     if (entry.kind === "directory") {
@@ -184,11 +186,11 @@ async function walkDirectoryHandle(
 }
 
 // A ContextCapture/Bentley-style tiled mesh export (what the drone survey
-// pipeline behind this platform produces) carries its real-world anchor —
-// SRS + the point the OBJ's local meter offsets are measured from — in a
+// pipeline behind this platform produces) carries its real-world anchor â€”
+// SRS + the point the OBJ's local meter offsets are measured from â€” in a
 // `metadata.xml` file. That file conventionally sits *next to* the tile
 // folder, not inside it (e.g. "3D MODEL/metadata.xml" alongside
-// "3D MODEL/Block0/Block0.obj") — sniff by content, not name, since the
+// "3D MODEL/Block0/Block0.obj") â€” sniff by content, not name, since the
 // convention isn't universal, and it may not be present at all.
 async function isGeoMetadataFile(file: File): Promise<boolean> {
   if (extensionOf(file.name) !== ".xml" || file.size > 65_536) return false;
@@ -200,14 +202,14 @@ async function isGeoMetadataFile(file: File): Promise<boolean> {
 }
 
 // A single bare .obj (picked via the plain file input, or dropped as one
-// file) carries no path info a browser will ever hand us — there is no API
+// file) carries no path info a browser will ever hand us â€” there is no API
 // that goes from a File back to its siblings on disk. The only way to pull
 // in its .mtl/textures/geo-referencing without the user hand-picking them
 // is to ask for a folder via the File System Access API and read it
-// ourselves — walking subfolders too, since the geo-reference file is
+// ourselves â€” walking subfolders too, since the geo-reference file is
 // often one level above wherever the .obj itself lives.
 async function collectObjCompanionsFromDisk(objFile: File): Promise<{ path: string; file: File }[]> {
-  // Deliberately not caught here — the picker throws "AbortError" when the
+  // Deliberately not caught here â€” the picker throws "AbortError" when the
   // user dismisses the dialog, and "SecurityError"/"NotAllowedError" when
   // Chromium decided this call isn't tied to a fresh-enough user gesture
   // (can happen chaining straight off an <input> change event). Callers
@@ -282,9 +284,16 @@ function getFileIcon(type: string): React.ReactNode {
 }
 
 export function DatasetsView() {
+  const { t } = useLanguage();
   const [rows, setRows] = useState<DatasetRow[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [mounted, setMounted] = useState(false);
+  const [storage, setStorage] = useState<{
+    total_bytes: number;
+    used_bytes: number;
+    free_bytes: number;
+    used_percent: number;
+  } | null>(null);
 
   const [dragOver, setDragOver] = useState(false);
   const [uploadName, setUploadName] = useState("");
@@ -309,6 +318,18 @@ export function DatasetsView() {
 
   useEffect(() => {
     setMounted(true);
+  }, []);
+
+  useEffect(() => {
+    const ctrl = new AbortController();
+    fetch(`${import.meta.env.VITE_API_BASE_URL ?? ""}/api/v1/system/storage`, {
+      credentials: "include",
+      signal: ctrl.signal,
+    })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => d && setStorage(d))
+      .catch(() => {});
+    return () => ctrl.abort();
   }, []);
 
   const refresh = useCallback(async (signal?: AbortSignal) => {
@@ -347,7 +368,7 @@ export function DatasetsView() {
     if (f && !uploadName.trim()) setUploadName(f.name.replace(/\.[^.]+$/, ""));
     // Best-effort ward suggestion from the filename (e.g. "Davangere
     // Ghandinagar Ward.gdb-...zip" -> "Ghandinagar") so re-uploading the
-    // same survey doesn't silently drop its ward again — never overrides
+    // same survey doesn't silently drop its ward again â€” never overrides
     // a ward the user already typed.
     if (f && !uploadWard.trim()) {
       const guess = guessWardFromFilename(f.name);
@@ -389,7 +410,7 @@ export function DatasetsView() {
     }
     if (files.length === 1 && extensionOf(files[0].name) === ".obj") {
       // A bare .obj needs its .mtl/textures/metadata.xml pulled in from
-      // disk automatically — see pickObjWithAutoCompanions for why this
+      // disk automatically â€” see pickObjWithAutoCompanions for why this
       // can't just be pickFile(files[0]).
       await pickObjWithAutoCompanions(files[0]);
       return;
@@ -421,7 +442,7 @@ export function DatasetsView() {
 
   // Several individually selected/dropped photos are bundled into one zip
   // client-side (same JSZip mechanism the .gdb folder path already uses)
-  // so they upload and ingest as a single dataset — the backend's
+  // so they upload and ingest as a single dataset â€” the backend's
   // ImageReader unpacks the zip and geo-tags each photo from its own EXIF.
   async function pickMultiplePhotos(files: File[]) {
     setUploadError(null);
@@ -440,15 +461,15 @@ export function DatasetsView() {
   }
 
   // A bare .obj arriving alone (single browse-select or single drag/drop)
-  // never carries its .mtl/textures/metadata.xml — the browser hands us
+  // never carries its .mtl/textures/metadata.xml â€” the browser hands us
   // exactly the one File and nothing else. Rather than making the user
   // hunt down and multi-select the companion files themselves, immediately
   // ask for a folder (one native prompt) and pull the matching files in
-  // ourselves. Falls back to the bare file — with an explanation — when the
+  // ourselves. Falls back to the bare file â€” with an explanation â€” when the
   // API isn't supported, the user declines the prompt, or nothing is found.
   //
   // Shared by the automatic first attempt and the manual retry button below
-  // — the retry button exists because Chromium sometimes refuses to open a
+  // â€” the retry button exists because Chromium sometimes refuses to open a
   // second native picker chained off an <input> change event (no fresh
   // enough user gesture), in which case a real click is the only way to
   // get a valid one.
@@ -459,7 +480,7 @@ export function DatasetsView() {
       const companions = await collectObjCompanionsFromDisk(file);
       if (companions.length <= 1) {
         pickFile(file);
-        setObjAutoNotice("⚠️ No .mtl or texture files were found next to this .obj — it will upload without materials.");
+        setObjAutoNotice("âš ï¸ No .mtl or texture files were found next to this .obj â€” it will upload without materials.");
         return;
       }
       const hasGeoMeta = companions.some((c) => extensionOf(c.file.name) === ".xml");
@@ -467,30 +488,30 @@ export function DatasetsView() {
       const zipped = await zipCollectedFiles(name, companions);
       pickFile(zipped);
       if (hasGeoMeta) {
-        setObjAutoNotice("✓ Textures and geo-referencing (metadata.xml) loaded automatically.");
+        setObjAutoNotice("âœ“ Textures and geo-referencing (metadata.xml) loaded automatically.");
       } else {
-        // Don't just warn and hope they know what to do — the metadata.xml
+        // Don't just warn and hope they know what to do â€” the metadata.xml
         // (when it exists) is conventionally one level *above* wherever the
         // .obj itself lives, so the folder they just granted was very
         // plausibly the wrong one. Offer the retry button right here
         // instead of making them notice a warning and manually reselect.
         setObjAutoRetryFile(file);
         setObjAutoNotice(
-          "⚠️ Textures loaded, but no metadata.xml was found, so this model's map position may be approximate. If the export has one, click below and pick the PARENT of the folder you just chose."
+          "âš ï¸ Textures loaded, but no metadata.xml was found, so this model's map position may be approximate. If the export has one, click below and pick the PARENT of the folder you just chose."
         );
       }
     } catch (err) {
       pickFile(file);
       if (err instanceof FolderScanLimitError) {
         setObjAutoRetryFile(file);
-        setObjAutoNotice(`⚠️ ${err.message}`);
+        setObjAutoNotice(`âš ï¸ ${err.message}`);
       } else if ((err as Error).name === "AbortError") {
         setObjAutoNotice(
-          "⚠️ Folder access was declined, so textures can't be auto-loaded. Reselect the .obj to try again, or use \"browse a folder\"."
+          "âš ï¸ Folder access was declined, so textures can't be auto-loaded. Reselect the .obj to try again, or use \"browse a folder\"."
         );
       } else {
         setObjAutoRetryFile(file);
-        setObjAutoNotice("⚠️ Couldn't open the folder picker automatically — click below to grant folder access and load textures.");
+        setObjAutoNotice("âš ï¸ Couldn't open the folder picker automatically â€” click below to grant folder access and load textures.");
       }
     } finally {
       setZipping(false);
@@ -501,7 +522,7 @@ export function DatasetsView() {
     if (typeof window.showDirectoryPicker !== "function") {
       pickFile(file);
       setObjAutoNotice(
-        "⚠️ This browser can't auto-load companion files for a single .obj (Chrome/Edge only). Use \"browse a folder\" below, or drag the whole folder in, to include the .mtl and textures."
+        "âš ï¸ This browser can't auto-load companion files for a single .obj (Chrome/Edge only). Use \"browse a folder\" below, or drag the whole folder in, to include the .mtl and textures."
       );
       return;
     }
@@ -511,7 +532,7 @@ export function DatasetsView() {
   // A dropped/browsed folder is supported if it's a File Geodatabase (by
   // name), a shapefile bundle, a folder full of photos (checked by content,
   // since a photo folder has no special naming convention), or a 3D model
-  // folder/tree (contains an .obj somewhere) — the latter is what makes a
+  // folder/tree (contains an .obj somewhere) â€” the latter is what makes a
   // folder one level up from the .obj (i.e. containing a metadata.xml
   // geo-reference sibling to the model's own folder) work, since these
   // collectors already walk subfolders and grab everything, unfiltered.
@@ -528,7 +549,7 @@ export function DatasetsView() {
       const isShapefile = files.length > 0 && files.every(({ file }) => SHAPEFILE_EXTENSIONS.includes(extensionOf(file.name)));
       if (!isGdb && !isAllImages && !isShapefile && !isObjModel) {
         setUploadError(
-          `"${name}" doesn't look like a File Geodatabase (.gdb), a shapefile folder, a folder of photos, or a 3D model folder — other folder types aren't supported, only individual files.`
+          `"${name}" doesn't look like a File Geodatabase (.gdb), a shapefile folder, a folder of photos, or a 3D model folder â€” other folder types aren't supported, only individual files.`
         );
         return;
       }
@@ -552,8 +573,8 @@ export function DatasetsView() {
         }
         setObjAutoNotice(
           hasGeoMeta
-            ? "✓ Textures and geo-referencing (metadata.xml) loaded automatically."
-            : "⚠️ No metadata.xml found in that folder — if this model uses local/tiled coordinates, its map position may be approximate."
+            ? "âœ“ Textures and geo-referencing (metadata.xml) loaded automatically."
+            : "âš ï¸ No metadata.xml found in that folder â€” if this model uses local/tiled coordinates, its map position may be approximate."
         );
       }
     } catch (err) {
@@ -601,7 +622,7 @@ export function DatasetsView() {
       return;
     }
     if (!uploadName.trim()) {
-      setUploadError("Give the dataset a name.");
+      setUploadError(t("datasets.nameRequired"));
       return;
     }
     setUploadBusy(true);
@@ -631,7 +652,7 @@ export function DatasetsView() {
       setUploadName("");
       setUploadWard("");
       if (fileInputRef.current) fileInputRef.current.value = "";
-      setUploadNotice(`Queued: ${body.dataset?.name ?? uploadName} → processing in background.`);
+      setUploadNotice(`${t("datasets.queueMsg")} ${body.dataset?.name ?? uploadName} â†’ ${t("datasets.processingNote")}`);
       window.setTimeout(() => setUploadNotice(null), 5000);
       void refresh();
     } catch (err) {
@@ -642,7 +663,6 @@ export function DatasetsView() {
     }
   }
 
-  const readyCount = rows?.filter((r) => r.status === "ready").length ?? 0;
   const processingCount = rows?.filter((r) => r.status === "processing" || r.status === "queued").length ?? 0;
   const failedCount = rows?.filter((r) => r.status === "failed").length ?? 0;
   const totalSize = rows?.reduce((sum, r) => sum + (r.size_bytes ?? 0), 0) ?? 0;
@@ -650,48 +670,67 @@ export function DatasetsView() {
   return (
     <div className={`datasets-page ${mounted ? "datasets-page--mounted" : ""}`} data-testid="datasets-page">
 
-      {/* ── HEADER ──────────────────────────────────────────────────── */}
+      {/* â”€â”€ HEADER â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */}
       <header className="ds-header">
         <div className="ds-header__left">
-          <h1 className="ds-header__title">Survey Datasets</h1>
-          <p className="ds-header__sub">Upload, manage, and analyze geospatial survey data for Davangere city</p>
+          <h1 className="ds-header__title">{t("datasets.title")}</h1>
+          <p className="ds-header__sub">{t("datasets.sub")}</p>
         </div>
         {rows && rows.length > 0 && (
           <div className="ds-stats">
-            <div className="ds-stat ds-stat--accent">
+            <div className="ds-stat">
               <span className="ds-stat__value">{rows.length}</span>
-              <span className="ds-stat__label">Total</span>
-            </div>
-            <div className="ds-stat ds-stat--ok">
-              <span className="ds-stat__value">{readyCount}</span>
-              <span className="ds-stat__label">Ready</span>
+              <span className="ds-stat__label">{t("datasets.stat.total")}</span>
             </div>
             {processingCount > 0 && (
               <div className="ds-stat ds-stat--warn">
                 <span className="ds-stat__value">{processingCount}</span>
-                <span className="ds-stat__label">Processing</span>
+                <span className="ds-stat__label">{t("datasets.stat.processing")}</span>
               </div>
             )}
             {failedCount > 0 && (
               <div className="ds-stat ds-stat--danger">
                 <span className="ds-stat__value">{failedCount}</span>
-                <span className="ds-stat__label">Failed</span>
+                <span className="ds-stat__label">{t("datasets.stat.failed")}</span>
               </div>
             )}
-            <div className="ds-stat">
-              <span className="ds-stat__value">{formatBytes(totalSize)}</span>
-              <span className="ds-stat__label">Total Size</span>
+            <div className="ds-stat ds-stat--storage">
+              <div className="ds-stat__top">
+                <span className="ds-stat__value">{formatBytes(totalSize)}</span>
+                {storage && <span className="ds-stat__used">{storage.used_percent}% {t("common.used")}</span>}
+              </div>
+              {storage && (
+                <div className="ds-storage">
+                  <div className="ds-storage__bar">
+                    <div
+                      className="ds-storage__fill"
+                      style={{
+                        width: `${Math.min(100, storage.used_percent)}%`,
+                        background:
+                          storage.used_percent >= 85
+                            ? "linear-gradient(90deg,#f59e0b,#ef4444)"
+                            : "linear-gradient(90deg,#22c55e,#14b8a6,#3b82f6,#8b5cf6,#ef4444)",
+                      }}
+                    />
+                  </div>
+                  <span className="ds-stat__label ds-stat__label--bottom">
+                    <span className="ds-stat__label-side">{t("datasets.stat.totalsize")}</span>
+                    <span className="ds-stat__label-side">{formatBytes(storage.total_bytes)}</span>
+                  </span>
+                </div>
+              )}
+              {!storage && <span className="ds-stat__label">{t("datasets.stat.totalsize")}</span>}
             </div>
           </div>
         )}
       </header>
 
-      {/* ── MAIN GRID ───────────────────────────────────────────────── */}
+      {/* â”€â”€ MAIN GRID â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */}
       <div className="ds-grid">
-      <div className="ds-grid__row">
+      <div className="ds-grid__row ds-grid__row--split">
 
         {/* ── UPLOAD SECTION ────────────────────────────────────────── */}
-        <section className="ds-upload-card ds-grid__upload">
+        <section className="ds-upload-card ds-grid__half">
           <div className="ds-upload-card__header">
             <div className="ds-upload-card__icon">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" width="24" height="24">
@@ -699,8 +738,8 @@ export function DatasetsView() {
               </svg>
             </div>
             <div>
-              <h2 className="ds-upload-card__title">Upload New Dataset</h2>
-              <p className="ds-upload-card__sub">Add geospatial data to the survey platform</p>
+              <h2 className="ds-upload-card__title">{t("datasets.upload")}</h2>
+              <p className="ds-upload-card__sub">{t("datasets.uploadSub")}</p>
             </div>
           </div>
 
@@ -714,7 +753,7 @@ export function DatasetsView() {
 
               // A dropped folder (e.g. an unzipped .gdb) arrives as a
               // FileSystemEntry via dataTransfer.items, not as a normal
-              // File — read it via webkitGetAsEntry() and zip it in the
+              // File â€” read it via webkitGetAsEntry() and zip it in the
               // browser before handing it to the normal upload flow.
               const item = e.dataTransfer.items?.[0];
               const entry = (item as unknown as { webkitGetAsEntry?: () => WebkitEntry | null })
@@ -748,7 +787,7 @@ export function DatasetsView() {
               id="dz-folder"
               ref={folderInputRef}
               type="file"
-              // @ts-expect-error — webkitdirectory isn't in the standard DOM typings
+              // @ts-expect-error â€” webkitdirectory isn't in the standard DOM typings
               webkitdirectory=""
               directory=""
               multiple
@@ -786,8 +825,8 @@ export function DatasetsView() {
 
             {zipping ? (
               <div className="ds-dropzone__content">
-                <span className="ds-dropzone__label">Validating and bundling files in your browser...</span>
-                <span className="ds-dropzone__hint">Shapefiles, large .gdb folders, and photo batches may take a few seconds.</span>
+                <span className="ds-dropzone__label">{t("datasets.validating")}</span>
+                <span className="ds-dropzone__hint">{t("datasets.validatingHint")}</span>
               </div>
             ) : !uploadFile ? (
               <label htmlFor="dz-file" className="ds-dropzone__content">
@@ -798,11 +837,11 @@ export function DatasetsView() {
                   </svg>
                 </div>
                 <span className="ds-dropzone__label">
-                  {dragOver ? "Drop file(s) or a folder here" : "Drag & drop data, all shapefile components, or a supported folder here"}
+                  {dragOver ? t("datasets.dropHere") : t("datasets.dropzone")}
                 </span>
                 <span className="ds-dropzone__hint">
-                  or <span className="ds-dropzone__browse">browse files</span>
-                  {" · "}
+                  {t("datasets.or")} <span className="ds-dropzone__browse">{t("datasets.browse")}</span>
+                  {" Â· "}
                   <span
                     className="ds-dropzone__browse"
                     onClick={(e) => {
@@ -811,9 +850,9 @@ export function DatasetsView() {
                       folderInputRef.current?.click();
                     }}
                   >
-                    browse a folder (.shp, .gdb, or photos)
+                    {t("datasets.browseFolder")}
                   </span>
-                  {" · "}
+                  {" Â· "}
                   <span
                     className="ds-dropzone__browse"
                     onClick={(e) => {
@@ -826,7 +865,7 @@ export function DatasetsView() {
                   </span>
                 </span>
                 <span className="ds-dropzone__formats">
-                  GeoJSON · Shapefile · GeoPackage · KML · GeoTIFF · OBJ · CSV · Excel · Photos (JPG/PNG/GIF/BMP/WEBP)
+                  GeoJSON Â· Shapefile Â· GeoPackage Â· KML Â· GeoTIFF Â· OBJ Â· CSV Â· Excel Â· Photos (JPG/PNG/GIF/BMP/WEBP)
                 </span>
               </label>
             ) : (
@@ -836,8 +875,8 @@ export function DatasetsView() {
                   <span className="ds-dropzone__file-name">{uploadFile.name}</span>
                   <span className="ds-dropzone__file-size">{formatBytes(uploadFile.size)}</span>
                   {(extensionOf(uploadFile.name) === ".obj" || objAutoNotice) && (
-                    <span className="ds-dropzone__warning" style={{ color: objAutoNotice?.startsWith("✓") ? "#4ade80" : "#eab308", fontSize: "0.8rem", marginTop: "4px", display: "block" }}>
-                      {objAutoNotice ?? "⚠️ Bare .obj file — it will upload without materials."}
+                    <span className="ds-dropzone__warning" style={{ color: objAutoNotice?.startsWith("âœ“") ? "#4ade80" : "#eab308", fontSize: "0.8rem", marginTop: "4px", display: "block" }}>
+                      {objAutoNotice ?? "âš ï¸ Bare .obj file â€” it will upload without materials."}
                       {objAutoRetryFile && (
                         <button
                           type="button"
@@ -875,21 +914,21 @@ export function DatasetsView() {
             )}
           </form>
 
-          {/* ── FORM FIELDS ─────────────────────────────────────────── */}
+          {/* â”€â”€ FORM FIELDS â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */}
           <div className="ds-fields">
             <label className="ds-field">
               <span className="ds-field__label">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" width="14" height="14">
                   <path d="M7 7h.01M7 3h5c.512 0 1.024.195 1.414.586l7 7a2 2 0 010 2.828l-7 7a2 2 0 01-2.828 0l-7-7A1.994 1.994 0 013 12V7a4 4 0 014-4z" strokeLinecap="round" strokeLinejoin="round" />
                 </svg>
-                Dataset Name
+                {t("datasets.datasetName")}
               </span>
               <input
                 className="ds-field__input"
                 data-testid="upload-name"
                 value={uploadName}
                 onChange={(e) => setUploadName(e.target.value)}
-                placeholder="e.g. Ward 12 streetlights survey"
+                placeholder={t("datasets.placeholderName")}
                 disabled={uploadBusy}
               />
             </label>
@@ -899,20 +938,20 @@ export function DatasetsView() {
                   <path d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z" strokeLinecap="round" strokeLinejoin="round" />
                   <path d="M15 11a3 3 0 11-6 0 3 3 0 016 0z" strokeLinecap="round" strokeLinejoin="round" />
                 </svg>
-                Ward (Optional)
+                {t("datasets.wardOptional")}
               </span>
               <input
                 className="ds-field__input"
                 data-testid="upload-ward"
                 value={uploadWard}
                 onChange={(e) => setUploadWard(e.target.value)}
-                placeholder="e.g. Gandinagar"
+                placeholder={t("datasets.placeholderWard")}
                 disabled={uploadBusy}
               />
             </label>
           </div>
 
-          {/* ── MESSAGES ────────────────────────────────────────────── */}
+          {/* â”€â”€ MESSAGES â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */}
           {uploadError && (
             <div className="ds-message ds-message--error" data-testid="upload-error">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="16" height="16">
@@ -941,121 +980,34 @@ export function DatasetsView() {
             {uploadBusy ? (
               <>
                 <span className="ds-upload-btn__spinner" />
-                Uploading & Ingesting...
+                {t("datasets.uploading")}
               </>
             ) : (
               <>
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="18" height="18">
                   <path d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" strokeLinecap="round" strokeLinejoin="round" />
                 </svg>
-                Upload & Ingest Dataset
+                {t("datasets.uploadBtn")}
               </>
             )}
           </button>
         </section>
 
-        {/* ── SUPPORTED FORMATS ─────────────────────────────────────── */}
-        <section className="ds-grid__formats">
-          <div className="ds-info-card">
-            <div className="ds-info-card__header">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" width="18" height="18">
-                <path d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" strokeLinecap="round" strokeLinejoin="round" />
-              </svg>
-              <h3>Supported Formats</h3>
-            </div>
-            <ul className="ds-format-list">
-              <li>
-                <span className="ds-format-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" width="14" height="14"><path d="M9 20l-5.447-2.724A1 1 0 013 16.382V5.618a1 1 0 011.447-.894L9 7m0 13l6-3m-6 3V7m6 10l5.447 2.724A1 1 0 0021 18.382V7.618a1 1 0 00-.553-.894L15 4m0 13V4m0 0L9 7" strokeLinecap="round" strokeLinejoin="round" /></svg></span>
-                <span className="ds-format-name">Shapefile</span>
-                <span className="ds-format-desc">Select .shp + .dbf + .shx + .prj together</span>
-              </li>
-              <li>
-                <span className="ds-format-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" width="14" height="14"><path d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z" /><path d="M15 11a3 3 0 11-6 0 3 3 0 016 0z" /></svg></span>
-                <span className="ds-format-name">GeoJSON</span>
-                <span className="ds-format-desc">.geojson or .json</span>
-              </li>
-              <li>
-                <span className="ds-format-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" width="14" height="14"><path d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4" strokeLinecap="round" strokeLinejoin="round" /></svg></span>
-                <span className="ds-format-name">GeoPackage</span>
-                <span className="ds-format-desc">.gpkg format</span>
-              </li>
-              <li>
-                <span className="ds-format-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" width="14" height="14"><path d="M3.055 11H5a2 2 0 012 2v1a2 2 0 002 2 2 2 0 012 2v2.945M8 3.935V5.5A2.5 2.5 0 0010.5 8h.5a2 2 0 012 2 2 2 0 104 0 2 2 0 012-2h1.064M15 20.488V18a2 2 0 012-2h3.064M21 12a9 9 0 11-18 0 9 9 0 0118 0z" strokeLinecap="round" strokeLinejoin="round" /></svg></span>
-                <span className="ds-format-name">KML</span>
-                <span className="ds-format-desc">Google Earth format</span>
-              </li>
-              <li>
-                <span className="ds-format-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" width="14" height="14"><path d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" strokeLinecap="round" strokeLinejoin="round" /></svg></span>
-                <span className="ds-format-name">GeoTIFF</span>
-                <span className="ds-format-desc">.tif / .tiff raster data</span>
-              </li>
-              <li>
-                <span className="ds-format-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" width="14" height="14"><path d="M14 10l-2 1m0 0l-2-1m2 1v2.5M20 7l-2 1m2-1l-2-1m2 1v2.5M14 4l-2-1-2 1M4 7l2-1M4 7l2 1M4 7v2.5M12 21l-2-1m2 1l2-1m-2 1v-2.5M6 18l-2-1v-2.5M18 18l2-1v-2.5" strokeLinecap="round" strokeLinejoin="round" /></svg></span>
-                <span className="ds-format-name">OBJ (3D)</span>
-                <span className="ds-format-desc">.obj 3D model files</span>
-              </li>
-              <li>
-                <span className="ds-format-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" width="14" height="14"><path d="M9 17v-2m3 2v-4m3 4v-6m2 10H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" strokeLinecap="round" strokeLinejoin="round" /></svg></span>
-                <span className="ds-format-name">CSV / TSV</span>
-                <span className="ds-format-desc">Tabular with coords</span>
-              </li>
-              <li>
-                <span className="ds-format-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" width="14" height="14"><path d="M9 17v-2m3 2v-4m3 4v-6m2 10H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" strokeLinecap="round" strokeLinejoin="round" /><path d="M14 3v4a1 1 0 001 1h4" strokeLinecap="round" strokeLinejoin="round" /></svg></span>
-                <span className="ds-format-name">Excel</span>
-                <span className="ds-format-desc">.xlsx or .xls</span>
-              </li>
-              <li>
-                <span className="ds-format-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" width="14" height="14"><path d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14M4 6h16M4 6a2 2 0 00-2 2v10a2 2 0 002 2h16a2 2 0 002-2V8a2 2 0 00-2-2M4 6l4-4h8l4 4" strokeLinecap="round" strokeLinejoin="round" /><circle cx="9" cy="10" r="1.5" /></svg></span>
-                <span className="ds-format-name">Photos</span>
-                <span className="ds-format-desc">Geo-tagged JPG/PNG/GIF/BMP/WEBP</span>
-              </li>
-            </ul>
-          </div>
-        </section>
-
-      </div>
-      <div className="ds-grid__row">
-
-        {/* ── TIPS ──────────────────────────────────────────────────── */}
-        <section className="ds-grid__tips">
-          <div className="ds-info-card ds-info-card--tips">
-            <div className="ds-info-card__header">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" width="18" height="18">
-                <path d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" strokeLinecap="round" strokeLinejoin="round" />
-              </svg>
-              <h3>Tips for Best Results</h3>
-            </div>
-            <ul className="ds-tips-list">
-              <li>Select .shp, .dbf, .shx, and .prj together; .cpg is included when present</li>
-              <li>Projected shapefiles are automatically converted to WGS84 for the web map</li>
-              <li>CSV files should have latitude/longitude columns</li>
-              <li>Use consistent coordinate systems (WGS84 / EPSG:4326)</li>
-              <li>Name datasets descriptively for easy identification</li>
-              <li>Assign ward names for spatial filtering</li>
-              <li>Photos need real GPS EXIF data (most phone/survey cameras add this automatically) — photos without it are skipped</li>
-              <li>Drop a whole File Geodatabase (.gdb) folder directly — it's zipped in your browser before upload</li>
-              <li>Batches of photos can be selected together and are bundled into a single dataset automatically</li>
-              <li>GeoTIFF rasters support live color and clarity adjustments from the dataset's display settings</li>
-              <li>Large uploads run in the background — you can keep working while a dataset finishes processing</li>
-            </ul>
-          </div>
-        </section>
-
-      {/* ── DATASETS TABLE ──────────────────────────────────────────── */}
-      <section className="ds-table-section ds-grid__uploaded">
+        {/* ── DATASETS TABLE ──────────────────────────────────────────── */}
+        <section className="ds-table-section ds-grid__half">
         <div className="ds-table-header">
           <div className="ds-table-header__left">
             <h2 className="ds-table-header__title">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" width="20" height="20">
                 <path d="M4 7v10c0 2.21 3.582 4 8 4s8-1.79 8-4V7M4 7c0 2.21 3.582 4 8 4s8-1.79 8-4M4 7c0-2.21 3.582-4 8-4s8 1.79 8 4m0 5c0 2.21-3.582 4-8 4s-8-1.79-8-4" strokeLinecap="round" strokeLinejoin="round" />
               </svg>
-              Uploaded Datasets
+              {t("datasets.uploadedDatasets")}
             </h2>
             <span className="ds-table-header__count" data-testid="dataset-count">
-              {rows ? `${rows.length} dataset${rows.length === 1 ? "" : "s"}` : "Loading..."}
+              {rows ? `${rows.length}` : t("datasets.loading")}
             </span>
           </div>
-          <button className="ds-refresh-btn" onClick={() => void refresh()} title="Refresh list">
+          <button className="ds-refresh-btn" onClick={() => void refresh()} title={t("datasets.refresh")}>
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="16" height="16">
               <path d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" strokeLinecap="round" strokeLinejoin="round" />
             </svg>
@@ -1073,13 +1025,13 @@ export function DatasetsView() {
 
         <div className="ds-table" data-testid="dataset-grid" role="table">
           <div className="ds-table__head" role="row">
-            <div className="ds-table__th ds-table__th--name">Dataset</div>
-            <div className="ds-table__th">Ward</div>
-            <div className="ds-table__th">Type</div>
-            <div className="ds-table__th">Size</div>
-            <div className="ds-table__th">Status</div>
-            <div className="ds-table__th">Uploaded</div>
-            <div className="ds-table__th ds-table__th--actions">Actions</div>
+            <div className="ds-table__th ds-table__th--name">{t("datasets.colName")}</div>
+            <div className="ds-table__th">{t("datasets.colWard")}</div>
+            <div className="ds-table__th">{t("datasets.colType")}</div>
+            <div className="ds-table__th">{t("datasets.colSize")}</div>
+            <div className="ds-table__th">{t("datasets.colStatus")}</div>
+            <div className="ds-table__th">{t("datasets.colUploaded")}</div>
+            <div className="ds-table__th ds-table__th--actions">{t("datasets.colActions")}</div>
           </div>
 
           <div className="ds-table__scroll" role="rowgroup">
@@ -1114,11 +1066,11 @@ export function DatasetsView() {
                         autoFocus
                       />
                       <button type="button" className="ds-table__ward-save" disabled={wardSaving} onClick={() => void saveWard(d.id)}>
-                        {wardSaving ? "..." : "✓"}
+                        {wardSaving ? "..." : "âœ“"}
                       </button>
                     </div>
                   ) : (
-                    <button type="button" className="ds-table__ward-btn" onClick={() => startEditWard(d)} title="Click to edit ward">
+                      <button type="button" className="ds-table__ward-btn" onClick={() => startEditWard(d)} title={t("datasets.editWardTitle")}>
                       {d.ward ? (
                         <>
                           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" width="12" height="12">
@@ -1127,7 +1079,7 @@ export function DatasetsView() {
                           {d.ward}
                         </>
                       ) : (
-                        <span className="ds-table__ward-empty">Assign ward</span>
+                        <span className="ds-table__ward-empty">{t("datasets.assignWard")}</span>
                       )}
                     </button>
                   )}
@@ -1141,10 +1093,10 @@ export function DatasetsView() {
                   </span>
                 </div>
                 <div className="ds-table__td ds-table__td--mono">{formatBytes(d.size_bytes ?? 0)}</div>
-                <div className="ds-table__td">
+                 <div className="ds-table__td">
                   <span className={`ds-table__status ds-table__status--${d.status}`}>
                     {d.status === "ready" && <span className="ds-table__status-dot" />}
-                    {d.status}
+                    {t(`datasets.status.${d.status === "queued" ? "queued" : d.status === "processing" ? "processing" : d.status === "failed" ? "failed" : "ready"}`)}
                   </span>
                 </div>
                 <div className="ds-table__td ds-table__td--mono ds-table__td--muted">{formatDate(d.created_at)}</div>
@@ -1155,12 +1107,12 @@ export function DatasetsView() {
                     data-testid={`view-attrs-${d.id}`}
                     disabled={d.status !== "ready"}
                     onClick={() => setOpenTableFor(d)}
-                    title="View attribute table"
+                    title={t("datasets.viewTable")}
                   >
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="14" height="14">
                       <path d="M4 7v10c0 2.21 3.582 4 8 4s8-1.79 8-4V7M4 7c0 2.21 3.582 4 8 4s8-1.79 8-4M4 7c0-2.21 3.582-4 8-4s8 1.79 8 4m0 5c0 2.21-3.582 4-8 4s-8-1.79-8-4" strokeLinecap="round" strokeLinejoin="round" />
                     </svg>
-                    Attributes
+                    {t("datasets.attributes")}
                   </button>
                   <button
                     type="button"
@@ -1168,7 +1120,7 @@ export function DatasetsView() {
                     data-testid={`remove-${d.id}`}
                     disabled={removingId === d.id}
                     onClick={() => void removeDataset(d.id, d.name)}
-                    title="Remove dataset"
+                    title={t("datasets.removeDataset")}
                   >
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="14" height="14">
                       <path d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" strokeLinecap="round" strokeLinejoin="round" />
@@ -1180,7 +1132,7 @@ export function DatasetsView() {
           ) : rows === null ? (
             <div className="ds-table__empty">
               <div className="ds-table__empty-spinner" />
-              <span>Loading datasets...</span>
+              <span>{t("datasets.loading")}</span>
             </div>
           ) : (
             <div className="ds-table__empty">
@@ -1188,8 +1140,8 @@ export function DatasetsView() {
                 <rect x="4" y="4" width="40" height="40" rx="8" stroke="currentColor" strokeWidth="2" strokeDasharray="4 4" />
                 <path d="M24 16v16M16 24h16" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
               </svg>
-              <span>No datasets uploaded yet</span>
-              <span className="ds-table__empty-hint">Upload your first survey dataset above to get started</span>
+              <span>{t("datasets.noDatasets")}</span>
+              <span className="ds-table__empty-hint">{t("datasets.noDatasetsHint")}</span>
             </div>
           )}
           </div>
@@ -1201,7 +1153,7 @@ export function DatasetsView() {
       {/* ── UNCLASSIFIED CATEGORIES (spatial audit classifier review) ── */}
       <UnclassifiedCategoriesPanel />
 
-      {/* ── ATTRIBUTE TABLE OVERLAY ─────────────────────────────────── */}
+      {/* â”€â”€ ATTRIBUTE TABLE OVERLAY â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */}
       {openTableFor && (
         <AttributeTable
           datasetId={openTableFor.id}
@@ -1214,7 +1166,7 @@ export function DatasetsView() {
 }
 
 function formatBytes(bytes: number): string {
-  if (!bytes) return "—";
+  if (!bytes) return "â€”";
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
   return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
@@ -1232,3 +1184,5 @@ function formatDate(iso: string): string {
     return iso;
   }
 }
+
+

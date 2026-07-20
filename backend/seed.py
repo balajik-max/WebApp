@@ -136,6 +136,24 @@ async def main() -> int:
             name=settings.ae_name,
             role=UserRole.AE,
         ),
+        SeedSpec(
+            email=settings.commissioner_email,
+            password=settings.commissioner_password,
+            name=settings.commissioner_name,
+            role=UserRole.COMMISSIONER,
+        ),
+        SeedSpec(
+            email=settings.aee_email,
+            password=settings.aee_password,
+            name=settings.aee_name,
+            role=UserRole.AEE,
+        ),
+        SeedSpec(
+            email=settings.ae_email,
+            password=settings.ae_password,
+            name=settings.ae_name,
+            role=UserRole.AE,
+        ),
     ]
 
     await _seed(specs)

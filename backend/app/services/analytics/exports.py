@@ -424,6 +424,27 @@ def _write_water_demand_csv_block(writer, water_demand: WardWaterDemandResult) -
         writer.writerow(["Total (litres/day)", water_demand.breakdown.total_liters_per_day])
         writer.writerow(["Total (MLD)", water_demand.breakdown.total_mld])
     writer.writerow(["Methodology", water_demand.methodology])
+    _write_supply_comparison_csv(writer, water_demand.supply_comparison)
+
+
+def _write_supply_comparison_csv(writer, supply_comparison: dict | None) -> None:
+    if not supply_comparison:
+        return
+    writer.writerow([])
+    writer.writerow(["# Supply vs Demand (City-wide benchmark)"])
+    writer.writerow(["Ward demand (MLD)", supply_comparison["ward_demand_mld"]])
+    writer.writerow(["Fair-share supply (MLD)", supply_comparison["expected_supply_mld"]])
+    writer.writerow(["Demand vs share (%)", supply_comparison["demand_vs_expected_supply_pct"]])
+    writer.writerow(["Ward supply rate (LPCD)", supply_comparison.get("ward_lpcd")])
+    writer.writerow(["Expected supply rate (LPCD)", supply_comparison.get("expected_lpcd")])
+    writer.writerow(["Gap (MLD)", supply_comparison["gap_mld"]])
+    if supply_comparison["is_deficit"]:
+        writer.writerow(["Deficit (MLD)", supply_comparison["deficit_mld"]])
+        writer.writerow(["Status", f"{supply_comparison['severity']} — short by {supply_comparison['deficit_mld']} MLD"])
+    else:
+        writer.writerow(["Surplus (MLD)", supply_comparison["surplus_mld"]])
+        writer.writerow(["Status", f"surplus — {supply_comparison['surplus_mld']} MLD excess capacity"])
+    writer.writerow(["Note", supply_comparison["note"]])
 
 
 def _csv_bytes(rows: list[ExportRow], water_demand: WardWaterDemandResult | None = None) -> bytes:
@@ -548,6 +569,24 @@ def _append_water_demand_sheet(wb: Workbook, water_demand: WardWaterDemandResult
         ws.append(["TOTAL", water_demand.breakdown.total_liters_per_day, f"{water_demand.breakdown.total_mld} MLD"])
     ws.append([])
     ws.append(["Methodology", water_demand.methodology])
+    sc = water_demand.supply_comparison
+    if sc:
+        ws.append([])
+        ws.append(["Supply vs Demand (City-wide benchmark)", ""])
+        _style_excel_header(ws, ws.max_row, 2)
+        ws.append(["Ward demand (MLD)", sc["ward_demand_mld"]])
+        ws.append(["Fair-share supply (MLD)", sc["expected_supply_mld"]])
+        ws.append(["Demand vs share (%)", sc["demand_vs_expected_supply_pct"]])
+        ws.append(["Ward supply rate (LPCD)", sc.get("ward_lpcd")])
+        ws.append(["Expected supply rate (LPCD)", sc.get("expected_lpcd")])
+        ws.append(["Gap (MLD)", sc["gap_mld"]])
+        if sc["is_deficit"]:
+            ws.append(["Deficit (MLD)", sc["deficit_mld"]])
+            ws.append(["Status", f"{sc['severity']} — short by {sc['deficit_mld']} MLD"])
+        else:
+            ws.append(["Surplus (MLD)", sc["surplus_mld"]])
+            ws.append(["Status", f"surplus — {sc['surplus_mld']} MLD excess capacity"])
+        ws.append(["Note", sc["note"]])
     _autosize_sheet(ws, max_width=70)
 
 
@@ -1053,6 +1092,47 @@ def _pdf_bytes(
             )
             story.append(demand_table)
         story.extend([Spacer(1, 6), Paragraph(escape(water_demand.methodology), small_style)])
+
+        sc = water_demand.supply_comparison
+        if sc:
+            story.extend([Spacer(1, 10), Paragraph("Supply vs Demand (City-wide benchmark)", heading_style)])
+            if sc["is_deficit"]:
+                status_text = (
+                    f"{sc['severity'].replace('_', ' ').title()} — this ward is short by "
+                    f"{sc['deficit_mld']:,.3f} MLD against its population-based share of the "
+                    f"city's {sc['city_total_supply_mld']:,.2f} MLD supply."
+                )
+            else:
+                status_text = (
+                    f"Surplus — this ward has {sc['surplus_mld']:,.3f} MLD of excess capacity "
+                    f"above its demand."
+                )
+            supply_rows = [
+                ["Ward demand (MLD)", f"{sc['ward_demand_mld']:,.3f}"],
+                ["Fair-share supply (MLD)", f"{sc['expected_supply_mld']:,.3f}"],
+                ["Demand vs share (%)", f"{sc['demand_vs_expected_supply_pct']:,.1f}%"],
+                ["Ward supply rate (LPCD)", f"{sc['ward_lpcd']:,.1f}" if sc.get("ward_lpcd") is not None else "—"],
+                ["Expected supply rate (LPCD)", f"{sc['expected_lpcd']:,.1f}" if sc.get("expected_lpcd") is not None else "—"],
+                ["Gap (MLD)", f"{sc['gap_mld']:,.3f}"],
+                ["Status", status_text],
+            ]
+            supply_table = Table(
+                [[Paragraph(escape(label), small_style), Paragraph(escape(str(value)), small_style)] for label, value in supply_rows],
+                colWidths=[55 * mm, 118 * mm],
+            )
+            supply_table.setStyle(
+                TableStyle(
+                    [
+                        ("GRID", (0, 0), (-1, -1), 0.35, colors.HexColor("#C9D5D0")),
+                        ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#F6F9F8")),
+                        ("LEFTPADDING", (0, 0), (-1, -1), 5),
+                        ("RIGHTPADDING", (0, 0), (-1, -1), 5),
+                        ("TOPPADDING", (0, 0), (-1, -1), 4),
+                        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+                    ]
+                )
+            )
+            story.extend([supply_table, Spacer(1, 4), Paragraph(f"<i>{escape(sc['note'])}</i>", small_style)])
 
     story.extend([PageBreak(), Paragraph("Recommended Attention Order", heading_style)])
     findings = sorted(quality.findings, key=lambda item: item.priority_score, reverse=True)

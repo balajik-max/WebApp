@@ -820,7 +820,7 @@ def _anomaly_out(row: SpatialAnomaly, lon: float, lat: float) -> SpatialAnomalyO
     "/audit",
     response_model=AuditRunResponse,
     dependencies=[Depends(require_any)],
-    summary="Run the spatial audit engine (pole redundancy, drain encroachment, manhole status) for a dataset",
+    summary="Run the spatial audit engine (pole redundancy, drain encroachment, manhole status, road width narrowing) for a dataset",
 )
 async def run_audit(body: AuditRunRequest, db: AsyncSession = Depends(get_db)) -> AuditRunResponse:
     try:
@@ -840,6 +840,7 @@ async def run_audit(body: AuditRunRequest, db: AsyncSession = Depends(get_db)) -
         pole_redundancy=summary.pole_redundancy,
         drain_encroachment=summary.drain_encroachment,
         manhole_status=summary.manhole_status,
+        road_width_narrowing=summary.road_width_narrowing,
     )
 
 

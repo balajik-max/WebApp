@@ -1,5 +1,57 @@
 import { useEffect, useMemo, useState } from "react";
-import { fetchWardWaterDemand, type WardWaterDemandReport } from "../../lib/workflow";
+import {
+  Bar,
+  BarChart,
+  Cell,
+  Pie,
+  PieChart,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis,
+} from "recharts";
+import { fetchWardWaterDemand, type WardWaterDemandReport, type WardSupplyComparison } from "../../lib/workflow";
+
+function DarkTooltip({ active, payload, label }: { active?: boolean; payload?: { name?: string; value?: number }[]; label?: string }) {
+  if (!active || !payload?.length) return null;
+  return (
+    <div className="analytics-chart-tooltip">
+      {label && <div className="analytics-chart-tooltip__label">{label}</div>}
+      {payload.map((p, i) => (
+        <div key={i} className="analytics-chart-tooltip__row">
+          {p.name}: {p.value?.toLocaleString()} MLD
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function DarkPieTooltip({ active, payload }: { active?: boolean; payload?: { name?: string; value?: number }[] }) {
+  if (!active || !payload?.length) return null;
+  return (
+    <div className="analytics-chart-tooltip">
+      {payload.map((p, i) => (
+        <div key={i} className="analytics-chart-tooltip__row">
+          {p.name}: {Math.round(p.value ?? 0).toLocaleString()} L
+        </div>
+      ))}
+    </div>
+  );
+}
+
+const SEVERITY_META: Record<WardSupplyComparison["severity"], { label: string; cls: string; color: string }> = {
+  surplus: { label: "Surplus", cls: "analytics-water-demand-insight--surplus", color: "#16a34a" },
+  mild_deficit: { label: "Mild deficit", cls: "analytics-water-demand-insight--deficit", color: "#f59e0b" },
+  moderate_deficit: { label: "Moderate deficit", cls: "analytics-water-demand-insight--deficit", color: "#f97316" },
+  severe_deficit: { label: "Severe deficit", cls: "analytics-water-demand-insight--deficit", color: "#dc2626" },
+};
+
+function supplyChartData(sc: WardSupplyComparison) {
+  return [
+    { name: "Ward demand", value: sc.ward_demand_mld, fill: SEVERITY_META[sc.severity].color },
+    { name: "Fair-share supply", value: sc.expected_supply_mld, fill: "#2563eb" },
+  ];
+}
 
 interface Props {
   datasetIds: string[];
@@ -237,21 +289,89 @@ export function AnalyticsWaterDemandPanel({ datasetIds, ward }: Props) {
                         <span>Demand vs share</span>
                         <b>{report.supply_comparison.demand_vs_expected_supply_pct.toLocaleString()}%</b>
                       </div>
+                      <div>
+                        <span>Ward supply rate</span>
+                        <b>{report.supply_comparison.ward_lpcd?.toLocaleString() ?? "—"} LPCD</b>
+                      </div>
+                      <div>
+                        <span>Expected rate</span>
+                        <b>{report.supply_comparison.expected_lpcd?.toLocaleString() ?? "—"} LPCD</b>
+                      </div>
                     </div>
-                    {report.supply_comparison.is_deficit ? (
-                      <div className="analytics-water-demand-insight analytics-water-demand-insight--deficit">
-                        <strong>⚠ Deficit:</strong> this ward needs{" "}
-                        {report.supply_comparison.deficit_mld.toLocaleString()} MLD more than its population-based
-                        share of the city's {report.supply_comparison.city_total_supply_mld.toLocaleString()} MLD supply.
-                        Prioritize network augmentation, leakage reduction, and equitable zone metering.
+
+                    <div className="analytics-water-demand-charts">
+                      <div className="analytics-water-demand-chart">
+                        <span className="analytics-water-demand-chart-title">Demand vs fair-share supply</span>
+                        <ResponsiveContainer width="100%" height={180}>
+                          <BarChart data={supplyChartData(report.supply_comparison)} margin={{ top: 8, right: 8, left: 0, bottom: 0 }} barCategoryGap="30%">
+                            <XAxis dataKey="name" tick={{ fontSize: 10, fill: "#9ca3af" }} axisLine={false} tickLine={false} />
+                            <YAxis tick={{ fontSize: 10, fill: "#9ca3af" }} axisLine={false} tickLine={false} width={44} tickFormatter={(v) => `${v}`} />
+                            <Tooltip content={<DarkTooltip />} cursor={{ fill: "rgba(255,255,255,0.04)" }} />
+                            <Bar dataKey="value" radius={[3, 3, 0, 0]} isAnimationActive={true} animationDuration={800} animationEasing="ease-out">
+                              {supplyChartData(report.supply_comparison).map((entry, i) => (
+                                <Cell key={i} fill={entry.fill} />
+                              ))}
+                            </Bar>
+                          </BarChart>
+                        </ResponsiveContainer>
                       </div>
-                    ) : (
-                      <div className="analytics-water-demand-insight analytics-water-demand-insight--surplus">
-                        <strong>✓ Headroom:</strong> this ward's demand is{" "}
-                        {report.supply_comparison.surplus_mld.toLocaleString()} MLD below its population-based share —
-                        supply capacity exists to absorb growth or floating population before augmentation.
+                      <div className="analytics-water-demand-chart">
+                        <span className="analytics-water-demand-chart-title">Where the demand comes from</span>
+                        <ResponsiveContainer width="100%" height={180}>
+                          <PieChart>
+                            <Pie
+                              data={report.line_items.map((i) => ({ name: i.label, value: Math.round(i.liters_per_day) }))}
+                              dataKey="value"
+                              nameKey="name"
+                              outerRadius={60}
+                              innerRadius={20}
+                              label={(e: { name?: string; percent?: number }) => `${e.name} ${((e.percent ?? 0) * 100).toFixed(0)}%`}
+                              labelLine={false}
+                              isAnimationActive={true}
+                              animationDuration={800}
+                              animationEasing="ease-out"
+                            >
+                              {report.line_items.map((_, i) => (
+                                <Cell key={i} fill={`hsl(${(i * 47) % 360} 70% 55%)`} />
+                              ))}
+                            </Pie>
+                            <Tooltip content={<DarkPieTooltip />} />
+                          </PieChart>
+                        </ResponsiveContainer>
                       </div>
-                    )}
+                    </div>
+
+                    {(() => {
+                      const sc = report.supply_comparison!;
+                      const meta = SEVERITY_META[sc.severity];
+                      const gapAbs = Math.abs(sc.gap_mld);
+                      return (
+                        <div className={`analytics-water-demand-insight ${meta.cls}`}>
+                          {sc.is_deficit ? (
+                            <>
+                              <strong>⚠ {meta.label}:</strong> this ward is short by{" "}
+                              <b>{sc.deficit_mld.toLocaleString()} MLD</b> ({gapAbs.toLocaleString()} MLD gap) against its
+                              population-based share of the city's {sc.city_total_supply_mld.toLocaleString()} MLD supply.
+                              It receives only {sc.ward_lpcd?.toLocaleString()} LPCD versus {sc.expected_lpcd?.toLocaleString()} LPCD expected —
+                              a {sc.demand_vs_expected_supply_pct.toLocaleString()}% load on its share.
+                              {sc.severity === "severe_deficit"
+                                ? " Treat as a priority augmentation zone: new sources, 24×7 balancing reservoirs, and aggressive UFW reduction."
+                                : sc.severity === "moderate_deficit"
+                                ? " Close the gap via equitable redistribution from surplus wards and targeted leakage control before new source commissioning."
+                                : " Monitor and model redistribution from surplus wards; augmentation likely deferrable."}
+                            </>
+                          ) : (
+                            <>
+                              <strong>✓ {meta.label}:</strong> this ward has{" "}
+                              <b>{sc.surplus_mld.toLocaleString()} MLD</b> of excess capacity ({gapAbs.toLocaleString()} MLD above demand) —
+                              supply exists to absorb growth or floating population before any augmentation.
+                              Its {sc.ward_lpcd?.toLocaleString()} LPCD sits above the {sc.expected_lpcd?.toLocaleString()} LPCD expectation.
+                            </>
+                          )}
+                        </div>
+                      );
+                    })()}
+
                     <ul className="analytics-water-demand-actions">
                       <li>{lpcdInsightText(report.lpcd, report.lpcd_source)}</li>
                       <li>Losses assumed at 15% UFW — target ≤10% via pressure management &amp; meter audits.</li>

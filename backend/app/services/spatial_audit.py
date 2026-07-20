@@ -76,6 +76,7 @@ from app.models.dataset import Dataset
 from app.models.point_verification import PointVerification, PointVerificationStatus
 from app.models.spatial_anomaly import AnomalyColor, AnomalyStatus, AnomalyType, SpatialAnomaly
 from app.services.manhole_recommend import classify_manhole_issue, is_bad_condition, is_good_condition, parse_level_m
+from app.services.road_width import detect_road_width_narrowing
 
 # Per-class DBSCAN epsilon (meters). Only Illumination_Asset is clustered in
 # Phase 1; other classes can get their own entry here later without touching
@@ -121,6 +122,7 @@ class AuditSummary:
     pole_redundancy: dict[str, int] = field(default_factory=dict)
     drain_encroachment: dict[str, int] = field(default_factory=dict)
     manhole_status: dict[str, int] = field(default_factory=dict)
+    road_width_narrowing: dict[str, int] = field(default_factory=dict)
 
 
 def _primary_feature_id(anomaly: SpatialAnomaly) -> str | None:
@@ -559,6 +561,7 @@ async def run_spatial_audit(dataset_id: uuid.UUID, db: AsyncSession) -> AuditSum
     await _detect_pole_redundancy(dataset_id, ward, db)
     await _detect_drain_encroachment(dataset_id, ward, db)
     await _detect_manhole_status(dataset_id, ward, db)
+    await detect_road_width_narrowing(dataset_id, ward, db)
     await db.flush()
 
     if protected_keys:
@@ -592,6 +595,7 @@ async def run_spatial_audit(dataset_id: uuid.UUID, db: AsyncSession) -> AuditSum
         AnomalyType.POLE_REDUNDANCY: _empty_counts(),
         AnomalyType.DRAIN_ENCROACHMENT: _empty_counts(),
         AnomalyType.MANHOLE_STATUS: _empty_counts(),
+        AnomalyType.ROAD_WIDTH_NARROWING: _empty_counts(),
     }
     for row in visible:
         counts[row.anomaly_type][row.color.value] += 1
@@ -601,5 +605,6 @@ async def run_spatial_audit(dataset_id: uuid.UUID, db: AsyncSession) -> AuditSum
         pole_redundancy=counts[AnomalyType.POLE_REDUNDANCY],
         drain_encroachment=counts[AnomalyType.DRAIN_ENCROACHMENT],
         manhole_status=counts[AnomalyType.MANHOLE_STATUS],
+        road_width_narrowing=counts[AnomalyType.ROAD_WIDTH_NARROWING],
     )
 
