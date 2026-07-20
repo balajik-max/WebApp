@@ -12,8 +12,6 @@ import { NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
 import { useAuth, type AuthUser, type Role } from "../context/AuthContext";
 import { useLanguage } from "../context/LanguageContext";
 import { STRINGS } from "../i18n/translations";
-import { listAssignedWork, subscribeAssignedWork, type AssignedWorkRecord } from "../lib/assignedWork";
-import { NotificationBell, type NotificationItem } from "./NotificationBell";
 import type { FeatureFilter } from "../lib/types";
 import { searchFeatureFids, type FidSearchResult } from "../lib/features";
 import type { DatasetRow } from "../lib/workflow";
@@ -438,32 +436,9 @@ export function WorkspaceLayout() {
           commissioner: "Commissioner",
           aee: "AEE",
           ae: "AE",
-          admin: "Administrator",
+          mla: "MLA (Read Only)",
         } as Record<string, string>)[user.role] ?? user.role
       : "";
-
-  const [assignedWorkRecords, setAssignedWorkRecords] = useState<AssignedWorkRecord[]>([]);
-  useEffect(() => {
-    if (user?.role !== "ae") {
-      setAssignedWorkRecords([]);
-      return;
-    }
-    setAssignedWorkRecords(listAssignedWork());
-    return subscribeAssignedWork(() => setAssignedWorkRecords(listAssignedWork()));
-  }, [user?.role]);
-
-  const workerNotifications = useMemo<NotificationItem[]>(() => {
-    if (user?.role !== "ae") return [];
-    return [...assignedWorkRecords]
-      .sort((a, b) => (a.assignedAt < b.assignedAt ? 1 : -1))
-      .slice(0, 4)
-      .map((record) => ({
-        id: record.id,
-        title: `${record.serial} · ${record.issueName}`,
-        body: `Deadline: ${record.deadline || "—"}${record.road ? ` · ${record.road}` : ""}`,
-        timestamp: new Date(record.assignedAt).toLocaleString(),
-      }));
-  }, [assignedWorkRecords, user?.role]);
 
   const [selectedDatasets, setSelectedDatasets] = useState<DatasetRow[]>([]);
   const selectedDatasetIds = useMemo(() => selectedDatasets.map((dataset) => dataset.id), [selectedDatasets]);
@@ -555,7 +530,6 @@ export function WorkspaceLayout() {
             <span className="lang-toggle__label">{lang === "en" ? "ಕನ್ನಡ" : "English"}</span>
           </button>
 
-          <NotificationBell notifications={workerNotifications} unreadCount={workerNotifications.length} />
 
           <button
             type="button"

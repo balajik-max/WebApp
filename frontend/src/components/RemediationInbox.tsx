@@ -22,7 +22,7 @@ export function RemediationInbox({ refreshToken = 0, onLocate }: Props) {
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    if (user?.role !== "admin") {
+    if (user?.role !== "commissioner") {
       setItems([]);
       return;
     }
@@ -40,25 +40,24 @@ export function RemediationInbox({ refreshToken = 0, onLocate }: Props) {
         .finally(() => setLoading(false));
     };
     load();
-    const timer = window.setInterval(load, 30000);
+    const timer = window.setInterval(load, 30_000);
     return () => {
       controller.abort();
       window.clearInterval(timer);
     };
   }, [user?.role, refreshToken]);
 
-  if (user?.role !== "admin") return null;
+  if (user?.role !== "commissioner") return null;
 
   return (
     <div className="remediation-inbox">
       <button type="button" className="remediation-inbox__toggle" onClick={() => setOpen((value) => !value)}>
-        <span>Remediation</span>
-        <strong>{items.length}</strong>
+        <span>Remediation</span><strong>{items.length}</strong>
       </button>
       {open && (
         <section className="remediation-inbox__panel" aria-label="Pending remediation submissions">
           <header>
-            <div><strong>Pending Admin Verification</strong><span>Architect submissions waiting for review</span></div>
+            <div><strong>Pending Commissioner Approval</strong><span>Direct AE/AEE submissions waiting for a decision</span></div>
             <button type="button" onClick={() => setOpen(false)} aria-label="Close">×</button>
           </header>
           {loading && items.length === 0 && <p>Loading submissions…</p>}
@@ -71,13 +70,13 @@ export function RemediationInbox({ refreshToken = 0, onLocate }: Props) {
                   <span>{item.detection_mode ?? "AI"}</span>
                   <span className={`remediation-inbox__severity remediation-inbox__severity--${item.ai_color ?? "red"}`}>{item.ai_color ?? "red"}</span>
                 </div>
-                <strong>{item.label ?? item.category ?? item.feature_id}</strong>
+                <strong>{item.label ?? item.asset_type ?? item.feature_id}</strong>
                 <small>{item.dataset_name}</small>
-                <p>{item.issue_summary ?? "Architect remediation submitted"}</p>
+                <p>{item.short_description ?? "Field remediation submitted"}</p>
                 <dl>
-                  <div><dt>Architect</dt><dd>{item.architect_name ?? "—"}</dd></div>
-                  <div><dt>Submitted</dt><dd>{displayDate(item.architect_submitted_at)}</dd></div>
-                  <div><dt>Location</dt><dd>{item.evidence_location_status?.replaceAll("_", " ") ?? "—"}</dd></div>
+                  <div><dt>Submitted by</dt><dd>{item.field_submitter_name ?? "—"} ({item.field_submitter_role?.toUpperCase() ?? "—"})</dd></div>
+                  <div><dt>Submitted</dt><dd>{displayDate(item.submitted_at)}</dd></div>
+                  <div><dt>GPS</dt><dd>{item.gps_validation_status?.replaceAll("_", " ") ?? "—"}</dd></div>
                   <div><dt>Distance</dt><dd>{item.evidence_distance_m === null ? "—" : `${item.evidence_distance_m.toFixed(1)} m`}</dd></div>
                 </dl>
                 <button type="button" onClick={() => { onLocate(item); setOpen(false); }}>Locate point on map</button>

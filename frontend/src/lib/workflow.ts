@@ -851,9 +851,6 @@ export const fetchAnomalies = (datasetId: string, statusFilter?: AnomalyStatus, 
 export const explainAnomaly = (anomalyId: string, signal?: AbortSignal) =>
   apiPost<AnomalyExplanation>(`/api/v1/ai/audit/anomalies/${anomalyId}/explain`, {}, signal);
 
-export const updateAnomalyStatus = (anomalyId: string, status: AnomalyStatus) =>
-  apiPatch<SpatialAnomaly>(`/api/v1/ai/audit/anomalies/${anomalyId}`, { status });
-
 // ---------------------- category -> canonical class mapping ----------------
 export interface CategoryClassMapping {
   raw_category: string;

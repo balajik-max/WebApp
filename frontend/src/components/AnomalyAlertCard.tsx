@@ -1,12 +1,10 @@
 import { useEffect, useState } from "react";
 import { ApiError } from "../lib/api";
-import { useAuth } from "../context/AuthContext";
-import { explainAnomaly, type AnomalyStatus, type SpatialAnomaly } from "../lib/workflow";
+import { explainAnomaly, type SpatialAnomaly } from "../lib/workflow";
 
 interface Props {
   anomaly: SpatialAnomaly;
   onClose: () => void;
-  onStatusChange: (anomalyId: string, next: AnomalyStatus) => void;
   /** A newer audit run replaced this finding server-side (its id no longer
    * exists) — remove it from the map/local state instead of showing a raw
    * fetch error, since re-running the audit is a normal, expected action. */
@@ -42,9 +40,7 @@ function metadataEntries(metadata: Record<string, unknown>): [string, string][] 
     ]);
 }
 
-export function AnomalyAlertCard({ anomaly, onClose, onStatusChange, onStale }: Props) {
-  const { user } = useAuth();
-  const isAdmin = user?.role === "admin";
+export function AnomalyAlertCard({ anomaly, onClose, onStale }: Props) {
   const [explanation, setExplanation] = useState<string | null>(anomaly.explanation_text);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -97,13 +93,7 @@ export function AnomalyAlertCard({ anomaly, onClose, onStatusChange, onStale }: 
       </div>
 
       <footer className="anomaly-card__actions">
-        {anomaly.status !== "reviewing" && anomaly.status !== "resolved" && (
-          <button type="button" onClick={() => onStatusChange(anomaly.id, "reviewing")}>Mark Reviewing</button>
-        )}
-        {isAdmin && anomaly.status !== "dismissed" && anomaly.status !== "resolved" && (
-          <button type="button" onClick={() => onStatusChange(anomaly.id, "dismissed")}>Dismiss</button>
-        )}
-        <span className="anomaly-card__workflow-note">Resolved status is applied only after Architect evidence and Admin approval.</span>
+        <span className="anomaly-card__workflow-note">AI controls Red, Yellow and Green. Blue is applied only after Commissioner approval.</span>
       </footer>
     </aside>
   );

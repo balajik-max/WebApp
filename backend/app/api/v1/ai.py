@@ -20,7 +20,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import require_any
 from app.db.session import get_db
-from app.models import User, UserRole
+from app.models import PointVerification, User, UserRole
+from app.models.point_verification import RemediationWorkflowStatus
 from app.models.spatial_anomaly import AnomalyStatus, SpatialAnomaly
 from app.schemas.ai import (
     AiAnswer,
@@ -896,7 +897,23 @@ def _anomaly_fact_sheet(row: SpatialAnomaly) -> str:
     return "\n".join(lines)
 
 
-def _anomaly_out(row: SpatialAnomaly, lon: float, lat: float) -> SpatialAnomalyOut:
+def _anomaly_out(
+    row: SpatialAnomaly,
+    lon: float,
+    lat: float,
+    *,
+    commissioner_approved: bool = False,
+) -> SpatialAnomalyOut:
+    # Blue is a workflow projection, never a manually mutable AI colour.
+    # Historical/orphan `resolved` anomaly flags stay unresolved unless the
+    # canonical remediation row proves Commissioner approval.
+    public_status = (
+        AnomalyStatus.RESOLVED.value
+        if commissioner_approved
+        else AnomalyStatus.REVIEWING.value
+        if row.status == AnomalyStatus.RESOLVED
+        else row.status.value
+    )
     return SpatialAnomalyOut(
         id=row.id,
         dataset_id=row.dataset_id,
@@ -904,7 +921,7 @@ def _anomaly_out(row: SpatialAnomaly, lon: float, lat: float) -> SpatialAnomalyO
         anomaly_type=row.anomaly_type.value,
         color=row.color.value,
         severity_score=row.severity_score,
-        status=row.status.value,
+        status=public_status,
         lon=lon,
         lat=lat,
         feature_ids=list(row.feature_ids),
@@ -954,13 +971,28 @@ async def list_anomalies(
     db: AsyncSession = Depends(get_db),
 ) -> list[SpatialAnomalyOut]:
     stmt = (
-        select(SpatialAnomaly, func.ST_X(SpatialAnomaly.geom), func.ST_Y(SpatialAnomaly.geom))
+        select(
+            SpatialAnomaly,
+            func.ST_X(SpatialAnomaly.geom),
+            func.ST_Y(SpatialAnomaly.geom),
+            PointVerification.id,
+        )
+        .outerjoin(
+            PointVerification,
+            (PointVerification.anomaly_id == SpatialAnomaly.id)
+            & (PointVerification.workflow_status == RemediationWorkflowStatus.APPROVED_RESOLVED),
+        )
         .where(SpatialAnomaly.dataset_id == dataset_id)
     )
-    if status_filter:
+    if status_filter == AnomalyStatus.RESOLVED.value:
+        stmt = stmt.where(PointVerification.id.isnot(None))
+    elif status_filter:
         stmt = stmt.where(SpatialAnomaly.status == status_filter)
     rows = (await db.execute(stmt)).all()
-    return [_anomaly_out(row, lon, lat) for row, lon, lat in rows]
+    return [
+        _anomaly_out(row, lon, lat, commissioner_approved=approval_id is not None)
+        for row, lon, lat, approval_id in rows
+    ]
 
 
 async def _manhole_pipe_suggestion_facts(row: SpatialAnomaly, db: AsyncSession) -> str:
@@ -1129,30 +1161,12 @@ async def update_anomaly_status(
     user: User = Depends(require_any),
     db: AsyncSession = Depends(get_db),
 ) -> SpatialAnomalyOut:
-    row = (
-        await db.execute(select(SpatialAnomaly).where(SpatialAnomaly.id == anomaly_id))
-    ).scalar_one_or_none()
-    if row is None:
-        raise HTTPException(status_code=404, detail="Anomaly not found")
-
-    requested_status = AnomalyStatus(body.status)
-    if requested_status == AnomalyStatus.RESOLVED:
-        raise HTTPException(
-            status_code=409,
-            detail="An AI finding can be resolved only through Architect evidence and Admin approval",
-        )
-    if user.role == UserRole.ARCHITECT and requested_status not in {AnomalyStatus.OPEN, AnomalyStatus.REVIEWING}:
-        raise HTTPException(status_code=403, detail="Architects may only open or mark a finding as reviewing")
-
-    row.status = requested_status
-    await db.commit()
-    await db.refresh(row)
-
-    lon, lat = (
-        await db.execute(
-            select(func.ST_X(SpatialAnomaly.geom), func.ST_Y(SpatialAnomaly.geom)).where(
-                SpatialAnomaly.id == anomaly_id
-            )
-        )
-    ).one()
-    return _anomaly_out(row, lon, lat)
+    # Deliberately retained as a compatibility route so older clients receive
+    # a deterministic conflict instead of a 404. AI condition and resolution
+    # are controlled exclusively by the remediation workflow; no role may
+    # manually recolour or resolve an anomaly through this legacy endpoint.
+    del anomaly_id, body, user, db
+    raise HTTPException(
+        status_code=409,
+        detail="Anomaly status is controlled by Start Work and Commissioner decision endpoints",
+    )

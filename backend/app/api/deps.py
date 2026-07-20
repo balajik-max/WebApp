@@ -47,6 +47,14 @@ async def get_current_user(
     user = result.scalar_one_or_none()
     if user is None:
         raise HTTPException(status_code=401, detail="User not found")
+    if not user.is_active:
+        raise HTTPException(status_code=403, detail="Account is inactive")
+    if (
+        user.role == UserRole.MLA
+        and request.method not in {"GET", "HEAD", "OPTIONS"}
+        and request.url.path != "/api/auth/logout"
+    ):
+        raise HTTPException(status_code=403, detail="MLA access is strictly read-only")
     return user
 
 
@@ -61,8 +69,9 @@ def require_roles(*allowed: UserRole):
     return _guard
 
 
-require_admin = require_roles(UserRole.ADMIN)
-require_architect = require_roles(UserRole.ARCHITECT)
+require_commissioner = require_roles(UserRole.COMMISSIONER)
+require_field_officer = require_roles(UserRole.AE, UserRole.AEE)
+require_operational = require_roles(UserRole.COMMISSIONER, UserRole.AEE, UserRole.AE)
 require_any = require_roles(
-    UserRole.COMMISSIONER, UserRole.AEE, UserRole.AE, UserRole.ADMIN, UserRole.ARCHITECT
+    UserRole.COMMISSIONER, UserRole.AEE, UserRole.AE, UserRole.MLA
 )

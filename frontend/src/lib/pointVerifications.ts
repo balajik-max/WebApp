@@ -1,10 +1,26 @@
-import { apiAssetUrl, apiDownload, apiGet, apiPost, apiPostForm } from "./api";
+import { apiAssetUrl, apiDownload, apiGet, apiPost, apiPutForm } from "./api";
 
-export type PointVerificationStatus = "open" | "pending_admin" | "rejected" | "resolved";
+export type WorkflowStatus =
+  | "AI_DETECTED"
+  | "WORK_IN_PROGRESS"
+  | "PENDING_COMMISSIONER_APPROVAL"
+  | "REJECTED_BY_COMMISSIONER"
+  | "APPROVED_RESOLVED";
 export type AiDetectionMode = "poles" | "drains" | "manholes";
 export type AiAnomalyType = "pole_redundancy" | "drain_encroachment" | "manhole_status";
 export type AiIssueColor = "red" | "yellow";
-export type VerifiedCondition = "bad" | "moderate" | "good";
+
+export interface WorkflowHistoryItem {
+  event: string;
+  version: number;
+  actor_id: string | null;
+  actor_name: string | null;
+  actor_role: string | null;
+  occurred_at: string;
+  details: Record<string, unknown>;
+  before_photo_url: string | null;
+  after_photo_url: string | null;
+}
 
 export interface PointVerificationRecord {
   id: string | null;
@@ -12,26 +28,24 @@ export interface PointVerificationRecord {
   dataset_id: string;
   dataset_name: string;
   label: string | null;
-  category: string | null;
+  asset_type: string | null;
   source_layer: string | null;
-  survey_condition: string | null;
-  original_condition: string | null;
-  verified_condition: VerifiedCondition | null;
+  original_gdb_attributes: Record<string, unknown>;
+  original_gdb_condition: string | null;
+  original_ai_condition: string | null;
   current_condition: string | null;
-  survey_issue: boolean;
-  status: PointVerificationStatus | null;
-  issue_fixed: boolean | null;
-  architect_id: string | null;
-  architect_name: string | null;
-  issue_summary: string | null;
-  work_completed: string | null;
+  workflow_status: WorkflowStatus;
+  field_submitter_id: string | null;
+  field_submitter_name: string | null;
+  field_submitter_role: string | null;
   work_started_at: string | null;
-  work_completed_at: string | null;
-  architect_submitted_at: string | null;
-  evidence_latitude: number | null;
-  evidence_longitude: number | null;
-  evidence_location_source: string | null;
-  evidence_location_status: string | null;
+  submitted_at: string | null;
+  issue_solved: boolean;
+  short_description: string | null;
+  remarks: string | null;
+  gps_validation_status: string | null;
+  photo_latitude: number | null;
+  photo_longitude: number | null;
   evidence_distance_m: number | null;
   evidence_buffer_m: number | null;
   before_photo_url: string | null;
@@ -44,44 +58,37 @@ export interface PointVerificationRecord {
   after_photo_exif_latitude: number | null;
   after_photo_exif_longitude: number | null;
   after_photo_exif_captured_at: string | null;
-  remarks: string | null;
-  inspected_at: string | null;
-  resolved_at: string | null;
-  rejected_at: string | null;
-  verified_by_id: string | null;
-  verified_by_name: string | null;
+  commissioner_decision: "APPROVE" | "REJECT" | null;
+  commissioner_id: string | null;
+  commissioner_name: string | null;
+  commissioner_decided_at: string | null;
+  commissioner_remarks: string | null;
   anomaly_id: string | null;
   detection_mode: AiDetectionMode | null;
   ai_anomaly_type: AiAnomalyType | null;
   ai_color: AiIssueColor | null;
   ai_severity_score: number | null;
   ai_detected_at: string | null;
+  submission_version: number;
+  history: WorkflowHistoryItem[];
   created_at: string | null;
   updated_at: string | null;
-}
-
-export interface ArchitectSubmissionInput {
-  anomalyId: string;
-  detectionMode: AiDetectionMode;
-  issueSummary: string;
-  workCompleted: string;
-  workStartedAt?: string | null;
-  workCompletedAt: string;
-  beforePhoto: File;
-  afterPhoto: File;
-}
-
-export interface AdminDecisionInput {
-  anomaly_id: string;
-  detection_mode: AiDetectionMode;
-  decision: "approve" | "reject";
-  verified_condition: VerifiedCondition;
-  remarks: string;
 }
 
 export interface AiVerificationRequestContext {
   anomalyId: string;
   detectionMode: AiDetectionMode;
+}
+
+export interface FieldSubmissionInput extends AiVerificationRequestContext {
+  issueSolved: boolean;
+  shortDescription: string;
+  remarks?: string | null;
+}
+
+export interface CommissionerDecisionInput extends AiVerificationRequestContext {
+  decision: "APPROVE" | "REJECT";
+  reason?: string | null;
 }
 
 export interface RemediationInboxItem {
@@ -90,15 +97,22 @@ export interface RemediationInboxItem {
   dataset_id: string;
   dataset_name: string;
   label: string | null;
-  category: string | null;
-  status: PointVerificationStatus;
+  asset_type: string | null;
+  source_layer: string | null;
+  anomaly_id: string;
+  workflow_status: WorkflowStatus;
   detection_mode: AiDetectionMode | null;
+  ai_anomaly_type: AiAnomalyType | null;
   ai_color: AiIssueColor | null;
-  architect_name: string | null;
-  issue_summary: string | null;
-  work_completed_at: string | null;
-  architect_submitted_at: string | null;
-  evidence_location_status: string | null;
+  ai_severity_score: number | null;
+  ai_detected_at: string | null;
+  longitude: number;
+  latitude: number;
+  field_submitter_name: string | null;
+  field_submitter_role: string | null;
+  short_description: string | null;
+  submitted_at: string | null;
+  gps_validation_status: string | null;
   evidence_distance_m: number | null;
 }
 
@@ -109,15 +123,29 @@ export interface RemediationUpdateItem {
   dataset_id: string | null;
   dataset_name: string | null;
   label: string | null;
-  category: string | null;
+  asset_type: string | null;
+  anomaly_id: string | null;
+  detection_mode: AiDetectionMode | null;
+  ai_anomaly_type: AiAnomalyType | null;
+  ai_color: AiIssueColor | null;
+  ai_severity_score: number | null;
+  ai_detected_at: string | null;
+  longitude: number | null;
+  latitude: number | null;
   source: "remediation_approved" | "remediation_rejected";
   message: string;
-  admin_name: string | null;
-  verified_condition: VerifiedCondition | null;
-  remarks: string | null;
-  status: PointVerificationStatus | null;
+  commissioner_name: string | null;
+  commissioner_remarks: string | null;
+  workflow_status: WorkflowStatus | null;
   created_at: string;
   read_at: string | null;
+}
+
+function workflowQuery(ai: AiVerificationRequestContext): string {
+  return new URLSearchParams({
+    anomaly_id: ai.anomalyId,
+    detection_mode: ai.detectionMode,
+  }).toString();
 }
 
 export function fetchPointVerification(
@@ -125,44 +153,62 @@ export function fetchPointVerification(
   ai: AiVerificationRequestContext,
   signal?: AbortSignal,
 ) {
-  const query = new URLSearchParams({
-    anomaly_id: ai.anomalyId,
-    detection_mode: ai.detectionMode,
-  });
   return apiGet<PointVerificationRecord>(
-    `/api/v1/point-verifications/${encodeURIComponent(featureId)}?${query.toString()}`,
+    `/api/v1/point-verifications/${encodeURIComponent(featureId)}/workflow?${workflowQuery(ai)}`,
     signal,
   );
 }
 
-export function submitArchitectRemediation(featureId: string, input: ArchitectSubmissionInput) {
+export function startRemediationWork(featureId: string, ai: AiVerificationRequestContext) {
+  return apiPost<PointVerificationRecord>(
+    `/api/v1/point-verifications/${encodeURIComponent(featureId)}/start-work`,
+    { anomaly_id: ai.anomalyId, detection_mode: ai.detectionMode },
+  );
+}
+
+export function uploadRemediationEvidence(
+  featureId: string,
+  ai: AiVerificationRequestContext,
+  beforeImage: File,
+  afterImage: File,
+) {
   const form = new FormData();
-  form.append("anomaly_id", input.anomalyId);
-  form.append("detection_mode", input.detectionMode);
-  form.append("issue_summary", input.issueSummary);
-  form.append("work_completed", input.workCompleted);
-  if (input.workStartedAt) form.append("work_started_at", input.workStartedAt);
-  form.append("work_completed_at", input.workCompletedAt);
-  form.append("before_photo", input.beforePhoto);
-  form.append("after_photo", input.afterPhoto);
-  return apiPostForm<PointVerificationRecord>(
-    `/api/v1/point-verifications/${encodeURIComponent(featureId)}/architect-submit`,
+  form.append("anomaly_id", ai.anomalyId);
+  form.append("detection_mode", ai.detectionMode);
+  form.append("before_image", beforeImage);
+  form.append("after_image", afterImage);
+  return apiPutForm<PointVerificationRecord>(
+    `/api/v1/point-verifications/${encodeURIComponent(featureId)}/evidence`,
     form,
   );
 }
 
-export function submitAdminDecision(featureId: string, payload: AdminDecisionInput) {
+export function submitFieldRemediation(featureId: string, input: FieldSubmissionInput) {
   return apiPost<PointVerificationRecord>(
-    `/api/v1/point-verifications/${encodeURIComponent(featureId)}/admin-decision`,
-    payload,
+    `/api/v1/point-verifications/${encodeURIComponent(featureId)}/submit`,
+    {
+      anomaly_id: input.anomalyId,
+      detection_mode: input.detectionMode,
+      issue_solved: input.issueSolved,
+      short_description: input.shortDescription,
+      remarks: input.remarks || null,
+    },
+  );
+}
+
+export function submitCommissionerDecision(featureId: string, input: CommissionerDecisionInput) {
+  return apiPost<PointVerificationRecord>(
+    `/api/v1/point-verifications/${encodeURIComponent(featureId)}/commissioner-decision`,
+    {
+      anomaly_id: input.anomalyId,
+      decision: input.decision,
+      reason: input.reason || null,
+    },
   );
 }
 
 export function fetchRemediationInbox(signal?: AbortSignal) {
-  return apiGet<RemediationInboxItem[]>(
-    "/api/v1/point-verifications/inbox?status_filter=pending_admin",
-    signal,
-  );
+  return apiGet<RemediationInboxItem[]>("/api/v1/point-verifications/inbox", signal);
 }
 
 export function fetchRemediationUpdates(signal?: AbortSignal) {

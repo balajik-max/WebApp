@@ -12,8 +12,8 @@ import {
   type DatasetBounds, type DatasetRow,
   type FeatureTableRow, type LayerFeatureTableFilter,
   type VisualizationFieldProfile, type VisualizationLayerManifest, type VisualizationManifest,
-  fetchAnomalies, runSpatialAudit, updateAnomalyStatus, fetchAllClassMappings,
-  type SpatialAnomaly, type AnomalyStatus,
+  fetchAnomalies, runSpatialAudit, fetchAllClassMappings,
+  type SpatialAnomaly,
 } from "../lib/workflow";
 import { AttributeTable } from "./AttributeTable";
 import { PanoramaViewer } from "./PanoramaViewer";
@@ -100,7 +100,7 @@ interface Props {
   focusFeatureId?: string;
   /** Clears the one-shot route request after the feature has been handled. */
   onFocusHandled?: () => void;
-  /** Refetch point-verification state after an Admin or Architect update. */
+  /** Refetch workflow state after an AE/AEE or Commissioner update. */
   refreshToken?: number;
 
   /** Whether the mobile Data Sources drawer is open — lifted up to
@@ -1054,7 +1054,7 @@ function featureFocusGeometry(feature: UrbanFeature): {
 
 
 // Blue is an AI-workflow color only. Normal map/category rendering always
-// keeps its original category color, even after Admin approval.
+// keeps its original category color, even after Commissioner approval.
 const POINT_ISSUE_RESOLVED_COLOR = "#2563eb";
 function withPointVerificationColor(
   fallback: maplibregl.ExpressionSpecification | string,
@@ -1167,7 +1167,7 @@ function summarizeAnomalyForTooltip(a: SpatialAnomaly): { color: AnomalyDisplayC
   return {
     color: resolved ? "blue" : a.color,
     typeLabel: ANOMALY_TYPE_LABEL[a.anomaly_type],
-    metric: resolved ? `Resolved and Admin approved · ${metric}` : metric,
+    metric: resolved ? `Resolved and Commissioner approved · ${metric}` : metric,
     resolved,
     longitude: a.lon,
     latitude: a.lat,
@@ -3837,11 +3837,6 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
 
   const selectedAnomaly = anomalies.find((a) => a.id === selectedAnomalyId) ?? null;
 
-  const handleAnomalyStatusChange = useCallback(async (anomalyId: string, next: AnomalyStatus) => {
-    const updated = await updateAnomalyStatus(anomalyId, next);
-    setAnomalies((prev) => prev.map((a) => (a.id === anomalyId ? updated : a)));
-  }, []);
-
   const handleAnomalyStale = useCallback((anomalyId: string) => {
     setAnomalies((prev) => prev.filter((a) => a.id !== anomalyId));
     setSelectedAnomalyId((current) => (current === anomalyId ? null : current));
@@ -5461,7 +5456,6 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
           <AnomalyAlertCard
             anomaly={selectedAnomaly}
             onClose={() => setSelectedAnomalyId(null)}
-            onStatusChange={handleAnomalyStatusChange}
             onStale={handleAnomalyStale}
           />
         )}

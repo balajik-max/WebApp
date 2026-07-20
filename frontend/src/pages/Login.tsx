@@ -189,7 +189,7 @@ export function LoginPage() {
                   data-testid="input-email"
                   type="email"
                   autoComplete="email"
-                  placeholder="admin@davangere.gov.in"
+                  placeholder="ae@davangere.gov.in"
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
                   onBlur={() =>
@@ -292,9 +292,9 @@ export function LoginPage() {
             <div className="login__demo">
               <p>{t("login.demo")}</p>
               <div className="login__demo-accounts">
-                <button type="button" onClick={() => { setEmail("admin@davangere.gov.in"); setPassword("Admin@12345"); }}>
-                  <span className="login__demo-badge login__demo-badge--admin">DEMO</span>
-                  admin@davangere.gov.in
+                <button type="button" onClick={() => { setEmail("mla@davangere.gov.in"); setPassword("Mla@12345"); }}>
+                  <span className="login__demo-badge login__demo-badge--admin">MLA</span>
+                  mla@davangere.gov.in
                 </button>
                 <button type="button" onClick={() => { setEmail("commissioner@davangere.gov.in"); setPassword("Commissioner@12345"); }}>
                   <span className="login__demo-badge login__demo-badge--commissioner">Commissioner</span>

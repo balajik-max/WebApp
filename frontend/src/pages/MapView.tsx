@@ -12,6 +12,7 @@ import type {
   RemediationUpdateItem,
 } from "../lib/pointVerifications";
 import type { DatasetRow } from "../lib/workflow";
+import { fetchFeatureById } from "../lib/features";
 
 interface LayoutCtx {
   filter: FeatureFilter;
@@ -64,6 +65,23 @@ export function MapView() {
       const next = new URLSearchParams(searchParams);
       next.set("locateFeature", item.feature_id);
       setSearchParams(next, { replace: true });
+      void fetchFeatureById(item.feature_id).then((feature) => {
+        if (!item.detection_mode || !item.ai_anomaly_type || !item.ai_color) return;
+        setSelected(feature);
+        setVerificationTarget({
+          feature,
+          ai: {
+            anomalyId: item.anomaly_id,
+            detectionMode: item.detection_mode,
+            anomalyType: item.ai_anomaly_type,
+            aiColor: item.ai_color,
+            severityScore: item.ai_severity_score ?? 0,
+            detectedAt: item.ai_detected_at ?? new Date().toISOString(),
+            longitude: item.longitude,
+            latitude: item.latitude,
+          },
+        });
+      });
     },
     [searchParams, setSearchParams],
   );
@@ -74,6 +92,27 @@ export function MapView() {
       const next = new URLSearchParams(searchParams);
       next.set("locateFeature", item.feature_id);
       setSearchParams(next, { replace: true });
+      if (
+        item.anomaly_id && item.detection_mode && item.ai_anomaly_type && item.ai_color
+        && item.longitude !== null && item.latitude !== null
+      ) {
+        void fetchFeatureById(item.feature_id).then((feature) => {
+          setSelected(feature);
+          setVerificationTarget({
+            feature,
+            ai: {
+              anomalyId: item.anomaly_id!,
+              detectionMode: item.detection_mode!,
+              anomalyType: item.ai_anomaly_type!,
+              aiColor: item.ai_color!,
+              severityScore: item.ai_severity_score ?? 0,
+              detectedAt: item.ai_detected_at ?? new Date().toISOString(),
+              longitude: item.longitude!,
+              latitude: item.latitude!,
+            },
+          });
+        });
+      }
     },
     [searchParams, setSearchParams],
   );

@@ -23,11 +23,11 @@ export function RemediationUpdates({ refreshToken = 0, onLocate }: Props) {
   const [open, setOpen] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-
+  const isFieldOfficer = user?.role === "ae" || user?.role === "aee";
   const unread = useMemo(() => items.filter((item) => !item.read_at).length, [items]);
 
   useEffect(() => {
-    if (user?.role !== "architect") {
+    if (!isFieldOfficer) {
       setItems([]);
       return;
     }
@@ -45,26 +45,24 @@ export function RemediationUpdates({ refreshToken = 0, onLocate }: Props) {
         .finally(() => setLoading(false));
     };
     load();
-    const timer = window.setInterval(load, 30000);
+    const timer = window.setInterval(load, 30_000);
     return () => {
       controller.abort();
       window.clearInterval(timer);
     };
-  }, [user?.id, refreshToken]);
+  }, [isFieldOfficer, user?.id, refreshToken]);
 
-  if (user?.role !== "architect") return null;
+  if (!isFieldOfficer) return null;
 
   async function locate(item: RemediationUpdateItem) {
     if (!item.read_at) {
       try {
         await markRemediationUpdateRead(item.notification_id);
-        setItems((current) => current.map((row) => (
-          row.notification_id === item.notification_id
-            ? { ...row, read_at: new Date().toISOString() }
-            : row
-        )));
+        setItems((current) => current.map((row) => row.notification_id === item.notification_id
+          ? { ...row, read_at: new Date().toISOString() }
+          : row));
       } catch {
-        // Locating the field point is more important than a read-marker failure.
+        // A read-marker failure must not block locating the field point.
       }
     }
     if (item.feature_id) onLocate(item);
@@ -74,13 +72,12 @@ export function RemediationUpdates({ refreshToken = 0, onLocate }: Props) {
   return (
     <div className="remediation-updates">
       <button type="button" className="remediation-updates__toggle" onClick={() => setOpen((value) => !value)}>
-        <span>Work Updates</span>
-        <strong>{unread}</strong>
+        <span>Work Updates</span><strong>{unread}</strong>
       </button>
       {open && (
         <section className="remediation-updates__panel" aria-label="Remediation approval updates">
           <header>
-            <div><strong>Remediation Updates</strong><span>Admin approvals and denied submissions</span></div>
+            <div><strong>Remediation Updates</strong><span>Commissioner approvals and rejections</span></div>
             <button type="button" onClick={() => setOpen(false)} aria-label="Close">×</button>
           </header>
           {loading && items.length === 0 && <p>Loading updates…</p>}
@@ -92,18 +89,14 @@ export function RemediationUpdates({ refreshToken = 0, onLocate }: Props) {
               return (
                 <article key={item.notification_id} className={item.read_at ? "" : "remediation-updates__item--unread"}>
                   <div className="remediation-updates__badges">
-                    <span className={rejected ? "remediation-updates__denied" : "remediation-updates__approved"}>
-                      {rejected ? "Approval denied" : "Approved"}
-                    </span>
-                    {item.verified_condition && <span>{item.verified_condition}</span>}
+                    <span className={rejected ? "remediation-updates__denied" : "remediation-updates__approved"}>{rejected ? "Rejected" : "Approved"}</span>
+                    {item.workflow_status && <span>{item.workflow_status.replaceAll("_", " ")}</span>}
                   </div>
-                  <strong>{item.label ?? item.category ?? item.feature_id ?? "Remediation item"}</strong>
+                  <strong>{item.label ?? item.asset_type ?? item.feature_id ?? "Remediation item"}</strong>
                   <small>{item.dataset_name ?? "Survey dataset"} · {displayDate(item.created_at)}</small>
                   <p>{item.message}</p>
-                  {item.remarks && <blockquote>{item.remarks}</blockquote>}
-                  {item.feature_id && (
-                    <button type="button" onClick={() => void locate(item)}>Locate point and view details</button>
-                  )}
+                  {item.commissioner_remarks && <blockquote>{item.commissioner_remarks}</blockquote>}
+                  {item.feature_id && <button type="button" onClick={() => void locate(item)}>Locate point and view details</button>}
                 </article>
               );
             })}

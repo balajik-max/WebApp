@@ -6,7 +6,7 @@ const ROLE_LABELS: Record<string, string> = {
   commissioner: "Commissioner",
   aee: "AEE",
   ae: "AE",
-  admin: "Administrator",
+  mla: "MLA (Read Only)",
 };
 
 function formatDate(iso: string | undefined): string {
