@@ -5,11 +5,15 @@ import type { UrbanFeature } from "../lib/types";
 import type { DatasetRow, SpatialAnomaly } from "../lib/workflow";
 import { fetchDemGrid, fetchBuildingHeights, type DemGrid, type DemBounds } from "../lib/dem";
 import { colorForCategory } from "../lib/categoryColors";
+import type { AiAnswer } from "../lib/ai";
 
 interface Props {
   features: UrbanFeature[];
   classMap: Record<string, string>;
   anomalies: SpatialAnomaly[];
+  /** Optional manhole-recommend answer — when present, pipe routes are drawn
+   * as subsurface tubes in the 3-D scene. */
+  manholeAnswer?: AiAnswer | null;
   datasets: DatasetRow[];
   activeDatasetIds: string[];
   onClose: () => void;

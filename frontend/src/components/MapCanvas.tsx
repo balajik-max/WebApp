@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState, useCallback, useImperativeHandle, useMemo, forwardRef, type MutableRefObject } from "react";
 import { createPortal } from "react-dom";
-import maplibregl, { Map as MLMap, MapMouseEvent, GeoJSONSource } from "maplibre-gl";
+import maplibregl, { Map as MLMap, MapMouseEvent, MapLayerMouseEvent, GeoJSONSource } from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
 
 import { fetchFeatureById, fetchFeaturesInViewport, fetchVisualizationLayerFeatures } from "../lib/features";
@@ -13,8 +13,8 @@ import {
   type FeatureTableRow, type LayerFeatureTableFilter,
   type VisualizationFieldGroupTree, type VisualizationFieldProfile, type VisualizationLayerGroupNode,
   type VisualizationLayerManifest, type VisualizationManifest,
-  fetchAnomalies, runSpatialAudit, updateAnomalyStatus, fetchAllClassMappings,
-  type SpatialAnomaly, type AnomalyStatus,
+  fetchAnalyticsFeatures, fetchDrainEncroachment, fetchAnomalies, fetchRoadInspection, runSpatialAudit, updateAnomalyStatus, fetchAllClassMappings,
+  type DrainEncroachmentReport, type RoadInspection, type RoadInspectionFeature, type SpatialAnomaly, type AnomalyStatus,
 } from "../lib/workflow";
 import { AttributeTable } from "./AttributeTable";
 import { PanoramaViewer } from "./PanoramaViewer";
@@ -24,6 +24,9 @@ import { LookAroundCompass, DEFAULT_MAP_PITCH, MAX_MAP_PITCH } from "./LookAroun
 import { DataSourceSelector } from "./DataSourceSelector";
 import { SupportingFilesImport } from "./WardReportPanel";
 import { AnomalyAlertCard } from "./AnomalyAlertCard";
+import { RoadInspectionCard } from "./RoadInspectionCard";
+import { QuickAnalysisPanel } from "./QuickAnalysisPanel";
+import { QuickAnalysisMapDashboard, type ManholeConnectionDetail, type QuickAnalysisTool } from "./QuickAnalysisMapDashboard";
 import { PlacemarkEditor } from "./map/PlacemarkEditor";
 import { MyPlacesPanel } from "./map/MyPlacesPanel";
 import { PlacemarkDetailsPanel } from "./map/PlacemarkDetailsPanel";
@@ -36,8 +39,10 @@ import {
   bulkDeletePlacemarks, createPlacemark, deletePlacemark, fetchElevationSample, fetchPlacemarks,
   updatePlacemark, type ElevationSample, type Placemark, type PlacemarkDraft,
 } from "../lib/placemarks";
+import { ManholeRecommendCard } from "./ManholeRecommendCard";
 import { Map3DViewer } from "./Map3DViewer";
 import { GroupedFieldList } from "./GroupedFieldList";
+import { aiManholeRecommend, type AiAnswer } from "../lib/ai";
 
 // .obj datasets are persisted with file_type "other" (the enum has no
 // dedicated OBJ value), so detect them from the stored filename instead.
@@ -96,6 +101,10 @@ interface Props {
   focusFeatureId?: string;
   /** Clears the one-shot route request after the feature has been handled. */
   onFocusHandled?: () => void;
+  sidebarCollapsed?: boolean;
+  onToggleSidebar?: () => void;
+  /** Lets the page hide global AI/report floating buttons in Quick Analysis. */
+  onQuickAnalysisActiveChange?: (active: boolean) => void;
   /** Refetch point-verification state after an Admin or Architect update. */
   refreshToken?: number;
 
@@ -129,6 +138,39 @@ const COMPLETE_DATA_BBOX: [number, number, number, number] = [-180, -90, 180, 90
 // raster preview image requests need the same credentials treatment as
 // every other authenticated call.
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "";
+// Only used when a real parcel-tile service is configured. Without one,
+// cadastral mode reuses the same OSM tiles as Street (guaranteed full local
+// coverage, unlike Esri's raster services which run out of LOD in smaller
+// towns) and gets a cream tint via raster paint properties instead — see
+// CADASTRAL_OSM_PAINT below.
+const CADASTRAL_TILE_URL = import.meta.env.VITE_CADASTRAL_TILE_URL?.trim() ?? "";
+const CADASTRAL_TILE_ATTRIBUTION = import.meta.env.VITE_CADASTRAL_ATTRIBUTION?.trim() ?? "";
+const cadastralOpacityRaw = Number(import.meta.env.VITE_CADASTRAL_OPACITY ?? "0.96");
+const CADASTRAL_TILE_OPACITY = Number.isFinite(cadastralOpacityRaw)
+  ? Math.min(1, Math.max(0, cadastralOpacityRaw))
+  : 0.96;
+const cadastralMaxZoomRaw = Number(import.meta.env.VITE_CADASTRAL_MAX_ZOOM ?? "22");
+const CADASTRAL_TILE_MAX_ZOOM = Number.isFinite(cadastralMaxZoomRaw)
+  ? Math.max(0, Math.min(24, cadastralMaxZoomRaw))
+  : 22;
+// Warm, slightly muted cream tint applied to the shared OSM layer in
+// cadastral mode so it reads as a distinct basemap from plain Street even
+// though both pull the same reliable tiles.
+const CADASTRAL_OSM_PAINT = {
+  "raster-hue-rotate": 15,
+  "raster-saturation": -0.15,
+  "raster-brightness-min": 0.15,
+  "raster-contrast": -0.05,
+} as const;
+const STREET_OSM_PAINT = {
+  "raster-hue-rotate": 0,
+  "raster-saturation": 0,
+  "raster-brightness-min": 0,
+  "raster-contrast": 0,
+} as const;
+const CADASTRAL_TILE_SOURCE = "cadastral-official-tiles";
+const CADASTRAL_TILE_LAYER = "cadastral-official-raster";
+const HAS_EXTERNAL_CADASTRAL_TILES = CADASTRAL_TILE_URL.length > 0;
 
 // Per-dataset IDs (rather than one fixed source/layer) so more than one
 // raster overlay can be shown on the map at the same time.
@@ -273,6 +315,15 @@ const BASE_STYLE: maplibregl.StyleSpecification = {
       maxzoom: 19,
       attribution: "Esri, Maxar, Earthstar Geographics",
     },
+    ...(HAS_EXTERNAL_CADASTRAL_TILES ? {
+      [CADASTRAL_TILE_SOURCE]: {
+        type: "raster",
+        tiles: [CADASTRAL_TILE_URL],
+        tileSize: 256,
+        maxzoom: CADASTRAL_TILE_MAX_ZOOM,
+        ...(CADASTRAL_TILE_ATTRIBUTION ? { attribution: CADASTRAL_TILE_ATTRIBUTION } : {}),
+      } satisfies maplibregl.RasterSourceSpecification,
+    } : {}),
   },
   layers: [
     { id: "osm", type: "raster", source: "osm-tiles", minzoom: 0, maxzoom: 24 },
@@ -284,6 +335,17 @@ const BASE_STYLE: maplibregl.StyleSpecification = {
       maxzoom: 24,
       layout: { visibility: "none" },
     },
+    ...(HAS_EXTERNAL_CADASTRAL_TILES ? [{
+      id: CADASTRAL_TILE_LAYER,
+      type: "raster",
+      source: CADASTRAL_TILE_SOURCE,
+      minzoom: 0,
+      maxzoom: 24,
+      layout: { visibility: "none" },
+      paint: {
+        "raster-opacity": CADASTRAL_TILE_OPACITY,
+      },
+    } satisfies maplibregl.LayerSpecification] : []),
     {
       id: "reference-boundaries",
       type: "line",
@@ -466,16 +528,36 @@ const BASE_STYLE: maplibregl.StyleSpecification = {
   ],
 };
 
-type Basemap = "street" | "satellite" | "off";
+type Basemap = "cadastral" | "street" | "satellite" | "off";
 
 const FEATURE_SOURCE = "urban-features";
 const LAYER_POINTS = "urban-features-points";
+const LAYER_POINTS_CADASTRAL = "urban-features-points-cadastral";
+const LAYER_POINTS_CADASTRAL_HIT = "urban-features-points-cadastral-hit";
 const LAYER_LINES = "urban-features-lines";
+const LAYER_LINES_CADASTRAL = "urban-features-lines-cadastral";
 const LAYER_POLY_FILL = "urban-features-poly-fill";
+const LAYER_POLY_FILL_CADASTRAL = "urban-features-poly-fill-cadastral";
 const LAYER_POLY_OUTLINE = "urban-features-poly-outline";
+const LAYER_POLY_OUTLINE_CADASTRAL = "urban-features-poly-outline-cadastral";
 const LAYER_PHOTOS = "urban-features-photos";
 const PHOTO_ICON_ID = "site-photo-icon";
+const CADASTRAL_POINT_ICON_DEFAULT = "cadastral-point-default";
+const CADASTRAL_POINT_ICON_TREE = "cadastral-point-tree";
+const CADASTRAL_POINT_ICON_PALM = "cadastral-point-palm";
+const CADASTRAL_POINT_ICON_POLE = "cadastral-point-pole";
+const CADASTRAL_POINT_ICON_LIGHT = "cadastral-point-light";
+const CADASTRAL_POINT_ICON_MANHOLE = "cadastral-point-manhole";
+const CADASTRAL_POINT_ICON_CAMERA = "cadastral-point-camera";
+const CADASTRAL_POINT_ICON_LEVEL = "cadastral-point-level";
+const CADASTRAL_POINT_ICON_LANDMARK = "cadastral-point-landmark";
+const CADASTRAL_POINT_ICON_TRANSFORMER = "cadastral-point-transformer";
+const CADASTRAL_POINT_ICON_SIGN = "cadastral-point-sign";
+const CADASTRAL_POINT_ICON_GATE = "cadastral-point-gate";
+const CADASTRAL_POINT_ICON_WATER = "cadastral-point-water";
+const CADASTRAL_POINT_ICON_TEMPLE = "cadastral-point-temple";
 const REFERENCE_SURVEY_BUILDING_LABELS = "reference-survey-building-labels";
+const REFERENCE_SURVEY_ROAD_LABELS = "reference-survey-road-labels";
 
 const PLACEMARK_SOURCE = "user-placemarks-source";
 const PLACEMARK_FOCUS_SOURCE = "user-placemark-focus-source";
@@ -520,6 +602,17 @@ const TABLE_FOCUS_LINE = "attribute-table-focus-line";
 const TABLE_FOCUS_POINT = "attribute-table-focus-point";
 const TABLE_FOCUS_DURATION_MS = 8000;
 
+// Road Inspection keeps its selected centerline visibly distinct while the
+// user reviews the server-side road report.
+const ROAD_INSPECTION_SOURCE = "road-inspection-focus";
+const LAYER_ROAD_INSPECTION = "road-inspection-focus-line";
+const ROAD_INSPECTION_ASSETS_SOURCE = "road-inspection-assets";
+const LAYER_ROAD_INSPECTION_ASSETS_FILL = "road-inspection-assets-fill";
+const LAYER_ROAD_INSPECTION_ASSETS_LINE = "road-inspection-assets-line";
+const LAYER_ROAD_INSPECTION_ASSETS_POINT = "road-inspection-assets-point";
+const ROAD_INSPECTION_WIDTH_SOURCE = "road-inspection-width";
+const LAYER_ROAD_INSPECTION_WIDTH = "road-inspection-width-line";
+
 // Base (category-agnostic) filters for the layers above — kept as named
 // constants so the category-visibility checklist can AND a hidden-category
 // clause onto them without duplicating the geometry/role logic.
@@ -537,6 +630,13 @@ const VIZ_SOURCE_LAYER_PROP = "__viz_source_layer";
 const VIZ_LAYER_ID_PROP = "__viz_layer_id";
 const VIZ_VALUE_PROP = "__viz_value";
 const VIZ_MISSING_PROP = "__viz_missing";
+const CADASTRAL_DUPLICATE_POINT_PROP = "__cadastral_duplicate_point";
+
+const CADASTRAL_POINT_HIT_FILTER: maplibregl.FilterSpecification = [
+  "all",
+  POINT_BASE_FILTER,
+  ["!=", ["get", CADASTRAL_DUPLICATE_POINT_PROP], true],
+];
 
 const VIZ_SELECTED_SOURCE = "visualization-selected-source";
 const VIZ_SELECTED_POLY_FILL = "visualization-selected-polygon-fill";
@@ -598,6 +698,99 @@ function withFeatureVisibility(
   if (clauses.length === 1) return base;
   return ["all", ...clauses] as unknown as maplibregl.FilterSpecification;
 }
+
+function normalizeCategoryName(value: string): string {
+  return value.trim().toLowerCase().replace(/[_-]+/g, " ").replace(/\s+/g, " ");
+}
+
+function isBuildingCategory(category: string | null | undefined): boolean {
+  return normalizeCategoryName(category ?? "").startsWith("building");
+}
+
+function featurePointCoordinate(feature: GeoJSON.Feature): [number, number] | null {
+  if (feature.geometry?.type !== "Point") return null;
+  const [longitude, latitude] = feature.geometry.coordinates;
+  return Number.isFinite(longitude) && Number.isFinite(latitude) ? [longitude, latitude] : null;
+}
+
+function featureLabel(feature: GeoJSON.Feature): string | null {
+  const properties = (feature.properties ?? {}) as Record<string, unknown>;
+  const attributes = (properties.attributes ?? {}) as Record<string, unknown>;
+  return featureDisplayLabel(properties.label, attributes);
+}
+
+function isNamedTempleLandmark(feature: GeoJSON.Feature): boolean {
+  const category = normalizeCategoryName(String((feature.properties ?? {}).category ?? ""));
+  const label = featureLabel(feature);
+  return category === "landmark" && Boolean(label && normalizeCategoryName(label).includes("temple"));
+}
+
+function isGenericTemplePoint(feature: GeoJSON.Feature): boolean {
+  const category = normalizeCategoryName(String((feature.properties ?? {}).category ?? ""));
+  const label = featureLabel(feature);
+  return category === "temple" && (!label || normalizeCategoryName(label) === "temple");
+}
+
+const CADASTRAL_CATEGORY_ALLOWLIST = new Set([
+  "road centerline",
+  "concrete road",
+  "concrete edge",
+  "wall",
+  "fence",
+  "power line",
+  "kerb top",
+  "kerb bottom",
+  "sidewalk",
+  "hand rail",
+  "road hump",
+  "arch",
+  "planter box",
+  "building",
+  "building roof extension",
+  "building extenstions",
+  "building extensions",
+  "building ruin",
+  "building underconstruction",
+  "building under construction",
+  "temple",
+  "shed",
+  "coconut tree",
+  "other tree",
+  "power pole with light",
+  "power pole",
+  "light pole",
+  "solar light",
+  "cc camera",
+  "road sign",
+  "road sign single pole",
+  "road sign double pole",
+  "transformer",
+  "high mast",
+  "flag pole",
+  "gate",
+  "monument",
+  "water tank",
+  "water pump",
+  "overhead tank",
+  "microwave tower",
+  "inlet",
+  "gully",
+  "manhole",
+  "landmark",
+  "drain levels",
+  "parcel",
+  "parcels",
+  "cadastral",
+  "cadastral parcel",
+  "property boundary",
+  "plot",
+  "plot boundary",
+  "site boundary",
+  "survey parcel",
+  "revenue parcel",
+  "revenue map",
+  "compound wall",
+].map(normalizeCategoryName));
 
 function aggregateVisualizationFields(
   layers: VisualizationLayerManifest[]
@@ -692,19 +885,61 @@ const LAYER_AI_NEEDED = "ai-highlight-needed";
 const AI_REDUNDANT_COLOR = "#ef4444"; // red
 const AI_NEEDED_COLOR = "#22c55e";    // green
 
+// Quick Analysis is not an AI overlay. It has its own lightweight survey
+// marker source, used by the Drain card for red circle-and-cross markers.
+const QUICK_ANALYSIS_MARKER_SOURCE = "quick-analysis-survey-markers";
+const QUICK_ANALYSIS_DRAIN_SOURCE = "quick-analysis-drain-network";
+const QUICK_ANALYSIS_MANHOLE_SOURCE = "quick-analysis-drain-manholes";
+const QUICK_ANALYSIS_ENCROACHMENT_SOURCE = "quick-analysis-building-encroachments";
+const LAYER_QUICK_ANALYSIS_DRAIN_CORRIDOR = "quick-analysis-drain-corridor";
+const LAYER_QUICK_ANALYSIS_DRAIN_LINE = "quick-analysis-drain-line";
+const LAYER_QUICK_ANALYSIS_DRAIN_RING = "quick-analysis-drain-ring";
+const LAYER_QUICK_ANALYSIS_DRAIN_CROSS = "quick-analysis-drain-cross";
+const LAYER_QUICK_ANALYSIS_MANHOLE_GLOW = "quick-analysis-manhole-glow";
+const LAYER_QUICK_ANALYSIS_MANHOLE = "quick-analysis-manhole";
+const LAYER_QUICK_ANALYSIS_ENCROACHMENT_FILL = "quick-analysis-encroachment-fill";
+const LAYER_QUICK_ANALYSIS_ENCROACHMENT_OUTLINE = "quick-analysis-encroachment-outline";
+const LAYER_QUICK_ANALYSIS_ENCROACHMENT_CROSSING_HALO = "quick-analysis-encroachment-crossing-halo";
+const LAYER_QUICK_ANALYSIS_ENCROACHMENT_CROSSING = "quick-analysis-encroachment-crossing";
+const QUICK_ANALYSIS_MANHOLE_CONNECTION_SOURCE = "quick-analysis-manhole-connections";
+const LAYER_QUICK_ANALYSIS_MANHOLE_CONNECTION_HIT = "quick-analysis-manhole-connection-hit";
+const LAYER_QUICK_ANALYSIS_MANHOLE_CONNECTION_HALO = "quick-analysis-manhole-connection-halo";
+const LAYER_QUICK_ANALYSIS_MANHOLE_CONNECTION_GOOD = "quick-analysis-manhole-connection-good";
+const LAYER_QUICK_ANALYSIS_MANHOLE_CONNECTION_WARNING = "quick-analysis-manhole-connection-warning";
+const LAYER_QUICK_ANALYSIS_MANHOLE_CONNECTION_CRITICAL = "quick-analysis-manhole-connection-critical";
+const LAYER_QUICK_ANALYSIS_MANHOLE_FLOW_ARROWS = "quick-analysis-manhole-flow-arrows";
+const QUICK_ANALYSIS_MANHOLE_UNCONNECTED_SOURCE = "quick-analysis-manhole-unconnected";
+const LAYER_QUICK_ANALYSIS_MANHOLE_UNCONNECTED_HALO = "quick-analysis-manhole-unconnected-halo";
+const LAYER_QUICK_ANALYSIS_MANHOLE_UNCONNECTED_RING = "quick-analysis-manhole-unconnected-ring";
+const QUICK_ANALYSIS_FLOW_ARROW_GOOD = "quick-analysis-flow-arrow-good";
+const QUICK_ANALYSIS_FLOW_ARROW_WARNING = "quick-analysis-flow-arrow-warning";
+const QUICK_ANALYSIS_FLOW_ARROW_CRITICAL = "quick-analysis-flow-arrow-critical";
+
 // Spatial Audit Engine — persisted findings (pole redundancy, drain
 // encroachment, manhole status), one shared point layer colored by the
 // backend-assigned `color` field directly (red/yellow/green already
 // decided server-side, no client bucket math needed).
 const ANOMALY_SOURCE = "spatial-anomalies";
 const LAYER_ANOMALIES = "spatial-anomalies-points";
+// Road-width narrowing is drawn as a coloured LINE (the affected carriageway
+// stretch, like a traffic segment) rather than vertex dots — see
+// ANOMALY_ROAD_LINE_SOURCE below, populated from each finding's
+// `affected_line_wkt` metadata. The point layer explicitly excludes this type.
+const ANOMALY_ROAD_LINE_SOURCE = "spatial-anomalies-road-lines";
+const LAYER_ANOMALIES_ROAD = "spatial-anomalies-road-lines";
 
-// Manhole heatmap — condition-audit density shown in "manholes" AI detection
-// mode instead of the individual red/yellow/green anomaly dots above.
-const MANHOLE_HEATMAP_SOURCE = "manhole-heatmap-source";
-const LAYER_MANHOLE_HEATMAP = "manhole-heatmap-layer";
-const LAYER_MANHOLE_HEATMAP_POINTS = "manhole-heatmap-points";
-
+// AI Manhole Recommendation Engine — proposed/rehab pipe routes, its own
+// source/layer so it never touches the anomaly/highlight layers above.
+const MANHOLE_ROUTES_SOURCE = "manhole-recommend-routes";
+const LAYER_MANHOLE_ROUTES = "manhole-recommend-routes-line";
+const LAYER_MANHOLE_FLOW_ARROWS = "manhole-recommend-routes-flow-arrows";
+const FLOW_ARROW_ICON_ID = "manhole-flow-arrow-icon";
+const MANHOLE_POINTS_SOURCE = "manhole-recommend-points";
+const LAYER_MANHOLE_POINTS = "manhole-recommend-points-circle";
+const MANHOLE_UNCONNECTED_SOURCE = "manhole-recommend-unconnected";
+const LAYER_MANHOLE_UNCONNECTED = "manhole-recommend-unconnected-circle";
+const MANHOLE_ROUTE_COLOR = "#3aa1ff";
+const MANHOLE_UNCONNECTED_COLOR = "#9b59b6";
 const ANOMALY_COLOR_EXPR: maplibregl.ExpressionSpecification = [
   "case",
   ["==", ["get", "status"], "resolved"], "#2563eb",
@@ -977,6 +1212,760 @@ function buildPhotoIconImageData(): ImageData {
   return ctx.getImageData(0, 0, w, h);
 }
 
+/** Compact right-pointing arrow (shaft + head) used for flow direction.
+ * It is icon-based rather than text-field because this map style has no
+ * glyph endpoint. */
+function buildFlowArrowImageData(fillColor = MANHOLE_ROUTE_COLOR): ImageData {
+  const w = 32, h = 20;
+  const canvas = document.createElement("canvas");
+  canvas.width = w;
+  canvas.height = h;
+  const ctx = canvas.getContext("2d")!;
+  ctx.lineCap = "round";
+  ctx.lineJoin = "round";
+  // Arrow shaft: this is intentionally visible, so the marker reads as an
+  // arrow rather than the triangle-only marker used previously.
+  ctx.beginPath();
+  ctx.moveTo(3, 10);
+  ctx.lineTo(21, 10);
+  ctx.strokeStyle = "#0b1013";
+  ctx.lineWidth = 4.4;
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.moveTo(3, 10);
+  ctx.lineTo(21, 10);
+  ctx.strokeStyle = fillColor;
+  ctx.lineWidth = 2.3;
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.moveTo(18, 3);
+  ctx.lineTo(29, 10);
+  ctx.lineTo(18, 17);
+  ctx.closePath();
+  ctx.fillStyle = fillColor;
+  ctx.strokeStyle = "#0b1013";
+  ctx.lineWidth = 1.8;
+  ctx.fill();
+  ctx.stroke();
+  return ctx.getImageData(0, 0, w, h);
+}
+
+// buildFlowArrowheadImageData removed — all arrows now use buildFlowArrowImageData (shaft + head).
+
+function quickAnalysisConnectionDetail(
+  route: AiAnswer["routes"][number],
+  index: number,
+): ManholeConnectionDetail {
+  // The backend also raises rainy_season_closed when elevation is missing.
+  // That is an uncertainty (yellow), not proof of a bad connection (red).
+  // Reserve red for a confirmed-flow connection that is explicitly flagged
+  // for attention; keep unconfirmed/road-assisted paths yellow.
+  const critical = route.rainy_season_closed === true && route.flow_confirmed === true;
+  const warning = !route.flow_confirmed || route.route_basis !== "sewage_line" || route.rainy_season_closed === true;
+  const status = critical ? "critical" : warning ? "warning" : "good";
+  const statusLabel = critical
+    ? "Needs attention"
+    : warning
+      ? route.flow_confirmed ? "Road-assisted connection" : "Flow verification required"
+      : "Verified connection";
+  return {
+    id: `${route.from_id}:${route.to_id ?? "unconnected"}:${index}`,
+    fromId: route.from_id,
+    toId: route.to_id,
+    status,
+    statusLabel,
+    flowConfirmed: route.flow_confirmed === true,
+    elevationSource: route.elevation_source ?? null,
+    routeBasis: route.route_basis ?? null,
+    rainySeasonClosed: critical,
+    pipeMaterial: route.pipe_spec.material,
+    pipeDiameterMm: route.pipe_spec.diameter_mm,
+    slope: route.pipe_spec.slope,
+  };
+}
+
+type CadastralPointIconKind =
+  | "default"
+  | "tree"
+  | "palm"
+  | "pole"
+  | "light"
+  | "manhole"
+  | "camera"
+  | "level"
+  | "landmark"
+  | "transformer"
+  | "sign"
+  | "gate"
+  | "water"
+  | "temple";
+
+function buildCadastralPointIconImageData(kind: CadastralPointIconKind): ImageData {
+  const size = 48;
+  const canvas = document.createElement("canvas");
+  canvas.width = size;
+  canvas.height = size;
+  const ctx = canvas.getContext("2d")!;
+  ctx.clearRect(0, 0, size, size);
+  ctx.lineCap = "round";
+  ctx.lineJoin = "round";
+
+  const stroke = "#0f172a";
+  const softStroke = "#475569";
+
+  const strokeOnly = (width = 2.5, color = stroke) => {
+    ctx.strokeStyle = color;
+    ctx.lineWidth = width;
+    ctx.stroke();
+  };
+
+  switch (kind) {
+    case "tree": {
+      ctx.beginPath();
+      ctx.moveTo(24, 30);
+      ctx.lineTo(24, 38);
+      strokeOnly(2.6, "#7c4a24");
+      ctx.beginPath();
+      ctx.arc(17, 21, 7.2, 0, Math.PI * 2);
+      ctx.arc(31, 21, 7.2, 0, Math.PI * 2);
+      ctx.arc(24, 14, 8.4, 0, Math.PI * 2);
+      ctx.fillStyle = "#4a9350";
+      ctx.fill();
+      strokeOnly(1.8, "#215226");
+      break;
+    }
+    case "palm": {
+      ctx.beginPath();
+      ctx.moveTo(24, 15);
+      ctx.quadraticCurveTo(20, 24, 24, 35);
+      strokeOnly(2.2, "#7c4a24");
+      const frondAngles = [-70, -35, -8, 20, 55];
+      for (const deg of frondAngles) {
+        const rad = (deg * Math.PI) / 180;
+        const tipX = 24 + Math.sin(rad) * 13;
+        const tipY = 15 - Math.cos(rad) * 10;
+        ctx.beginPath();
+        ctx.moveTo(24, 15);
+        ctx.quadraticCurveTo(24 + Math.sin(rad) * 7, 12 - Math.cos(rad) * 6, tipX, tipY);
+        strokeOnly(3.2, "#4a9350");
+      }
+      break;
+    }
+    case "pole": {
+      ctx.beginPath();
+      ctx.moveTo(24, 10);
+      ctx.lineTo(24, 36);
+      strokeOnly(1.9, softStroke);
+      ctx.beginPath();
+      ctx.moveTo(18, 16);
+      ctx.lineTo(30, 16);
+      strokeOnly(1.7, softStroke);
+      ctx.beginPath();
+      ctx.arc(24, 9, 2.4, 0, Math.PI * 2);
+      ctx.fillStyle = "#cbd5e1";
+      ctx.fill();
+      strokeOnly(1.2, softStroke);
+      break;
+    }
+    case "light": {
+      ctx.beginPath();
+      ctx.moveTo(22, 10);
+      ctx.lineTo(22, 35);
+      strokeOnly(1.9, softStroke);
+      ctx.beginPath();
+      ctx.moveTo(22, 15);
+      ctx.lineTo(29, 15);
+      strokeOnly(1.7, softStroke);
+      ctx.beginPath();
+      ctx.arc(31, 17, 3.2, 0, Math.PI * 2);
+      ctx.fillStyle = "#f8e36b";
+      ctx.fill();
+      strokeOnly(1.4, softStroke);
+      break;
+    }
+    case "manhole": {
+      ctx.beginPath();
+      ctx.arc(24, 24, 6.4, 0, Math.PI * 2);
+      ctx.fillStyle = "#8a3a2d";
+      ctx.fill();
+      strokeOnly(1.6, "#3b241d");
+      ctx.beginPath();
+      ctx.arc(24, 24, 2.1, 0, Math.PI * 2);
+      ctx.fillStyle = "#f5d0c5";
+      ctx.fill();
+      break;
+    }
+    case "camera": {
+      ctx.beginPath();
+      ctx.moveTo(24, 16);
+      ctx.lineTo(24, 35);
+      strokeOnly(1.7, softStroke);
+      ctx.fillStyle = "#ffffff";
+      roundRectPath(ctx, 16, 20, 16, 10, 3);
+      ctx.fill();
+      strokeOnly(1.4);
+      ctx.beginPath();
+      ctx.arc(24, 25, 3, 0, Math.PI * 2);
+      strokeOnly(1.4);
+      ctx.beginPath();
+      ctx.moveTo(19, 20);
+      ctx.lineTo(21, 18);
+      ctx.lineTo(27, 18);
+      ctx.lineTo(29, 20);
+      ctx.closePath();
+      ctx.fillStyle = "#111827";
+      ctx.fill();
+      strokeOnly(1.4);
+      break;
+    }
+    case "level": {
+      ctx.beginPath();
+      ctx.moveTo(24, 14);
+      ctx.lineTo(24, 32);
+      strokeOnly(1.7, softStroke);
+      ctx.beginPath();
+      ctx.moveTo(20, 18);
+      ctx.lineTo(24, 14);
+      ctx.lineTo(28, 18);
+      strokeOnly(1.5, softStroke);
+      ctx.beginPath();
+      ctx.moveTo(17, 28);
+      ctx.lineTo(31, 28);
+      strokeOnly(1.5, "#38bdf8");
+      ctx.beginPath();
+      ctx.arc(24, 35, 2.6, 0, Math.PI * 2);
+      ctx.fillStyle = "#cbd5e1";
+      ctx.fill();
+      strokeOnly(1.3, softStroke);
+      break;
+    }
+    case "landmark": {
+      ctx.beginPath();
+      const points = 4;
+      const outer = 8.4;
+      const inner = 3.8;
+      for (let i = 0; i < points * 2; i += 1) {
+        const angle = (-Math.PI / 2) + (i * Math.PI / points);
+        const radius = i % 2 === 0 ? outer : inner;
+        const x = 24 + Math.cos(angle) * radius;
+        const y = 24 + Math.sin(angle) * radius;
+        if (i === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+      }
+      ctx.closePath();
+      ctx.fillStyle = "#d97706";
+      ctx.fill();
+      strokeOnly(1.5, "#7c2d12");
+      break;
+    }
+    case "transformer": {
+      ctx.beginPath();
+      ctx.rect(16, 16, 16, 16);
+      ctx.fillStyle = "#f8e36b";
+      ctx.fill();
+      strokeOnly(1.6);
+      ctx.beginPath();
+      ctx.moveTo(20, 20);
+      ctx.lineTo(28, 28);
+      ctx.moveTo(28, 20);
+      ctx.lineTo(20, 28);
+      strokeOnly(1.4);
+      break;
+    }
+    case "sign": {
+      ctx.beginPath();
+      ctx.moveTo(24, 15);
+      ctx.lineTo(24, 35);
+      strokeOnly(1.6, softStroke);
+      ctx.beginPath();
+      ctx.moveTo(24, 11);
+      ctx.lineTo(30, 17);
+      ctx.lineTo(24, 23);
+      ctx.lineTo(18, 17);
+      ctx.closePath();
+      ctx.fillStyle = "#f8e36b";
+      ctx.fill();
+      strokeOnly(1.4);
+      break;
+    }
+    case "gate": {
+      ctx.beginPath();
+      ctx.moveTo(16, 34);
+      ctx.lineTo(16, 17);
+      ctx.lineTo(32, 17);
+      ctx.lineTo(32, 34);
+      strokeOnly(1.7, "#7c2d12");
+      ctx.beginPath();
+      ctx.moveTo(24, 17);
+      ctx.lineTo(24, 34);
+      ctx.moveTo(20, 23);
+      ctx.lineTo(20, 34);
+      ctx.moveTo(28, 23);
+      ctx.lineTo(28, 34);
+      strokeOnly(1.3, "#b45309");
+      break;
+    }
+    case "water": {
+      ctx.beginPath();
+      ctx.rect(15, 14, 18, 11);
+      ctx.fillStyle = "#7dd3fc";
+      ctx.fill();
+      strokeOnly(1.5, "#0f172a");
+      ctx.beginPath();
+      ctx.moveTo(18, 25);
+      ctx.lineTo(18, 34);
+      ctx.moveTo(30, 25);
+      ctx.lineTo(30, 34);
+      strokeOnly(1.4, "#0f172a");
+      break;
+    }
+    case "temple": {
+      ctx.beginPath();
+      ctx.moveTo(24, 11);
+      ctx.lineTo(17, 18);
+      ctx.lineTo(31, 18);
+      ctx.closePath();
+      ctx.fillStyle = "#d97706";
+      ctx.fill();
+      strokeOnly(1.5, "#7c2d12");
+      ctx.beginPath();
+      ctx.rect(17, 18, 14, 10);
+      ctx.fillStyle = "#fde68a";
+      ctx.fill();
+      strokeOnly(1.5, "#7c2d12");
+      ctx.beginPath();
+      ctx.moveTo(20, 28);
+      ctx.lineTo(20, 36);
+      ctx.moveTo(28, 28);
+      ctx.lineTo(28, 36);
+      ctx.moveTo(18, 36);
+      ctx.lineTo(30, 36);
+      strokeOnly(1.4, "#7c2d12");
+      break;
+    }
+    default: {
+      ctx.beginPath();
+      ctx.arc(24, 24, 6.5, 0, Math.PI * 2);
+      ctx.fillStyle = "#94a3b8";
+      ctx.fill();
+      strokeOnly(1.6, softStroke);
+      break;
+    }
+  }
+
+  return ctx.getImageData(0, 0, size, size);
+}
+
+function cadastralPointIconExpression(): maplibregl.ExpressionSpecification {
+  const categoryExpr: maplibregl.ExpressionSpecification = ["downcase", ["coalesce", ["get", "category"], ""]];
+  const labelExpr: maplibregl.ExpressionSpecification = [
+    "downcase",
+    [
+      "coalesce",
+      ["get", "label"],
+      ["get", "Name", ["get", "attributes"]],
+      ["get", "name", ["get", "attributes"]],
+      "",
+    ],
+  ];
+
+  return [
+    "case",
+    [
+      "in",
+      categoryExpr,
+      ["literal", ["coconut tree"]],
+    ],
+    CADASTRAL_POINT_ICON_TREE,
+    [
+      "in",
+      categoryExpr,
+      ["literal", ["other tree", "tree", "planter box"]],
+    ],
+    CADASTRAL_POINT_ICON_TREE,
+    [
+      "in",
+      categoryExpr,
+      ["literal", ["power pole with light", "light pole", "solar light", "high mast"]],
+    ],
+    CADASTRAL_POINT_ICON_LIGHT,
+    [
+      "in",
+      categoryExpr,
+      ["literal", ["power pole", "flag pole", "microwave tower"]],
+    ],
+    CADASTRAL_POINT_ICON_POLE,
+    [
+      "in",
+      categoryExpr,
+      ["literal", ["transformer"]],
+    ],
+    CADASTRAL_POINT_ICON_TRANSFORMER,
+    [
+      "in",
+      categoryExpr,
+      ["literal", ["road sign", "road sign single pole", "road sign double pole"]],
+    ],
+    CADASTRAL_POINT_ICON_SIGN,
+    [
+      "in",
+      categoryExpr,
+      ["literal", ["gate"]],
+    ],
+    CADASTRAL_POINT_ICON_GATE,
+    [
+      "in",
+      categoryExpr,
+      ["literal", ["water tank", "water pump", "overhead tank"]],
+    ],
+    CADASTRAL_POINT_ICON_WATER,
+    [
+      "in",
+      categoryExpr,
+      ["literal", ["manhole", "inlet", "gully"]],
+    ],
+    CADASTRAL_POINT_ICON_MANHOLE,
+    [
+      "in",
+      categoryExpr,
+      ["literal", ["cc camera"]],
+    ],
+    CADASTRAL_POINT_ICON_CAMERA,
+    [
+      "in",
+      categoryExpr,
+      ["literal", ["drain levels"]],
+    ],
+    CADASTRAL_POINT_ICON_LEVEL,
+    [
+      "in",
+      categoryExpr,
+      ["literal", ["temple"]],
+    ],
+    CADASTRAL_POINT_ICON_TEMPLE,
+    [
+      "all",
+      ["==", categoryExpr, "landmark"],
+      ["in", "temple", labelExpr],
+    ],
+    CADASTRAL_POINT_ICON_TEMPLE,
+    [
+      "in",
+      categoryExpr,
+      ["literal", ["monument", "mionument", "landmark"]],
+    ],
+    CADASTRAL_POINT_ICON_LANDMARK,
+    ["==", ["coalesce", ["get", "canonical_class"], ""], "Vegetation"],
+    [
+      "match",
+      categoryExpr,
+      "coconut tree", CADASTRAL_POINT_ICON_PALM,
+      CADASTRAL_POINT_ICON_TREE,
+    ],
+    ["==", ["coalesce", ["get", "canonical_class"], ""], "Illumination_Asset"], CADASTRAL_POINT_ICON_LIGHT,
+    ["==", ["coalesce", ["get", "canonical_class"], ""], "Access_Point"], CADASTRAL_POINT_ICON_MANHOLE,
+    ["==", ["coalesce", ["get", "canonical_class"], ""], "Utility_Pole"], CADASTRAL_POINT_ICON_POLE,
+    ["==", ["coalesce", ["get", "canonical_class"], ""], "Drainage_Level_Point"], CADASTRAL_POINT_ICON_LEVEL,
+    ["==", categoryExpr, "cc camera"], CADASTRAL_POINT_ICON_CAMERA,
+    ["==", categoryExpr, "landmark"], CADASTRAL_POINT_ICON_LANDMARK,
+    CADASTRAL_POINT_ICON_DEFAULT,
+  ] as unknown as maplibregl.ExpressionSpecification;
+}
+
+function cadastralPointIconSizeExpression(): maplibregl.ExpressionSpecification {
+  const categoryExpr: maplibregl.ExpressionSpecification = ["downcase", ["coalesce", ["get", "category"], ""]];
+  return [
+    "*",
+    [
+      "interpolate", ["linear"], ["zoom"],
+      11, 0.72,
+      14, 1.02,
+      17, 1.38,
+      20, 1.8,
+    ],
+    [
+      "match",
+      categoryExpr,
+      "manhole", 0.9,
+      "inlet", 0.9,
+      "gully", 0.9,
+      "power pole", 0.95,
+      "power pole with light", 0.95,
+      "light pole", 0.95,
+      "solar light", 0.95,
+      "high mast", 1.02,
+      "road sign", 1.02,
+      "road sign single pole", 1.02,
+      "road sign double pole", 1.02,
+      "transformer", 1.08,
+      "temple", 1.08,
+      "landmark", 1.08,
+      1,
+    ],
+  ] as unknown as maplibregl.ExpressionSpecification;
+}
+
+function cadastralPointHitRadiusExpression(): maplibregl.ExpressionSpecification {
+  return [
+    "interpolate", ["linear"], ["zoom"],
+    11, 8,
+    14, 11,
+    17, 15,
+    20, 20,
+  ] as unknown as maplibregl.ExpressionSpecification;
+}
+
+function addCadastralPointIconLayer(
+  map: maplibregl.Map,
+  visibility: "visible" | "none" = "none"
+): void {
+  if (map.getLayer(LAYER_POINTS_CADASTRAL)) return;
+  map.addLayer({
+    id: LAYER_POINTS_CADASTRAL,
+    type: "symbol",
+    source: FEATURE_SOURCE,
+    filter: CADASTRAL_POINT_HIT_FILTER,
+    layout: {
+      "icon-image": cadastralPointIconExpression(),
+      "icon-size": cadastralPointIconSizeExpression(),
+      "icon-anchor": "center",
+      "icon-allow-overlap": true,
+      "icon-ignore-placement": true,
+      visibility,
+    },
+  });
+}
+
+function cadastralPointIconKindForFeature(feature: UrbanFeature): CadastralPointIconKind {
+  const category = normalizeCategoryName(feature.properties.category ?? "");
+  const canonicalClass = feature.properties.canonical_class ?? "";
+  if (["coconut tree", "other tree", "tree", "planter box"].includes(category)) return "tree";
+  if (["power pole with light", "light pole", "solar light", "high mast"].includes(category)) return "light";
+  if (["power pole", "flag pole", "microwave tower"].includes(category)) return "pole";
+  if (category === "transformer") return "transformer";
+  if (["road sign", "road sign single pole", "road sign double pole"].includes(category)) return "sign";
+  if (category === "gate") return "gate";
+  if (["water tank", "water pump", "overhead tank"].includes(category)) return "water";
+  if (["manhole", "inlet", "gully"].includes(category)) return "manhole";
+  if (category === "cc camera") return "camera";
+  if (category === "drain levels") return "level";
+  if (category === "temple") return "temple";
+  if (["monument", "mionument", "landmark"].includes(category)) return "landmark";
+  if (canonicalClass === "Vegetation") return category === "coconut tree" ? "palm" : "tree";
+  if (canonicalClass === "Illumination_Asset") return "light";
+  if (canonicalClass === "Access_Point") return "manhole";
+  if (canonicalClass === "Utility_Pole") return "pole";
+  if (canonicalClass === "Drainage_Level_Point") return "level";
+  return "default";
+}
+
+const cadastralPointMarkerImageUrls = new Map<CadastralPointIconKind, string>();
+
+function createCadastralPointMarkerElement(feature: UrbanFeature): HTMLImageElement {
+  const kind = cadastralPointIconKindForFeature(feature);
+  let imageUrl = cadastralPointMarkerImageUrls.get(kind);
+  if (!imageUrl) {
+    const image = buildCadastralPointIconImageData(kind);
+    const canvas = document.createElement("canvas");
+    canvas.width = image.width;
+    canvas.height = image.height;
+    canvas.getContext("2d")?.putImageData(image, 0, 0);
+    imageUrl = canvas.toDataURL();
+    cadastralPointMarkerImageUrls.set(kind, imageUrl);
+  }
+
+  const icon = document.createElement("img");
+  icon.src = imageUrl;
+  icon.alt = "";
+  icon.draggable = false;
+  icon.decoding = "async";
+  icon.className = "cadastral-point-marker";
+  icon.style.pointerEvents = "none";
+  icon.style.filter = "drop-shadow(0 1px 1px rgba(15,23,42,.45))";
+  return icon;
+}
+
+function cadastralMarkerSize(zoom: number): number {
+  const progress = Math.max(0, Math.min(1, (zoom - 11) / 9));
+  return Math.round(24 * (0.72 + progress * (1.8 - 0.72)));
+}
+
+function cadastralMarkerMinZoom(feature: UrbanFeature): number {
+  switch (cadastralPointIconKindForFeature(feature)) {
+    // Names/landmarks are useful while navigating a whole ward.
+    case "landmark":
+    case "temple":
+      return 15;
+    // Tall or civic assets remain useful at street/block scale.
+    case "pole":
+    case "light":
+    case "transformer":
+      return 17.5;
+    // Small ground/detail assets only appear when user is close enough.
+    case "tree":
+    case "palm":
+      return 19.25;
+    case "manhole":
+    case "level":
+    case "camera":
+    case "sign":
+    case "gate":
+    case "water":
+    case "default":
+      return 18.5;
+  }
+}
+
+function applyCadastralMarkerZoom(element: HTMLElement, zoom: number): void {
+  const minZoom = Number(element.dataset.minZoom ?? 0);
+  element.style.display = zoom >= minZoom ? "" : "none";
+}
+
+function roadNameTextExpression(): maplibregl.ExpressionSpecification {
+  return [
+    "coalesce",
+    ["get", "label"],
+    ["get", "Road_Name", ["get", "attributes"]],
+    ["get", "ROAD_NAME", ["get", "attributes"]],
+    ["get", "road_name", ["get", "attributes"]],
+    ["get", "RoadName", ["get", "attributes"]],
+    ["get", "roadname", ["get", "attributes"]],
+    ["get", "Street_Name", ["get", "attributes"]],
+    ["get", "street_name", ["get", "attributes"]],
+    ["get", "streetname", ["get", "attributes"]],
+    ["get", "Name", ["get", "attributes"]],
+    ["get", "name", ["get", "attributes"]],
+    "",
+  ] as unknown as maplibregl.ExpressionSpecification;
+}
+
+function buildingIdTextExpression(): maplibregl.ExpressionSpecification {
+  return [
+    "to-string",
+    [
+      "coalesce",
+      ["get", "building_id", ["get", "attributes"]],
+      ["get", "BUILDING_ID", ["get", "attributes"]],
+      ["get", "property_id", ["get", "attributes"]],
+      ["get", "Property_ID", ["get", "attributes"]],
+      ["get", "house_no", ["get", "attributes"]],
+      ["get", "House_No", ["get", "attributes"]],
+      ["get", "door_no", ["get", "attributes"]],
+      ["get", "Door_No", ["get", "attributes"]],
+      ["get", "FID", ["get", "attributes"]],
+      ["get", "fid", ["get", "attributes"]],
+      ["get", "id"],
+      "",
+    ],
+  ] as unknown as maplibregl.ExpressionSpecification;
+}
+
+function featureDisplayLabel(rawLabel: unknown, attributes: Record<string, unknown>): string | null {
+  const topLevel = typeof rawLabel === "string" ? rawLabel.trim() : "";
+  if (topLevel && topLevel !== "-") return topLevel;
+  const candidates = [
+    "Road_Name",
+    "ROAD_NAME",
+    "road_name",
+    "RoadName",
+    "roadname",
+    "Street_Name",
+    "street_name",
+    "streetname",
+    "Name",
+    "name",
+    "building_name",
+    "BUILDING_NAME",
+    "asset_name",
+  ];
+  for (const key of candidates) {
+    const value = attributes[key];
+    const text = typeof value === "string" ? value.trim() : "";
+    if (text && text !== "-") return text;
+  }
+  return null;
+}
+
+function cadastralLineColorExpression(): maplibregl.ExpressionSpecification {
+  const categoryExpr: maplibregl.ExpressionSpecification = ["downcase", ["coalesce", ["get", "category"], ""]];
+  return [
+    "match",
+    categoryExpr,
+    "power line", "#78c6e7",
+    "concrete road", "#2f2b28",
+    "concrete edge", "#4b5563",
+    "wall", "#111827",
+    "fence", "#6b7280",
+    "kerb top", "#7c8796",
+    "kerb bottom", "#94a3b8",
+    "sidewalk", "#6b7280",
+    "hand rail", "#60a5fa",
+    "arch", "#7c2d12",
+    "road hump", "#475569",
+    "planter box", "#84cc16",
+    "road centerline", "#475569",
+    "#3b3b3b",
+  ] as unknown as maplibregl.ExpressionSpecification;
+}
+
+function cadastralLineWidthExpression(): maplibregl.ExpressionSpecification {
+  const categoryExpr: maplibregl.ExpressionSpecification = ["downcase", ["coalesce", ["get", "category"], ""]];
+  return [
+    "interpolate", ["linear"], ["zoom"],
+    12,
+    [
+      "match",
+      categoryExpr,
+      "concrete road", 1.05,
+      "power line", 0.9,
+      "wall", 1.0,
+      "concrete edge", 0.9,
+      "arch", 1.1,
+      0.72,
+    ],
+    18,
+    [
+      "match",
+      categoryExpr,
+      "concrete road", 1.55,
+      "power line", 1.2,
+      "wall", 1.45,
+      "concrete edge", 1.2,
+      "arch", 1.55,
+      1.0,
+    ],
+  ] as unknown as maplibregl.ExpressionSpecification;
+}
+
+function cadastralPolygonFillExpression(): maplibregl.ExpressionSpecification {
+  const categoryExpr: maplibregl.ExpressionSpecification = ["downcase", ["coalesce", ["get", "category"], ""]];
+  return [
+    "match",
+    categoryExpr,
+    "building", "#fffaf0",
+    "building extenstions", "#fff4dc",
+    "building extensions", "#fff4dc",
+    "building roof extension", "#fff4dc",
+    "shed", "#faf3d2",
+    "temple", "#f6efc1",
+    "building ruin", "#f4efe6",
+    "building underconstruction", "#f2eee7",
+    "building under construction", "#f2eee7",
+    "#fffaf0",
+  ] as unknown as maplibregl.ExpressionSpecification;
+}
+
+function cadastralPolygonOutlineExpression(): maplibregl.ExpressionSpecification {
+  const categoryExpr: maplibregl.ExpressionSpecification = ["downcase", ["coalesce", ["get", "category"], ""]];
+  return [
+    "match",
+    categoryExpr,
+    "temple", "#7c2d12",
+    "shed", "#5b5042",
+    "building ruin", "#7c6f64",
+    "#262626",
+  ] as unknown as maplibregl.ExpressionSpecification;
+}
 
 function decodeFeature(raw: {
   id?: string | number;
@@ -997,12 +1986,41 @@ function decodeFeature(raw: {
     properties: {
       id: String(props.id ?? raw.id),
       dataset_id: String(props.dataset_id ?? ""),
-      label: (props.label as string | null) ?? null,
+      label: featureDisplayLabel(props.label, attrs),
       category: (props.category as string | null) ?? null,
       severity: Number(props.severity ?? 0),
+      canonical_class: (props.canonical_class as string | null) ?? (attrs._canonical_class as string | null) ?? null,
       attributes: attrs,
     },
   };
+}
+
+function roadInspectionFeatureToGeoJson(feature: RoadInspectionFeature): GeoJSON.Feature {
+  return {
+    type: "Feature",
+    id: feature.id,
+    geometry: feature.geometry,
+    properties: {
+      id: feature.id,
+      dataset_id: feature.dataset_id,
+      label: feature.label,
+      category: feature.category,
+      severity: feature.severity,
+      canonical_class: feature.canonical_class,
+      attributes: feature.attributes,
+      audit_color: feature.audit_color,
+    },
+  };
+}
+
+function pointCoordinatesFromFeature(feature: UrbanFeature): {
+  longitude: number;
+  latitude: number;
+} | null {
+  if (feature.geometry.type !== "Point") return null;
+  const [longitude, latitude] = feature.geometry.coordinates;
+  if (!Number.isFinite(longitude) || !Number.isFinite(latitude)) return null;
+  return { longitude, latitude };
 }
 
 function extendCoordinateBounds(bounds: maplibregl.LngLatBounds, coordinates: unknown): void {
@@ -1035,6 +2053,85 @@ function featureFocusGeometry(feature: UrbanFeature): {
   };
 }
 
+function isQuickAnalysisDrain(feature: UrbanFeature): boolean {
+  return feature.properties.canonical_class === "Drainage_Asset";
+}
+
+function quickAnalysisDrainAnchor(feature: UrbanFeature): [number, number] | null {
+  const lines = feature.geometry.type === "LineString"
+    ? [feature.geometry.coordinates]
+    : feature.geometry.type === "MultiLineString"
+      ? feature.geometry.coordinates
+      : [];
+  const segments: Array<{ start: [number, number]; end: [number, number]; length: number }> = [];
+  let totalLength = 0;
+  for (const line of lines) {
+    for (let index = 1; index < line.length; index += 1) {
+      const start = line[index - 1];
+      const end = line[index];
+      const length = haversineDistance(start, end);
+      if (!Number.isFinite(length) || length <= 0) continue;
+      segments.push({ start, end, length });
+      totalLength += length;
+    }
+  }
+  if (segments.length === 0) return lines[0]?.[0] ?? null;
+  const midpoint = totalLength / 2;
+  let traversed = 0;
+  for (const segment of segments) {
+    if (traversed + segment.length >= midpoint) {
+      const ratio = (midpoint - traversed) / segment.length;
+      return [
+        segment.start[0] + (segment.end[0] - segment.start[0]) * ratio,
+        segment.start[1] + (segment.end[1] - segment.start[1]) * ratio,
+      ];
+    }
+    traversed += segment.length;
+  }
+  return segments[segments.length - 1].end;
+}
+
+/** One red cross marker per actual surveyed drain line. This is deliberately
+ * independent of AI findings: it reads the Drainage_Asset survey class. */
+function quickAnalysisDrainMarkers(features: UrbanFeature[], selectedFeatureId?: string): GeoJSON.Feature[] {
+  return features.flatMap((feature) => {
+    if (!isQuickAnalysisDrain(feature)) return [];
+    const anchor = quickAnalysisDrainAnchor(feature);
+    if (!anchor) return [];
+    return [{
+      type: "Feature" as const,
+      id: feature.properties.id,
+      geometry: { type: "Point" as const, coordinates: anchor },
+      properties: {
+        id: feature.properties.id,
+        category: feature.properties.category ?? "Closed Drain",
+        label: feature.properties.label ?? "Closed Drain",
+        selected: feature.properties.id === selectedFeatureId,
+        dimmed: Boolean(selectedFeatureId && feature.properties.id !== selectedFeatureId),
+      },
+    }];
+  });
+}
+
+/** Actual surveyed closed-drain geometry for the dedicated Quick Analysis
+ * network overlay. This prevents the drains from disappearing into the much
+ * denser cadastral parcel/road linework. */
+function quickAnalysisDrainLines(features: UrbanFeature[], selectedFeatureId?: string): GeoJSON.Feature[] {
+  return features.flatMap((feature) => {
+    if (!isQuickAnalysisDrain(feature)) return [];
+    if (feature.geometry.type !== "LineString" && feature.geometry.type !== "MultiLineString") return [];
+    return [{
+      type: "Feature" as const,
+      id: feature.properties.id,
+      geometry: feature.geometry as GeoJSON.LineString | GeoJSON.MultiLineString,
+      properties: {
+        ...feature.properties,
+        selected: feature.properties.id === selectedFeatureId,
+        dimmed: Boolean(selectedFeatureId && feature.properties.id !== selectedFeatureId),
+      },
+    }];
+  });
+}
 
 // Blue is an AI-workflow color only. Normal map/category rendering always
 // keeps its original category color, even after Admin approval.
@@ -1060,18 +2157,58 @@ function buildCategoryColorExpression(
 
 /** AI Detection focus modes — each isolates the map to one asset family and
  * one anomaly type, instead of showing every layer/finding at once. */
-export type DetectionMode = "poles" | "drains" | "manholes" | null;
+export type DetectionMode = "poles" | "drains" | "manholes" | "roads" | null;
+
+interface QuickAnalysisMapConfig {
+  title: string;
+  description: string;
+}
+
+// Each Quick Analysis card owns the content on the cadastral dashboard. The
+// sidebar remains a launcher only; the selected card never replaces it.
+const QUICK_ANALYSIS_MAP_CONFIG: Record<string, QuickAnalysisMapConfig> = {
+  "drain-encroachment": {
+    title: "Drain Encroachment Check",
+    description: "All surveyed closed-drain segments marked on the cadastral map.",
+  },
+  "utility-tracker": {
+    title: "Utility Asset Tracker",
+    description: "Mapped poles, lighting, water and utility assets.",
+  },
+  "asset-catalog": {
+    title: "Full Asset Catalog",
+    description: "All geo-referenced survey features in the active dataset.",
+  },
+  "condition-overview": {
+    title: "Asset Condition Overview",
+    description: "Condition and severity signals across mapped infrastructure.",
+  },
+  "survey-kpis": {
+    title: "Survey KPIs",
+    description: "Coverage, completeness and survey totals.",
+  },
+  "manhole-detail": {
+    title: "Manhole Detail View",
+    description: "Manhole location, condition and pipe attributes.",
+  },
+  "road-width": {
+    title: "Road Width Check",
+    description: "Road segments narrowed below the local average, marked on the cadastral map.",
+  },
+};
 
 const DETECTION_MODE_TARGET_CLASSES: Record<Exclude<DetectionMode, null>, string[]> = {
   poles: ["Illumination_Asset"],
   drains: ["Building", "Drainage_Asset"],
   manholes: ["Access_Point"],
+  roads: ["Road_Centerline", "Road_Surface"],
 };
 
 const DETECTION_MODE_ANOMALY_TYPE: Record<Exclude<DetectionMode, null>, string> = {
   poles: "pole_redundancy",
   drains: "drain_encroachment",
   manholes: "manhole_status",
+  roads: "road_width_narrowing",
 };
 
 // Deliberately darker/more saturated than the category-color palette used
@@ -1118,6 +2255,7 @@ const ANOMALY_TYPE_LABEL: Record<SpatialAnomaly["anomaly_type"], string> = {
   pole_redundancy: "Pole Redundancy",
   drain_encroachment: "Drain Encroachment",
   manhole_status: "Manhole Status",
+  road_width_narrowing: "Road Width Narrowing",
 };
 
 /** One-line, numbers-first summary for the hover tooltip's AI Detected
@@ -1144,6 +2282,8 @@ function summarizeAnomalyForTooltip(a: SpatialAnomaly): { color: AnomalyDisplayC
         ? `Nearest drain: ${m.nearest_drain_category} (${m.nearest_drain_distance_m ?? "?"}m)`
         : "No nearby drain found"
     );
+  } else if (a.anomaly_type === "road_width_narrowing") {
+    metric = `Width ${m.width_m ?? "?"}m — down ${m.drop_pct ?? "?"}% from ~${m.rolling_avg_m ?? "?"}m avg`;
   }
   const resolved = a.status === "resolved";
   return {
@@ -1337,6 +2477,8 @@ interface HoverInfo {
   category: string;
   severity: number;
   color: string;
+  longitude?: number;
+  latitude?: number;
   attributes: Record<string, unknown>;
   aiStatus?: "redundant" | "needed";
   /** Populated only while the AI Detection overlay is on and this feature
@@ -1369,6 +2511,9 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     aiHighlights,
     focusFeatureId,
     onFocusHandled,
+    sidebarCollapsed = false,
+    onToggleSidebar,
+    onQuickAnalysisActiveChange,
     refreshToken = 0,
     commandCenterMobileOpen, onCommandCenterMobileOpenChange,
     spatialAuditRequestedRef, spatialAuditExecutedRef,
@@ -1376,6 +2521,42 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
   },
   ref
 ) {
+  const [sidebarPanel, setSidebarPanel] = useState<"layers" | "analysis">("layers");
+  // The card list always remains in the Quick Analysis sidebar. A selected
+  // card drives a dedicated dashboard over the cadastral canvas instead.
+  const [quickAnalysisCardId, setQuickAnalysisCardId] = useState<string | null>(null);
+  const [quickAnalysisFeatures, setQuickAnalysisFeatures] = useState<UrbanFeature[]>([]);
+  const [quickAnalysisLoading, setQuickAnalysisLoading] = useState(false);
+  const [quickAnalysisError, setQuickAnalysisError] = useState<string | null>(null);
+  const [quickDrainEncroachment, setQuickDrainEncroachment] = useState<DrainEncroachmentReport | null>(null);
+  const [quickDrainEncroachmentLoading, setQuickDrainEncroachmentLoading] = useState(false);
+  const [quickDrainEncroachmentError, setQuickDrainEncroachmentError] = useState<string | null>(null);
+  const [quickAnalysisTool, setQuickAnalysisTool] = useState<QuickAnalysisTool>(null);
+  const quickAnalysisToolRef = useRef<QuickAnalysisTool>(null);
+  const [selectedQuickAnalysisFeature, setSelectedQuickAnalysisFeature] = useState<UrbanFeature | null>(null);
+  const quickAnalysisFeatureByIdRef = useRef<Map<string, UrbanFeature>>(new Map());
+  const quickAnalysisConnectionByIdRef = useRef<Map<string, ManholeConnectionDetail>>(new Map());
+  const quickAnalysisSelectableFeatureIdsRef = useRef<Set<string>>(new Set());
+  const quickAnalysisFeatureClickConsumedRef = useRef(false);
+  const quickAnalysisFitKeyRef = useRef("");
+  const quickAnalysisActiveRef = useRef(false);
+  const quickAnalysisPreviousMapRef = useRef<{ basemap: Basemap; detectionMode: DetectionMode; aiOverlayEnabled: boolean } | null>(null);
+
+  useEffect(() => {
+    onQuickAnalysisActiveChange?.(sidebarPanel === "analysis" && !sidebarCollapsed);
+  }, [onQuickAnalysisActiveChange, sidebarCollapsed, sidebarPanel]);
+
+  useEffect(() => {
+    if (!selectedQuickAnalysisFeature) return;
+    const handleEscape = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      const target = event.target as HTMLElement | null;
+      if (target?.closest("input, textarea, select, [contenteditable='true']")) return;
+      setSelectedQuickAnalysisFeature(null);
+    };
+    window.addEventListener("keydown", handleEscape);
+    return () => window.removeEventListener("keydown", handleEscape);
+  }, [selectedQuickAnalysisFeature]);
   const containerRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<MLMap | null>(null);
   const abortRef = useRef<AbortController | null>(null);
@@ -1389,8 +2570,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
   const [status, setStatus] = useState<ViewportStatus>({ loading: false, count: 0, truncated: false, error: null, bbox: null });
   // Full (unsliced) per-category breakdown of the currently loaded features,
   // for the QGIS-style layer-visibility checklist in the Command Center.
-  // The compact map overlay remains independently limited.
-
+  // `legend` above stays capped at 10 entries for the compact map overlay.
   const [categoryStats, setCategoryStats] = useState<LegendEntry[]>([]);
   // Categories unchecked in that checklist — purely a client-side paint/
   // filter toggle on already-fetched features, so it applies instantly and
@@ -1405,6 +2585,9 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
   // until the user explicitly asks for it.
   const [extraVisibleCategories, setExtraVisibleCategories] = useState<Set<string>>(new Set());
   const [basemap, setBasemap] = useState<Basemap>("street");
+  const basemapRef = useRef<Basemap>("street");
+  const preCadastralHiddenCategoriesRef = useRef<Set<string> | null>(null);
+  const cadastralPresetActiveRef = useRef(false);
   const [hover, setHover] = useState<HoverInfo | null>(null);
   const [photoViewer, setPhotoViewer] = useState<{ url: string; label: string; isPanorama: boolean } | null>(null);
   const [datasets, setDatasets] = useState<DatasetRow[]>([]);
@@ -1447,7 +2630,32 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
   const [anomalies, setAnomalies] = useState<SpatialAnomaly[]>([]);
   const [selectedAnomalyId, setSelectedAnomalyId] = useState<string | null>(null);
 
-  // Phase C — 3D subsurface view, showing real terrain/buildings/manholes.
+  // AI Manhole Recommendation Engine — computed fresh per click/plan-run
+  // (not pre-persisted like the spatial audit engine above), so its own
+  // loading/error/answer state lives separately from the anomaly card's.
+  const [manholeRecommendAnswer, setManholeRecommendAnswer] = useState<AiAnswer | null>(null);
+  const [manholeRecommendLoading, setManholeRecommendLoading] = useState(false);
+  const [manholeRecommendError, setManholeRecommendError] = useState<string | null>(null);
+  const [manholeRecommendOpen, setManholeRecommendOpen] = useState(false);
+  // Single-manhole click ("feature" mode: real pipe suggestion — material,
+  // diameter, RLs, route) — deliberately its OWN state, separate from the
+  // network-mode state above. The map's drawn network (MANHOLE_ROUTES_SOURCE)
+  // reads only manholeRecommendAnswer, never this one, so clicking a manhole
+  // to see its pipe suggestion can never clear an already-drawn network.
+  const [manholeFeatureAnswer, setManholeFeatureAnswer] = useState<AiAnswer | null>(null);
+  const [manholeFeatureLoading, setManholeFeatureLoading] = useState(false);
+  const [manholeFeatureError, setManholeFeatureError] = useState<string | null>(null);
+  const [manholeFeatureOpen, setManholeFeatureOpen] = useState(false);
+  // Quick Analysis has its own network result. It is deliberately separate
+  // from the on-demand AI Detection network so opening/closing the Manhole
+  // Detail card never overwrites a user's regular map workflow.
+  const [quickAnalysisManholeNetwork, setQuickAnalysisManholeNetwork] = useState<AiAnswer | null>(null);
+  const [quickAnalysisManholeNetworkLoading, setQuickAnalysisManholeNetworkLoading] = useState(false);
+  const [quickAnalysisManholeNetworkError, setQuickAnalysisManholeNetworkError] = useState<string | null>(null);
+  const [selectedQuickAnalysisConnection, setSelectedQuickAnalysisConnection] = useState<ManholeConnectionDetail | null>(null);
+  // Phase C — 3D subsurface view, opened from the same recommend result
+  // (or on its own, showing real terrain/buildings/manholes with no plan
+  // run yet) so it never shows a fact the 2D view didn't already show.
   const [show3DPlan, setShow3DPlan] = useState(false);
 
   // Which AI Detection focus mode is active (null = normal full view).
@@ -1456,6 +2664,16 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
   // the CURRENT mode/building colors without needing to be in its deps.
   const [detectionMode, setDetectionMode] = useState<DetectionMode>(null);
   const detectionModeRef = useRef<DetectionMode>(null);
+  // Road Inspection is deliberately separate from the four category-wide AI
+  // modes: it narrows the map to selectable centerlines, then asks the server
+  // for findings assigned to exactly one unique road ID.
+  const [roadInspectionActive, setRoadInspectionActive] = useState(false);
+  const roadInspectionActiveRef = useRef(false);
+  const [roadInspectionRoad, setRoadInspectionRoad] = useState<UrbanFeature | null>(null);
+  const [roadInspectionReport, setRoadInspectionReport] = useState<RoadInspection | null>(null);
+  const [roadInspectionLoading, setRoadInspectionLoading] = useState(false);
+  const [roadInspectionError, setRoadInspectionError] = useState<string | null>(null);
+  const roadInspectionAbortRef = useRef<AbortController | null>(null);
   // Selecting a mode only isolates the map to that asset family (plain
   // category colors) — the actual AI red/yellow/green overlay is a
   // separate, explicit step, so a fresh mode selection always starts with
@@ -1528,6 +2746,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
   const [streetPickMode, setStreetPickMode] = useState(false);
   const [streetViewTarget, setStreetViewTarget] = useState<{ latitude: number; longitude: number } | null>(null);
   const [loadedFeatures, setLoadedFeatures] = useState<UrbanFeature[]>([]);
+  const cadastralPointMarkersRef = useRef<maplibregl.Marker[]>([]);
   const streetPickModeRef = useRef(false);
   const streetPickConsumedRef = useRef(false);
   const [pendingFocusFeatureId, setPendingFocusFeatureId] = useState<string | null>(focusFeatureId ?? null);
@@ -2147,13 +3366,208 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
 
   const colorByCategoryRef = useRef<Map<string, string>>(new Map());
 
+  // Runtime MapLibre symbol layers have intermittently disappeared after the
+  // cadastral road-label style pass. Canvas markers bypass that fragile symbol
+  // bucket completely while leaving the invisible MapLibre hit layer in place
+  // for the normal hover/click pipeline.
+  useEffect(() => {
+    const map = mapRef.current;
+    for (const marker of cadastralPointMarkersRef.current) marker.remove();
+    cadastralPointMarkersRef.current = [];
+    const quickAnalysisPointClasses = quickAnalysisCardId === "manhole-detail"
+      ? new Set(["Access_Point"])
+      : quickAnalysisCardId === "utility-tracker"
+        ? new Set(["Access_Point", "Illumination_Asset", "Utility_Pole"])
+        : null;
+    if (
+      !mapReady
+      || !map
+      || basemap !== "cadastral"
+      || detectionMode
+      || roadInspectionActive
+      || (quickAnalysisCardId !== null && quickAnalysisPointClasses === null)
+    ) return;
+
+    const markers: maplibregl.Marker[] = [];
+    cadastralPointMarkersRef.current = markers;
+    const visibleFeatures = loadedFeatures.filter((feature) => {
+      if (feature.geometry.type !== "Point") return false;
+      const category = feature.properties.category ?? "uncategorized";
+      return category !== "raster_pixel"
+        && category !== "site_photo"
+        && !hiddenCategories.has(category)
+        && (!quickAnalysisPointClasses || quickAnalysisPointClasses.has(feature.properties.canonical_class ?? ""))
+        && (feature.properties as unknown as Record<string, unknown>)[CADASTRAL_DUPLICATE_POINT_PROP] !== true;
+    });
+    let cancelled = false;
+    let drawFrame: number | null = null;
+    let drawTimer: number | null = null;
+
+    // Do not block first cadastral-tile paint by creating every marker in one
+    // synchronous loop. Small animation-frame batches keep pan/zoom responsive.
+    const drawMarkers = () => {
+      if (cancelled) return;
+      const size = cadastralMarkerSize(map.getZoom());
+      let index = 0;
+      const drawBatch = () => {
+        if (cancelled) return;
+        const end = Math.min(index + 36, visibleFeatures.length);
+        for (; index < end; index++) {
+          const feature = visibleFeatures[index];
+          const [longitude, latitude] = feature.geometry.coordinates as [number, number];
+          if (!Number.isFinite(longitude) || !Number.isFinite(latitude)) continue;
+          const element = createCadastralPointMarkerElement(feature);
+          element.style.width = `${size}px`;
+          element.style.height = `${size}px`;
+          // A focused point-analysis card must show its subject at the fitted
+          // ward extent. The normal cadastral min-zoom rule is for the busy
+          // all-assets map and would hide manholes/utilities here.
+          element.dataset.minZoom = String(quickAnalysisPointClasses ? 0 : cadastralMarkerMinZoom(feature));
+          applyCadastralMarkerZoom(element, map.getZoom());
+          if (quickAnalysisCardId === "manhole-detail") {
+            // Select the exact marker that was clicked. The transparent map
+            // hit circles overlap at ward scale and can otherwise return a
+            // nearby manhole instead of this one.
+            element.style.pointerEvents = "auto";
+            element.style.cursor = "pointer";
+            element.addEventListener("click", (event) => {
+              event.stopPropagation();
+              setSelectedQuickAnalysisConnection(null);
+              setSelectedQuickAnalysisFeature((current) =>
+                current?.properties.id === feature.properties.id ? null : feature
+              );
+            });
+          }
+          markers.push(new maplibregl.Marker({ element, anchor: "center" })
+            .setLngLat([longitude, latitude])
+            .addTo(map));
+        }
+        if (index < visibleFeatures.length) drawFrame = window.requestAnimationFrame(drawBatch);
+      };
+      drawBatch();
+    };
+
+    // Give MapLibre one paint cycle for cadastral tiles/road labels before icons.
+    drawTimer = window.setTimeout(drawMarkers, 80);
+
+    const resizeMarkers = () => {
+      const markerSize = `${cadastralMarkerSize(map.getZoom())}px`;
+      for (const marker of markers) {
+        const element = marker.getElement();
+        element.style.width = markerSize;
+        element.style.height = markerSize;
+        applyCadastralMarkerZoom(element, map.getZoom());
+      }
+    };
+    map.on("zoom", resizeMarkers);
+    return () => {
+      cancelled = true;
+      if (drawTimer !== null) window.clearTimeout(drawTimer);
+      if (drawFrame !== null) window.cancelAnimationFrame(drawFrame);
+      map.off("zoom", resizeMarkers);
+      for (const marker of markers) marker.remove();
+      if (cadastralPointMarkersRef.current === markers) cadastralPointMarkersRef.current = [];
+    };
+  }, [basemap, detectionMode, hiddenCategories, loadedFeatures, mapReady, quickAnalysisCardId, roadInspectionActive]);
+
+  useEffect(() => {
+    basemapRef.current = basemap;
+  }, [basemap]);
+
+  const applyBasemapVisibility = useCallback((map: maplibregl.Map, next: Basemap) => {
+    const showOsm = next === "street" || (next === "cadastral" && !HAS_EXTERNAL_CADASTRAL_TILES);
+    map.setLayoutProperty("osm", "visibility", showOsm ? "visible" : "none");
+    if (map.getLayer("osm")) {
+      const tint = next === "cadastral" ? CADASTRAL_OSM_PAINT : STREET_OSM_PAINT;
+      for (const [prop, value] of Object.entries(tint)) {
+        map.setPaintProperty("osm", prop, value);
+      }
+    }
+    map.setLayoutProperty("satellite", "visibility", next === "satellite" ? "visible" : "none");
+    if (map.getLayer(CADASTRAL_TILE_LAYER)) {
+      map.setLayoutProperty(CADASTRAL_TILE_LAYER, "visibility", next === "cadastral" ? "visible" : "none");
+    }
+    if (map.getLayer(LAYER_POLY_FILL)) {
+      map.setLayoutProperty(LAYER_POLY_FILL, "visibility", next === "cadastral" ? "none" : "visible");
+    }
+    if (map.getLayer(LAYER_POLY_OUTLINE)) {
+      map.setLayoutProperty(LAYER_POLY_OUTLINE, "visibility", next === "cadastral" ? "none" : "visible");
+    }
+    if (map.getLayer(LAYER_LINES)) {
+      map.setLayoutProperty(LAYER_LINES, "visibility", next === "cadastral" ? "none" : "visible");
+    }
+    if (map.getLayer(LAYER_POLY_FILL_CADASTRAL)) {
+      map.setLayoutProperty(LAYER_POLY_FILL_CADASTRAL, "visibility", next === "cadastral" ? "visible" : "none");
+    }
+    if (map.getLayer(LAYER_POLY_OUTLINE_CADASTRAL)) {
+      map.setLayoutProperty(LAYER_POLY_OUTLINE_CADASTRAL, "visibility", next === "cadastral" ? "visible" : "none");
+    }
+    if (map.getLayer(LAYER_LINES_CADASTRAL)) {
+      map.setLayoutProperty(LAYER_LINES_CADASTRAL, "visibility", next === "cadastral" ? "visible" : "none");
+    }
+    if (map.getLayer(LAYER_POINTS)) {
+      map.setLayoutProperty(LAYER_POINTS, "visibility", next === "cadastral" ? "none" : "visible");
+    }
+    if (map.getLayer(LAYER_POINTS_CADASTRAL_HIT)) {
+      map.setLayoutProperty(LAYER_POINTS_CADASTRAL_HIT, "visibility", next === "cadastral" ? "visible" : "none");
+    }
+    if (map.getLayer(LAYER_POINTS_CADASTRAL)) {
+      // Visual icons are cached HTML markers; leaving duplicate MapLibre
+      // symbols disabled avoids a second icon layout pass during tile load.
+      map.setLayoutProperty(LAYER_POINTS_CADASTRAL, "visibility", "none");
+    }
+    if (map.getLayer(REFERENCE_SURVEY_ROAD_LABELS)) {
+      map.setLayoutProperty(REFERENCE_SURVEY_ROAD_LABELS, "visibility", next === "cadastral" ? "visible" : "none");
+    }
+  }, []);
+
   const changeBasemap = useCallback((next: Basemap) => {
     const map = mapRef.current;
     if (!map) return;
     setBasemap(next);
-    map.setLayoutProperty("osm", "visibility", next === "street" ? "visible" : "none");
-    map.setLayoutProperty("satellite", "visibility", next === "satellite" ? "visible" : "none");
-  }, []);
+    applyBasemapVisibility(map, next);
+  }, [applyBasemapVisibility]);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !mapReady) return;
+    applyBasemapVisibility(map, basemap);
+  }, [applyBasemapVisibility, basemap, mapReady]);
+
+  useEffect(() => {
+    if (detectionMode || roadInspectionActive || quickAnalysisCardId) return;
+
+    if (basemap !== "cadastral") {
+      if (!cadastralPresetActiveRef.current) return;
+      cadastralPresetActiveRef.current = false;
+      const previous = preCadastralHiddenCategoriesRef.current;
+      preCadastralHiddenCategoriesRef.current = null;
+      setHiddenCategories(previous ? new Set(previous) : new Set());
+      return;
+    }
+
+    if (categoryStats.length === 0) return;
+    if (!cadastralPresetActiveRef.current) {
+      preCadastralHiddenCategoriesRef.current = new Set(hiddenCategories);
+    }
+    cadastralPresetActiveRef.current = true;
+
+    const nextHidden = new Set(
+      categoryStats
+        .map((entry) => entry.category)
+        .filter((category) => !CADASTRAL_CATEGORY_ALLOWLIST.has(normalizeCategoryName(category)))
+    );
+
+    setHiddenCategories((current) => {
+      if (
+        current.size === nextHidden.size
+        && Array.from(nextHidden).every((category) => current.has(category))
+      ) {
+        return current;
+      }
+      return nextHidden;
+    });
+  }, [basemap, categoryStats, detectionMode, hiddenCategories, roadInspectionActive]);
 
   // Renders the locked vertices plus, while still placing the shape, a live
   // preview out to `previewPoint` (the current mouse position) — the same
@@ -2899,18 +4313,30 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
           return !objIds.has(did);
         });
 
-    // Add two internal top-level properties used only by the visualization UI.
+    // A named landmark and generic Temple survey point commonly occupy same
+    // coordinate. Keep named place only: one icon and one correct hover card.
+    const namedTempleLocations = rawFeatures
+      .filter(isNamedTempleLandmark)
+      .map(featurePointCoordinate)
+      .filter((coordinate): coordinate is [number, number] => coordinate !== null);
+
+    // Add internal top-level properties used only by visualization UI.
     // Original attributes remain untouched inside properties.attributes.
     const features = rawFeatures.map((feature) => {
       const properties = (feature.properties ?? {}) as Record<string, unknown>;
       const datasetId = String(properties.dataset_id ?? "");
       const sourceLayer = sourceLayerFromFeature(feature);
+      const coordinate = featurePointCoordinate(feature);
+      const isDuplicateTemple = coordinate !== null
+        && isGenericTemplePoint(feature)
+        && namedTempleLocations.some((namedCoordinate) => haversineDistance(coordinate, namedCoordinate) < 14);
       return {
         ...feature,
         properties: {
           ...properties,
           [VIZ_SOURCE_LAYER_PROP]: sourceLayer,
           [VIZ_LAYER_ID_PROP]: visualizationLayerId(datasetId, sourceLayer),
+          [CADASTRAL_DUPLICATE_POINT_PROP]: isDuplicateTemple,
         },
       } as GeoJSON.Feature;
     });
@@ -2981,14 +4407,24 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     // While an AI Detection mode owns the map, the detection effect below
     // drives layer visibility by canonical class; this manual-checklist
     // filter must not fight it, so stand down in that case.
-    if (detectionMode) return;
+    if (detectionMode || roadInspectionActive || quickAnalysisCardId) return;
     const hiddenForBase = selectedVisualizationFeatures.length > 0
       ? new Set(selectedVisualizationCompositeIds)
       : new Set<string>();
     if (map.getLayer(LAYER_POLY_FILL)) map.setFilter(LAYER_POLY_FILL, withFeatureVisibility(POLY_BASE_FILTER, hiddenCategories, hiddenForBase));
     if (map.getLayer(LAYER_POLY_OUTLINE)) map.setFilter(LAYER_POLY_OUTLINE, withFeatureVisibility(POLY_BASE_FILTER, hiddenCategories, hiddenForBase));
+    if (map.getLayer(LAYER_POLY_FILL_CADASTRAL)) map.setFilter(LAYER_POLY_FILL_CADASTRAL, withFeatureVisibility(POLY_BASE_FILTER, hiddenCategories, hiddenForBase));
+    if (map.getLayer(LAYER_POLY_OUTLINE_CADASTRAL)) map.setFilter(LAYER_POLY_OUTLINE_CADASTRAL, withFeatureVisibility(POLY_BASE_FILTER, hiddenCategories, hiddenForBase));
     if (map.getLayer(LAYER_LINES)) map.setFilter(LAYER_LINES, withFeatureVisibility(LINE_BASE_FILTER, hiddenCategories, hiddenForBase));
+    if (map.getLayer(LAYER_LINES_CADASTRAL)) map.setFilter(LAYER_LINES_CADASTRAL, withFeatureVisibility(LINE_BASE_FILTER, hiddenCategories, hiddenForBase));
+    if (map.getLayer(REFERENCE_SURVEY_ROAD_LABELS)) map.setFilter(REFERENCE_SURVEY_ROAD_LABELS, withFeatureVisibility([
+      "all",
+      LINE_BASE_FILTER,
+      ["==", ["coalesce", ["get", "canonical_class"], ""], "Road_Centerline"],
+    ] as unknown as maplibregl.FilterSpecification, hiddenCategories, hiddenForBase));
     if (map.getLayer(LAYER_POINTS)) map.setFilter(LAYER_POINTS, withFeatureVisibility(POINT_BASE_FILTER, hiddenCategories, hiddenForBase));
+    if (map.getLayer(LAYER_POINTS_CADASTRAL_HIT)) map.setFilter(LAYER_POINTS_CADASTRAL_HIT, withFeatureVisibility(CADASTRAL_POINT_HIT_FILTER, hiddenCategories, hiddenForBase));
+    if (map.getLayer(LAYER_POINTS_CADASTRAL)) map.setFilter(LAYER_POINTS_CADASTRAL, withFeatureVisibility(CADASTRAL_POINT_HIT_FILTER, hiddenCategories, hiddenForBase));
     if (map.getLayer(LAYER_PHOTOS)) map.setFilter(LAYER_PHOTOS, withFeatureVisibility(PHOTO_BASE_FILTER, hiddenCategories, hiddenForBase));
 
     // The selected geometry is rendered in a dedicated overlay. It must obey
@@ -2999,7 +4435,182 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     if (map.getLayer(VIZ_SELECTED_POLY_OUTLINE)) map.setFilter(VIZ_SELECTED_POLY_OUTLINE, withFeatureVisibility(POLY_BASE_FILTER, hiddenCategories, noHiddenVisualizationLayers));
     if (map.getLayer(VIZ_SELECTED_LINES)) map.setFilter(VIZ_SELECTED_LINES, withFeatureVisibility(LINE_BASE_FILTER, hiddenCategories, noHiddenVisualizationLayers));
     if (map.getLayer(VIZ_SELECTED_POINTS)) map.setFilter(VIZ_SELECTED_POINTS, withFeatureVisibility(POINT_BASE_FILTER, hiddenCategories, noHiddenVisualizationLayers));
-  }, [mapReady, hiddenCategories, detectionMode, selectedVisualizationCompositeIds, selectedVisualizationFeatures.length]);
+  }, [mapReady, hiddenCategories, detectionMode, quickAnalysisCardId, roadInspectionActive, selectedVisualizationCompositeIds, selectedVisualizationFeatures.length]);
+
+  // Each Quick Analysis card owns a focused cadastral view. Drain keeps only
+  // building context + drain lines; utility and manhole views keep building
+  // context + their relevant point assets. Catalog/KPI cards retain the full
+  // survey. None of these filters reuse AI Detection state.
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!mapReady || !map || !quickAnalysisCardId) return;
+    if (!["drain-encroachment", "utility-tracker", "manhole-detail", "road-width"].includes(quickAnalysisCardId)) return;
+    const buildingFilter: maplibregl.FilterSpecification = [
+      "all", POLY_BASE_FILTER,
+      ["==", ["coalesce", ["get", "canonical_class"], ""], "Building"],
+    ];
+    const hideAll: maplibregl.FilterSpecification = ["==", ["get", "id"], "__quick_analysis_none__"];
+    if (map.getLayer(LAYER_POLY_FILL)) map.setFilter(LAYER_POLY_FILL, buildingFilter);
+    if (map.getLayer(LAYER_POLY_OUTLINE)) map.setFilter(LAYER_POLY_OUTLINE, buildingFilter);
+    if (map.getLayer(LAYER_POLY_FILL_CADASTRAL)) map.setFilter(LAYER_POLY_FILL_CADASTRAL, buildingFilter);
+    if (map.getLayer(LAYER_POLY_OUTLINE_CADASTRAL)) map.setFilter(LAYER_POLY_OUTLINE_CADASTRAL, buildingFilter);
+    if (quickAnalysisCardId === "drain-encroachment") {
+      const drainFilter: maplibregl.FilterSpecification = [
+        "all", LINE_BASE_FILTER,
+        ["==", ["coalesce", ["get", "canonical_class"], ""], "Drainage_Asset"],
+      ];
+      if (map.getLayer(LAYER_LINES)) map.setFilter(LAYER_LINES, drainFilter);
+      if (map.getLayer(LAYER_LINES_CADASTRAL)) map.setFilter(LAYER_LINES_CADASTRAL, drainFilter);
+      if (map.getLayer(LAYER_POINTS)) map.setFilter(LAYER_POINTS, hideAll);
+      if (map.getLayer(LAYER_POINTS_CADASTRAL_HIT)) map.setFilter(LAYER_POINTS_CADASTRAL_HIT, hideAll);
+      if (map.getLayer(LAYER_POINTS_CADASTRAL)) map.setFilter(LAYER_POINTS_CADASTRAL, hideAll);
+      if (map.getLayer(REFERENCE_SURVEY_ROAD_LABELS)) map.setFilter(REFERENCE_SURVEY_ROAD_LABELS, hideAll);
+      return;
+    }
+
+    if (quickAnalysisCardId === "road-width") {
+      const roadFilter: maplibregl.FilterSpecification = [
+        "all", LINE_BASE_FILTER,
+        ["in", ["coalesce", ["get", "canonical_class"], ""], ["literal", ["Road_Centerline", "Road_Surface"]]],
+      ];
+      if (map.getLayer(LAYER_LINES)) map.setFilter(LAYER_LINES, roadFilter);
+      if (map.getLayer(LAYER_LINES_CADASTRAL)) map.setFilter(LAYER_LINES_CADASTRAL, roadFilter);
+      if (map.getLayer(LAYER_POINTS)) map.setFilter(LAYER_POINTS, hideAll);
+      if (map.getLayer(LAYER_POINTS_CADASTRAL_HIT)) map.setFilter(LAYER_POINTS_CADASTRAL_HIT, hideAll);
+      if (map.getLayer(LAYER_POINTS_CADASTRAL)) map.setFilter(LAYER_POINTS_CADASTRAL, hideAll);
+      if (map.getLayer(REFERENCE_SURVEY_ROAD_LABELS)) map.setFilter(REFERENCE_SURVEY_ROAD_LABELS, hideAll);
+      return;
+    }
+
+    const targetClasses = quickAnalysisCardId === "manhole-detail"
+      ? ["Access_Point"]
+      : ["Access_Point", "Illumination_Asset", "Utility_Pole"];
+    const targetPoints: maplibregl.FilterSpecification = [
+      "all", CADASTRAL_POINT_HIT_FILTER,
+      ["in", ["coalesce", ["get", "canonical_class"], ""], ["literal", targetClasses]],
+    ];
+    if (map.getLayer(LAYER_LINES)) map.setFilter(LAYER_LINES, hideAll);
+    if (map.getLayer(LAYER_LINES_CADASTRAL)) map.setFilter(LAYER_LINES_CADASTRAL, hideAll);
+    if (map.getLayer(LAYER_POINTS)) map.setFilter(LAYER_POINTS, targetPoints);
+    if (map.getLayer(LAYER_POINTS_CADASTRAL_HIT)) map.setFilter(LAYER_POINTS_CADASTRAL_HIT, targetPoints);
+    if (map.getLayer(LAYER_POINTS_CADASTRAL)) map.setFilter(LAYER_POINTS_CADASTRAL, targetPoints);
+    if (map.getLayer(REFERENCE_SURVEY_ROAD_LABELS)) map.setFilter(REFERENCE_SURVEY_ROAD_LABELS, hideAll);
+  }, [mapReady, quickAnalysisCardId]);
+
+  // Drain Encroachment fades the cadastral fabric so the drainage network
+  // owns the visual hierarchy. Manhole Detail retains that fabric, but gives
+  // the single clicked manhole a cyan focus ring. Keeping those states
+  // separate prevents the old drain-point styling from leaking into another
+  // Quick Analysis card.
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!mapReady || !map) return;
+    const isDrainAnalysis = quickAnalysisCardId === "drain-encroachment";
+    const isManholeDetail = quickAnalysisCardId === "manhole-detail";
+    const isRoadWidth = quickAnalysisCardId === "road-width";
+    const hasFocusedCadastralSubject = isDrainAnalysis || isManholeDetail || isRoadWidth;
+    const activeFeatureId = selectedQuickAnalysisFeature?.properties.id ?? "";
+    const selectedManholeId = isManholeDetail
+      && selectedQuickAnalysisFeature?.properties.canonical_class === "Access_Point"
+      ? selectedQuickAnalysisFeature.properties.id
+      : "";
+    const hasDrainSelection = isDrainAnalysis && activeFeatureId !== "";
+    const hasManholeSelection = selectedManholeId !== "";
+    if (map.getLayer("osm")) map.setPaintProperty("osm", "raster-opacity", 1);
+    if (map.getLayer(CADASTRAL_TILE_LAYER)) {
+      map.setPaintProperty(CADASTRAL_TILE_LAYER, "raster-opacity", CADASTRAL_TILE_OPACITY);
+    }
+    if (map.getLayer(LAYER_POLY_FILL_CADASTRAL)) {
+      map.setPaintProperty(LAYER_POLY_FILL_CADASTRAL, "fill-opacity", hasFocusedCadastralSubject ? 0.02 : 0.18);
+    }
+    if (map.getLayer(LAYER_POLY_OUTLINE_CADASTRAL)) {
+      map.setPaintProperty(LAYER_POLY_OUTLINE_CADASTRAL, "line-opacity", hasFocusedCadastralSubject ? 0.12 : 0.88);
+    }
+    if (map.getLayer(LAYER_LINES_CADASTRAL)) {
+      map.setPaintProperty(
+        LAYER_LINES_CADASTRAL,
+        "line-color",
+        isDrainAnalysis
+          ? ["case", ["==", ["get", "id"], activeFeatureId], "#9f1239", "#e11d48"]
+          : isRoadWidth
+            ? "#94a3b8"
+            : cadastralLineColorExpression()
+      );
+      map.setPaintProperty(
+        LAYER_LINES_CADASTRAL,
+        "line-width",
+        isDrainAnalysis
+          ? [
+            "case",
+            ["==", ["get", "id"], activeFeatureId],
+            ["interpolate", ["linear"], ["zoom"], 12, 5, 16, 7, 20, 10],
+            ["interpolate", ["linear"], ["zoom"], 12, 2.5, 16, 4, 20, 6],
+          ]
+          : cadastralLineWidthExpression()
+      );
+      map.setPaintProperty(
+        LAYER_LINES_CADASTRAL,
+        "line-opacity",
+        isDrainAnalysis
+          ? (hasDrainSelection
+              ? ["case", ["==", ["get", "id"], activeFeatureId], 1, 0.2]
+              : 0.98)
+          : isRoadWidth
+            ? 0.35
+            : 0.82
+      );
+      if (isDrainAnalysis || isRoadWidth) map.moveLayer(LAYER_LINES_CADASTRAL);
+    }
+    if (map.getLayer(LAYER_POINTS_CADASTRAL_HIT)) {
+      map.setPaintProperty(
+        LAYER_POINTS_CADASTRAL_HIT,
+        "circle-radius",
+        isManholeDetail
+          ? [
+              "case",
+              ["==", ["get", "id"], selectedManholeId],
+              ["interpolate", ["linear"], ["zoom"], 12, 12, 16, 16, 20, 21],
+              0,
+            ]
+          : cadastralPointHitRadiusExpression()
+      );
+      map.setPaintProperty(LAYER_POINTS_CADASTRAL_HIT, "circle-color", isManholeDetail ? "#083344" : "rgba(15,23,42,0.01)");
+      map.setPaintProperty(LAYER_POINTS_CADASTRAL_HIT, "circle-stroke-color", isManholeDetail ? "#22d3ee" : "rgba(15,23,42,0.01)");
+      map.setPaintProperty(LAYER_POINTS_CADASTRAL_HIT, "circle-stroke-width", isManholeDetail ? 3 : 0);
+      map.setPaintProperty(
+        LAYER_POINTS_CADASTRAL_HIT,
+        "circle-opacity",
+        isManholeDetail
+          ? ["case", ["==", ["get", "id"], selectedManholeId], 1, 0]
+          : 0.01
+      );
+      map.setPaintProperty(
+        LAYER_POINTS_CADASTRAL_HIT,
+        "circle-stroke-opacity",
+        isManholeDetail
+          ? ["case", ["==", ["get", "id"], selectedManholeId], 1, 0]
+          : 0
+      );
+      map.setPaintProperty(LAYER_POINTS_CADASTRAL_HIT, "circle-radius-transition", { duration: 180, delay: 0 });
+      map.setPaintProperty(LAYER_POINTS_CADASTRAL_HIT, "circle-opacity-transition", { duration: 180, delay: 0 });
+      map.setPaintProperty(LAYER_POINTS_CADASTRAL_HIT, "circle-stroke-opacity-transition", { duration: 180, delay: 0 });
+      if (isManholeDetail && hasManholeSelection) map.moveLayer(LAYER_POINTS_CADASTRAL_HIT);
+    }
+    if (map.getLayer(REFERENCE_SURVEY_ROAD_LABELS)) {
+      map.setPaintProperty(REFERENCE_SURVEY_ROAD_LABELS, "text-opacity", isDrainAnalysis ? 0.22 : 1);
+    }
+    if (map.getLayer(REFERENCE_SURVEY_BUILDING_LABELS)) {
+      map.setPaintProperty(REFERENCE_SURVEY_BUILDING_LABELS, "text-opacity", hasFocusedCadastralSubject ? 0 : 1);
+    }
+    [
+      LAYER_QUICK_ANALYSIS_DRAIN_CORRIDOR,
+      LAYER_QUICK_ANALYSIS_DRAIN_LINE,
+      LAYER_QUICK_ANALYSIS_MANHOLE_GLOW,
+      LAYER_QUICK_ANALYSIS_MANHOLE,
+    ].forEach((layerId) => {
+      if (map.getLayer(layerId)) map.setLayoutProperty(layerId, "visibility", "none");
+    });
+  }, [mapReady, quickAnalysisCardId, selectedQuickAnalysisFeature]);
 
   // Publish the selected source layer into its own viewport-scoped overlay.
   // Large datasets such as AMRUT exceed the normal 5,000-feature base snapshot;
@@ -3121,7 +4732,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
       map.setPaintProperty(VIZ_SELECTED_POLY_OUTLINE, "line-opacity", visualizationOpacity);
     }
   }, [
-    aiOverlayEnabled, detectionMode, mapReady, visualizationField,
+    aiOverlayEnabled, basemap, detectionMode, mapReady, visualizationField,
     visualizationLineWidth, visualizationMode, visualizationOpacity,
     visualizationPointSize, visualizationPreview,
   ]);
@@ -3212,6 +4823,10 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
   const runFetch = useCallback(async () => {
     const map = mapRef.current;
     if (!map) return;
+    // The Quick Analysis dashboard owns the feature source while it is open.
+    // Do not let a concurrent home-map refresh overwrite that independent
+    // dataset snapshot.
+    if (quickAnalysisActiveRef.current || quickAnalysisCardId) return;
     const requestSequence = ++fetchSequenceRef.current;
 
     // If no dataset is selected AND no real topbar filter is active,
@@ -3247,7 +4862,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
       applyFeatureCollection(EMPTY_FC);
       setStatus({ loading: false, count: 0, truncated: false, error: msg, bbox });
     }
-  }, [applyFeatureCollection]);
+  }, [applyFeatureCollection, quickAnalysisCardId]);
 
   const scheduleFetch = useCallback(() => {
     if (debounceRef.current !== null) window.clearTimeout(debounceRef.current);
@@ -3434,6 +5049,21 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     return () => ctrl.abort();
   }, [activeDatasetIds, refreshToken]);
 
+  // Parse a "LINESTRING(lon lat, ...)" / "SRID=4326;LINESTRING(...)" WKT into
+  // GeoJSON [lon, lat] coordinates. Returns null if not a line.
+  const wktLineCoords = (wkt: string | undefined): [number, number][] | null => {
+    if (!wkt) return null;
+    const m = wkt.match(/LINESTRING\s*\(([^)]+)\)/i);
+    if (!m) return null;
+    return m[1]
+      .trim()
+      .split(",")
+      .map((pair) => {
+        const [lon, lat] = pair.trim().split(/\s+/).map(Number);
+        return [lon, lat] as [number, number];
+      });
+  };
+
   // Push the fetched anomalies into the map source whenever they change.
   useEffect(() => {
     const map = mapRef.current;
@@ -3449,11 +5079,244 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
         properties: { id: a.id, color: a.color, anomaly_type: a.anomaly_type, status: a.status },
       })),
     });
+    // Road-width narrowing is rendered as a line (the affected carriageway
+    // stretch), not a point — feed its WKT geometry into a separate source.
+    const roadSrc = map.getSource(ANOMALY_ROAD_LINE_SOURCE) as GeoJSONSource | undefined;
+    if (roadSrc) {
+      roadSrc.setData({
+        type: "FeatureCollection",
+        features: anomalies
+          .filter((a) => a.anomaly_type === "road_width_narrowing")
+          .map((a) => {
+            const coords = wktLineCoords(a.anomaly_metadata?.affected_line_wkt as string | undefined);
+            return coords
+              ? {
+                  type: "Feature" as const,
+                  id: a.id,
+                  geometry: { type: "LineString" as const, coordinates: coords },
+                  properties: { id: a.id, color: a.color, anomaly_type: a.anomaly_type },
+                }
+              : null;
+          })
+          .filter((f): f is NonNullable<typeof f> => f !== null),
+      });
+    }
   }, [mapReady, anomalies]);
+
+  // Keep the clicked road visible as the report card is read, even though
+  // Road Inspection intentionally hides all non-road map categories.
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!mapReady || !map) return;
+    const source = map.getSource(ROAD_INSPECTION_SOURCE) as GeoJSONSource | undefined;
+    source?.setData({
+      type: "FeatureCollection",
+      features: roadInspectionRoad ? [roadInspectionRoad as unknown as GeoJSON.Feature] : [],
+    });
+  }, [mapReady, roadInspectionRoad]);
+
+  // The server returns the actual geometry and attributes for every asset
+  // assigned to the selected road. Keep these in a dedicated source so the
+  // one-road view can show poles, drains, manholes, road edges, and drain
+  // evidence together without leaking neighbouring-road features back in.
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!mapReady || !map) return;
+    const assetSource = map.getSource(ROAD_INSPECTION_ASSETS_SOURCE) as GeoJSONSource | undefined;
+    assetSource?.setData({
+      type: "FeatureCollection",
+      features: roadInspectionReport?.features.map(roadInspectionFeatureToGeoJson) ?? [],
+    });
+    const widthSource = map.getSource(ROAD_INSPECTION_WIDTH_SOURCE) as GeoJSONSource | undefined;
+    widthSource?.setData({
+      type: "FeatureCollection",
+      features: (roadInspectionReport?.issues ?? [])
+        .filter((issue) => issue.anomaly_type === "road_width_narrowing")
+        .map((issue) => {
+          const coordinates = wktLineCoords(issue.anomaly_metadata.affected_line_wkt as string | undefined);
+          return coordinates
+            ? {
+                type: "Feature" as const,
+                id: issue.id,
+                geometry: { type: "LineString" as const, coordinates },
+                properties: { id: issue.id, color: issue.color, anomaly_type: issue.anomaly_type },
+              }
+            : null;
+        })
+        .filter((feature): feature is NonNullable<typeof feature> => feature !== null),
+    });
+  }, [mapReady, roadInspectionReport]);
+
+  useEffect(() => () => roadInspectionAbortRef.current?.abort(), []);
+
+  // Push the current manhole-recommend answer's routes into their own map
+  // source whenever the answer changes (including clearing to [] on close).
+  //
+  // Dedup strategy — segment-level union:
+  //   Two manholes rarely share the *exact* same line, but many edges route
+  //   along the SAME road segments (several manholes converge on a common
+  //   downstream node, so their paths overlap on the shared approach). That
+  //   overlap is what renders as "parallel / double lines". Pair-key dedup
+  //   can't catch it, so instead we walk every route as a sequence of small
+  //   directed segments and only ever draw each UNDIRECTED segment once. The
+  //   first route to claim a segment keeps it; later routes that re-trace it
+  //   simply skip that segment (the earlier route already covers it on the
+  //   map). Confirmed-flow edges are processed first so they own the shared
+  //   "trunk" segments and the arrows stay correct. The result: every road
+  //   segment is painted exactly once — no duplicate lines.
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!mapReady || !map) return;
+    const src = map.getSource(MANHOLE_ROUTES_SOURCE) as GeoJSONSource | undefined;
+    if (!src) return;
+    if (quickAnalysisCardId) {
+      src.setData({ type: "FeatureCollection", features: [] });
+      return;
+    }
+    const routes = manholeRecommendAnswer?.routes ?? [];
+
+    // Priority: confirmed-flow edges first (they own shared trunk segments
+    // and keep their arrows), then longer edges (trunks) before short spurs.
+    const ordered = [...routes].sort((a, b) => {
+      const ac = a.flow_confirmed ? 1 : 0;
+      const bc = b.flow_confirmed ? 1 : 0;
+      if (ac !== bc) return bc - ac;
+      return (b.coordinates?.length ?? 0) - (a.coordinates?.length ?? 0);
+    });
+
+    // Coordinate snapping to a coarse ~3m grid. Two paths that run 1-3m apart
+    // for a shared stretch (e.g. two genuine edges sharing a hub manhole and
+    // converging on the same corridor, computed independently and snapped to
+    // slightly different road points) collapse onto the same lattice grid, so
+    // their segments resolve to identical keys and merge into ONE drawn line
+    // instead of rendering as near-parallel duplicates. Snapping every
+    // coordinate *before* segmenting also handles the case where the two paths
+    // have different point densities — their consecutive-segment endpoints will
+    // now coincide on the grid regardless.
+    const GRID = 0.00006; // ~3m at typical latitudes
+    const snap = (v: number): number => Math.round(v / GRID) * GRID;
+    const snapPt = (p: number[]): [number, number] => [snap(p[0]), snap(p[1])];
+    const segKey = (a: number[], b: number[]): string => {
+      const ra = `${a[0].toFixed(5)},${a[1].toFixed(5)}`;
+      const rb = `${b[0].toFixed(5)},${b[1].toFixed(5)}`;
+      return ra < rb ? `${ra}|${rb}` : `${rb}|${ra}`;
+    };
+    // Two snapped points count as the SAME node if they share a grid cell.
+    const sameNode = (a: number[], b: number[]): boolean =>
+      a[0] === b[0] && a[1] === b[1];
+
+    const drawn = new Set<string>();
+    const features: GeoJSON.Feature[] = [];
+
+    for (const route of ordered) {
+      const raw = route.coordinates;
+      if (!raw || raw.length < 2) continue;
+
+      // 1) Snap every coordinate to the grid, then collapse consecutive
+      //    duplicate grid-nodes (this removes a single route's own tiny
+      //    zig-zag / double-back so one path never renders as two lines).
+      const snapped: number[][] = [];
+      for (const p of raw) {
+        const s = snapPt(p);
+        const last = snapped[snapped.length - 1];
+        if (!last || !sameNode(last, s)) snapped.push(s);
+      }
+      if (snapped.length < 2) continue;
+
+      // Group consecutive UN-drawn segments into contiguous runs so the
+      // dashed line style stays continuous; a drawn (shared) segment becomes
+      // a gap that the owning route already covers.
+      let run: number[][] = [snapped[0]];
+      const flush = () => {
+        if (run.length >= 2) {
+          features.push({
+            type: "Feature",
+            geometry: { type: "LineString", coordinates: run },
+            properties: {
+              from_id: route.from_id,
+              to_id: route.to_id,
+              flow_confirmed: route.flow_confirmed ?? false,
+            },
+          } as GeoJSON.Feature);
+        }
+        run = [];
+      };
+
+      let prev = snapped[0];
+      run = [prev];
+      for (let i = 1; i < snapped.length; i++) {
+        const cur = snapped[i];
+        const key = segKey(prev, cur);
+        if (drawn.has(key)) {
+          flush();          // gap: start a fresh run after the shared segment
+          run = [cur];
+        } else {
+          drawn.add(key);
+          run.push(cur);
+        }
+        prev = cur;
+      }
+      flush();
+    }
+
+    src.setData({ type: "FeatureCollection", features });
+    if (routes.length > 0) {
+      if (map.getLayer(LAYER_MANHOLE_ROUTES)) map.moveLayer(LAYER_MANHOLE_ROUTES);
+      if (map.getLayer(LAYER_MANHOLE_FLOW_ARROWS)) map.moveLayer(LAYER_MANHOLE_FLOW_ARROWS);
+    }
+  }, [mapReady, manholeRecommendAnswer, quickAnalysisCardId]);
+
+  // Push the current manhole-recommend answer's proposed manhole locations
+  // (coverage gaps / disconnected manholes) into their own point layer.
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!mapReady || !map) return;
+    const src = map.getSource(MANHOLE_POINTS_SOURCE) as GeoJSONSource | undefined;
+    if (!src) return;
+    if (quickAnalysisCardId) {
+      src.setData({ type: "FeatureCollection", features: [] });
+      return;
+    }
+    const locs = manholeRecommendAnswer?.needed_locations ?? [];
+    src.setData({
+      type: "FeatureCollection",
+      features: locs.map((loc, idx) => ({
+        type: "Feature",
+        id: idx,
+        geometry: { type: "Point", coordinates: [loc.lon, loc.lat] },
+        properties: { id: loc.id, reason: loc.reason },
+      })),
+    });
+  }, [mapReady, manholeRecommendAnswer, quickAnalysisCardId]);
+
+  // Push manholes with no real sewage/drain pipe within reach (network
+  // mode) into their own point layer, so "not connected to the sewage
+  // line" is a visible fact on the map, not just hidden absence of a line.
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!mapReady || !map) return;
+    const src = map.getSource(MANHOLE_UNCONNECTED_SOURCE) as GeoJSONSource | undefined;
+    if (!src) return;
+    if (quickAnalysisCardId) {
+      src.setData({ type: "FeatureCollection", features: [] });
+      return;
+    }
+    const locs = manholeRecommendAnswer?.unconnected_manholes ?? [];
+    src.setData({
+      type: "FeatureCollection",
+      features: locs.map((loc, idx) => ({
+        type: "Feature",
+        id: idx,
+        geometry: { type: "Point", coordinates: [loc.lon, loc.lat] },
+        properties: { id: loc.id, reason: loc.reason },
+      })),
+    });
+  }, [mapReady, manholeRecommendAnswer, quickAnalysisCardId]);
 
   // Keep the ref mirror in sync so applyFeatureCollection (a stable
   // useCallback) always reads the current mode on the next fetch.
   useEffect(() => { detectionModeRef.current = detectionMode; }, [detectionMode]);
+  useEffect(() => { roadInspectionActiveRef.current = roadInspectionActive; }, [roadInspectionActive]);
   useEffect(() => { aiOverlayEnabledRef.current = aiOverlayEnabled; }, [aiOverlayEnabled]);
   useEffect(() => { classMapRef.current = classMap; }, [classMap]);
 
@@ -3485,18 +5348,36 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
   useEffect(() => {
     const map = mapRef.current;
     if (!mapReady || !map) return;
-    if (!detectionMode) {
+    // Quick Analysis owns its own authoritative survey filters. In particular,
+    // Drain Encroachment must remain restricted to the 36 Drainage_Asset
+    // geometries; the detection-mode cleanup below previously cleared hidden
+    // categories and caused the general filter effect to restore every road,
+    // power and unclassified line after the drain filter had been applied.
+    if (quickAnalysisActiveRef.current || quickAnalysisCardId) return;
+    if (!detectionMode && !roadInspectionActive) {
       // Hand control back to the manual checklist filter.
       setHiddenCategories(new Set());
       return;
     }
-    const allowed = DETECTION_MODE_TARGET_CLASSES[detectionMode];
+    const allowed = roadInspectionActive
+      ? ["Road_Centerline"]
+      : DETECTION_MODE_TARGET_CLASSES[detectionMode!];
     if (map.getLayer(LAYER_POLY_FILL)) map.setFilter(LAYER_POLY_FILL, withCanonicalVisibility(POLY_BASE_FILTER, allowed, extraVisibleCategories));
     if (map.getLayer(LAYER_POLY_OUTLINE)) map.setFilter(LAYER_POLY_OUTLINE, withCanonicalVisibility(POLY_BASE_FILTER, allowed, extraVisibleCategories));
+    if (map.getLayer(LAYER_POLY_FILL_CADASTRAL)) map.setFilter(LAYER_POLY_FILL_CADASTRAL, withCanonicalVisibility(POLY_BASE_FILTER, allowed, extraVisibleCategories));
+    if (map.getLayer(LAYER_POLY_OUTLINE_CADASTRAL)) map.setFilter(LAYER_POLY_OUTLINE_CADASTRAL, withCanonicalVisibility(POLY_BASE_FILTER, allowed, extraVisibleCategories));
     if (map.getLayer(LAYER_LINES)) map.setFilter(LAYER_LINES, withCanonicalVisibility(LINE_BASE_FILTER, allowed, extraVisibleCategories));
+    if (map.getLayer(LAYER_LINES_CADASTRAL)) map.setFilter(LAYER_LINES_CADASTRAL, withCanonicalVisibility(LINE_BASE_FILTER, allowed, extraVisibleCategories));
+    if (map.getLayer(REFERENCE_SURVEY_ROAD_LABELS)) map.setFilter(REFERENCE_SURVEY_ROAD_LABELS, withCanonicalVisibility([
+      "all",
+      LINE_BASE_FILTER,
+      ["==", ["coalesce", ["get", "canonical_class"], ""], "Road_Centerline"],
+    ] as unknown as maplibregl.FilterSpecification, allowed, extraVisibleCategories));
     if (map.getLayer(LAYER_POINTS)) map.setFilter(LAYER_POINTS, withCanonicalVisibility(POINT_BASE_FILTER, allowed, extraVisibleCategories));
+    if (map.getLayer(LAYER_POINTS_CADASTRAL_HIT)) map.setFilter(LAYER_POINTS_CADASTRAL_HIT, withCanonicalVisibility(CADASTRAL_POINT_HIT_FILTER, allowed, extraVisibleCategories));
+    if (map.getLayer(LAYER_POINTS_CADASTRAL)) map.setFilter(LAYER_POINTS_CADASTRAL, withCanonicalVisibility(CADASTRAL_POINT_HIT_FILTER, allowed, extraVisibleCategories));
     // LAYER_PHOTOS is intentionally left as-is so geotagged evidence stays visible.
-  }, [mapReady, detectionMode, extraVisibleCategories]);
+  }, [mapReady, detectionMode, roadInspectionActive, extraVisibleCategories, quickAnalysisCardId]);
 
   // Drives the two mode-specific map treatments: (1) Drains mode recolors
   // building polygons by their own encroachment finding instead of showing
@@ -3523,7 +5404,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     buildingColorMapRef.current = buildingColors;
     buildingAnomalyIdMapRef.current = buildingAnomalyIds;
 
-    const aiOn = aiOverlayEnabled && detectionMode !== null;
+    const aiOn = !roadInspectionActive && aiOverlayEnabled && detectionMode !== null;
     if (map.getLayer(LAYER_POLY_FILL)) {
       map.setPaintProperty(
         LAYER_POLY_FILL,
@@ -3537,56 +5418,47 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
       );
     }
     if (map.getLayer(LAYER_ANOMALIES)) {
-      // Manholes mode hides the individual red/green/yellow anomaly dots —
-      // the heatmap overlay replaces them (see the heatmap effect below).
-      const showAnomalies = aiOn && detectionMode !== "drains" && detectionMode !== "manholes";
-      const anomalyType = showAnomalies ? DETECTION_MODE_ANOMALY_TYPE[detectionMode] : null;
-      map.setFilter(LAYER_ANOMALIES, anomalyType ? ["==", ["get", "anomaly_type"], anomalyType] : ["==", ["get", "anomaly_type"], "__none__"]);
+      // Each detection mode isolates its own finding type as dots. Road-width
+      // narrowing is drawn as a LINE (LAYER_ANOMALIES_ROAD), so in Road Width
+      // mode the point layer shows nothing; in other modes it shows that
+      // mode's type (never road_width_narrowing). With no mode but the overlay
+      // on (e.g. after "Run Spatial Audit") it shows every type except
+      // road_width_narrowing. Drains mode suppresses points entirely — it
+      // communicates through polygon fill instead.
+      const anomalyType =
+        aiOn && detectionMode !== null && detectionMode !== "drains" && detectionMode !== "roads"
+          ? DETECTION_MODE_ANOMALY_TYPE[detectionMode]
+          : null;
+      let pointFilter: maplibregl.FilterSpecification;
+      if (anomalyType) {
+        pointFilter = ["==", ["get", "anomaly_type"], anomalyType];
+      } else if (aiOn && detectionMode === null) {
+        pointFilter = ["!=", ["get", "anomaly_type"], "road_width_narrowing"];
+      } else {
+        // roads or drains mode, or overlay off => no dots
+        pointFilter = ["==", ["get", "anomaly_type"], "__none__"];
+      }
+      map.setFilter(LAYER_ANOMALIES, pointFilter);
+    }
+    if (map.getLayer(LAYER_ANOMALIES_ROAD)) {
+      // The road-line layer mirrors the same visibility logic, but it ONLY
+      // ever carries road_width_narrowing — so it shows whenever that type is
+      // in scope: Road Width mode, or "show everything" (overlay on, no
+      // specific mode). Drains mode communicates via polygon fill, so it
+      // hides the road lines too.
+      const roadInScope = (aiOn && detectionMode !== "drains" && (detectionMode === "roads" || detectionMode === null))
+        || quickAnalysisCardId === "road-width";
+      const roadFilter: maplibregl.FilterSpecification = roadInScope
+        ? ["==", ["get", "anomaly_type"], "road_width_narrowing"]
+        : ["==", ["get", "anomaly_type"], "__none__"];
+      map.setFilter(LAYER_ANOMALIES_ROAD, roadFilter);
     }
 
     function colorByCategoryExpr() {
       return buildCategoryColorExpression(colorByCategoryRef.current);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [mapReady, detectionMode, anomalies, aiOverlayEnabled]);
-
-  // Manhole heatmap — populate from the real, persisted manhole_status audit
-  // findings (the same red/yellow/green results the individual anomaly
-  // points would otherwise show), weighted so red hotspots dominate the
-  // density and resolved findings fade out. Visible only in "manholes" AI
-  // detection mode; hidden (and cleared) otherwise.
-  useEffect(() => {
-    const map = mapRef.current;
-    if (!mapReady || !map) return;
-    const isManholes = aiOverlayEnabled && detectionMode === "manholes";
-    const visibility = isManholes ? "visible" : "none";
-    if (map.getLayer(LAYER_MANHOLE_HEATMAP)) {
-      map.setLayoutProperty(LAYER_MANHOLE_HEATMAP, "visibility", visibility);
-    }
-    if (map.getLayer(LAYER_MANHOLE_HEATMAP_POINTS)) {
-      map.setLayoutProperty(LAYER_MANHOLE_HEATMAP_POINTS, "visibility", visibility);
-    }
-    const src = map.getSource(MANHOLE_HEATMAP_SOURCE) as GeoJSONSource | undefined;
-    if (!src) return;
-    if (!isManholes) {
-      src.setData({ type: "FeatureCollection", features: [] });
-      return;
-    }
-    const weightForAnomaly = (color: string, status: string): number => {
-      if (status === "resolved") return 0.1;
-      if (color === "red") return 1;
-      if (color === "yellow") return 0.55;
-      return 0.2; // green
-    };
-    const features: GeoJSON.Feature[] = anomalies
-      .filter((a) => a.anomaly_type === "manhole_status")
-      .map((a) => ({
-        type: "Feature",
-        geometry: { type: "Point", coordinates: [a.lon, a.lat] },
-        properties: { id: a.id, severity: weightForAnomaly(a.color, a.status), color: a.color, status: a.status },
-      }));
-    src.setData({ type: "FeatureCollection", features });
-  }, [mapReady, detectionMode, aiOverlayEnabled, anomalies]);
+  }, [mapReady, detectionMode, roadInspectionActive, anomalies, aiOverlayEnabled, quickAnalysisCardId]);
 
   // Manholes mode is only useful alongside the geotagged photo evidence —
   // auto-include the image dataset so its site-photo pins appear without
@@ -3601,11 +5473,61 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
   }, [detectionMode, datasets]);
 
   const toggleDetectionMode = useCallback((mode: Exclude<DetectionMode, null>) => {
+    roadInspectionAbortRef.current?.abort();
+    roadInspectionActiveRef.current = false;
+    setRoadInspectionActive(false);
+    setRoadInspectionRoad(null);
+    setRoadInspectionReport(null);
+    setRoadInspectionError(null);
+    setRoadInspectionLoading(false);
     setDetectionMode((current) => (current === mode ? null : mode));
     // Every fresh mode selection starts with the AI overlay off — isolate
     // the category first, plain colors, then the user explicitly turns AI
     // on as a separate step.
     setAiOverlayEnabled(false);
+  }, []);
+
+  const closeRoadInspection = useCallback(() => {
+    roadInspectionAbortRef.current?.abort();
+    setRoadInspectionRoad(null);
+    setRoadInspectionReport(null);
+    setRoadInspectionError(null);
+    setRoadInspectionLoading(false);
+  }, []);
+
+  const toggleRoadInspection = useCallback(() => {
+    setRoadInspectionActive((current) => {
+      const next = !current;
+      roadInspectionActiveRef.current = next;
+      if (next) {
+        setDetectionMode(null);
+        setAiOverlayEnabled(false);
+        setExtraVisibleCategories(new Set());
+      }
+      if (!next) closeRoadInspection();
+      return next;
+    });
+  }, [closeRoadInspection]);
+
+  const openRoadInspection = useCallback((road: UrbanFeature) => {
+    if (!road.properties.dataset_id) return;
+    roadInspectionAbortRef.current?.abort();
+    const controller = new AbortController();
+    roadInspectionAbortRef.current = controller;
+    setRoadInspectionRoad(road);
+    setRoadInspectionReport(null);
+    setRoadInspectionError(null);
+    setRoadInspectionLoading(true);
+    fetchRoadInspection(road.properties.id, controller.signal)
+      .then((report) => {
+        if (!controller.signal.aborted) setRoadInspectionReport(report);
+      })
+      .catch((error: Error) => {
+        if (error.name !== "AbortError" && !controller.signal.aborted) setRoadInspectionError(error.message);
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) setRoadInspectionLoading(false);
+      });
   }, []);
 
   const toggleAiOverlay = useCallback(() => {
@@ -3645,8 +5567,427 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     if (failures.length > 0) {
       console.error("Spatial Audit failed", failures);
     }
+    // Auto-turn on the AI overlay so the freshly-computed audit findings are
+    // visible on the map immediately, without the user having to also toggle
+    // "AI Detection" on. With no detection mode active this shows ALL audit
+    // anomaly types (including the new road_width_narrowing), not one mode.
+    setAiOverlayEnabled(true);
     return failures.length === 0;
   }, []);
+
+  const selectQuickAnalysis = useCallback((cardId: string) => {
+    const config = QUICK_ANALYSIS_MAP_CONFIG[cardId];
+    if (!config) return;
+    // Save the ordinary map state once, before the dashboard takes over the
+    // canvas. Closing the dashboard restores exactly that state.
+    if (!quickAnalysisPreviousMapRef.current) {
+      quickAnalysisPreviousMapRef.current = { basemap, detectionMode, aiOverlayEnabled };
+    }
+    if (measureActiveRef.current) closeMeasureSafely();
+    quickAnalysisToolRef.current = null;
+    setQuickAnalysisTool(null);
+    setSelectedQuickAnalysisFeature(null);
+    setSelectedQuickAnalysisConnection(null);
+    quickAnalysisFitKeyRef.current = "";
+    quickAnalysisActiveRef.current = true;
+    setQuickAnalysisCardId(cardId);
+  }, [aiOverlayEnabled, basemap, closeMeasureSafely, detectionMode]);
+
+  const closeQuickAnalysis = useCallback(() => {
+    if (measureActiveRef.current) closeMeasureSafely();
+    quickAnalysisToolRef.current = null;
+    setQuickAnalysisTool(null);
+    setSelectedQuickAnalysisFeature(null);
+    setSelectedQuickAnalysisConnection(null);
+    quickAnalysisFitKeyRef.current = "";
+    quickAnalysisActiveRef.current = false;
+    setQuickAnalysisCardId(null);
+  }, [closeMeasureSafely]);
+
+  const activateQuickAnalysisSelect = useCallback(() => {
+    if (measureActiveRef.current) closeMeasureSafely();
+    const nextTool: QuickAnalysisTool = quickAnalysisToolRef.current === "select" ? null : "select";
+    quickAnalysisToolRef.current = nextTool;
+    setQuickAnalysisTool(nextTool);
+    setSelectedQuickAnalysisFeature(null);
+    setSelectedQuickAnalysisConnection(null);
+  }, [closeMeasureSafely]);
+
+  const activateQuickAnalysisMeasure = useCallback(() => {
+    quickAnalysisToolRef.current = null;
+    setQuickAnalysisTool(null);
+    setSelectedQuickAnalysisFeature(null);
+    setSelectedQuickAnalysisConnection(null);
+    toggleMeasureActive();
+  }, [toggleMeasureActive]);
+
+  // A selected card is presented as a focused cadastral dashboard. The
+  // dashboard controls this state directly rather than routing through the
+  // normal map-tool menu, so that menu and unrelated controls never appear
+  // as part of a Quick Analysis result.
+  useEffect(() => {
+    if (!quickAnalysisCardId) {
+      const previous = quickAnalysisPreviousMapRef.current;
+      if (!previous) return;
+      quickAnalysisPreviousMapRef.current = null;
+      setDetectionMode(previous.detectionMode);
+      setAiOverlayEnabled(previous.aiOverlayEnabled);
+      changeBasemap(previous.basemap);
+      setQuickAnalysisFeatures([]);
+      setQuickAnalysisError(null);
+      scheduleFetch();
+      return;
+    }
+
+    const config = QUICK_ANALYSIS_MAP_CONFIG[quickAnalysisCardId];
+    if (!config) return;
+    roadInspectionAbortRef.current?.abort();
+    roadInspectionActiveRef.current = false;
+    setRoadInspectionActive(false);
+    setRoadInspectionRoad(null);
+    setRoadInspectionReport(null);
+    setRoadInspectionError(null);
+    setRoadInspectionLoading(false);
+    setSelectedAnomalyId(null);
+    setExtraVisibleCategories(new Set());
+    // Quick Analysis deliberately does not activate an AI Detection mode or
+    // reuse its red/yellow/green findings. Its survey markers are drawn from
+    // the selected card's actual feature data in a separate source below.
+    setDetectionMode(null);
+    setAiOverlayEnabled(false);
+    changeBasemap("cadastral");
+  }, [changeBasemap, quickAnalysisCardId, scheduleFetch]);
+
+  // Quick Analysis must not read its metrics from the home-map viewport
+  // state. Fetch a full, independent snapshot of the active datasets while
+  // the dashboard is open, then use that same snapshot for its map source.
+  // This keeps a result available even if the home map has hidden the source
+  // layer or is showing a different live selection.
+  useEffect(() => {
+    if (!quickAnalysisCardId || !mapReady) return;
+    if (activeDatasetIds.length === 0) {
+      setQuickAnalysisFeatures([]);
+      setQuickAnalysisLoading(false);
+      setQuickAnalysisError("Select a dataset to view this analysis.");
+      return;
+    }
+    const controller = new AbortController();
+    setQuickAnalysisLoading(true);
+    setQuickAnalysisError(null);
+    fetchAnalyticsFeatures(activeDatasetIds, [], controller.signal)
+      .then((data) => {
+        if (controller.signal.aborted) return;
+        const features = data.features as UrbanFeature[];
+        setQuickAnalysisFeatures(features);
+        applyFeatureCollection(data);
+        setStatus({ loading: false, count: data.count, truncated: data.truncated, error: null, bbox: data.bbox });
+      })
+      .catch((error: Error) => {
+        if (!controller.signal.aborted) {
+          setQuickAnalysisFeatures([]);
+          setQuickAnalysisError(error.message);
+        }
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) setQuickAnalysisLoading(false);
+      });
+    return () => controller.abort();
+  }, [activeDatasetIds, applyFeatureCollection, mapReady, quickAnalysisCardId]);
+
+  useEffect(() => {
+    if (quickAnalysisCardId !== "drain-encroachment" || activeDatasetIds.length === 0) {
+      setQuickDrainEncroachment(null);
+      setQuickDrainEncroachmentLoading(false);
+      setQuickDrainEncroachmentError(null);
+      return;
+    }
+    const controller = new AbortController();
+    setQuickDrainEncroachmentLoading(true);
+    setQuickDrainEncroachmentError(null);
+    fetchDrainEncroachment(activeDatasetIds, controller.signal)
+      .then((report) => {
+        if (!controller.signal.aborted) setQuickDrainEncroachment(report);
+      })
+      .catch((error: Error) => {
+        if (!controller.signal.aborted) {
+          setQuickDrainEncroachment(null);
+          setQuickDrainEncroachmentError(error.message);
+        }
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) setQuickDrainEncroachmentLoading(false);
+      });
+    return () => controller.abort();
+  }, [activeDatasetIds, quickAnalysisCardId]);
+
+  // The Manhole Detail card is a cadastral network view, not just a point
+  // catalogue. Build its verified downstream connections when the card
+  // opens so the pipe paths and confirmed flow arrows are present on the map
+  // without requiring the user to leave Quick Analysis and open AI Detection.
+  useEffect(() => {
+    if (quickAnalysisCardId !== "manhole-detail" || activeDatasetIds.length === 0) {
+      setQuickAnalysisManholeNetwork(null);
+      setQuickAnalysisManholeNetworkLoading(false);
+      setQuickAnalysisManholeNetworkError(null);
+      return;
+    }
+    let cancelled = false;
+    setQuickAnalysisManholeNetwork(null);
+    setQuickAnalysisManholeNetworkLoading(true);
+    setQuickAnalysisManholeNetworkError(null);
+    aiManholeRecommend({ mode: "network", dataset_id: activeDatasetIds[0] })
+      .then((network) => {
+        if (!cancelled) setQuickAnalysisManholeNetwork(network);
+      })
+      .catch((error: Error) => {
+        if (!cancelled) setQuickAnalysisManholeNetworkError(error.message);
+      })
+      .finally(() => {
+        if (!cancelled) setQuickAnalysisManholeNetworkLoading(false);
+      });
+    return () => { cancelled = true; };
+  }, [activeDatasetIds, quickAnalysisCardId]);
+
+  useEffect(() => {
+    quickAnalysisFeatureByIdRef.current = new Map(
+      quickAnalysisFeatures.map((feature) => [feature.properties.id, feature])
+    );
+  }, [quickAnalysisFeatures]);
+
+  useEffect(() => {
+    const selectable = new Set<string>();
+    if (quickAnalysisCardId === "drain-encroachment") {
+      quickAnalysisFeatures.forEach((feature) => {
+        if (isQuickAnalysisDrain(feature)) selectable.add(feature.properties.id);
+      });
+      quickDrainEncroachment?.buildings.forEach((hit) => selectable.add(hit.building_id));
+    } else if (quickAnalysisCardId === "manhole-detail") {
+      quickAnalysisFeatures.forEach((feature) => {
+        if (feature.properties.canonical_class === "Access_Point") selectable.add(feature.properties.id);
+      });
+    } else if (quickAnalysisCardId) {
+      quickAnalysisFeatures.forEach((feature) => selectable.add(feature.properties.id));
+    }
+    quickAnalysisSelectableFeatureIdsRef.current = selectable;
+  }, [quickAnalysisCardId, quickAnalysisFeatures, quickDrainEncroachment]);
+
+  // Render the complete surveyed drain geometry in its own high-contrast
+  // overlay and frame the camera around that network. The red cross source
+  // below is only an annotation; this source is the actual drainage map.
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!mapReady || !map) return;
+    const source = map.getSource(QUICK_ANALYSIS_DRAIN_SOURCE) as GeoJSONSource | undefined;
+    if (!source) return;
+    const drainFeatures = quickAnalysisCardId === "drain-encroachment"
+      ? quickAnalysisFeatures.filter(isQuickAnalysisDrain)
+      : [];
+    source.setData({
+      type: "FeatureCollection",
+      features: quickAnalysisDrainLines(drainFeatures, selectedQuickAnalysisFeature?.properties.id),
+    });
+    if (quickAnalysisCardId === "drain-encroachment") {
+      if (map.getLayer(LAYER_QUICK_ANALYSIS_DRAIN_CORRIDOR)) map.moveLayer(LAYER_QUICK_ANALYSIS_DRAIN_CORRIDOR);
+      if (map.getLayer(LAYER_QUICK_ANALYSIS_DRAIN_LINE)) map.moveLayer(LAYER_QUICK_ANALYSIS_DRAIN_LINE);
+    }
+
+    if (drainFeatures.length === 0 || quickAnalysisCardId !== "drain-encroachment") return;
+    const fitKey = `${quickAnalysisCardId}:${activeDatasetIds.join(",")}:${drainFeatures.length}`;
+    if (quickAnalysisFitKeyRef.current === fitKey) return;
+    const bounds = new maplibregl.LngLatBounds();
+    drainFeatures.forEach((feature) => extendCoordinateBounds(bounds, feature.geometry.coordinates));
+    if (bounds.isEmpty()) return;
+    quickAnalysisFitKeyRef.current = fitKey;
+    map.fitBounds(bounds, {
+      padding: { top: 70, right: 310, bottom: 260, left: 70 },
+      maxZoom: 18,
+      duration: 900,
+    });
+  }, [activeDatasetIds, mapReady, quickAnalysisCardId, quickAnalysisFeatures, selectedQuickAnalysisFeature]);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!mapReady || !map) return;
+    const source = map.getSource(QUICK_ANALYSIS_MANHOLE_SOURCE) as GeoJSONSource | undefined;
+    if (!source) return;
+    // Manhole selection is handled by the exact HTML survey marker. Keep the
+    // old WebGL halo empty because it can visually detach from that marker.
+    source.setData({ type: "FeatureCollection", features: [] });
+    [LAYER_QUICK_ANALYSIS_MANHOLE_GLOW, LAYER_QUICK_ANALYSIS_MANHOLE].forEach((layerId) => {
+      if (!map.getLayer(layerId)) return;
+      map.setLayoutProperty(layerId, "visibility", "none");
+    });
+  }, [mapReady, quickAnalysisCardId, selectedQuickAnalysisFeature]);
+
+  // Manhole Detail owns this connection source. It intentionally does not
+  // reuse the general AI Manhole Recommendation layers: Quick Analysis has
+  // its own condition colours, click details, and lifecycle.
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!mapReady || !map) return;
+    const source = map.getSource(QUICK_ANALYSIS_MANHOLE_CONNECTION_SOURCE) as GeoJSONSource | undefined;
+    if (!source) return;
+    const connections = quickAnalysisCardId === "manhole-detail"
+      ? (quickAnalysisManholeNetwork?.routes ?? []).map(quickAnalysisConnectionDetail)
+      : [];
+    const manholeCoordinates = new Map<string, [number, number]>();
+    for (const feature of quickAnalysisFeatures) {
+      if (feature.properties.canonical_class !== "Access_Point" || feature.geometry.type !== "Point") continue;
+      const [longitude, latitude] = feature.geometry.coordinates;
+      if (Number.isFinite(longitude) && Number.isFinite(latitude)) {
+        manholeCoordinates.set(feature.properties.id, [longitude, latitude]);
+      }
+    }
+    const segments = connections.flatMap((connection, index) => {
+      const route = quickAnalysisManholeNetwork?.routes[index];
+      if (!route || route.coordinates.length < 2) return [];
+      const start = manholeCoordinates.get(connection.fromId) ?? route.coordinates[0];
+      const end = connection.toId
+        ? manholeCoordinates.get(connection.toId) ?? route.coordinates[route.coordinates.length - 1]
+        : route.coordinates[route.coordinates.length - 1];
+      return [{ connection, coordinates: [start, end] as [number, number][] }];
+    });
+    const hasConnectionSelection = selectedQuickAnalysisConnection !== null;
+    quickAnalysisConnectionByIdRef.current = new Map(connections.map((connection) => [connection.id, connection]));
+    source.setData({
+      type: "FeatureCollection",
+      features: segments.map(({ connection, coordinates }) => ({
+        type: "Feature" as const,
+        id: connection.id,
+        geometry: {
+          type: "LineString" as const,
+          coordinates,
+        },
+        properties: {
+          id: connection.id,
+          status: connection.status,
+          flow_confirmed: connection.flowConfirmed,
+          selected: selectedQuickAnalysisConnection?.id === connection.id,
+          dimmed: hasConnectionSelection && selectedQuickAnalysisConnection?.id !== connection.id,
+        },
+      })),
+    });
+    if (connections.length > 0) {
+      [
+        LAYER_QUICK_ANALYSIS_MANHOLE_CONNECTION_HIT,
+        LAYER_QUICK_ANALYSIS_MANHOLE_CONNECTION_HALO,
+        LAYER_QUICK_ANALYSIS_MANHOLE_CONNECTION_GOOD,
+        LAYER_QUICK_ANALYSIS_MANHOLE_CONNECTION_WARNING,
+        LAYER_QUICK_ANALYSIS_MANHOLE_CONNECTION_CRITICAL,
+        LAYER_QUICK_ANALYSIS_MANHOLE_FLOW_ARROWS,
+      ].forEach((layerId) => {
+        if (map.getLayer(layerId)) map.setLayoutProperty(layerId, "visibility", "visible");
+      });
+      if (map.getLayer(LAYER_QUICK_ANALYSIS_MANHOLE_CONNECTION_HIT)) map.moveLayer(LAYER_QUICK_ANALYSIS_MANHOLE_CONNECTION_HIT);
+      if (map.getLayer(LAYER_QUICK_ANALYSIS_MANHOLE_CONNECTION_HALO)) map.moveLayer(LAYER_QUICK_ANALYSIS_MANHOLE_CONNECTION_HALO);
+      if (map.getLayer(LAYER_QUICK_ANALYSIS_MANHOLE_CONNECTION_GOOD)) map.moveLayer(LAYER_QUICK_ANALYSIS_MANHOLE_CONNECTION_GOOD);
+      if (map.getLayer(LAYER_QUICK_ANALYSIS_MANHOLE_CONNECTION_WARNING)) map.moveLayer(LAYER_QUICK_ANALYSIS_MANHOLE_CONNECTION_WARNING);
+      if (map.getLayer(LAYER_QUICK_ANALYSIS_MANHOLE_CONNECTION_CRITICAL)) map.moveLayer(LAYER_QUICK_ANALYSIS_MANHOLE_CONNECTION_CRITICAL);
+      if (map.getLayer(LAYER_QUICK_ANALYSIS_MANHOLE_FLOW_ARROWS)) map.moveLayer(LAYER_QUICK_ANALYSIS_MANHOLE_FLOW_ARROWS);
+    }
+  }, [mapReady, quickAnalysisCardId, quickAnalysisFeatures, quickAnalysisManholeNetwork, selectedQuickAnalysisConnection]);
+
+  // Unconnected manholes need a map cue of their own: there is no path to
+  // click, so a high-contrast ring makes the missing connection explicit.
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!mapReady || !map) return;
+    const source = map.getSource(QUICK_ANALYSIS_MANHOLE_UNCONNECTED_SOURCE) as GeoJSONSource | undefined;
+    if (!source) return;
+    const unconnected = quickAnalysisCardId === "manhole-detail"
+      ? quickAnalysisManholeNetwork?.unconnected_manholes ?? []
+      : [];
+    source.setData({
+      type: "FeatureCollection",
+      features: unconnected.map((manhole, index) => ({
+        type: "Feature" as const,
+        id: `${manhole.id}-${index}`,
+        geometry: { type: "Point" as const, coordinates: [manhole.lon, manhole.lat] },
+        properties: { id: manhole.id, reason: manhole.reason },
+      })),
+    });
+    if (unconnected.length > 0) {
+      if (map.getLayer(LAYER_QUICK_ANALYSIS_MANHOLE_UNCONNECTED_HALO)) map.moveLayer(LAYER_QUICK_ANALYSIS_MANHOLE_UNCONNECTED_HALO);
+      if (map.getLayer(LAYER_QUICK_ANALYSIS_MANHOLE_UNCONNECTED_RING)) map.moveLayer(LAYER_QUICK_ANALYSIS_MANHOLE_UNCONNECTED_RING);
+    }
+  }, [mapReady, quickAnalysisCardId, quickAnalysisManholeNetwork]);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!mapReady || !map) return;
+    const source = map.getSource(QUICK_ANALYSIS_ENCROACHMENT_SOURCE) as GeoJSONSource | undefined;
+    if (!source) return;
+    const selectedId = selectedQuickAnalysisFeature?.properties.id ?? "";
+    const hasSelection = selectedId !== "";
+    const features: GeoJSON.Feature[] = [];
+    if (quickAnalysisCardId === "drain-encroachment" && quickDrainEncroachment) {
+      for (const hit of quickDrainEncroachment.buildings) {
+        const buildingSelected = hit.building_id === selectedId;
+        const crossingSelected = buildingSelected || hit.drain_ids.includes(selectedId);
+        features.push({
+          type: "Feature",
+          id: hit.building_id,
+          geometry: hit.geometry as GeoJSON.Geometry,
+          properties: {
+            id: hit.building_id,
+            building_id: hit.building_id,
+            kind: "building",
+            classification: hit.classification,
+            crossing_length_m: hit.crossing_length_m,
+            crossing_ratio_pct: hit.crossing_ratio_pct,
+            selected: buildingSelected,
+            dimmed: false,
+          },
+        });
+        features.push({
+          type: "Feature",
+          id: `crossing-${hit.building_id}`,
+          geometry: hit.crossing_geometry as GeoJSON.Geometry,
+          properties: {
+            id: `crossing-${hit.building_id}`,
+            building_id: hit.building_id,
+            kind: "crossing",
+            classification: hit.classification,
+            selected: crossingSelected,
+            dimmed: hasSelection && !crossingSelected,
+          },
+        });
+      }
+    }
+    source.setData({ type: "FeatureCollection", features });
+    if (quickAnalysisCardId === "drain-encroachment") {
+      [
+        LAYER_QUICK_ANALYSIS_ENCROACHMENT_FILL,
+        LAYER_QUICK_ANALYSIS_ENCROACHMENT_OUTLINE,
+        LAYER_QUICK_ANALYSIS_ENCROACHMENT_CROSSING_HALO,
+        LAYER_QUICK_ANALYSIS_ENCROACHMENT_CROSSING,
+      ].forEach((layerId) => { if (map.getLayer(layerId)) map.moveLayer(layerId); });
+    }
+  }, [mapReady, quickAnalysisCardId, quickDrainEncroachment, selectedQuickAnalysisFeature]);
+
+  // Quick Analysis markers are populated from the independently fetched
+  // survey snapshot. They never read spatial_anomalies or AI-highlight
+  // state, so hidden home-map layers cannot make them disappear.
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!mapReady || !map) return;
+    const source = map.getSource(QUICK_ANALYSIS_MARKER_SOURCE) as GeoJSONSource | undefined;
+    if (!source) return;
+    const features = quickAnalysisCardId === "drain-encroachment"
+      ? quickAnalysisDrainMarkers(quickAnalysisFeatures, selectedQuickAnalysisFeature?.properties.id)
+      : [];
+    source.setData({ type: "FeatureCollection", features });
+    if (quickAnalysisCardId === "drain-encroachment") {
+      if (map.getLayer(LAYER_QUICK_ANALYSIS_DRAIN_RING)) map.moveLayer(LAYER_QUICK_ANALYSIS_DRAIN_RING);
+      if (map.getLayer(LAYER_QUICK_ANALYSIS_DRAIN_CROSS)) map.moveLayer(LAYER_QUICK_ANALYSIS_DRAIN_CROSS);
+    }
+  }, [mapReady, quickAnalysisCardId, quickAnalysisFeatures, selectedQuickAnalysisFeature]);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!mapReady || !map || measureActive) return;
+    map.getCanvas().style.cursor = quickAnalysisTool === "select" ? "crosshair" : "";
+  }, [mapReady, measureActive, quickAnalysisTool]);
 
   // Fires once per fresh app load, on the first AI Detection icon click —
   // see WorkspaceLayout for why the guard refs live outside this component.
@@ -3664,6 +6005,57 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
       onSpatialAuditStatusChange(ok ? "success" : "error");
     });
   }, [hasActiveDatasets, activeDatasetIds, runAudit, onSpatialAuditStatusChange, spatialAuditRequestedRef, spatialAuditExecutedRef]);
+
+  const runManholeFeatureRecommend = useCallback(async (datasetId: string, featureId: string) => {
+    setManholeFeatureOpen(true);
+    setManholeFeatureLoading(true);
+    setManholeFeatureError(null);
+    setManholeFeatureAnswer(null);
+    try {
+      const answer = await aiManholeRecommend({ mode: "feature", dataset_id: datasetId, feature_id: featureId });
+      setManholeFeatureAnswer(answer);
+    } catch (e) {
+      setManholeFeatureError((e as Error).message);
+    } finally {
+      setManholeFeatureLoading(false);
+    }
+  }, []);
+
+  const closeManholeFeature = useCallback(() => {
+    setManholeFeatureOpen(false);
+    setManholeFeatureAnswer(null);
+    setManholeFeatureError(null);
+  }, []);
+
+  const runManholeNetwork = useCallback(async (datasetIds: string[]) => {
+    if (datasetIds.length === 0) return;
+    setManholeRecommendOpen(true);
+    setManholeRecommendLoading(true);
+    setManholeRecommendError(null);
+    setManholeRecommendAnswer(null);
+    try {
+      const answer = await aiManholeRecommend({ mode: "network", dataset_id: datasetIds[0] });
+      setManholeRecommendAnswer(answer);
+    } catch (e) {
+      setManholeRecommendError((e as Error).message);
+    } finally {
+      setManholeRecommendLoading(false);
+    }
+  }, []);
+
+  const closeManholeRecommend = useCallback(() => {
+    setManholeRecommendOpen(false);
+    setManholeRecommendAnswer(null);
+    setManholeRecommendError(null);
+  }, []);
+
+  const quickAnalysisManholeNetworkStatusCounts = useMemo(() => {
+    const counts = { good: 0, warning: 0, critical: 0, unconnected: quickAnalysisManholeNetwork?.unconnected_manholes.length ?? 0 };
+    for (const [index, route] of (quickAnalysisManholeNetwork?.routes ?? []).entries()) {
+      counts[quickAnalysisConnectionDetail(route, index).status] += 1;
+    }
+    return counts;
+  }, [quickAnalysisManholeNetwork]);
 
   const selectedAnomaly = anomalies.find((a) => a.id === selectedAnomalyId) ?? null;
 
@@ -3721,6 +6113,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
           const showTooltip = () => {
             const point = map.project(target.anchor);
             const attributes = feature.properties.attributes ?? {};
+            const pointCoordinates = pointCoordinatesFromFeature(feature);
             const fidEntry = Object.entries(attributes).find(([key]) => key.toLowerCase() === "fid");
             setHover({
               x: point.x,
@@ -3729,6 +6122,8 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
               category,
               severity: feature.properties.severity,
               color: colorForCategory(category),
+              longitude: pointCoordinates?.longitude ?? target.anchor.lng,
+              latitude: pointCoordinates?.latitude ?? target.anchor.lat,
               attributes,
             });
             focusClearTimerRef.current = window.setTimeout(() => {
@@ -3889,6 +6284,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
         API_BASE && url.startsWith(API_BASE) ? { url, credentials: "include" } : { url },
     });
     mapRef.current = map;
+    if (typeof window !== "undefined") (window as unknown as { __mapCanvas?: unknown }).__mapCanvas = map;
 
     // Keeps the custom horizontal zoom slider's thumb synced to the map's
     // actual zoom regardless of how it changed (wheel, pinch, double-click,
@@ -3982,6 +6378,41 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
       map.addLayer({ id: LAYER_POLY_OUTLINE, type: "line", source: FEATURE_SOURCE, filter: POLY_BASE_FILTER, paint: { "line-color": "#0b1013", "line-width": 1 } });
       map.addLayer({ id: LAYER_LINES, type: "line", source: FEATURE_SOURCE, filter: LINE_BASE_FILTER, paint: { "line-color": ["interpolate", ["linear"], ["coalesce", ["get", "severity"], 0], 0, "#3aa1ff", 0.5, "#f5c542", 1, "#ff5a3d"], "line-width": 2.5 } });
       map.addLayer({
+        id: LAYER_POLY_FILL_CADASTRAL,
+        type: "fill",
+        source: FEATURE_SOURCE,
+        filter: POLY_BASE_FILTER,
+        layout: { visibility: "none" },
+        paint: {
+          "fill-color": cadastralPolygonFillExpression(),
+          "fill-opacity": 0.18,
+        },
+      });
+      map.addLayer({
+        id: LAYER_POLY_OUTLINE_CADASTRAL,
+        type: "line",
+        source: FEATURE_SOURCE,
+        filter: POLY_BASE_FILTER,
+        layout: { visibility: "none" },
+        paint: {
+          "line-color": cadastralPolygonOutlineExpression(),
+          "line-width": ["interpolate", ["linear"], ["zoom"], 12, 0.7, 18, 1.1],
+          "line-opacity": 0.88,
+        },
+      });
+      map.addLayer({
+        id: LAYER_LINES_CADASTRAL,
+        type: "line",
+        source: FEATURE_SOURCE,
+        filter: LINE_BASE_FILTER,
+        layout: { visibility: "none" },
+        paint: {
+          "line-color": cadastralLineColorExpression(),
+          "line-width": cadastralLineWidthExpression(),
+          "line-opacity": 0.82,
+        },
+      });
+      map.addLayer({
         id: LAYER_POINTS,
         type: "circle",
         source: FEATURE_SOURCE,
@@ -3994,12 +6425,456 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
         filter: POINT_BASE_FILTER,
         paint: { "circle-radius": 3.5, "circle-color": ["interpolate", ["linear"], ["coalesce", ["get", "severity"], 0], 0, "#3aa1ff", 0.5, "#f5c542", 1, "#ff5a3d"], "circle-stroke-color": "#0b1013", "circle-stroke-width": 1.5, "circle-opacity": 0.9 },
       });
+      const cadastralPointImages: Array<[string, CadastralPointIconKind]> = [
+        [CADASTRAL_POINT_ICON_DEFAULT, "default"],
+        [CADASTRAL_POINT_ICON_TREE, "tree"],
+        [CADASTRAL_POINT_ICON_PALM, "palm"],
+        [CADASTRAL_POINT_ICON_POLE, "pole"],
+        [CADASTRAL_POINT_ICON_LIGHT, "light"],
+        [CADASTRAL_POINT_ICON_MANHOLE, "manhole"],
+        [CADASTRAL_POINT_ICON_CAMERA, "camera"],
+        [CADASTRAL_POINT_ICON_LEVEL, "level"],
+        [CADASTRAL_POINT_ICON_LANDMARK, "landmark"],
+        [CADASTRAL_POINT_ICON_TRANSFORMER, "transformer"],
+        [CADASTRAL_POINT_ICON_SIGN, "sign"],
+        [CADASTRAL_POINT_ICON_GATE, "gate"],
+        [CADASTRAL_POINT_ICON_WATER, "water"],
+        [CADASTRAL_POINT_ICON_TEMPLE, "temple"],
+      ];
+      for (const [imageId, kind] of cadastralPointImages) {
+        if (!map.hasImage(imageId)) map.addImage(imageId, buildCadastralPointIconImageData(kind), { pixelRatio: 2 });
+      }
+      map.addLayer({
+        id: LAYER_POINTS_CADASTRAL_HIT,
+        type: "circle",
+        source: FEATURE_SOURCE,
+        filter: CADASTRAL_POINT_HIT_FILTER,
+        layout: {
+          visibility: "none",
+        },
+        paint: {
+          "circle-radius": cadastralPointHitRadiusExpression(),
+          "circle-color": "rgba(15,23,42,0.01)",
+          "circle-stroke-color": "rgba(15,23,42,0.01)",
+          "circle-stroke-width": 0,
+          "circle-opacity": 0.01,
+        },
+      });
+      addCadastralPointIconLayer(map);
+      map.addSource(QUICK_ANALYSIS_DRAIN_SOURCE, {
+        type: "geojson",
+        data: { type: "FeatureCollection", features: [] },
+        promoteId: "id",
+      });
+      map.addLayer({
+        id: LAYER_QUICK_ANALYSIS_DRAIN_CORRIDOR,
+        type: "line",
+        source: QUICK_ANALYSIS_DRAIN_SOURCE,
+        layout: {
+          "line-cap": "round",
+          "line-join": "round",
+        },
+        paint: {
+          "line-color": "#ef4444",
+          "line-width": [
+            "case",
+            ["==", ["get", "selected"], true],
+            ["interpolate", ["linear"], ["zoom"], 12, 12, 16, 20, 20, 28],
+            ["interpolate", ["linear"], ["zoom"], 12, 7, 16, 12, 20, 18],
+          ],
+          "line-opacity": [
+            "case",
+            ["==", ["get", "selected"], true], 0.42,
+            ["==", ["get", "dimmed"], true], 0.04,
+            0.22,
+          ],
+        },
+      });
+      map.addLayer({
+        id: LAYER_QUICK_ANALYSIS_DRAIN_LINE,
+        type: "line",
+        source: QUICK_ANALYSIS_DRAIN_SOURCE,
+        layout: {
+          "line-cap": "round",
+          "line-join": "round",
+        },
+        paint: {
+          "line-color": ["case", ["==", ["get", "selected"], true], "#be123c", "#e11d48"],
+          "line-width": [
+            "case",
+            ["==", ["get", "selected"], true],
+            ["interpolate", ["linear"], ["zoom"], 12, 3.5, 16, 5, 20, 7],
+            ["interpolate", ["linear"], ["zoom"], 12, 2, 16, 3.25, 20, 5],
+          ],
+          "line-opacity": [
+            "case",
+            ["==", ["get", "selected"], true], 1,
+            ["==", ["get", "dimmed"], true], 0.18,
+            0.98,
+          ],
+        },
+      });
+      map.addSource(QUICK_ANALYSIS_MANHOLE_SOURCE, {
+        type: "geojson",
+        data: { type: "FeatureCollection", features: [] },
+        promoteId: "id",
+      });
+      map.addLayer({
+        id: LAYER_QUICK_ANALYSIS_MANHOLE_GLOW,
+        type: "circle",
+        source: QUICK_ANALYSIS_MANHOLE_SOURCE,
+        paint: {
+          "circle-radius": [
+            "case",
+            ["==", ["get", "selected"], true],
+            ["interpolate", ["linear"], ["zoom"], 12, 13, 16, 18, 20, 24],
+            ["interpolate", ["linear"], ["zoom"], 12, 8, 16, 12, 20, 16],
+          ],
+          "circle-color": "#06b6d4",
+          "circle-opacity": [
+            "case",
+            ["==", ["get", "selected"], true], 0.46,
+            ["==", ["get", "dimmed"], true], 0.06,
+            0.2,
+          ],
+          "circle-blur": 0.35,
+        },
+      });
+      map.addLayer({
+        id: LAYER_QUICK_ANALYSIS_MANHOLE,
+        type: "circle",
+        source: QUICK_ANALYSIS_MANHOLE_SOURCE,
+        paint: {
+          "circle-radius": [
+            "case",
+            ["==", ["get", "selected"], true],
+            ["interpolate", ["linear"], ["zoom"], 12, 7, 16, 10, 20, 13],
+            ["interpolate", ["linear"], ["zoom"], 12, 4, 16, 6, 20, 8],
+          ],
+          "circle-color": "#083344",
+          "circle-opacity": ["case", ["==", ["get", "dimmed"], true], 0.35, 0.98],
+          "circle-stroke-color": "#22d3ee",
+          "circle-stroke-width": ["case", ["==", ["get", "selected"], true], 4, 2.2],
+          "circle-stroke-opacity": ["case", ["==", ["get", "dimmed"], true], 0.3, 1],
+        },
+      });
+      map.addSource(QUICK_ANALYSIS_MANHOLE_CONNECTION_SOURCE, {
+        type: "geojson",
+        data: { type: "FeatureCollection", features: [] },
+        promoteId: "id",
+      });
+      // Wide transparent hit corridor makes a short/curved connection easy
+      // to select without competing with building outlines beneath it.
+      map.addLayer({
+        id: LAYER_QUICK_ANALYSIS_MANHOLE_CONNECTION_HIT,
+        type: "line",
+        source: QUICK_ANALYSIS_MANHOLE_CONNECTION_SOURCE,
+        layout: { "line-cap": "round", "line-join": "round" },
+        paint: {
+          "line-width": ["interpolate", ["linear"], ["zoom"], 12, 16, 18, 24],
+          "line-color": "#0f172a",
+          "line-opacity": 0.01,
+        },
+      });
+      map.addLayer({
+        id: LAYER_QUICK_ANALYSIS_MANHOLE_CONNECTION_HALO,
+        type: "line",
+        source: QUICK_ANALYSIS_MANHOLE_CONNECTION_SOURCE,
+        layout: { "line-cap": "round", "line-join": "round" },
+        paint: {
+          "line-color": [
+            "match", ["get", "status"],
+            "good", "#22c55e",
+            "warning", "#facc15",
+            "critical", "#ef4444",
+            "#64748b",
+          ],
+          "line-width": ["interpolate", ["linear"], ["zoom"], 12, 10, 18, 16],
+          "line-opacity": ["case", ["==", ["get", "selected"], true], 0.34, 0],
+          "line-blur": 0.45,
+        },
+      });
+      const quickAnalysisConnectionLines: Array<[string, "good" | "warning" | "critical", string]> = [
+        [LAYER_QUICK_ANALYSIS_MANHOLE_CONNECTION_GOOD, "good", "#16a34a"],
+        [LAYER_QUICK_ANALYSIS_MANHOLE_CONNECTION_WARNING, "warning", "#eab308"],
+        [LAYER_QUICK_ANALYSIS_MANHOLE_CONNECTION_CRITICAL, "critical", "#dc2626"],
+      ];
+      for (const [layerId, status, color] of quickAnalysisConnectionLines) {
+        map.addLayer({
+          id: layerId,
+          type: "line",
+          source: QUICK_ANALYSIS_MANHOLE_CONNECTION_SOURCE,
+          filter: ["==", ["get", "status"], status],
+          layout: { "line-cap": "round", "line-join": "round" },
+          paint: {
+            "line-color": color,
+            // Same weight curve as the drain path line (LAYER_QUICK_ANALYSIS_
+            // DRAIN_LINE) — thin by default, only thickens on selection.
+            "line-width": [
+              "case", ["==", ["get", "selected"], true],
+              ["interpolate", ["linear"], ["zoom"], 12, 3.5, 16, 5, 20, 7],
+              ["interpolate", ["linear"], ["zoom"], 12, 2, 16, 3.25, 20, 5],
+            ],
+            "line-opacity": [
+              "case", ["==", ["get", "selected"], true], 1,
+              ["==", ["get", "dimmed"], true], 0.18,
+              0.98,
+            ],
+          },
+        });
+      }
+      const quickAnalysisFlowArrowImages: Array<[string, string]> = [
+        [QUICK_ANALYSIS_FLOW_ARROW_GOOD, "#16a34a"],
+        [QUICK_ANALYSIS_FLOW_ARROW_WARNING, "#eab308"],
+        [QUICK_ANALYSIS_FLOW_ARROW_CRITICAL, "#dc2626"],
+      ];
+      for (const [imageId, color] of quickAnalysisFlowArrowImages) {
+        if (!map.hasImage(imageId)) map.addImage(imageId, buildFlowArrowImageData(color), { pixelRatio: 2 });
+      }
+      // Arrow with shaft + arrowhead placed once per connection line via
+      // symbol-placement: "line" so MapLibre anchors and rotates it to
+      // the line's own geometry.
+      map.addLayer({
+        id: LAYER_QUICK_ANALYSIS_MANHOLE_FLOW_ARROWS,
+        type: "symbol",
+        source: QUICK_ANALYSIS_MANHOLE_CONNECTION_SOURCE,
+        filter: ["==", ["get", "flow_confirmed"], true],
+        layout: {
+          "symbol-placement": "line",
+          // Larger than any single connection segment, so exactly one
+          // arrowhead is placed per line instead of a repeating chevron
+          // pattern.
+          "symbol-spacing": 10000,
+          "icon-image": [
+            "match", ["get", "status"],
+            "good", QUICK_ANALYSIS_FLOW_ARROW_GOOD,
+            "warning", QUICK_ANALYSIS_FLOW_ARROW_WARNING,
+            "critical", QUICK_ANALYSIS_FLOW_ARROW_CRITICAL,
+            QUICK_ANALYSIS_FLOW_ARROW_WARNING,
+          ],
+          "icon-size": ["interpolate", ["linear"], ["zoom"], 12, 1.0, 18, 1.6],
+          "icon-rotation-alignment": "map",
+          "icon-keep-upright": false,
+          "icon-allow-overlap": true,
+          "icon-ignore-placement": true,
+        },
+        paint: {
+          "icon-opacity": ["case", ["==", ["get", "dimmed"], true], 0.12, 1],
+        },
+      });
+      map.addSource(QUICK_ANALYSIS_MANHOLE_UNCONNECTED_SOURCE, {
+        type: "geojson",
+        data: { type: "FeatureCollection", features: [] },
+        promoteId: "id",
+      });
+      map.addLayer({
+        id: LAYER_QUICK_ANALYSIS_MANHOLE_UNCONNECTED_HALO,
+        type: "circle",
+        source: QUICK_ANALYSIS_MANHOLE_UNCONNECTED_SOURCE,
+        paint: {
+          "circle-radius": ["interpolate", ["linear"], ["zoom"], 12, 12, 18, 20],
+          "circle-color": "#ef4444",
+          "circle-opacity": 0.24,
+          "circle-blur": 0.45,
+        },
+      });
+      map.addLayer({
+        id: LAYER_QUICK_ANALYSIS_MANHOLE_UNCONNECTED_RING,
+        type: "circle",
+        source: QUICK_ANALYSIS_MANHOLE_UNCONNECTED_SOURCE,
+        paint: {
+          "circle-radius": ["interpolate", ["linear"], ["zoom"], 12, 8, 18, 14],
+          "circle-color": "rgba(255,255,255,0.01)",
+          "circle-stroke-color": "#ef4444",
+          "circle-stroke-width": ["interpolate", ["linear"], ["zoom"], 12, 2.5, 18, 3.5],
+          "circle-stroke-opacity": 1,
+        },
+      });
+      map.addSource(QUICK_ANALYSIS_ENCROACHMENT_SOURCE, {
+        type: "geojson",
+        data: { type: "FeatureCollection", features: [] },
+        promoteId: "id",
+      });
+      map.addLayer({
+        id: LAYER_QUICK_ANALYSIS_ENCROACHMENT_FILL,
+        type: "fill",
+        source: QUICK_ANALYSIS_ENCROACHMENT_SOURCE,
+        filter: ["==", ["get", "kind"], "building"],
+        paint: {
+          "fill-color": ["match", ["get", "classification"], "major_crossing", "#ef4444", "#f59e0b"],
+          // Crossing segments already identify every encroachment. Keep the
+          // footprint clean until the user asks for one building's details.
+          "fill-opacity": ["case", ["==", ["get", "selected"], true], 0.62, 0],
+        },
+      });
+      map.addLayer({
+        id: LAYER_QUICK_ANALYSIS_ENCROACHMENT_OUTLINE,
+        type: "line",
+        source: QUICK_ANALYSIS_ENCROACHMENT_SOURCE,
+        filter: ["==", ["get", "kind"], "building"],
+        paint: {
+          "line-color": ["match", ["get", "classification"], "major_crossing", "#b91c1c", "#d97706"],
+          "line-width": ["case", ["==", ["get", "selected"], true], 4, 2],
+          "line-opacity": ["case", ["==", ["get", "selected"], true], 0.98, 0],
+        },
+      });
+      map.addLayer({
+        id: LAYER_QUICK_ANALYSIS_ENCROACHMENT_CROSSING_HALO,
+        type: "line",
+        source: QUICK_ANALYSIS_ENCROACHMENT_SOURCE,
+        filter: ["==", ["get", "kind"], "crossing"],
+        layout: { "line-cap": "round", "line-join": "round" },
+        paint: {
+          "line-color": "#ffffff",
+          "line-width": ["case", ["==", ["get", "selected"], true], 10, 7],
+          "line-opacity": ["case", ["==", ["get", "dimmed"], true], 0.08, 0.95],
+        },
+      });
+      map.addLayer({
+        id: LAYER_QUICK_ANALYSIS_ENCROACHMENT_CROSSING,
+        type: "line",
+        source: QUICK_ANALYSIS_ENCROACHMENT_SOURCE,
+        filter: ["==", ["get", "kind"], "crossing"],
+        layout: { "line-cap": "round", "line-join": "round" },
+        paint: {
+          "line-color": ["match", ["get", "classification"], "major_crossing", "#7f1d1d", "#b45309"],
+          "line-width": ["case", ["==", ["get", "selected"], true], 6, 4],
+          "line-opacity": ["case", ["==", ["get", "dimmed"], true], 0.1, 1],
+        },
+      });
+      map.addSource(QUICK_ANALYSIS_MARKER_SOURCE, {
+        type: "geojson",
+        data: { type: "FeatureCollection", features: [] },
+        promoteId: "id",
+      });
+      map.addLayer({
+        id: LAYER_QUICK_ANALYSIS_DRAIN_RING,
+        type: "circle",
+        source: QUICK_ANALYSIS_MARKER_SOURCE,
+        paint: {
+          "circle-radius": [
+            "case",
+            ["==", ["get", "selected"], true],
+            ["interpolate", ["linear"], ["zoom"], 12, 11, 16, 17, 20, 22],
+            ["interpolate", ["linear"], ["zoom"], 12, 8, 16, 13, 20, 18],
+          ],
+          "circle-color": "#ef4444",
+          "circle-opacity": ["case", ["==", ["get", "selected"], true], 0.34, 0],
+          "circle-stroke-color": "#dc2626",
+          "circle-stroke-width": ["case", ["==", ["get", "selected"], true], 4, 2.2],
+          "circle-stroke-opacity": ["case", ["==", ["get", "selected"], true], 0.96, 0],
+        },
+      });
+      map.addLayer({
+        id: LAYER_QUICK_ANALYSIS_DRAIN_CROSS,
+        type: "symbol",
+        source: QUICK_ANALYSIS_MARKER_SOURCE,
+        layout: {
+          "text-field": "×",
+          "text-font": ["Noto Sans Regular"],
+          "text-size": ["interpolate", ["linear"], ["zoom"], 12, 15, 16, 23, 20, 31],
+          "text-allow-overlap": true,
+          "text-ignore-placement": true,
+        },
+        paint: {
+          "text-color": "#dc2626",
+          "text-halo-color": "rgba(255,255,255,0.9)",
+          "text-halo-width": 0.8,
+          "text-opacity": ["case", ["==", ["get", "selected"], true], 1, 0],
+        },
+      });
+      const handleQuickAnalysisMarkerClick = (event: MapLayerMouseEvent) => {
+        if (!quickAnalysisActiveRef.current) return;
+        // A rendered feature can belong to several stacked QA layers (fill +
+        // outline, glow + point, corridor + line). Treat the browser click as
+        // one selection action instead of toggling once per matching layer.
+        if (quickAnalysisFeatureClickConsumedRef.current) return;
+        quickAnalysisFeatureClickConsumedRef.current = true;
+        window.requestAnimationFrame(() => { quickAnalysisFeatureClickConsumedRef.current = false; });
+        const featureId = String(
+          event.features?.[0]?.properties?.building_id
+          ?? event.features?.[0]?.properties?.id
+          ?? ""
+        );
+        const selected = quickAnalysisFeatureByIdRef.current.get(featureId);
+        if (selected) {
+          setSelectedQuickAnalysisFeature((current) =>
+            current?.properties.id === selected.properties.id ? null : selected
+          );
+        }
+      };
+      const handleQuickAnalysisMarkerEnter = () => {
+        if (quickAnalysisActiveRef.current) map.getCanvas().style.cursor = "pointer";
+      };
+      const handleQuickAnalysisMarkerLeave = () => {
+        if (quickAnalysisActiveRef.current) map.getCanvas().style.cursor = "";
+      };
+      [
+        LAYER_QUICK_ANALYSIS_DRAIN_CORRIDOR,
+        LAYER_QUICK_ANALYSIS_DRAIN_LINE,
+        LAYER_QUICK_ANALYSIS_DRAIN_RING,
+        LAYER_QUICK_ANALYSIS_DRAIN_CROSS,
+        LAYER_QUICK_ANALYSIS_MANHOLE_GLOW,
+        LAYER_QUICK_ANALYSIS_MANHOLE,
+        LAYER_QUICK_ANALYSIS_ENCROACHMENT_FILL,
+        LAYER_QUICK_ANALYSIS_ENCROACHMENT_OUTLINE,
+        LAYER_QUICK_ANALYSIS_ENCROACHMENT_CROSSING_HALO,
+        LAYER_QUICK_ANALYSIS_ENCROACHMENT_CROSSING,
+      ].forEach((layerId) => {
+        map.on("click", layerId, handleQuickAnalysisMarkerClick);
+        map.on("mouseenter", layerId, handleQuickAnalysisMarkerEnter);
+        map.on("mouseleave", layerId, handleQuickAnalysisMarkerLeave);
+      });
+      map.on("click", LAYER_QUICK_ANALYSIS_MANHOLE_CONNECTION_HIT, (event: MapLayerMouseEvent) => {
+        if (!quickAnalysisActiveRef.current) return;
+        const id = String(event.features?.[0]?.properties?.id ?? "");
+        const connection = quickAnalysisConnectionByIdRef.current.get(id);
+        if (!connection) return;
+        setSelectedQuickAnalysisFeature(null);
+        setSelectedQuickAnalysisConnection((current) => current?.id === connection.id ? null : connection);
+      });
+      map.on("mouseenter", LAYER_QUICK_ANALYSIS_MANHOLE_CONNECTION_HIT, () => {
+        if (quickAnalysisActiveRef.current) map.getCanvas().style.cursor = "pointer";
+      });
+      map.on("mouseleave", LAYER_QUICK_ANALYSIS_MANHOLE_CONNECTION_HIT, () => {
+        if (quickAnalysisActiveRef.current) map.getCanvas().style.cursor = "";
+      });
+      map.addLayer({
+        id: REFERENCE_SURVEY_ROAD_LABELS,
+        type: "symbol",
+        source: FEATURE_SOURCE,
+        minzoom: 17,
+        filter: [
+          "all",
+          LINE_BASE_FILTER,
+          ["==", ["coalesce", ["get", "canonical_class"], ""], "Road_Centerline"],
+        ],
+        layout: {
+          visibility: "none",
+          "symbol-placement": "line-center",
+          "text-field": roadNameTextExpression(),
+          "text-font": ["Noto Sans Regular"],
+          "text-size": ["interpolate", ["linear"], ["zoom"], 15, 10, 18, 13, 21, 15],
+          "text-letter-spacing": 0.03,
+          "text-allow-overlap": false,
+          "text-ignore-placement": false,
+          "symbol-spacing": 500,
+        },
+        paint: {
+          "text-color": "#0f172a",
+          "text-halo-color": "#f8fafc",
+          "text-halo-width": 1.4,
+          "text-halo-blur": 0.4,
+        },
+      });
 
       map.addLayer({
         id: REFERENCE_SURVEY_BUILDING_LABELS,
         type: "symbol",
         source: FEATURE_SOURCE,
-        minzoom: 15,
+        // Parcel IDs are deliberately house-level detail. Showing them at
+        // ward/block zoom turns cadastral view into an unreadable wall.
+        minzoom: 20.25,
         filter: [
           "all",
           POLY_BASE_FILTER,
@@ -4007,25 +6882,17 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
         ],
         layout: {
           visibility: "none",
-          "text-field": [
-            "coalesce",
-            ["get", "building_name", ["get", "attributes"]],
-            ["get", "BUILDING_NAME", ["get", "attributes"]],
-            ["get", "name", ["get", "attributes"]],
-            ["get", "Name", ["get", "attributes"]],
-            ["get", "asset_name", ["get", "attributes"]],
-            "",
-          ],
+          "text-field": buildingIdTextExpression(),
           "text-font": ["Noto Sans Regular"],
-          "text-size": ["interpolate", ["linear"], ["zoom"], 15, 9, 20, 12],
+          "text-size": ["interpolate", ["linear"], ["zoom"], 20.25, 8.5, 22, 11],
           "text-variable-anchor": ["center", "top", "bottom"],
           "text-radial-offset": 0.25,
           "text-allow-overlap": false,
         },
         paint: {
-          "text-color": "#ecfeff",
-          "text-halo-color": "#083344",
-          "text-halo-width": 1.6,
+          "text-color": "#111827",
+          // Parcel IDs stay plain: no white halo/background treatment.
+          "text-halo-width": 0,
         },
       });
 
@@ -4087,7 +6954,14 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
 
       const BASE_CLICKABLE = [
         VIZ_SELECTED_POINTS, VIZ_SELECTED_LINES, VIZ_SELECTED_POLY_FILL,
-        LAYER_POINTS, LAYER_LINES, LAYER_POLY_FILL, LAYER_PHOTOS,
+        // Canvas cadastral icons intentionally have pointer-events disabled;
+        // this transparent hit layer supplies their normal hover/click data.
+        // Do not register events against the optional MapLibre symbol layer:
+        // a removed style layer aborts the whole handler registration loop.
+        LAYER_POINTS, LAYER_POINTS_CADASTRAL_HIT,
+        LAYER_LINES, LAYER_LINES_CADASTRAL,
+        LAYER_POLY_FILL, LAYER_POLY_FILL_CADASTRAL,
+        LAYER_PHOTOS,
       ];
       void runFetch();
 
@@ -4138,6 +7012,8 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
         id: LAYER_ANOMALIES,
         type: "circle",
         source: ANOMALY_SOURCE,
+        // Road-width narrowing is drawn as a line elsewhere, never as dots.
+        filter: ["!=", ["get", "anomaly_type"], "road_width_narrowing"],
         paint: {
           "circle-radius": ["interpolate", ["linear"], ["zoom"], 8, 6, 12, 10, 16, 15],
           "circle-color": ANOMALY_COLOR_EXPR,
@@ -4147,11 +7023,132 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
         },
       });
 
-      // Shared by both the plain anomaly-points layer and the manhole
-      // heatmap's invisible click layer — same finding, same AI Alert card,
-      // just a different visual treatment for manholes (heatmap density
-      // instead of individual red/yellow/green dots).
-      const openAnomalyFinding = (id: string) => {
+      // Road-width narrowing rendered as a coloured LINE (the affected
+      // carriageway stretch) — like a traffic segment, not vertex markers.
+      map.addSource(ANOMALY_ROAD_LINE_SOURCE, {
+        type: "geojson",
+        data: { type: "FeatureCollection", features: [] },
+        promoteId: "id",
+      });
+      map.addLayer({
+        id: LAYER_ANOMALIES_ROAD,
+        type: "line",
+        source: ANOMALY_ROAD_LINE_SOURCE,
+        layout: { "line-cap": "round", "line-join": "round" },
+        paint: {
+          "line-color": ANOMALY_COLOR_EXPR,
+          "line-width": ["interpolate", ["linear"], ["zoom"], 12, 4, 16, 8, 19, 14],
+          "line-opacity": 0.85,
+          "line-blur": 0.5,
+        },
+      });
+
+      // AI Manhole Recommendation Engine — proposed/rehab pipe routes.
+      map.addSource(MANHOLE_ROUTES_SOURCE, {
+        type: "geojson",
+        data: { type: "FeatureCollection", features: [] },
+      });
+      map.addLayer({
+        id: LAYER_MANHOLE_ROUTES,
+        type: "line",
+        source: MANHOLE_ROUTES_SOURCE,
+        layout: { "line-cap": "round", "line-join": "round" },
+        paint: {
+          "line-color": MANHOLE_ROUTE_COLOR,
+          "line-width": ["interpolate", ["linear"], ["zoom"], 12, 3, 18, 6],
+          "line-dasharray": [0.2, 1.5],
+        },
+      });
+      // Flow-direction arrows drawn along each route line, only where the
+      // direction is actually grounded in real elevation evidence
+      // (flow_confirmed) — an unconfirmed route still shows as a plain line,
+      // never with an arrow asserting a direction we don't have evidence for.
+      if (!map.hasImage(FLOW_ARROW_ICON_ID)) {
+        map.addImage(FLOW_ARROW_ICON_ID, buildFlowArrowImageData(), { pixelRatio: 2 });
+      }
+      map.addLayer({
+        id: LAYER_MANHOLE_FLOW_ARROWS,
+        type: "symbol",
+        source: MANHOLE_ROUTES_SOURCE,
+        filter: ["==", ["get", "flow_confirmed"], true],
+        layout: {
+          "symbol-placement": "line",
+          "symbol-spacing": 60,
+          "icon-image": FLOW_ARROW_ICON_ID,
+          "icon-size": ["interpolate", ["linear"], ["zoom"], 12, 0.6, 18, 1.1],
+          "icon-rotation-alignment": "map",
+          "icon-keep-upright": false,
+          "icon-allow-overlap": true,
+          "icon-ignore-placement": true,
+        },
+      });
+
+      // AI Manhole Recommendation Engine — proposed new manhole locations
+      // (coverage gaps / disconnected manholes), drawn as points on top.
+      map.addSource(MANHOLE_POINTS_SOURCE, {
+        type: "geojson",
+        data: { type: "FeatureCollection", features: [] },
+      });
+      map.addLayer({
+        id: LAYER_MANHOLE_POINTS,
+        type: "circle",
+        source: MANHOLE_POINTS_SOURCE,
+        paint: {
+          "circle-radius": ["interpolate", ["linear"], ["zoom"], 12, 6, 18, 11],
+          "circle-color": MANHOLE_ROUTE_COLOR,
+          "circle-stroke-color": "#0b1013",
+          "circle-stroke-width": 1.5,
+          "circle-opacity": 0.9,
+        },
+      });
+
+      // AI Manhole Recommendation Engine — manholes with no real sewage/
+      // drain pipe within reach. Drawn as a distinct ring rather than left
+      // silently unconnected, so it reads as "flagged" rather than "missing".
+      map.addSource(MANHOLE_UNCONNECTED_SOURCE, {
+        type: "geojson",
+        data: { type: "FeatureCollection", features: [] },
+      });
+      map.addLayer({
+        id: LAYER_MANHOLE_UNCONNECTED,
+        type: "circle",
+        source: MANHOLE_UNCONNECTED_SOURCE,
+        paint: {
+          "circle-radius": ["interpolate", ["linear"], ["zoom"], 12, 8, 18, 14],
+          "circle-color": "rgba(0,0,0,0)",
+          "circle-stroke-color": MANHOLE_UNCONNECTED_COLOR,
+          "circle-stroke-width": 3,
+        },
+      });
+
+      map.on("mousemove", LAYER_MANHOLE_UNCONNECTED, (e: MapMouseEvent) => {
+        const hit = map.queryRenderedFeatures(e.point, { layers: [LAYER_MANHOLE_UNCONNECTED] });
+        if (!hit.length) return;
+        map.getCanvas().style.cursor = "pointer";
+        const reason = (hit[0].properties?.reason as string | undefined) ?? "Not connected to the sewage line";
+        setHover({
+          x: e.point.x,
+          y: e.point.y,
+          label: "Unconnected Manhole",
+          category: "Not connected to sewage line",
+          severity: 1,
+          color: MANHOLE_UNCONNECTED_COLOR,
+          longitude: e.lngLat.lng,
+          latitude: e.lngLat.lat,
+          attributes: { reason },
+        });
+      });
+      map.on("mouseleave", LAYER_MANHOLE_UNCONNECTED, () => {
+        map.getCanvas().style.cursor = "";
+        setHover(null);
+      });
+
+      map.on("click", LAYER_ANOMALIES, (e: MapMouseEvent) => {
+        const hit = map.queryRenderedFeatures(e.point, { layers: [LAYER_ANOMALIES] });
+        if (!hit.length) return;
+        const id = hit[0].properties?.id as string | undefined;
+        if (!id) return;
+
         const anomaly = anomalyByIdRef.current[id];
         const activeMode = detectionModeRef.current;
         const context = aiOverlayEnabledRef.current
@@ -4159,7 +7156,9 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
           : null;
         const primaryFeatureId = anomaly ? primaryFeatureIdForAnomaly(anomaly) : null;
 
-        setSelectedAnomalyId(id);
+        // Preserve the previous AI UI: Poles/Drains still open the AI Alert
+        // card; Manholes still use their richer recommendation card.
+        if (activeMode !== "manholes") setSelectedAnomalyId(id);
         if (!context || !primaryFeatureId) return;
 
         aiAnomalyClickConsumedRef.current = true;
@@ -4167,70 +7166,129 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
         void fetchFeatureById(primaryFeatureId)
           .then((feature) => {
             onFeatureSelect(feature, context);
+            if (context.detectionMode === "manholes" && feature.properties.dataset_id) {
+              setManholeRecommendOpen(false);
+              void runManholeFeatureRecommend(feature.properties.dataset_id, feature.properties.id);
+            }
           })
           .catch(() => {});
-      };
-
-      map.on("click", LAYER_ANOMALIES, (e: MapMouseEvent) => {
-        const hit = map.queryRenderedFeatures(e.point, { layers: [LAYER_ANOMALIES] });
-        if (!hit.length) return;
-        const id = hit[0].properties?.id as string | undefined;
-        if (!id) return;
-        openAnomalyFinding(id);
       });
       map.on("mouseenter", LAYER_ANOMALIES, () => (map.getCanvas().style.cursor = "pointer"));
       map.on("mouseleave", LAYER_ANOMALIES, () => (map.getCanvas().style.cursor = ""));
 
-      // Manhole heatmap — density visualization for condition-audit findings,
-      // shown instead of the plain dots above when in "manholes" mode.
-      map.addSource(MANHOLE_HEATMAP_SOURCE, {
+      // Road-width narrowing lines open the same anomaly card on click/hover.
+      map.on("click", LAYER_ANOMALIES_ROAD, (e: MapMouseEvent) => {
+        const hit = map.queryRenderedFeatures(e.point, { layers: [LAYER_ANOMALIES_ROAD] });
+        if (!hit.length) return;
+        const id = hit[0].properties?.id as string | undefined;
+        if (id) setSelectedAnomalyId(id);
+      });
+      map.on("mouseenter", LAYER_ANOMALIES_ROAD, () => (map.getCanvas().style.cursor = "pointer"));
+      map.on("mouseleave", LAYER_ANOMALIES_ROAD, () => (map.getCanvas().style.cursor = ""));
+
+      map.addSource(ROAD_INSPECTION_SOURCE, {
         type: "geojson",
         data: { type: "FeatureCollection", features: [] },
       });
       map.addLayer({
-        id: LAYER_MANHOLE_HEATMAP,
-        type: "heatmap",
-        source: MANHOLE_HEATMAP_SOURCE,
-        layout: { visibility: "none" },
+        id: LAYER_ROAD_INSPECTION,
+        type: "line",
+        source: ROAD_INSPECTION_SOURCE,
+        layout: { "line-cap": "round", "line-join": "round" },
         paint: {
-          "heatmap-weight": ["interpolate", ["linear"], ["coalesce", ["get", "severity"], 0], 0, 0, 0.5, 0.5, 1, 1],
-          "heatmap-intensity": ["interpolate", ["linear"], ["zoom"], 0, 1, 22, 3],
-          "heatmap-color": [
-            "interpolate", ["linear"], ["heatmap-density"],
-            0, "rgba(0, 0, 255, 0)",
-            0.2, "#3b82f6",
-            0.4, "#22c55e",
-            0.6, "#eab308",
-            0.8, "#f97316",
-            1, "#ef4444",
-          ],
-          "heatmap-radius": ["interpolate", ["linear"], ["zoom"], 0, 8, 22, 30],
-          "heatmap-opacity": 0.8,
+          "line-color": "#14b8a6",
+          "line-width": ["interpolate", ["linear"], ["zoom"], 12, 5, 16, 9, 19, 14],
+          "line-opacity": 0.9,
+          "line-blur": 0.3,
         },
       });
-      // Invisible-but-clickable points on top of the heatmap so users can
-      // still click individual manholes while the heatmap overlay is active
-      // — radius must stay non-zero (opacity 0 makes it invisible) since a
-      // zero-radius circle has no rendered pixels for hit-testing to find.
+
+      map.addSource(ROAD_INSPECTION_ASSETS_SOURCE, {
+        type: "geojson",
+        data: { type: "FeatureCollection", features: [] },
+        promoteId: "id",
+      });
       map.addLayer({
-        id: LAYER_MANHOLE_HEATMAP_POINTS,
-        type: "circle",
-        source: MANHOLE_HEATMAP_SOURCE,
-        layout: { visibility: "none" },
+        id: LAYER_ROAD_INSPECTION_ASSETS_FILL,
+        type: "fill",
+        source: ROAD_INSPECTION_ASSETS_SOURCE,
+        filter: POLY_BASE_FILTER,
         paint: {
-          "circle-radius": ["interpolate", ["linear"], ["zoom"], 12, 8, 18, 14],
-          "circle-opacity": 0,
+          "fill-color": [
+            "match", ["get", "audit_color"],
+            "red", "#ef4444",
+            "yellow", "#f59e0b",
+            "green", "#22c55e",
+            "#64748b",
+          ],
+          "fill-opacity": 0.52,
         },
       });
-      map.on("click", LAYER_MANHOLE_HEATMAP_POINTS, (e: MapMouseEvent) => {
-        const hit = map.queryRenderedFeatures(e.point, { layers: [LAYER_MANHOLE_HEATMAP_POINTS] });
-        if (!hit.length) return;
-        const id = hit[0].properties?.id as string | undefined;
-        if (!id) return;
-        openAnomalyFinding(id);
+      map.addLayer({
+        id: LAYER_ROAD_INSPECTION_ASSETS_LINE,
+        type: "line",
+        source: ROAD_INSPECTION_ASSETS_SOURCE,
+        filter: LINE_BASE_FILTER,
+        layout: { "line-cap": "round", "line-join": "round" },
+        paint: {
+          "line-color": [
+            "match", ["get", "canonical_class"],
+            "Drainage_Asset", "#a78bfa",
+            "#38bdf8",
+          ],
+          "line-width": ["interpolate", ["linear"], ["zoom"], 12, 3, 16, 5, 19, 7],
+          "line-opacity": 0.95,
+        },
       });
-      map.on("mouseenter", LAYER_MANHOLE_HEATMAP_POINTS, () => (map.getCanvas().style.cursor = "pointer"));
-      map.on("mouseleave", LAYER_MANHOLE_HEATMAP_POINTS, () => (map.getCanvas().style.cursor = ""));
+      map.addLayer({
+        id: LAYER_ROAD_INSPECTION_ASSETS_POINT,
+        type: "circle",
+        source: ROAD_INSPECTION_ASSETS_SOURCE,
+        filter: POINT_BASE_FILTER,
+        paint: {
+          "circle-radius": ["interpolate", ["linear"], ["zoom"], 10, 6, 14, 10, 18, 14],
+          "circle-color": [
+            "match", ["coalesce", ["get", "audit_color"], ["get", "canonical_class"]],
+            "red", "#ef4444",
+            "yellow", "#f59e0b",
+            "green", "#22c55e",
+            "Illumination_Asset", "#fbbf24",
+            "Drainage_Asset", "#a78bfa",
+            "Access_Point", "#2dd4bf",
+            "#38bdf8",
+          ],
+          "circle-opacity": 0.96,
+          "circle-stroke-color": "#0b1013",
+          "circle-stroke-width": 2,
+        },
+      });
+
+      // Width narrowing has a computed segment rather than a stored asset
+      // geometry, so keep it in a small separate line source above the road.
+      map.addSource(ROAD_INSPECTION_WIDTH_SOURCE, {
+        type: "geojson",
+        data: { type: "FeatureCollection", features: [] },
+        promoteId: "id",
+      });
+      map.addLayer({
+        id: LAYER_ROAD_INSPECTION_WIDTH,
+        type: "line",
+        source: ROAD_INSPECTION_WIDTH_SOURCE,
+        layout: { "line-cap": "round", "line-join": "round" },
+        paint: {
+          "line-color": ANOMALY_COLOR_EXPR,
+          "line-width": ["interpolate", ["linear"], ["zoom"], 12, 5, 16, 9, 19, 14],
+          "line-opacity": 0.9,
+          "line-blur": 0.3,
+        },
+      });
+      map.on("click", LAYER_ROAD_INSPECTION_WIDTH, (e: MapMouseEvent) => {
+        const hit = map.queryRenderedFeatures(e.point, { layers: [LAYER_ROAD_INSPECTION_WIDTH] });
+        const id = hit[0]?.properties?.id as string | undefined;
+        if (id) setSelectedAnomalyId(id);
+      });
+      map.on("mouseenter", LAYER_ROAD_INSPECTION_WIDTH, () => (map.getCanvas().style.cursor = "pointer"));
+      map.on("mouseleave", LAYER_ROAD_INSPECTION_WIDTH, () => (map.getCanvas().style.cursor = ""));
 
       // A separate, top-most source keeps an attribute-table selection
       // visible even while the regular dataset source is being refreshed.
@@ -4270,7 +7328,12 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
       // Registered AFTER AI layers are added so MapLibre binds them correctly.
       // Using one handler set avoids double-fire when AI circles overlap base features.
       const AI_CLICKABLE = [LAYER_AI_NEEDED, LAYER_AI_REDUNDANT];
-      const ALL_CLICKABLE = [...BASE_CLICKABLE, ...AI_CLICKABLE];
+      const ROAD_INSPECTION_CLICKABLE = [
+        LAYER_ROAD_INSPECTION_ASSETS_POINT,
+        LAYER_ROAD_INSPECTION_ASSETS_LINE,
+        LAYER_ROAD_INSPECTION_ASSETS_FILL,
+      ];
+      const ALL_CLICKABLE = [...BASE_CLICKABLE, ...ROAD_INSPECTION_CLICKABLE, ...AI_CLICKABLE];
       const handleFeatureClick = (e: MapMouseEvent) => {
         // While a measurement tool is actually armed/drawing, clicks drop
         // measurement points instead of selecting a feature/opening its
@@ -4283,6 +7346,24 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
         const isAi = AI_CLICKABLE.includes(hit[0].layer?.id as string);
         const base = isAi ? hit.find((f) => BASE_CLICKABLE.includes(f.layer?.id as string)) : hit[0];
         const selected = decodeFeature(base ?? hit[0]);
+        if (quickAnalysisActiveRef.current) {
+          if (quickAnalysisFeatureClickConsumedRef.current) return;
+          if (quickAnalysisSelectableFeatureIdsRef.current.has(selected.properties.id)) {
+            quickAnalysisFeatureClickConsumedRef.current = true;
+            window.requestAnimationFrame(() => { quickAnalysisFeatureClickConsumedRef.current = false; });
+            const actual = quickAnalysisFeatureByIdRef.current.get(selected.properties.id) ?? selected;
+            setSelectedQuickAnalysisConnection(null);
+            setSelectedQuickAnalysisFeature((current) =>
+              current?.properties.id === actual.properties.id ? null : actual
+            );
+          }
+          return;
+        }
+        if (roadInspectionActiveRef.current) {
+          if (selected.properties.canonical_class === "Road_Centerline") void openRoadInspection(selected);
+          else onFeatureSelect(selected);
+          return;
+        }
         const activeMode = detectionModeRef.current;
         const selectedAnomaly = aiOverlayEnabledRef.current && activeMode
           ? anomalyByFeatureIdRef.current[selected.properties.id]
@@ -4297,6 +7378,23 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
             if (verificationContext) onFeatureSelect(selected, verificationContext);
             return;
           }
+        }
+        if (
+          aiOverlayEnabledRef.current &&
+          detectionModeRef.current === "manholes" &&
+          classMapRef.current[selected.properties.category ?? ""] === "Access_Point" &&
+          selected.properties.dataset_id
+        ) {
+          // The real pipe-suggestion card (material/diameter/RL/slope/route)
+          // — kept in its OWN state (manholeFeatureAnswer), never touching
+          // manholeRecommendAnswer/routes, so a "Full Drainage Network"
+          // already drawn on the map stays exactly as-is. Same courtesy as
+          // Poles/Drains: only hide the network SUMMARY PANEL (not its
+          // data) so the two cards don't visually stack in the same corner.
+          setManholeRecommendOpen(false);
+          if (verificationContext) onFeatureSelect(selected, verificationContext);
+          void runManholeFeatureRecommend(selected.properties.dataset_id, selected.properties.id);
+          return;
         }
         if (selected.properties.category === "site_photo") {
           setPhotoViewer({
@@ -4317,14 +7415,29 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
         // Leave below). Uses isMeasureInputActive() (not the raw panel-open
         // flag) so hover works normally again as soon as Escape deactivates
         // the tool, even while the Measure panel itself stays open.
-        if (placemarkModeRef.current || streetPickModeRef.current || isMeasureInputActive()) { setHover(null); return; }
+        if (placemarkModeRef.current || streetPickModeRef.current || isMeasureInputActive() || quickAnalysisActiveRef.current) { setHover(null); return; }
         const hit = map.queryRenderedFeatures(e.point, { layers: ALL_CLICKABLE });
         if (!hit.length) { setHover(null); return; }
         const aiHit = hit.find((f) => AI_CLICKABLE.includes(f.layer?.id as string));
         const baseHit = hit.find((f) => BASE_CLICKABLE.includes(f.layer?.id as string));
         const featureToDecode = baseHit ?? aiHit ?? hit[0];
         const decoded = decodeFeature(featureToDecode);
+        const pointCoordinates = pointCoordinatesFromFeature(decoded);
         const category = decoded.properties.category || "uncategorized";
+        // Buildings dominate this cadastral survey. Their ID is printed on
+        // the footprint; suppressing hover cards keeps nearby assets usable.
+        if (basemapRef.current === "cadastral" && isBuildingCategory(category)) {
+          map.getCanvas().style.cursor = "";
+          setHover(null);
+          return;
+        }
+        if (basemapRef.current === "cadastral"
+          && decoded.geometry.type === "Point"
+          && map.getZoom() < cadastralMarkerMinZoom(decoded)) {
+          map.getCanvas().style.cursor = "";
+          setHover(null);
+          return;
+        }
         const aiStatus: "redundant" | "needed" | undefined =
           (aiHit?.properties?.ai_status as "redundant" | "needed" | undefined)
           ?? aiStatusRef.current.get(decoded.properties.id);
@@ -4339,6 +7452,8 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
           category,
           severity: decoded.properties.severity,
           color: aiSummary ? ANOMALY_BADGE_COLOR[aiSummary.color] : colorForCategory(category),
+          longitude: pointCoordinates?.longitude ?? e.lngLat.lng,
+          latitude: pointCoordinates?.latitude ?? e.lngLat.lat,
           attributes: decoded.properties.attributes,
           aiStatus,
           aiDetection: aiSummary,
@@ -4349,13 +7464,29 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
       // measuring, syncMeasureCursor() owns canvas.style.cursor (crosshair),
       // and these handlers must not overwrite it with "pointer"/"" just
       // because the mouse crossed a feature underneath the measurement layer.
-      const handleFeatureMouseEnter = () => {
+      const handleFeatureMouseEnter = (e: MapMouseEvent) => {
         if (placemarkModeRef.current || streetPickModeRef.current) { map.getCanvas().style.cursor = "crosshair"; return; }
+        if (quickAnalysisActiveRef.current) {
+          const hit = map.queryRenderedFeatures(e.point, { layers: ALL_CLICKABLE });
+          const baseHit = hit.find((feature) => BASE_CLICKABLE.includes(feature.layer?.id as string));
+          const featureId = baseHit ? decodeFeature(baseHit).properties.id : "";
+          map.getCanvas().style.cursor = quickAnalysisSelectableFeatureIdsRef.current.has(featureId) ? "pointer" : "";
+          return;
+        }
         if (isMeasureInputActive()) return;
+        if (basemapRef.current === "cadastral") {
+          const hit = map.queryRenderedFeatures(e.point, { layers: ALL_CLICKABLE });
+          const baseHit = hit.find((feature) => BASE_CLICKABLE.includes(feature.layer?.id as string));
+          if (baseHit && isBuildingCategory(decodeFeature(baseHit).properties.category)) {
+            map.getCanvas().style.cursor = "";
+            return;
+          }
+        }
         map.getCanvas().style.cursor = "pointer";
       };
       const handleFeatureMouseLeave = () => {
         if (placemarkModeRef.current || streetPickModeRef.current) { map.getCanvas().style.cursor = "crosshair"; setHover(null); return; }
+        if (quickAnalysisActiveRef.current) { map.getCanvas().style.cursor = ""; setHover(null); return; }
         if (isMeasureInputActive()) return;
         map.getCanvas().style.cursor = "";
         setHover(null);
@@ -4368,6 +7499,13 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
       });
 
       map.on("click", (event) => {
+        if (
+          quickAnalysisActiveRef.current
+          && !quickAnalysisFeatureClickConsumedRef.current
+          && !isMeasureInputActive()
+        ) {
+          setSelectedQuickAnalysisFeature(null);
+        }
         if (!streetPickModeRef.current) return;
         streetPickConsumedRef.current = true;
         window.requestAnimationFrame(() => { streetPickConsumedRef.current = false; });
@@ -4517,6 +7655,13 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
       // setMapReady AFTER the AI source/layers are added so the aiHighlights
       // useEffect can safely call map.getSource(AI_HIGHLIGHT_SOURCE).
       setMapReady(true);
+      // Some MapLibre style changes can remove a runtime symbol layer while
+      // its custom images are being registered. Restore it after that first
+      // style pass; points remain on FEATURE_SOURCE so hover/click decoding
+      // always reads the same loaded data as every other map layer.
+      window.requestAnimationFrame(() => {
+        addCadastralPointIconLayer(map, basemap === "cadastral" ? "visible" : "none");
+      });
     });
     // Do not fetch on move/zoom. Once a dashboard selection is loaded, the
     // GeoJSON source remains unchanged until the user changes that selection.
@@ -5041,9 +8186,13 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
       ].find((layerId) => Boolean(currentMap.getLayer(layerId)));
 
       for (const [key, layerIds] of Object.entries(REFERENCE_LAYER_IDS) as Array<[keyof ReferenceLayerVisibility, string[]]>) {
-        const visibility = next[key] ? "visible" : "none";
         for (const layerId of layerIds) {
           if (!currentMap.getLayer(layerId)) continue;
+          // Survey building IDs are a cadastral aid, not a reference-layer
+          // toggle. They never appear on street or satellite basemaps.
+          const visibility = layerId === REFERENCE_SURVEY_BUILDING_LABELS
+            ? (basemapRef.current === "cadastral" ? "visible" : "none")
+            : (next[key] ? "visible" : "none");
           if (currentMap.getLayoutProperty(layerId, "visibility") !== visibility) {
             currentMap.setLayoutProperty(layerId, "visibility", visibility);
           }
@@ -5146,9 +8295,57 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     ? datasets.find((dataset) => dataset.id === selectedPlacemarkDetails.dataset_id)?.name ?? null
     : null;
 
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+    const frame = window.requestAnimationFrame(() => map.resize());
+    return () => window.cancelAnimationFrame(frame);
+  }, [sidebarCollapsed]);
+
   return (
     <>
-      <CommandCenter
+      <aside className="sidebar-rail" aria-label="Sidebar controls">
+        <button
+          type="button"
+          className={!sidebarCollapsed && sidebarPanel === "layers" ? "sidebar-rail__layers-button sidebar-rail__layers-button--active" : "sidebar-rail__layers-button"}
+          onClick={() => {
+            if (!sidebarCollapsed && sidebarPanel === "layers") { onToggleSidebar?.(); return; }
+            setSidebarPanel("layers");
+            if (sidebarCollapsed) onToggleSidebar?.();
+          }}
+          title={!sidebarCollapsed && sidebarPanel === "layers" ? "Hide layers panel" : "Show layers panel"}
+          aria-label={!sidebarCollapsed && sidebarPanel === "layers" ? "Hide layers panel" : "Show layers panel"}
+          aria-pressed={!sidebarCollapsed && sidebarPanel === "layers"}
+        >
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" aria-hidden="true">
+            <path d="M4 7h16M4 12h16M4 17h16" />
+          </svg>
+        </button>
+        <button
+          type="button"
+          className={!sidebarCollapsed && sidebarPanel === "analysis" ? "sidebar-rail__layers-button sidebar-rail__layers-button--active" : "sidebar-rail__layers-button"}
+          onClick={() => {
+            if (!sidebarCollapsed && sidebarPanel === "analysis") { onToggleSidebar?.(); return; }
+            setSidebarPanel("analysis");
+            if (sidebarCollapsed) onToggleSidebar?.();
+          }}
+          title={!sidebarCollapsed && sidebarPanel === "analysis" ? "Hide quick analysis panel" : "Quick analysis"}
+          aria-label={!sidebarCollapsed && sidebarPanel === "analysis" ? "Hide quick analysis panel" : "Quick analysis"}
+          aria-pressed={!sidebarCollapsed && sidebarPanel === "analysis"}
+          data-testid="quick-analysis-toggle"
+        >
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" aria-hidden="true">
+            <path d="M4 20V11m6.5 9V4m6.5 16v-7.5" />
+          </svg>
+        </button>
+      </aside>
+      {!sidebarCollapsed && sidebarPanel === "analysis" && (
+        <QuickAnalysisPanel
+          selectedCardId={quickAnalysisCardId}
+          onSelectCard={selectQuickAnalysis}
+        />
+      )}
+      {!sidebarCollapsed && sidebarPanel === "layers" && <CommandCenter
         isMobile={isMobile}
         open={!isMobile || commandCenterMobileOpen}
         onRequestClose={() => onCommandCenterMobileOpenChange(false)}
@@ -5198,20 +8395,52 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
           onResetStyle: resetVisualizationStyle,
         }}
         detectionMode={detectionMode}
+        onRunManholeNetwork={runManholeNetwork}
+        manholeRecommendLoading={manholeRecommendLoading}
         classMap={classMap}
         extraVisibleCategories={extraVisibleCategories}
         onToggleExtraVisibleCategory={toggleExtraVisibleCategory}
         onSetAllExtraVisibleCategories={setAllExtraVisibleCategories}
         onSetCategoriesVisible={setCategoriesVisible}
-      />
+      />}
       <div className="map-canvas" data-testid="map-canvas">
         <div ref={containerRef} className="map-canvas__map" data-testid="map-gl" />
-        <MapControls
+        {quickAnalysisCardId && QUICK_ANALYSIS_MAP_CONFIG[quickAnalysisCardId] && (
+          <QuickAnalysisMapDashboard
+            cardId={quickAnalysisCardId}
+            title={QUICK_ANALYSIS_MAP_CONFIG[quickAnalysisCardId].title}
+            description={QUICK_ANALYSIS_MAP_CONFIG[quickAnalysisCardId].description}
+            datasetIds={activeDatasetIds}
+            features={quickAnalysisFeatures}
+            loading={quickAnalysisLoading}
+            error={quickAnalysisError}
+            drainEncroachment={quickDrainEncroachment}
+            drainEncroachmentLoading={quickDrainEncroachmentLoading}
+            drainEncroachmentError={quickDrainEncroachmentError}
+            manholeNetworkLoading={quickAnalysisManholeNetworkLoading}
+            manholeNetworkError={quickAnalysisManholeNetworkError}
+            manholeNetworkRouteCount={quickAnalysisManholeNetwork?.routes.length ?? 0}
+            manholeNetworkFlowCount={quickAnalysisManholeNetwork?.routes.filter((route) => route.flow_confirmed).length ?? 0}
+            manholeNetworkStatusCounts={quickAnalysisManholeNetworkStatusCounts}
+            anomalies={anomalies}
+            selectedFeature={selectedQuickAnalysisFeature}
+            selectedConnection={selectedQuickAnalysisConnection}
+            activeTool={measureActive ? "measure" : quickAnalysisTool}
+            onActivateSelect={activateQuickAnalysisSelect}
+            onActivateMeasure={activateQuickAnalysisMeasure}
+            onClearSelectedFeature={() => setSelectedQuickAnalysisFeature(null)}
+            onClearSelectedConnection={() => setSelectedQuickAnalysisConnection(null)}
+            onClose={closeQuickAnalysis}
+          />
+        )}
+        {!quickAnalysisCardId && <MapControls
           basemap={basemap}
           onChangeBasemap={changeBasemap}
           status={status}
           detectionMode={detectionMode}
           onToggleDetectionMode={toggleDetectionMode}
+          roadInspectionActive={roadInspectionActive}
+          onToggleRoadInspection={toggleRoadInspection}
           aiOverlayEnabled={aiOverlayEnabled}
           onToggleAiOverlay={toggleAiOverlay}
           onAiIconClick={requestSpatialAuditOnce}
@@ -5226,16 +8455,28 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
           onToggleCoordinateSearch={toggleCoordinateSearch}
           referenceLayers={referenceLayers}
           onToggleReferenceLayer={handleToggleReferenceLayer}
-          measureActive={measureActive}
-          onToggleMeasure={toggleMeasureActive}
-        />
-        <HoverTooltip hover={hover} />
+          hideBasemap={sidebarPanel === "analysis"}
+        />}
+        {!quickAnalysisCardId && <HoverTooltip hover={hover} />}
         {selectedAnomaly && (
           <AnomalyAlertCard
             anomaly={selectedAnomaly}
             onClose={() => setSelectedAnomalyId(null)}
             onStatusChange={handleAnomalyStatusChange}
             onStale={handleAnomalyStale}
+          />
+        )}
+        {roadInspectionRoad && (
+          <RoadInspectionCard
+            roadLabel={roadInspectionRoad.properties.label}
+            report={roadInspectionReport}
+            loading={roadInspectionLoading}
+            error={roadInspectionError}
+            onClose={closeRoadInspection}
+            onSelectIssue={(issueId) => {
+              closeRoadInspection();
+              setSelectedAnomalyId(issueId);
+            }}
           />
         )}
         {placemarkMode && !placemarkDraft && (
@@ -5298,21 +8539,15 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
             onHover={(placemark) => setListHoveredPlacemarkId(placemark?.id ?? null)}
           />
         )}
-        <MapStatusBar
+        {!quickAnalysisCardId && <MapStatusBar
           lngLat={cursorLngLat}
           scaleLabel={mapScaleLabel}
           datasetName={activeStatusDataset?.name ?? null}
           surveyDate={activeStatusDataset?.survey_date ?? null}
           elevation={elevationSample?.elevation ?? null}
           eyeAltitudeMeters={eyeAltitudeMeters}
-        />
-        <ZoomSlider
-          zoom={mapZoom}
-          minZoom={4}
-          maxZoom={24}
-          onChange={(next) => mapRef.current?.setZoom(next)}
-        />
-        <div className="map-side-controls">
+        />}
+        {!quickAnalysisCardId && <div className="map-side-controls">
           <LookAroundCompass
             bearing={mapBearing}
             pitch={mapPitch}
@@ -5331,6 +8566,22 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
           />
           <button
             type="button"
+            className={`map-measure-btn${measureActive ? " map-measure-btn--active" : ""}`}
+            onClick={toggleMeasureActive}
+            title="Measure"
+            aria-label="Open Measure tools"
+            aria-pressed={measureActive}
+            data-testid="topbar-measure"
+          >
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <rect x="2.5" y="8" width="19" height="8" rx="1.5" transform="rotate(-45 12 12)" />
+              <g transform="rotate(-45 12 12)">
+                <path d="M6 8v3M9.5 8v2M13 8v3M16.5 8v2" />
+              </g>
+            </svg>
+          </button>
+          <button
+            type="button"
             className="map-measure-btn"
             onClick={() => setShow3DPlan(true)}
             title="3D Viewer"
@@ -5342,7 +8593,25 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
               <path d="M12 12v8.5M12 12l7.5-4.3M12 12L4.5 7.7" />
             </svg>
           </button>
-        </div>
+        </div>}
+        {manholeRecommendOpen && (
+          <ManholeRecommendCard
+            answer={manholeRecommendAnswer}
+            loading={manholeRecommendLoading}
+            error={manholeRecommendError}
+            onClose={closeManholeRecommend}
+            onView3D={() => setShow3DPlan(true)}
+          />
+        )}
+        {manholeFeatureOpen && (
+          <ManholeRecommendCard
+            answer={manholeFeatureAnswer}
+            loading={manholeFeatureLoading}
+            error={manholeFeatureError}
+            onClose={closeManholeFeature}
+            onView3D={() => setShow3DPlan(true)}
+          />
+        )}
         {measureActive && (
           <RulerPanel
             tab={measureTab}
@@ -5399,6 +8668,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
           features={loadedFeatures}
           classMap={classMap}
           anomalies={anomalies}
+          manholeAnswer={manholeFeatureOpen ? manholeFeatureAnswer : manholeRecommendAnswer}
           datasets={datasets}
           activeDatasetIds={activeDatasetIds}
           onClose={() => setShow3DPlan(false)}
@@ -5477,7 +8747,7 @@ function CommandCenter({
   datasets, activeDatasetIds, flyError, onSelectDataset, onSelectAllDatasets, expandedDatasetId, onToggleDatasetSettings,
   rasterSettingsById, onChangeRasterSettings, categoryStats, hiddenCategories, onToggleCategory,
   onSetAllCategoriesVisible, spatialAuditStatus, onOpenAttributeTable, status: _status, visualization,
-  detectionMode,
+  detectionMode, onRunManholeNetwork, manholeRecommendLoading,
   classMap, extraVisibleCategories, onToggleExtraVisibleCategory, onSetAllExtraVisibleCategories,
   onSetCategoriesVisible,
 }: {
@@ -5497,6 +8767,8 @@ function CommandCenter({
   status: ViewportStatus;
   visualization: VisualizationPanelProps;
   detectionMode: DetectionMode;
+  onRunManholeNetwork: (datasetIds: string[]) => void;
+  manholeRecommendLoading: boolean;
   classMap: Record<string, string>;
   extraVisibleCategories: Set<string>;
   onToggleExtraVisibleCategory: (category: string) => void;
@@ -5505,6 +8777,13 @@ function CommandCenter({
 }) {
   const [layerQuery, setLayerQuery] = useState("");
   const [layerMenu, setLayerMenu] = useState<{ category: string; x: number; y: number } | null>(null);
+  const [openSections, setOpenSections] = useState<Record<"dataSources" | "spatialAudit" | "categoryVisibility", boolean>>(() => {
+    try {
+      const saved = window.localStorage.getItem("davangere.command-center-sections");
+      if (saved) return { dataSources: true, spatialAudit: true, categoryVisibility: true, ...JSON.parse(saved) };
+    } catch { /* use expanded defaults */ }
+    return { dataSources: true, spatialAudit: true, categoryVisibility: true };
+  });
   const [visualizationOpen, setVisualizationOpen] = useState(false);
   const visualizationAnchorRef = useRef<HTMLElement | null>(null);
   const visualizationPopupRef = useRef<HTMLDivElement | null>(null);
@@ -5524,6 +8803,13 @@ function CommandCenter({
     disabled: isMobile,
   });
   const normalizedLayerQuery = layerQuery.trim().toLocaleLowerCase();
+  const toggleSection = useCallback((section: "dataSources" | "spatialAudit" | "categoryVisibility") => {
+    setOpenSections((current) => ({ ...current, [section]: !current[section] }));
+  }, []);
+
+  useEffect(() => {
+    window.localStorage.setItem("davangere.command-center-sections", JSON.stringify(openSections));
+  }, [openSections]);
   const displayedLayers = useMemo(
     () => [...categoryStats]
       .sort((a, b) => a.category.localeCompare(b.category, undefined, { sensitivity: "base", numeric: true }))
@@ -5766,6 +9052,8 @@ function CommandCenter({
           <DataSourceSelector
             datasets={datasets}
             activeDatasetIds={activeDatasetIds}
+            open={openSections.dataSources}
+            onToggleOpen={() => toggleSection("dataSources")}
             onSelectDataset={onSelectDataset}
             onSelectAllDatasets={onSelectAllDatasets}
             expandedDatasetId={expandedDatasetId}
@@ -5807,10 +9095,54 @@ function CommandCenter({
           document.body
         )}
 
+        {activeDatasetIds.length > 0 && detectionMode === "manholes" && (
+          <div className="command-center__section">
+            <div className="command-center__section-head">
+              <button
+                type="button"
+                className="command-center__section-toggle"
+                onClick={() => toggleSection("spatialAudit")}
+                aria-expanded={openSections.spatialAudit}
+                aria-controls="spatial-audit-panel"
+              >
+                <svg className={`command-center__chevron${openSections.spatialAudit ? " command-center__chevron--open" : ""}`} viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="m8 10 4 4 4-4" />
+                </svg>
+                <span className="command-center__section-title">Spatial Audit</span>
+              </button>
+            </div>
+            {openSections.spatialAudit && <div id="spatial-audit-panel">
+              <button
+              type="button"
+              className="command-center__audit-btn"
+              disabled={manholeRecommendLoading}
+              onClick={() => onRunManholeNetwork(activeDatasetIds)}
+              data-testid="run-manhole-network"
+              title="Build the complete manhole-to-manhole drainage network, with flow direction grounded in real surveyed levels / DTM / contour elevation"
+              style={{ marginTop: 8 }}
+            >
+              {manholeRecommendLoading ? "Building…" : "Full Drainage Network"}
+            </button>
+            </div>}
+          </div>
+        )}
+
         {categoryStats.length > 0 && (
           <div className="command-center__section">
             <div className="command-center__section-head">
-              <span className="command-center__section-title">Category Visibility</span>
+              <button
+                type="button"
+                className="command-center__section-toggle"
+                onClick={() => toggleSection("categoryVisibility")}
+                aria-expanded={openSections.categoryVisibility}
+                aria-controls="category-visibility-panel"
+              >
+                <svg className={`command-center__chevron${openSections.categoryVisibility ? " command-center__chevron--open" : ""}`} viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="m8 10 4 4 4-4" />
+                </svg>
+                <span className="command-center__section-title">Category Visibility</span>
+              </button>
+              {openSections.categoryVisibility &&
               <button
                 type="button"
                 className="command-center__text-btn"
@@ -5830,8 +9162,9 @@ function CommandCenter({
                 }}
               >
                 {(detectionMode ? extraVisibleCategories.size === 0 : hiddenCategories.size > 0) ? "Show all" : "Hide all"}
-              </button>
+              </button>}
             </div>
+            {openSections.categoryVisibility && <div id="category-visibility-panel">
             <div className="layer-search">
               <svg viewBox="0 0 24 24" aria-hidden="true">
                 <circle cx="11" cy="11" r="7" />
@@ -6081,6 +9414,7 @@ function CommandCenter({
                   <div className="layer-list__empty">No matching layers</div>
                 )}
             </div>
+            </div>}
           </div>
         )}
       </div>
@@ -6390,6 +9724,7 @@ const DETECTION_MODE_LABEL: Record<Exclude<DetectionMode, null>, string> = {
   poles: "Poles",
   drains: "Drains",
   manholes: "Manholes",
+  roads: "Road Width",
 };
 
 function MapControls({
@@ -6398,6 +9733,8 @@ function MapControls({
   status,
   detectionMode,
   onToggleDetectionMode,
+  roadInspectionActive,
+  onToggleRoadInspection,
   aiOverlayEnabled,
   onToggleAiOverlay,
   onAiIconClick,
@@ -6412,14 +9749,16 @@ function MapControls({
   onToggleCoordinateSearch,
   referenceLayers,
   onToggleReferenceLayer,
-  measureActive,
-  onToggleMeasure,
+  hideBasemap,
 }: {
   basemap: Basemap;
   onChangeBasemap: (b: Basemap) => void;
+  hideBasemap?: boolean;
   status: ViewportStatus;
   detectionMode: DetectionMode;
   onToggleDetectionMode: (mode: Exclude<DetectionMode, null>) => void;
+  roadInspectionActive: boolean;
+  onToggleRoadInspection: () => void;
   aiOverlayEnabled: boolean;
   onToggleAiOverlay: () => void;
   /** Fires on every AI Detection icon click (not just the first) — the
@@ -6437,10 +9776,11 @@ function MapControls({
   onToggleCoordinateSearch: () => void;
   referenceLayers: ReferenceLayerVisibility;
   onToggleReferenceLayer: (key: keyof ReferenceLayerVisibility, visible: boolean) => void;
-  measureActive: boolean;
-  onToggleMeasure: () => void;
 }) {
-  const [activeToolsSection, setActiveToolsSection] = useState<"map" | "location" | null>(null);
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [basemapMenuOpen, setBasemapMenuOpen] = useState(false);
+  const [toolsMenuOpen, setToolsMenuOpen] = useState(false);
+  const [activeToolsSection, setActiveToolsSection] = useState<"ai" | "map" | "location" | null>(null);
   const [menuPos, setMenuPos] = useState<{ top: number; left: number } | null>(null);
   // AI Detection is an independent floating control, not a tools-menu
   // category — its own open state, own outside-click handling, own anchor.
@@ -6454,41 +9794,11 @@ function MapControls({
   const [showDetectionList, setShowDetectionList] = useState(false);
   const [showDetectionStatus, setShowDetectionStatus] = useState(false);
   const [aiOffsetY, setAiOffsetY] = useState(0);
-  // Location Tools child strip: `locationOpen` is the logical state
-  // (mutually exclusive with the Map View section via activeToolsSection).
-  // `locationMounted` keeps the strip in the DOM through the close
-  // animation so children can slide back before unmount; `locationShown`
-  // toggles the `is-open` class that drives the staggered transition.
-  // A single timer (locationCloseTimer) guards unmount; it is cleared on
-  // reopen and on unmount to avoid stale close callbacks/race conditions.
-  const locationOpen = activeToolsSection === "location";
-  const [locationMounted, setLocationMounted] = useState(locationOpen);
-  const [locationShown, setLocationShown] = useState(locationOpen);
-  const locationCloseTimer = useRef<number | null>(null);
-  const LOCATION_EXIT_MS = 460;
-  useEffect(() => {
-    if (locationCloseTimer.current !== null) {
-      clearTimeout(locationCloseTimer.current);
-      locationCloseTimer.current = null;
-    }
-    if (locationOpen) {
-      setLocationMounted(true);
-      const raf = requestAnimationFrame(() => {
-        requestAnimationFrame(() => setLocationShown(true));
-      });
-      return () => cancelAnimationFrame(raf);
-    }
-    setLocationShown(false);
-    locationCloseTimer.current = window.setTimeout(() => setLocationMounted(false), LOCATION_EXIT_MS);
-  }, [locationOpen]);
-  useEffect(() => () => {
-    if (locationCloseTimer.current !== null) clearTimeout(locationCloseTimer.current);
-  }, []);
   const toolsControlRef = useRef<HTMLDivElement | null>(null);
+  const basemapControlRef = useRef<HTMLDivElement | null>(null);
+  const menuRef = useRef<HTMLDivElement | null>(null);
+  const toolsToggleRef = useRef<HTMLButtonElement | null>(null);
   const toolsPanelsRef = useRef<HTMLDivElement | null>(null);
-  const categoryRailRef = useRef<HTMLDivElement | null>(null);
-  const mapCategoryBtnRef = useRef<HTMLButtonElement | null>(null);
-  const locationCategoryBtnRef = useRef<HTMLButtonElement | null>(null);
   const aiWrapRef = useRef<HTMLDivElement | null>(null);
   const portalMenuRef = useRef<HTMLDivElement | null>(null);
   const isMobile = useIsMobile();
@@ -6499,6 +9809,44 @@ function MapControls({
     margin: 8,
     disabled: isMobile,
   });
+
+  useEffect(() => {
+    if (!menuOpen) return;
+    const onClickOutside = (e: MouseEvent) => {
+      const target = e.target as Node;
+      if (
+        menuRef.current && !menuRef.current.contains(target) &&
+        portalMenuRef.current && !portalMenuRef.current.contains(target)
+      ) {
+        setMenuOpen(false);
+      }
+    };
+    const onEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setMenuOpen(false);
+    };
+    document.addEventListener("mousedown", onClickOutside);
+    document.addEventListener("keydown", onEscape);
+    return () => {
+      document.removeEventListener("mousedown", onClickOutside);
+      document.removeEventListener("keydown", onEscape);
+    };
+  }, [menuOpen]);
+
+  useEffect(() => {
+    if (!basemapMenuOpen) return;
+    const onClickOutside = (event: MouseEvent) => {
+      if (!basemapControlRef.current?.contains(event.target as Node)) setBasemapMenuOpen(false);
+    };
+    const onEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setBasemapMenuOpen(false);
+    };
+    document.addEventListener("mousedown", onClickOutside);
+    document.addEventListener("keydown", onEscape);
+    return () => {
+      document.removeEventListener("mousedown", onClickOutside);
+      document.removeEventListener("keydown", onEscape);
+    };
+  }, [basemapMenuOpen]);
 
   // MapLibre's WebGL canvas can composite on its own GPU layer that paints
   // over positioned overlay siblings regardless of z-index/stacking-context
@@ -6514,26 +9862,27 @@ function MapControls({
     setMenuPos({ top: rect.top, left: rect.right + 8 });
   }, [showDetectionList]);
 
-  // Closes an open category panel (basemap/location) on an outside click or
-  // Escape. The category rail itself is always visible now (no hamburger
-  // gate), so this only ever needs to collapse activeToolsSection back to
-  // null — it never hides the rail.
   useEffect(() => {
-    if (!activeToolsSection) return;
+    if (!toolsMenuOpen) {
+      setActiveToolsSection(null);
+      return;
+    }
 
     const onToolsOutside = (event: MouseEvent) => {
       const target = event.target as Node;
       if (toolsControlRef.current?.contains(target)) return;
       // The AI mode-picker dropdown is portaled to document.body (outside
-      // toolsControlRef) — a click inside it is unrelated to this panel and
-      // must not close it, since AI Detection is fully independent.
+      // toolsControlRef) — a click inside it is unrelated to this menu and
+      // must not close it, since AI Detection is now fully independent.
       if (portalMenuRef.current?.contains(target)) return;
       if (target instanceof Element && target.closest(".reference-layers-menu")) return;
+      setToolsMenuOpen(false);
       setActiveToolsSection(null);
     };
 
     const onToolsEscape = (event: KeyboardEvent) => {
       if (event.key !== "Escape") return;
+      setToolsMenuOpen(false);
       setActiveToolsSection(null);
     };
 
@@ -6543,7 +9892,7 @@ function MapControls({
       document.removeEventListener("mousedown", onToolsOutside);
       document.removeEventListener("keydown", onToolsEscape);
     };
-  }, [activeToolsSection]);
+  }, [toolsMenuOpen]);
 
   // AI Detection's own outside-click/escape handling — fully independent of
   // the tools menu's. The dropdown is portaled to document.body, so it's
@@ -6593,20 +9942,24 @@ function MapControls({
     setShowDetectionList(true);
   };
 
-  // Keeps the AI icon flush under the always-visible category rail, and
-  // dynamically pushes it further down when a category panel expands —
-  // measured from the actual rendered rail+panel rect and the container's
-  // own CSS gap (not a hardcoded offset), so it stays correct regardless of
-  // which tool category's content is showing.
+  // Keeps the AI icon flush under the toggle when the tools menu is closed,
+  // and dynamically pushes it below the expanded panel's real rendered
+  // height when the menu opens — measured from actual DOM rects and the
+  // container's own CSS gap (not a hardcoded offset), so it stays correct
+  // regardless of which tool category's content is showing.
   const measureAiOffset = useCallback(() => {
     const container = toolsControlRef.current;
-    const panelsEl = toolsPanelsRef.current;
-    if (!container || !panelsEl) return;
+    const toggleEl = toolsToggleRef.current;
+    if (!container || !toggleEl) return;
     const gap = parseFloat(getComputedStyle(container).rowGap || getComputedStyle(container).gap || "0") || 0;
     const containerTop = container.getBoundingClientRect().top;
-    const referenceBottom = panelsEl.getBoundingClientRect().bottom;
+    let referenceBottom = toggleEl.getBoundingClientRect().bottom;
+    if (toolsMenuOpen && toolsPanelsRef.current) {
+      const panelsBottom = toolsPanelsRef.current.getBoundingClientRect().bottom;
+      if (panelsBottom > referenceBottom) referenceBottom = panelsBottom;
+    }
     setAiOffsetY(referenceBottom - containerTop + gap);
-  }, []);
+  }, [toolsMenuOpen]);
 
   useLayoutEffect(() => {
     measureAiOffset();
@@ -6620,24 +9973,109 @@ function MapControls({
     return () => observer.disconnect();
   }, [measureAiOffset]);
 
+  const hasActiveTool = Boolean(
+    detectionMode ||
+    roadInspectionActive ||
+    streetPickMode ||
+    placemarkMode ||
+    myPlacesOpen ||
+    coordinateSearchOpen ||
+    Object.values(referenceLayers).some(Boolean)
+  );
+
   return (
     <>
       <div className="feature-count" data-testid="viewport-status">
         {status.loading ? "loading..." : `${status.count} features`}
       </div>
+      {!hideBasemap && (
+      <div className="basemap-picker" ref={basemapControlRef}>
+        <button
+          type="button"
+          className={`basemap-picker__toggle${basemapMenuOpen ? " basemap-picker__toggle--open" : ""}`}
+          onClick={() => setBasemapMenuOpen((current) => !current)}
+          aria-label="Choose map style"
+          aria-expanded={basemapMenuOpen}
+          aria-controls="basemap-picker-menu"
+          title="Map style"
+          data-testid="basemap-picker-toggle"
+        >
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" aria-hidden="true">
+            <circle cx="12" cy="12" r="9" />
+            <path d="M3 12h18M12 3c2.8 2.5 4.2 5.5 4.2 9S14.8 18.5 12 21c-2.8-2.5-4.2-5.5-4.2-9S9.2 5.5 12 3Z" />
+          </svg>
+        </button>
+        {basemapMenuOpen && (
+          <div id="basemap-picker-menu" className="basemap-picker__menu" role="menu" aria-label="Map styles">
+            <button type="button" className={basemap === "street" ? "is-active" : ""} onClick={() => { onChangeBasemap("street"); setBasemapMenuOpen(false); }} title="Street" aria-label="Street" data-testid="basemap-street">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true"><path d="M7 3 6 21M17 3l1 18" /><path d="M12 4v3M12 10.5v3M12 17v3" /></svg>
+            </button>
+            <button type="button" className={basemap === "satellite" ? "is-active" : ""} onClick={() => { onChangeBasemap("satellite"); setBasemapMenuOpen(false); }} title="Satellite" aria-label="Satellite" data-testid="basemap-satellite">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true"><circle cx="12" cy="12" r="6" /><ellipse cx="12" cy="12" rx="10" ry="4" transform="rotate(-20 12 12)" /></svg>
+            </button>
+            <button type="button" className={basemap === "off" ? "is-active" : ""} onClick={() => { onChangeBasemap("off"); setBasemapMenuOpen(false); }} title="No basemap" aria-label="No basemap" data-testid="basemap-off">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="1" /><path d="M4 20 20 4" /></svg>
+            </button>
+          </div>
+        )}
+      </div>
+      )}
       <div className="map-tools" ref={toolsControlRef}>
+        <button
+          type="button"
+          ref={toolsToggleRef}
+          className={`map-tools__toggle${toolsMenuOpen ? " map-tools__toggle--open" : ""}${hasActiveTool ? " map-tools__toggle--has-active" : ""}`}
+          onClick={() => {
+            const nextOpen = !toolsMenuOpen;
+            setToolsMenuOpen(nextOpen);
+            if (!nextOpen) {
+              setActiveToolsSection(null);
+            }
+          }}
+          aria-expanded={toolsMenuOpen}
+          aria-controls="map-tools-panels"
+          aria-label={toolsMenuOpen ? "Close map tools" : "Open map tools"}
+          data-testid="map-tools-toggle"
+          title={toolsMenuOpen ? "Close tools" : "Open tools"}
+        >
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" width="18" height="18" aria-hidden="true">
+            <rect x="3" y="8" width="18" height="12" rx="2" />
+            <path d="M8 8V6a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+            <path d="M3 13h18" />
+            <path d="M10 13v2M14 13v2" />
+          </svg>
+          {hasActiveTool && <span className="map-tools__active-dot" aria-hidden="true" />}
+        </button>
+
         <div
           id="map-tools-panels"
           ref={toolsPanelsRef}
-          className="map-tools__panels"
-          role="toolbar"
+          className={`map-tools__panels${toolsMenuOpen ? " map-tools__panels--open" : ""}`}
           aria-label="Map tools"
+          aria-hidden={!toolsMenuOpen}
         >
-          <div className="map-tools__category-rail" ref={categoryRailRef} aria-label="Tool categories">
-            <div className="map-tools__map-view-anchor">
+          <div className="map-tools__category-rail" aria-label="Tool categories">
             <button
               type="button"
-              ref={mapCategoryBtnRef}
+              className={`map-tools__category-btn${activeToolsSection === "ai" ? " map-tools__category-btn--active" : ""}${(detectionMode || roadInspectionActive) ? " map-tools__category-btn--has-active" : ""}`}
+              onClick={() => {
+                setMenuOpen(false);
+                setActiveToolsSection((current) => current === "ai" ? null : "ai");
+              }}
+              aria-label="AI detection tools"
+              aria-expanded={activeToolsSection === "ai"}
+              title="AI detection"
+              data-testid="map-tools-category-ai"
+            >
+              <svg viewBox="0 0 24 24" fill="currentColor" width="19" height="19" aria-hidden="true">
+                <path d="M12 2l1.8 5.2L19 9l-5.2 1.8L12 16l-1.8-5.2L5 9l5.2-1.8L12 2Z" />
+                <path d="m19 13 .9 2.1L22 16l-2.1.9L19 19l-.9-2.1L16 16l2.1-.9L19 13Z" />
+              </svg>
+              {(detectionMode || roadInspectionActive) && <span className="map-tools__category-dot" aria-hidden="true" />}
+            </button>
+
+            <button
+              type="button"
               className={`map-tools__category-btn${activeToolsSection === "map" ? " map-tools__category-btn--active" : ""}`}
               onClick={() => {
                 setActiveToolsSection((current) => current === "map" ? null : "map");
@@ -6647,155 +10085,211 @@ function MapControls({
               title="Map view"
               data-testid="map-tools-category-map"
             >
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" width="16" height="16" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" width="19" height="19" aria-hidden="true">
                 <path d="m3 6 5-3 8 3 5-3v15l-5 3-8-3-5 3V6Z" />
                 <path d="M8 3v15M16 6v15" />
               </svg>
-             </button>
+            </button>
 
-              {activeToolsSection === "map" && (
-              <div className="map-tools__map-view-options" id="map-view-options" role="toolbar" aria-label="Map view options">
-                <div className="map-controls__group" data-testid="basemap-toggle">
-              <button className={`map-controls__btn${basemap === "street" ? " map-controls__btn--active" : ""}`} onClick={() => onChangeBasemap("street")} data-testid="basemap-street" aria-pressed={basemap === "street"} aria-label="Map basemap">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="14" height="14" style={{ marginRight: 4, verticalAlign: -2 }}>
-                  <path d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-4 0h4" />
-                </svg>
-                <span className="map-controls__btn-label">Map</span>
-              </button>
-              <button className={`map-controls__btn${basemap === "satellite" ? " map-controls__btn--active" : ""}`} onClick={() => onChangeBasemap("satellite")} data-testid="basemap-satellite" aria-pressed={basemap === "satellite"} aria-label="Satellite basemap">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="14" height="14" style={{ marginRight: 4, verticalAlign: -2 }}>
-                  <circle cx="12" cy="12" r="10" />
-                  <path d="M2 12h20M12 2a15.3 15.3 0 014 10 15.3 15.3 0 01-4 10 15.3 15.3 0 01-4-10 15.3 15.3 0 014-10z" />
-                </svg>
-                <span className="map-controls__btn-label">Satellite</span>
-              </button>
-              <button
-                className={`map-controls__btn${basemap === "off" ? " map-controls__btn--active" : ""}`}
-                onClick={() => onChangeBasemap("off")}
-                data-testid="basemap-off"
-                aria-pressed={basemap === "off"}
-                aria-label="Hide basemap"
-                title="Hide the basemap so raster overlays/vector data aren't limited by its tile resolution when zooming in close"
-              >
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="14" height="14" style={{ marginRight: 4, verticalAlign: -2 }}>
-                  <path d="M3 3l18 18M10.58 10.58a2 2 0 002.83 2.83M9.88 4.24A9.4 9.4 0 0112 4c5 0 8.5 4 10 8-.46 1.3-1.13 2.6-2 3.79M6.6 6.6C4.7 8 3.2 10 2 12c1.5 4 5 8 10 8 1.35 0 2.63-.28 3.8-.78" />
-                </svg>
-                <span className="map-controls__btn-label">Off</span>
-              </button>
-                </div>
+            <button
+              type="button"
+              className={`map-tools__category-btn${activeToolsSection === "location" ? " map-tools__category-btn--active" : ""}${(streetPickMode || placemarkMode || myPlacesOpen || coordinateSearchOpen || Object.values(referenceLayers).some(Boolean)) ? " map-tools__category-btn--has-active" : ""}`}
+              onClick={() => {
+                setActiveToolsSection((current) => current === "location" ? null : "location");
+              }}
+              aria-label="Location and map tools"
+              aria-expanded={activeToolsSection === "location"}
+              title="Location tools"
+              data-testid="map-tools-category-location"
+            >
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" width="19" height="19" aria-hidden="true">
+                <path d="M12 22s7-6.1 7-13a7 7 0 1 0-14 0c0 6.9 7 13 7 13Z" />
+                <circle cx="12" cy="9" r="2.2" />
+              </svg>
+              {(streetPickMode || placemarkMode || myPlacesOpen || coordinateSearchOpen || Object.values(referenceLayers).some(Boolean)) && <span className="map-tools__category-dot" aria-hidden="true" />}
+            </button>
+          </div>
+
+          <div className="map-tools__content">
+          {activeToolsSection === "ai" && (
+          <div className="map-tools__floating-panel map-tools__floating-panel--ai" data-testid="ai-tools-panel">
+            <div className="map-controls map-controls--floating-panel">
+              <div className="map-controls__group ai-detection-control" data-testid="ai-detection-control" ref={menuRef}>
+          <button
+            type="button"
+            className={`map-controls__btn${(detectionMode || roadInspectionActive) ? " map-controls__btn--active" : ""}`}
+            onClick={() => setMenuOpen((v) => !v)}
+            data-testid="ai-detection-toggle"
+          >
+            <svg viewBox="0 0 24 24" fill="currentColor" width="14" height="14" style={{ marginRight: 4, verticalAlign: -2 }}>
+              <path d="M12 2l1.8 5.2L19 9l-5.2 1.8L12 16l-1.8-5.2L5 9l5.2-1.8L12 2z" />
+              <path d="M19 13l.9 2.1L22 16l-2.1.9L19 19l-.9-2.1L16 16l2.1-.9L19 13z" />
+            </svg>
+            AI Detection{roadInspectionActive ? ": Road Inspection" : detectionMode ? `: ${DETECTION_MODE_LABEL[detectionMode]}` : ""}
+          </button>
+          {detectionMode && (
+            <button
+              type="button"
+              className={`ai-overlay-toggle${aiOverlayEnabled ? " ai-overlay-toggle--on" : ""}`}
+              onClick={onToggleAiOverlay}
+              data-testid="ai-overlay-toggle"
+              title={aiOverlayEnabled ? "Turn off the AI red/yellow/green overlay" : "Turn on the AI red/yellow/green overlay"}
+            >
+              <span className="ai-overlay-toggle__track">
+                <span className="ai-overlay-toggle__knob" />
+              </span>
+              AI {aiOverlayEnabled ? "ON" : "OFF"}
+            </button>
+          )}
+          {menuOpen && menuPos && createPortal(
+            <div
+              className="ai-detection-menu"
+              data-testid="ai-detection-menu"
+              ref={(node) => {
+                portalMenuRef.current = node;
+                aiMenuDrag.panelRef.current = node;
+              }}
+              style={{ position: "fixed", top: menuPos.top, left: menuPos.left, ...aiMenuDrag.style }}
+            >
+              <div className="ai-detection-menu__dragbar" onPointerDown={aiMenuDrag.onDragStart}>
+                <span>AI Detection</span>
+                <small>Drag</small>
+                <button type="button" onClick={() => setMenuOpen(false)} aria-label="Close AI Detection">×</button>
               </div>
-              )}
-
-            </div>
-
-            <div className="map-tools__location-anchor">
+              {(["poles", "drains", "manholes", "roads"] as const).map((mode) => (
+                <button
+                  type="button"
+                  key={mode}
+                  className={`ai-detection-menu__item${detectionMode === mode ? " ai-detection-menu__item--active" : ""}`}
+                  onClick={() => { onToggleDetectionMode(mode); setMenuOpen(false); }}
+                  data-testid={`detection-mode-${mode}`}
+                >
+                  {DETECTION_MODE_LABEL[mode]}
+                </button>
+              ))}
               <button
                 type="button"
-                ref={locationCategoryBtnRef}
-                className={`map-tools__category-btn${activeToolsSection === "location" ? " map-tools__category-btn--active" : ""}${(streetPickMode || placemarkMode || myPlacesOpen || coordinateSearchOpen || Object.values(referenceLayers).some(Boolean)) ? " map-tools__category-btn--has-active" : ""}`}
-                onClick={() => {
-                  setActiveToolsSection((current) => current === "location" ? null : "location");
-                }}
-                aria-label="Location and map tools"
-                aria-expanded={activeToolsSection === "location"}
-                aria-controls="location-tools-options"
-                title="Location tools"
-                data-testid="map-tools-category-location"
+                className={`ai-detection-menu__item${roadInspectionActive ? " ai-detection-menu__item--active" : ""}`}
+                onClick={() => { onToggleRoadInspection(); setMenuOpen(false); }}
+                data-testid="road-inspection-mode"
               >
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" width="16" height="16" aria-hidden="true">
-                  <path d="M12 22s7-6.1 7-13a7 7 0 1 0-14 0c0 6.9 7 13 7 13Z" />
-                  <circle cx="12" cy="9" r="2.2" />
-                </svg>
-                {(streetPickMode || placemarkMode || myPlacesOpen || coordinateSearchOpen || Object.values(referenceLayers).some(Boolean)) && <span className="map-tools__category-dot" aria-hidden="true" />}
+                Road Inspection
               </button>
-
-              {locationMounted && (
-              <div className={`map-tools__location-options${locationShown ? " is-open" : ""}`} id="location-tools-options" role="toolbar" aria-label="Location tools" aria-hidden={!locationOpen}>
-                <div className="map-controls__group map-controls__group--annotations" data-testid="annotation-controls">
-              <button
-                type="button"
-                className={`map-controls__btn${placemarkMode ? " map-controls__btn--active" : ""}`}
-                onClick={onTogglePlacemark}
-                data-testid="placemark-tool"
-                aria-pressed={placemarkMode}
-                aria-label="Placemark"
-                title="Place a saved placemark on the map"
-              >
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" width="16" height="16" aria-hidden="true">
-                  <path d="M12 22s7-6.1 7-13a7 7 0 1 0-14 0c0 6.9 7 13 7 13Z" />
-                  <circle cx="12" cy="9" r="2.2" />
-                </svg>
-              </button>
-              <button
-                type="button"
-                className={`map-controls__btn${myPlacesOpen ? " map-controls__btn--active" : ""}`}
-                onClick={onToggleMyPlaces}
-                data-testid="my-places-toggle"
-                aria-pressed={myPlacesOpen}
-                aria-label={`My Places${placemarkCount > 0 ? ` · ${placemarkCount}` : ""}`}
-                title={`My Places${placemarkCount > 0 ? ` · ${placemarkCount}` : ""}`}
-              >
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" width="16" height="16" aria-hidden="true">
-                  <path d="M4 5.5A2.5 2.5 0 0 1 6.5 3H18a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6.5A2.5 2.5 0 0 1 4 18.5v-13Z" />
-                  <path d="M8 3v18M12 8h5M12 12h5" />
-                </svg>
-              </button>
-              <button
-                type="button"
-                className={`map-controls__btn${coordinateSearchOpen ? " map-controls__btn--active" : ""}`}
-                onClick={onToggleCoordinateSearch}
-                data-testid="coordinate-search-toggle"
-                aria-pressed={coordinateSearchOpen}
-                aria-label="Coordinate Search"
-                title="Enter latitude and longitude and fly to the exact location"
-              >
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" width="16" height="16" aria-hidden="true">
-                  <circle cx="12" cy="12" r="6" />
-                  <path d="M12 2v4M12 18v4M2 12h4M18 12h4" />
-                  <circle cx="12" cy="12" r="1.5" fill="currentColor" stroke="none" />
-                </svg>
-              </button>
-              <ReferenceLayersMenu value={referenceLayers} onChange={onToggleReferenceLayer} />
-              <button
-                className={`map-controls__btn map-controls__btn--street-view${streetPickMode ? " map-controls__btn--active" : ""}`}
-                onClick={onToggleStreetView}
-                data-testid="street-view-picker"
-                title="Select a map location and open the nearest Google Street View panorama"
-                aria-pressed={streetPickMode}
-                aria-label="Street View"
-              >
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" width="16" height="16" aria-hidden="true">
-                  <circle cx="12" cy="5" r="2.5" fill="currentColor" stroke="none" />
-                  <path d="M8 10c1.2-1.2 2.5-1.8 4-1.8s2.8.6 4 1.8M9.2 10.2 8 16m6.8-5.8L16 16M9.3 13h5.4M10.5 16v5m3-5v5" />
-                </svg>
-              </button>
-              <button
-                type="button"
-                className={`map-controls__btn${measureActive ? " map-controls__btn--active" : ""}`}
-                onClick={onToggleMeasure}
-                data-testid="location-tools-measure"
-                aria-pressed={measureActive}
-                aria-label="Measure"
-                title="Measure"
-              >
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" width="16" height="16" aria-hidden="true">
-                  <rect x="2.5" y="8" width="19" height="8" rx="1.5" transform="rotate(-45 12 12)" />
-                  <g transform="rotate(-45 12 12)">
-                    <path d="M6 8v3M9.5 8v2M13 8v3M16.5 8v2" />
-                  </g>
-                </svg>
-              </button>
-                </div>
+            </div>,
+            document.body
+          )}
               </div>
-              )}
             </div>
+          </div>
+          )}
+
+          {activeToolsSection === "map" && (
+          <div className="map-tools__floating-panel map-tools__floating-panel--map" data-testid="map-view-panel">
+            <div className="map-controls map-controls--floating-panel">
+              <div className="map-controls__group" data-testid="basemap-toggle">
+          <button className={`map-controls__btn${basemap === "street" ? " map-controls__btn--active" : ""}`} onClick={() => onChangeBasemap("street")} data-testid="basemap-street">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="14" height="14" style={{ marginRight: 4, verticalAlign: -2 }}>
+              <path d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-4 0h4" />
+            </svg>
+            <span className="map-controls__btn-label">Map</span>
+          </button>
+          <button className={`map-controls__btn${basemap === "satellite" ? " map-controls__btn--active" : ""}`} onClick={() => onChangeBasemap("satellite")} data-testid="basemap-satellite">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="14" height="14" style={{ marginRight: 4, verticalAlign: -2 }}>
+              <circle cx="12" cy="12" r="10" />
+              <path d="M2 12h20M12 2a15.3 15.3 0 014 10 15.3 15.3 0 01-4 10 15.3 15.3 0 01-4-10 15.3 15.3 0 014-10z" />
+            </svg>
+            <span className="map-controls__btn-label">Satellite</span>
+          </button>
+          <button
+            className={`map-controls__btn${basemap === "off" ? " map-controls__btn--active" : ""}`}
+            onClick={() => onChangeBasemap("off")}
+            data-testid="basemap-off"
+            title="Hide the basemap so raster overlays/vector data aren't limited by its tile resolution when zooming in close"
+          >
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="14" height="14" style={{ marginRight: 4, verticalAlign: -2 }}>
+              <path d="M3 3l18 18M10.58 10.58a2 2 0 002.83 2.83M9.88 4.24A9.4 9.4 0 0112 4c5 0 8.5 4 10 8-.46 1.3-1.13 2.6-2 3.79M6.6 6.6C4.7 8 3.2 10 2 12c1.5 4 5 8 10 8 1.35 0 2.63-.28 3.8-.78" />
+            </svg>
+            <span className="map-controls__btn-label">Off</span>
+          </button>
+              </div>
+            </div>
+          </div>
+          )}
+
+          {activeToolsSection === "location" && (
+          <div className="map-tools__floating-panel map-tools__floating-panel--location" data-testid="location-tools-panel">
+            <div className="map-controls map-controls--floating-panel map-controls--location-panel">
+              <div className="map-controls__group map-controls__group--annotations" data-testid="annotation-controls">
+          <button
+            type="button"
+            className={`map-controls__btn${placemarkMode ? " map-controls__btn--active" : ""}`}
+            onClick={onTogglePlacemark}
+            data-testid="placemark-tool"
+            aria-pressed={placemarkMode}
+            title="Place a saved placemark on the map"
+          >
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" width="15" height="15" style={{ marginRight: 4, verticalAlign: -2 }} aria-hidden="true">
+              <path d="M12 22s7-6.1 7-13a7 7 0 1 0-14 0c0 6.9 7 13 7 13Z" />
+              <circle cx="12" cy="9" r="2.2" />
+            </svg>
+            <span className="map-controls__btn-label">Placemark</span>
+          </button>
+          <button
+            type="button"
+            className={`map-controls__btn${myPlacesOpen ? " map-controls__btn--active" : ""}`}
+            onClick={onToggleMyPlaces}
+            data-testid="my-places-toggle"
+            aria-pressed={myPlacesOpen}
+            title="Search and manage saved placemarks"
+          >
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" width="15" height="15" style={{ marginRight: 4, verticalAlign: -2 }} aria-hidden="true">
+              <path d="M4 5.5A2.5 2.5 0 0 1 6.5 3H18a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6.5A2.5 2.5 0 0 1 4 18.5v-13Z" />
+              <path d="M8 3v18M12 8h5M12 12h5" />
+            </svg>
+            <span className="map-controls__btn-label">My Places{placemarkCount > 0 ? ` · ${placemarkCount}` : ""}</span>
+          </button>
+          <button
+            type="button"
+            className={`map-controls__btn${coordinateSearchOpen ? " map-controls__btn--active" : ""}`}
+            onClick={onToggleCoordinateSearch}
+            data-testid="coordinate-search-toggle"
+            aria-pressed={coordinateSearchOpen}
+            title="Enter latitude and longitude and fly to the exact location"
+          >
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" width="15" height="15" style={{ marginRight: 4, verticalAlign: -2 }} aria-hidden="true">
+              <circle cx="12" cy="12" r="6" />
+              <path d="M12 2v4M12 18v4M2 12h4M18 12h4" />
+              <circle cx="12" cy="12" r="1.5" fill="currentColor" stroke="none" />
+            </svg>
+            Coordinate Search
+          </button>
+          <ReferenceLayersMenu value={referenceLayers} onChange={onToggleReferenceLayer} />
+              </div>
+              <div className="map-controls__group map-controls__group--street-view">
+          <button
+            className={`map-controls__btn map-controls__btn--street-view${streetPickMode ? " map-controls__btn--active" : ""}`}
+            onClick={onToggleStreetView}
+            data-testid="street-view-picker"
+            title="Select a map location and open the nearest Google Street View panorama"
+            aria-pressed={streetPickMode}
+          >
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" width="15" height="15" style={{ marginRight: 4, verticalAlign: -2 }}>
+              <circle cx="12" cy="5" r="2.5" fill="currentColor" stroke="none" />
+              <path d="M8 10c1.2-1.2 2.5-1.8 4-1.8s2.8.6 4 1.8M9.2 10.2 8 16m6.8-5.8L16 16M9.3 13h5.4M10.5 16v5m3-5v5" />
+            </svg>
+            <span className="map-controls__btn-label">Street View</span>
+          </button>
+              </div>
+            </div>
+          </div>
+          )}
           </div>
         </div>
         {/* AI Detection: an independent floating control, not a tools-menu
-            category. It sits directly below the permanent category rail and
-            dynamically slides down (via aiOffsetY, see measureAiOffset) when
-            a category panel expands, but its own panel opens to the right
-            and is never gated by activeToolsSection. */}
+            category. It sits directly below the toggle and dynamically
+            slides down (via aiOffsetY, see measureAiOffset) when the tools
+            menu expands, but its own panel opens to the right and is never
+            gated by toolsMenuOpen/activeToolsSection. */}
         <div
           className="map-tools__ai-wrap"
           ref={aiWrapRef}
@@ -6811,7 +10305,7 @@ function MapControls({
             title="AI detection"
             data-testid="map-tools-category-ai"
           >
-            <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="currentColor" width="19" height="19" aria-hidden="true">
               <path d="M12 2l1.8 5.2L19 9l-5.2 1.8L12 16l-1.8-5.2L5 9l5.2-1.8L12 2Z" />
               <path d="m19 13 .9 2.1L22 16l-2.1.9L19 19l-.9-2.1L16 16l2.1-.9L19 13Z" />
             </svg>
@@ -6900,12 +10394,14 @@ function formatAttrValue(v: unknown): string {
 
 function HoverTooltip({ hover }: { hover: HoverInfo | null }) {
   if (!hover) return null;
+  const hasHoverCoordinates = Number.isFinite(hover.latitude) && Number.isFinite(hover.longitude);
   // Only show attributes that actually have a value — most survey rows
   // leave many condition/status fields blank, and a tooltip full of "—"
   // placeholders is noise, not information.
   const isPhoto = hover.category === "site_photo";
   const isPanorama = isPhoto && hover.attributes.is_360 === true;
   const attrEntries = Object.entries(hover.attributes).filter(([k, v]) => {
+    if (hasHoverCoordinates && isCoordinateAttributeKey(k)) return false;
     if (k === "gdb_layer" || k.startsWith("_")) return false;
     // Internal plumbing fields, not something a user needs to see in a tooltip.
     if (isPhoto && (k === "photo_key" || k === "content_type" || k === "is_360")) return false;
@@ -6979,8 +10475,20 @@ function HoverTooltip({ hover }: { hover: HoverInfo | null }) {
           {hover.verification.approvedAt && <div><span>Approved Date</span><strong>{new Date(hover.verification.approvedAt).toLocaleString()}</strong></div>}
         </div>
       )}
-      {attrEntries.length > 0 && (
+      {(hasHoverCoordinates || attrEntries.length > 0) && (
         <div className="map__tooltip-attrs">
+          {hasHoverCoordinates && (
+            <>
+              <div className="map__tooltip-attr-row">
+                <span className="map__tooltip-attr-key">Latitude</span>
+                <span className="map__tooltip-attr-val">{formatHoverCoordinate(hover.latitude!)}</span>
+              </div>
+              <div className="map__tooltip-attr-row">
+                <span className="map__tooltip-attr-key">Longitude</span>
+                <span className="map__tooltip-attr-val">{formatHoverCoordinate(hover.longitude!)}</span>
+              </div>
+            </>
+          )}
           {attrEntries.map(([k, v]) => (
             <div className="map__tooltip-attr-row" key={k}>
               <span className="map__tooltip-attr-key">{k}</span>
@@ -6991,6 +10499,26 @@ function HoverTooltip({ hover }: { hover: HoverInfo | null }) {
       )}
     </div>
   );
+}
+
+function isCoordinateAttributeKey(key: string): boolean {
+  const normalized = key.trim().toLowerCase().replace(/[\s_-]+/g, "");
+  return [
+    "latitude",
+    "lat",
+    "gpslat",
+    "ylat",
+    "longitude",
+    "long",
+    "lng",
+    "lon",
+    "gpslon",
+    "xlong",
+  ].includes(normalized);
+}
+
+function formatHoverCoordinate(value: number): string {
+  return value.toFixed(6);
 }
 
 function formatDms(value: number, positiveSuffix: string, negativeSuffix: string): string {
@@ -7061,7 +10589,7 @@ function MapStatusBar({
  * the map's zoom is the single source of truth (passed in via `zoom`), and
  * every interaction (click ends, drag, track click) just calls `onChange`;
  * MapCanvas is the one that actually calls `map.setZoom()`. */
-function ZoomSlider({
+export function ZoomSlider({
   zoom,
   minZoom,
   maxZoom,

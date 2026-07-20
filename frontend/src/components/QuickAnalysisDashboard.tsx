@@ -35,7 +35,7 @@ export function QuickAnalysisDashboard({
   );
 
   const maxCount = Math.max(1, ...data.right.map((item) => item.count));
-  const showRunAudit = data.right.length === 0 && ["drain-encroachment", "streetlight-spacing", "manhole-hotspots", "road-snapshot", "priority-zones"].includes(cardId);
+  const showRunAudit = data.right.length === 0 && ["drain-encroachment", "streetlight-spacing", "manhole-hotspots", "road-width", "priority-zones"].includes(cardId);
 
   return (
     <div className="quick-dash" data-testid="quick-analysis-dashboard">

@@ -66,6 +66,14 @@ const CARDS: QuickAnalysisCard[] = [
     action: "quick",
     icon: <svg {...ICON_PROPS}><circle cx="12" cy="12" r="8.5" /><path d="M8.3 9.7h7.4M8.3 12h7.4M8.3 14.3h7.4" /></svg>,
   },
+  {
+    id: "road-width",
+    title: "Road Width Check",
+    description: "Every road segment where the carriageway narrows below the local average, drawn on the cadastral map.",
+    cta: "View on map",
+    action: "quick",
+    icon: <svg {...ICON_PROPS}><path d="M4 9h16M4 15h16" /><path d="M8 9V6m8 3V6M8 18v-3m8 3v-3" /></svg>,
+  },
 ];
 
 interface QuickAnalysisPanelProps {

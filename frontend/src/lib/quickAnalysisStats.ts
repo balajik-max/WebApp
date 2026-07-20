@@ -211,7 +211,7 @@ export function computeDashboardData(cardId: string, ctx: QuickAnalysisContext):
         rightEmptyLabel: "No manholes loaded in this dataset",
       };
     }
-    case "road-snapshot": {
+    case "road-width": {
       const list = anomaliesByType(anomalies, "road_width_narrowing");
       const counts = colorCounts(list);
       const roadCount = categoryStats.find((c) => normalizeCategory(c.category) === "concrete road")?.count ?? 0;

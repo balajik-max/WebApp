@@ -5,7 +5,7 @@ import {
 } from "recharts";
 import type { UrbanFeature } from "../lib/types";
 import { colorForCategory } from "../lib/categoryColors";
-import { fetchManholeReadiness, type DrainEncroachmentReport, type ManholeReadinessReport } from "../lib/workflow";
+import { fetchManholeReadiness, type DrainEncroachmentReport, type ManholeReadinessReport, type SpatialAnomaly } from "../lib/workflow";
 import { computeDashboardData, type LegendEntry } from "../lib/quickAnalysisStats";
 
 export type QuickAnalysisTool = "select" | "measure" | null;
@@ -41,6 +41,7 @@ interface QuickAnalysisMapDashboardProps {
   manholeNetworkRouteCount: number;
   manholeNetworkFlowCount: number;
   manholeNetworkStatusCounts: { good: number; warning: number; critical: number; unconnected: number };
+  anomalies: SpatialAnomaly[];
   selectedFeature: UrbanFeature | null;
   selectedConnection: ManholeConnectionDetail | null;
   activeTool: QuickAnalysisTool;
@@ -133,6 +134,7 @@ export function QuickAnalysisMapDashboard({
   drainEncroachment, drainEncroachmentLoading, drainEncroachmentError,
   manholeNetworkLoading, manholeNetworkError, manholeNetworkRouteCount, manholeNetworkFlowCount,
   manholeNetworkStatusCounts,
+  anomalies,
   selectedFeature, selectedConnection, activeTool, onActivateMeasure,
   onClearSelectedFeature, onClearSelectedConnection, onClose,
 }: QuickAnalysisMapDashboardProps) {
@@ -171,7 +173,7 @@ export function QuickAnalysisMapDashboard({
     return computeDashboardData(cardId, {
       loadedFeatures: dashboardFeatures,
       categoryStats,
-      anomalies: [],
+      anomalies,
       activeDatasetIds: datasetIds,
       readiness,
     });
@@ -248,6 +250,54 @@ export function QuickAnalysisMapDashboard({
     { label: "Check", count: manholeNetworkStatusCounts.warning, color: "#eab308" },
     { label: "Attention", count: manholeNetworkStatusCounts.critical, color: "#dc2626" },
   ];
+  const roadWidthAnomalies = useMemo(
+    () => anomalies.filter((a) => a.anomaly_type === "road_width_narrowing"),
+    [anomalies, cardId]
+  );
+  const roadWidthSeverity = useMemo(() => {
+    const counts = { red: 0, yellow: 0, green: 0 };
+    for (const a of roadWidthAnomalies) counts[a.color as keyof typeof counts] += 1;
+    return [
+      { label: "Red — needs attention", value: counts.red, color: "#ef4444" },
+      { label: "Yellow — watch", value: counts.yellow, color: "#eab308" },
+      { label: "Green — OK", value: counts.green, color: "#22c55e" },
+    ].filter((entry) => entry.value > 0);
+  }, [roadWidthAnomalies]);
+  const roadWidthAvgWidthM = roadWidthAnomalies.length
+    ? roadWidthAnomalies.reduce((sum, a) => sum + (Number(a.anomaly_metadata?.width_m) || 0), 0) / roadWidthAnomalies.length
+    : null;
+  const wktLineCoords = (wkt: unknown): [number, number][] | null => {
+    const value = typeof wkt === "string" ? wkt : "";
+    const m = value.match(/LINESTRING\s*\(([^)]+)\)/i);
+    if (!m) return null;
+    return m[1]
+      .trim()
+      .split(",")
+      .map((pair) => {
+        const [lon, lat] = pair.trim().split(/\s+/).map(Number);
+        return [lon, lat] as [number, number];
+      });
+  };
+  const roadWidthAffectedM = useMemo(() => {
+    let total = 0;
+    for (const a of roadWidthAnomalies) {
+      const coords = wktLineCoords(a.anomaly_metadata?.affected_line_wkt);
+      if (coords) total += lineLength(coords);
+    }
+    return total;
+  }, [roadWidthAnomalies]);
+  const roadWidthEdgeBuildings = useMemo(() => {
+    let buildingEdges = 0;
+    for (const a of roadWidthAnomalies) {
+      const meta = a.anomaly_metadata ?? {};
+      if (/building|temple|structure/i.test(String(meta.left_edge_category ?? ""))) buildingEdges += 1;
+      if (/building|temple|structure/i.test(String(meta.right_edge_category ?? ""))) buildingEdges += 1;
+    }
+    return buildingEdges;
+  }, [roadWidthAnomalies]);
+  const roadWidthWorstDropPct = roadWidthAnomalies.length
+    ? Math.max(...roadWidthAnomalies.map((a) => Number(a.anomaly_metadata?.drop_pct) || 0))
+    : null;
 
   return (
     <section className="quick-map-dashboard" aria-label={`${title} dashboard`} data-testid="quick-analysis-map-dashboard">
@@ -376,6 +426,11 @@ export function QuickAnalysisMapDashboard({
                 { label: "Verified flow", value: String(manholeNetworkFlowCount) },
                 { label: "Needs attention", value: String(manholeNetworkStatusCounts.critical + manholeNetworkStatusCounts.warning) },
                 { label: "Unconnected", value: String(manholeNetworkStatusCounts.unconnected) },
+              ] : cardId === "road-width" ? [
+                { label: "Narrow segments", value: String(roadWidthAnomalies.length) },
+                { label: "Affected distance", value: formatLength(roadWidthAffectedM) },
+                { label: "Edge buildings", value: String(roadWidthEdgeBuildings) },
+                { label: "Worst drop", value: roadWidthWorstDropPct !== null ? `${roadWidthWorstDropPct.toFixed(0)}%` : "—" },
               ] : data.bottom).map((tile) => (
                 <article className="quick-map-dashboard__metric" key={tile.label}>
                   <span>{tile.label}</span>
@@ -526,6 +581,57 @@ export function QuickAnalysisMapDashboard({
                 <li>{drainEncroachment.affected_drains} of {drainEncroachment.total_drains} drain segments are affected; {drainEncroachment.clear_drains} have no building crossing.</li>
                 <li>{formatLength(drainEncroachment.crossing_length_m)} of drain geometry lies inside building footprints.</li>
                 {drainEncroachment.drains[0] && <li>The worst segment ({drainEncroachment.drains[0].fid ? `FID ${drainEncroachment.drains[0].fid}` : drainEncroachment.drains[0].drain_id.slice(0, 8)}) intersects {drainEncroachment.drains[0].affected_buildings} buildings across {formatLength(drainEncroachment.drains[0].crossing_length_m)}.</li>}
+              </ul>
+            </article>
+          </div>
+        ) : cardId === "road-width" ? (
+          <div className="quick-map-dashboard__analysis-grid">
+            <article className="quick-map-dashboard__chart-card">
+              <h3>Narrowing severity</h3>
+              <p>Flagged carriageway stretches below the local average width</p>
+              <div className="quick-map-dashboard__chart">
+                <ResponsiveContainer width="100%" height="100%">
+                  <BarChart data={roadWidthSeverity} margin={{ top: 6, right: 8, bottom: 0, left: -22 }}>
+                    <CartesianGrid stroke="#27364a" strokeDasharray="3 3" vertical={false} />
+                    <XAxis dataKey="label" tick={{ fill: "#94a3b8", fontSize: 8 }} axisLine={false} tickLine={false} interval={0} />
+                    <YAxis allowDecimals={false} domain={[0, Math.max(1, ...roadWidthSeverity.map((e) => e.value))]} tick={{ fill: "#94a3b8", fontSize: 9 }} axisLine={false} tickLine={false} />
+                    <Tooltip contentStyle={CHART_TOOLTIP_STYLE} cursor={{ fill: "rgba(20,184,166,0.08)" }} />
+                    <Bar dataKey="value" name="Segments" radius={[4, 4, 0, 0]}>
+                      {roadWidthSeverity.map((entry) => <Cell key={entry.label} fill={entry.color} />)}
+                    </Bar>
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
+            </article>
+
+            <article className="quick-map-dashboard__chart-card quick-map-dashboard__chart-card--donut">
+              <h3>Severity mix</h3>
+              <p>Red / yellow / green narrowing findings on the cadastral map</p>
+              <div className="quick-map-dashboard__donut-wrap">
+                <div className="quick-map-dashboard__donut">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <PieChart>
+                      <Pie data={roadWidthSeverity} dataKey="value" nameKey="label" innerRadius={36} outerRadius={55} paddingAngle={2}>
+                        {roadWidthSeverity.map((entry) => <Cell key={entry.label} fill={entry.color} />)}
+                      </Pie>
+                      <Tooltip contentStyle={CHART_TOOLTIP_STYLE} />
+                    </PieChart>
+                  </ResponsiveContainer>
+                  <div><strong>{roadWidthAnomalies.length}</strong><span>flagged</span></div>
+                </div>
+                <ul>{roadWidthSeverity.map((entry) => <li key={entry.label}><i style={{ background: entry.color }} /><span>{entry.label}</span><b>{entry.value}</b></li>)}</ul>
+              </div>
+            </article>
+
+            <article className="quick-map-dashboard__insights">
+              <h3>Road width findings</h3>
+              <p>Segments drawn in red/yellow on the cadastral map</p>
+              <ul>
+                <li>{roadWidthAnomalies.length} road segment{roadWidthAnomalies.length === 1 ? "" : "s"} narrowed below the local average carriageway width, spanning {formatLength(roadWidthAffectedM)} of road.</li>
+                <li>{roadWidthSeverity.find((e) => e.label.startsWith("Red"))?.value ?? 0} need attention (red); {roadWidthSeverity.find((e) => e.label.startsWith("Yellow"))?.value ?? 0} flagged for review (yellow).</li>
+                <li>{roadWidthAvgWidthM !== null ? `Average narrowed width is ${roadWidthAvgWidthM.toFixed(1)} m` : "No width recorded"}{roadWidthWorstDropPct !== null ? `; worst drop ${roadWidthWorstDropPct.toFixed(0)}% below the local average.` : ""}</li>
+                <li>{roadWidthEdgeBuildings} narrowing edge{roadWidthEdgeBuildings === 1 ? "" : "s"} back onto a building, temple or structure footprint — the usual cause of the squeeze.</li>
+                <li>Run the Spatial Audit if no narrowing has been detected for this survey.</li>
               </ul>
             </article>
           </div>
