@@ -36,10 +36,8 @@ import {
   bulkDeletePlacemarks, createPlacemark, deletePlacemark, fetchElevationSample, fetchPlacemarks,
   updatePlacemark, type ElevationSample, type Placemark, type PlacemarkDraft,
 } from "../lib/placemarks";
-import { ManholeRecommendCard } from "./ManholeRecommendCard";
 import { Map3DViewer } from "./Map3DViewer";
 import { GroupedFieldList } from "./GroupedFieldList";
-import { aiManholeRecommend, type AiAnswer } from "../lib/ai";
 
 // .obj datasets are persisted with file_type "other" (the enum has no
 // dedicated OBJ value), so detect them from the stored filename instead.
@@ -701,18 +699,12 @@ const AI_NEEDED_COLOR = "#22c55e";    // green
 const ANOMALY_SOURCE = "spatial-anomalies";
 const LAYER_ANOMALIES = "spatial-anomalies-points";
 
-// AI Manhole Recommendation Engine — proposed/rehab pipe routes, its own
-// source/layer so it never touches the anomaly/highlight layers above.
-const MANHOLE_ROUTES_SOURCE = "manhole-recommend-routes";
-const LAYER_MANHOLE_ROUTES = "manhole-recommend-routes-line";
-const LAYER_MANHOLE_FLOW_ARROWS = "manhole-recommend-routes-flow-arrows";
-const FLOW_ARROW_ICON_ID = "manhole-flow-arrow-icon";
-const MANHOLE_POINTS_SOURCE = "manhole-recommend-points";
-const LAYER_MANHOLE_POINTS = "manhole-recommend-points-circle";
-const MANHOLE_UNCONNECTED_SOURCE = "manhole-recommend-unconnected";
-const LAYER_MANHOLE_UNCONNECTED = "manhole-recommend-unconnected-circle";
-const MANHOLE_ROUTE_COLOR = "#3aa1ff";
-const MANHOLE_UNCONNECTED_COLOR = "#9b59b6";
+// Manhole heatmap — condition-audit density shown in "manholes" AI detection
+// mode instead of the individual red/yellow/green anomaly dots above.
+const MANHOLE_HEATMAP_SOURCE = "manhole-heatmap-source";
+const LAYER_MANHOLE_HEATMAP = "manhole-heatmap-layer";
+const LAYER_MANHOLE_HEATMAP_POINTS = "manhole-heatmap-points";
+
 const ANOMALY_COLOR_EXPR: maplibregl.ExpressionSpecification = [
   "case",
   ["==", ["get", "status"], "resolved"], "#2563eb",
@@ -985,29 +977,6 @@ function buildPhotoIconImageData(): ImageData {
   return ctx.getImageData(0, 0, w, h);
 }
 
-/** Small right-pointing triangle used as the flow-direction arrow along
- * manhole-recommend route lines. Icon-based rather than text-field, since
- * this map style has no "glyphs" endpoint configured (text-field symbol
- * layers fail validation without one). */
-function buildFlowArrowImageData(): ImageData {
-  const w = 24, h = 24;
-  const canvas = document.createElement("canvas");
-  canvas.width = w;
-  canvas.height = h;
-  const ctx = canvas.getContext("2d")!;
-  ctx.beginPath();
-  ctx.moveTo(2, 3);
-  ctx.lineTo(22, 12);
-  ctx.lineTo(2, 21);
-  ctx.closePath();
-  ctx.fillStyle = MANHOLE_ROUTE_COLOR;
-  ctx.strokeStyle = "#0b1013";
-  ctx.lineWidth = 2;
-  ctx.lineJoin = "round";
-  ctx.fill();
-  ctx.stroke();
-  return ctx.getImageData(0, 0, w, h);
-}
 
 function decodeFeature(raw: {
   id?: string | number;
@@ -1478,25 +1447,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
   const [anomalies, setAnomalies] = useState<SpatialAnomaly[]>([]);
   const [selectedAnomalyId, setSelectedAnomalyId] = useState<string | null>(null);
 
-  // AI Manhole Recommendation Engine — computed fresh per click/plan-run
-  // (not pre-persisted like the spatial audit engine above), so its own
-  // loading/error/answer state lives separately from the anomaly card's.
-  const [manholeRecommendAnswer, setManholeRecommendAnswer] = useState<AiAnswer | null>(null);
-  const [manholeRecommendLoading, setManholeRecommendLoading] = useState(false);
-  const [manholeRecommendError, setManholeRecommendError] = useState<string | null>(null);
-  const [manholeRecommendOpen, setManholeRecommendOpen] = useState(false);
-  // Single-manhole click ("feature" mode: real pipe suggestion — material,
-  // diameter, RLs, route) — deliberately its OWN state, separate from the
-  // network-mode state above. The map's drawn network (MANHOLE_ROUTES_SOURCE)
-  // reads only manholeRecommendAnswer, never this one, so clicking a manhole
-  // to see its pipe suggestion can never clear an already-drawn network.
-  const [manholeFeatureAnswer, setManholeFeatureAnswer] = useState<AiAnswer | null>(null);
-  const [manholeFeatureLoading, setManholeFeatureLoading] = useState(false);
-  const [manholeFeatureError, setManholeFeatureError] = useState<string | null>(null);
-  const [manholeFeatureOpen, setManholeFeatureOpen] = useState(false);
-  // Phase C — 3D subsurface view, opened from the same recommend result
-  // (or on its own, showing real terrain/buildings/manholes with no plan
-  // run yet) so it never shows a fact the 2D view didn't already show.
+  // Phase C — 3D subsurface view, showing real terrain/buildings/manholes.
   const [show3DPlan, setShow3DPlan] = useState(false);
 
   // Which AI Detection focus mode is active (null = normal full view).
@@ -3500,154 +3451,6 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     });
   }, [mapReady, anomalies]);
 
-  // Push the current manhole-recommend answer's routes into their own map
-  // source whenever the answer changes (including clearing to [] on close).
-  //
-  // Dedup strategy — segment-level union:
-  //   Two manholes rarely share the *exact* same line, but many edges route
-  //   along the SAME road segments (several manholes converge on a common
-  //   downstream node, so their paths overlap on the shared approach). That
-  //   overlap is what renders as "parallel / double lines". Pair-key dedup
-  //   can't catch it, so instead we walk every route as a sequence of small
-  //   directed segments and only ever draw each UNDIRECTED segment once. The
-  //   first route to claim a segment keeps it; later routes that re-trace it
-  //   simply skip that segment (the earlier route already covers it on the
-  //   map). Confirmed-flow edges are processed first so they own the shared
-  //   "trunk" segments and the arrows stay correct. The result: every road
-  //   segment is painted exactly once — no duplicate lines.
-  useEffect(() => {
-    const map = mapRef.current;
-    if (!mapReady || !map) return;
-    const src = map.getSource(MANHOLE_ROUTES_SOURCE) as GeoJSONSource | undefined;
-    if (!src) return;
-    const routes = manholeRecommendAnswer?.routes ?? [];
-
-    // Priority: confirmed-flow edges first (they own shared trunk segments
-    // and keep their arrows), then longer edges (trunks) before short spurs.
-    const ordered = [...routes].sort((a, b) => {
-      const ac = a.flow_confirmed ? 1 : 0;
-      const bc = b.flow_confirmed ? 1 : 0;
-      if (ac !== bc) return bc - ac;
-      return (b.coordinates?.length ?? 0) - (a.coordinates?.length ?? 0);
-    });
-
-    // Coordinate snapping to a coarse ~3m grid. Two paths that run 1-3m apart
-    // for a shared stretch (e.g. two genuine edges sharing a hub manhole and
-    // converging on the same corridor, computed independently and snapped to
-    // slightly different road points) collapse onto the same lattice grid, so
-    // their segments resolve to identical keys and merge into ONE drawn line
-    // instead of rendering as near-parallel duplicates. Snapping every
-    // coordinate *before* segmenting also handles the case where the two paths
-    // have different point densities — their consecutive-segment endpoints will
-    // now coincide on the grid regardless.
-    const GRID = 0.00006; // ~3m at typical latitudes
-    const snap = (v: number): number => Math.round(v / GRID) * GRID;
-    const snapPt = (p: number[]): [number, number] => [snap(p[0]), snap(p[1])];
-    const segKey = (a: number[], b: number[]): string => {
-      const ra = `${a[0].toFixed(5)},${a[1].toFixed(5)}`;
-      const rb = `${b[0].toFixed(5)},${b[1].toFixed(5)}`;
-      return ra < rb ? `${ra}|${rb}` : `${rb}|${ra}`;
-    };
-    // Two snapped points count as the SAME node if they share a grid cell.
-    const sameNode = (a: number[], b: number[]): boolean =>
-      a[0] === b[0] && a[1] === b[1];
-
-    const drawn = new Set<string>();
-    const features: GeoJSON.Feature[] = [];
-
-    for (const route of ordered) {
-      const raw = route.coordinates;
-      if (!raw || raw.length < 2) continue;
-
-      // 1) Snap every coordinate to the grid, then collapse consecutive
-      //    duplicate grid-nodes (this removes a single route's own tiny
-      //    zig-zag / double-back so one path never renders as two lines).
-      const snapped: number[][] = [];
-      for (const p of raw) {
-        const s = snapPt(p);
-        const last = snapped[snapped.length - 1];
-        if (!last || !sameNode(last, s)) snapped.push(s);
-      }
-      if (snapped.length < 2) continue;
-
-      // Group consecutive UN-drawn segments into contiguous runs so the
-      // dashed line style stays continuous; a drawn (shared) segment becomes
-      // a gap that the owning route already covers.
-      let run: number[][] = [snapped[0]];
-      const flush = () => {
-        if (run.length >= 2) {
-          features.push({
-            type: "Feature",
-            geometry: { type: "LineString", coordinates: run },
-            properties: {
-              from_id: route.from_id,
-              to_id: route.to_id,
-              flow_confirmed: route.flow_confirmed ?? false,
-            },
-          } as GeoJSON.Feature);
-        }
-        run = [];
-      };
-
-      let prev = snapped[0];
-      run = [prev];
-      for (let i = 1; i < snapped.length; i++) {
-        const cur = snapped[i];
-        const key = segKey(prev, cur);
-        if (drawn.has(key)) {
-          flush();          // gap: start a fresh run after the shared segment
-          run = [cur];
-        } else {
-          drawn.add(key);
-          run.push(cur);
-        }
-        prev = cur;
-      }
-      flush();
-    }
-
-    src.setData({ type: "FeatureCollection", features });
-  }, [mapReady, manholeRecommendAnswer]);
-
-  // Push the current manhole-recommend answer's proposed manhole locations
-  // (coverage gaps / disconnected manholes) into their own point layer.
-  useEffect(() => {
-    const map = mapRef.current;
-    if (!mapReady || !map) return;
-    const src = map.getSource(MANHOLE_POINTS_SOURCE) as GeoJSONSource | undefined;
-    if (!src) return;
-    const locs = manholeRecommendAnswer?.needed_locations ?? [];
-    src.setData({
-      type: "FeatureCollection",
-      features: locs.map((loc, idx) => ({
-        type: "Feature",
-        id: idx,
-        geometry: { type: "Point", coordinates: [loc.lon, loc.lat] },
-        properties: { id: loc.id, reason: loc.reason },
-      })),
-    });
-  }, [mapReady, manholeRecommendAnswer]);
-
-  // Push manholes with no real sewage/drain pipe within reach (network
-  // mode) into their own point layer, so "not connected to the sewage
-  // line" is a visible fact on the map, not just hidden absence of a line.
-  useEffect(() => {
-    const map = mapRef.current;
-    if (!mapReady || !map) return;
-    const src = map.getSource(MANHOLE_UNCONNECTED_SOURCE) as GeoJSONSource | undefined;
-    if (!src) return;
-    const locs = manholeRecommendAnswer?.unconnected_manholes ?? [];
-    src.setData({
-      type: "FeatureCollection",
-      features: locs.map((loc, idx) => ({
-        type: "Feature",
-        id: idx,
-        geometry: { type: "Point", coordinates: [loc.lon, loc.lat] },
-        properties: { id: loc.id, reason: loc.reason },
-      })),
-    });
-  }, [mapReady, manholeRecommendAnswer]);
-
   // Keep the ref mirror in sync so applyFeatureCollection (a stable
   // useCallback) always reads the current mode on the next fetch.
   useEffect(() => { detectionModeRef.current = detectionMode; }, [detectionMode]);
@@ -3734,7 +3537,10 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
       );
     }
     if (map.getLayer(LAYER_ANOMALIES)) {
-      const anomalyType = aiOn && detectionMode !== "drains" ? DETECTION_MODE_ANOMALY_TYPE[detectionMode] : null;
+      // Manholes mode hides the individual red/green/yellow anomaly dots —
+      // the heatmap overlay replaces them (see the heatmap effect below).
+      const showAnomalies = aiOn && detectionMode !== "drains" && detectionMode !== "manholes";
+      const anomalyType = showAnomalies ? DETECTION_MODE_ANOMALY_TYPE[detectionMode] : null;
       map.setFilter(LAYER_ANOMALIES, anomalyType ? ["==", ["get", "anomaly_type"], anomalyType] : ["==", ["get", "anomaly_type"], "__none__"]);
     }
 
@@ -3743,6 +3549,44 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mapReady, detectionMode, anomalies, aiOverlayEnabled]);
+
+  // Manhole heatmap — populate from the real, persisted manhole_status audit
+  // findings (the same red/yellow/green results the individual anomaly
+  // points would otherwise show), weighted so red hotspots dominate the
+  // density and resolved findings fade out. Visible only in "manholes" AI
+  // detection mode; hidden (and cleared) otherwise.
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!mapReady || !map) return;
+    const isManholes = aiOverlayEnabled && detectionMode === "manholes";
+    const visibility = isManholes ? "visible" : "none";
+    if (map.getLayer(LAYER_MANHOLE_HEATMAP)) {
+      map.setLayoutProperty(LAYER_MANHOLE_HEATMAP, "visibility", visibility);
+    }
+    if (map.getLayer(LAYER_MANHOLE_HEATMAP_POINTS)) {
+      map.setLayoutProperty(LAYER_MANHOLE_HEATMAP_POINTS, "visibility", visibility);
+    }
+    const src = map.getSource(MANHOLE_HEATMAP_SOURCE) as GeoJSONSource | undefined;
+    if (!src) return;
+    if (!isManholes) {
+      src.setData({ type: "FeatureCollection", features: [] });
+      return;
+    }
+    const weightForAnomaly = (color: string, status: string): number => {
+      if (status === "resolved") return 0.1;
+      if (color === "red") return 1;
+      if (color === "yellow") return 0.55;
+      return 0.2; // green
+    };
+    const features: GeoJSON.Feature[] = anomalies
+      .filter((a) => a.anomaly_type === "manhole_status")
+      .map((a) => ({
+        type: "Feature",
+        geometry: { type: "Point", coordinates: [a.lon, a.lat] },
+        properties: { id: a.id, severity: weightForAnomaly(a.color, a.status), color: a.color, status: a.status },
+      }));
+    src.setData({ type: "FeatureCollection", features });
+  }, [mapReady, detectionMode, aiOverlayEnabled, anomalies]);
 
   // Manholes mode is only useful alongside the geotagged photo evidence —
   // auto-include the image dataset so its site-photo pins appear without
@@ -3820,49 +3664,6 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
       onSpatialAuditStatusChange(ok ? "success" : "error");
     });
   }, [hasActiveDatasets, activeDatasetIds, runAudit, onSpatialAuditStatusChange, spatialAuditRequestedRef, spatialAuditExecutedRef]);
-
-  const runManholeFeatureRecommend = useCallback(async (datasetId: string, featureId: string) => {
-    setManholeFeatureOpen(true);
-    setManholeFeatureLoading(true);
-    setManholeFeatureError(null);
-    setManholeFeatureAnswer(null);
-    try {
-      const answer = await aiManholeRecommend({ mode: "feature", dataset_id: datasetId, feature_id: featureId });
-      setManholeFeatureAnswer(answer);
-    } catch (e) {
-      setManholeFeatureError((e as Error).message);
-    } finally {
-      setManholeFeatureLoading(false);
-    }
-  }, []);
-
-  const closeManholeFeature = useCallback(() => {
-    setManholeFeatureOpen(false);
-    setManholeFeatureAnswer(null);
-    setManholeFeatureError(null);
-  }, []);
-
-  const runManholeNetwork = useCallback(async (datasetIds: string[]) => {
-    if (datasetIds.length === 0) return;
-    setManholeRecommendOpen(true);
-    setManholeRecommendLoading(true);
-    setManholeRecommendError(null);
-    setManholeRecommendAnswer(null);
-    try {
-      const answer = await aiManholeRecommend({ mode: "network", dataset_id: datasetIds[0] });
-      setManholeRecommendAnswer(answer);
-    } catch (e) {
-      setManholeRecommendError((e as Error).message);
-    } finally {
-      setManholeRecommendLoading(false);
-    }
-  }, []);
-
-  const closeManholeRecommend = useCallback(() => {
-    setManholeRecommendOpen(false);
-    setManholeRecommendAnswer(null);
-    setManholeRecommendError(null);
-  }, []);
 
   const selectedAnomaly = anomalies.find((a) => a.id === selectedAnomalyId) ?? null;
 
@@ -4346,110 +4147,11 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
         },
       });
 
-      // AI Manhole Recommendation Engine — proposed/rehab pipe routes.
-      map.addSource(MANHOLE_ROUTES_SOURCE, {
-        type: "geojson",
-        data: { type: "FeatureCollection", features: [] },
-      });
-      map.addLayer({
-        id: LAYER_MANHOLE_ROUTES,
-        type: "line",
-        source: MANHOLE_ROUTES_SOURCE,
-        layout: { "line-cap": "round", "line-join": "round" },
-        paint: {
-          "line-color": MANHOLE_ROUTE_COLOR,
-          "line-width": ["interpolate", ["linear"], ["zoom"], 12, 3, 18, 6],
-          "line-dasharray": [0.2, 1.5],
-        },
-      });
-      // Flow-direction arrows drawn along each route line, only where the
-      // direction is actually grounded in real elevation evidence
-      // (flow_confirmed) — an unconfirmed route still shows as a plain line,
-      // never with an arrow asserting a direction we don't have evidence for.
-      if (!map.hasImage(FLOW_ARROW_ICON_ID)) {
-        map.addImage(FLOW_ARROW_ICON_ID, buildFlowArrowImageData(), { pixelRatio: 2 });
-      }
-      map.addLayer({
-        id: LAYER_MANHOLE_FLOW_ARROWS,
-        type: "symbol",
-        source: MANHOLE_ROUTES_SOURCE,
-        filter: ["==", ["get", "flow_confirmed"], true],
-        layout: {
-          "symbol-placement": "line",
-          "symbol-spacing": 60,
-          "icon-image": FLOW_ARROW_ICON_ID,
-          "icon-size": ["interpolate", ["linear"], ["zoom"], 12, 0.6, 18, 1.1],
-          "icon-rotation-alignment": "map",
-          "icon-keep-upright": false,
-          "icon-allow-overlap": true,
-          "icon-ignore-placement": true,
-        },
-      });
-
-      // AI Manhole Recommendation Engine — proposed new manhole locations
-      // (coverage gaps / disconnected manholes), drawn as points on top.
-      map.addSource(MANHOLE_POINTS_SOURCE, {
-        type: "geojson",
-        data: { type: "FeatureCollection", features: [] },
-      });
-      map.addLayer({
-        id: LAYER_MANHOLE_POINTS,
-        type: "circle",
-        source: MANHOLE_POINTS_SOURCE,
-        paint: {
-          "circle-radius": ["interpolate", ["linear"], ["zoom"], 12, 6, 18, 11],
-          "circle-color": MANHOLE_ROUTE_COLOR,
-          "circle-stroke-color": "#0b1013",
-          "circle-stroke-width": 1.5,
-          "circle-opacity": 0.9,
-        },
-      });
-
-      // AI Manhole Recommendation Engine — manholes with no real sewage/
-      // drain pipe within reach. Drawn as a distinct ring rather than left
-      // silently unconnected, so it reads as "flagged" rather than "missing".
-      map.addSource(MANHOLE_UNCONNECTED_SOURCE, {
-        type: "geojson",
-        data: { type: "FeatureCollection", features: [] },
-      });
-      map.addLayer({
-        id: LAYER_MANHOLE_UNCONNECTED,
-        type: "circle",
-        source: MANHOLE_UNCONNECTED_SOURCE,
-        paint: {
-          "circle-radius": ["interpolate", ["linear"], ["zoom"], 12, 8, 18, 14],
-          "circle-color": "rgba(0,0,0,0)",
-          "circle-stroke-color": MANHOLE_UNCONNECTED_COLOR,
-          "circle-stroke-width": 3,
-        },
-      });
-
-      map.on("mousemove", LAYER_MANHOLE_UNCONNECTED, (e: MapMouseEvent) => {
-        const hit = map.queryRenderedFeatures(e.point, { layers: [LAYER_MANHOLE_UNCONNECTED] });
-        if (!hit.length) return;
-        map.getCanvas().style.cursor = "pointer";
-        const reason = (hit[0].properties?.reason as string | undefined) ?? "Not connected to the sewage line";
-        setHover({
-          x: e.point.x,
-          y: e.point.y,
-          label: "Unconnected Manhole",
-          category: "Not connected to sewage line",
-          severity: 1,
-          color: MANHOLE_UNCONNECTED_COLOR,
-          attributes: { reason },
-        });
-      });
-      map.on("mouseleave", LAYER_MANHOLE_UNCONNECTED, () => {
-        map.getCanvas().style.cursor = "";
-        setHover(null);
-      });
-
-      map.on("click", LAYER_ANOMALIES, (e: MapMouseEvent) => {
-        const hit = map.queryRenderedFeatures(e.point, { layers: [LAYER_ANOMALIES] });
-        if (!hit.length) return;
-        const id = hit[0].properties?.id as string | undefined;
-        if (!id) return;
-
+      // Shared by both the plain anomaly-points layer and the manhole
+      // heatmap's invisible click layer — same finding, same AI Alert card,
+      // just a different visual treatment for manholes (heatmap density
+      // instead of individual red/yellow/green dots).
+      const openAnomalyFinding = (id: string) => {
         const anomaly = anomalyByIdRef.current[id];
         const activeMode = detectionModeRef.current;
         const context = aiOverlayEnabledRef.current
@@ -4457,9 +4159,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
           : null;
         const primaryFeatureId = anomaly ? primaryFeatureIdForAnomaly(anomaly) : null;
 
-        // Preserve the previous AI UI: Poles/Drains still open the AI Alert
-        // card; Manholes still use their richer recommendation card.
-        if (activeMode !== "manholes") setSelectedAnomalyId(id);
+        setSelectedAnomalyId(id);
         if (!context || !primaryFeatureId) return;
 
         aiAnomalyClickConsumedRef.current = true;
@@ -4467,15 +4167,70 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
         void fetchFeatureById(primaryFeatureId)
           .then((feature) => {
             onFeatureSelect(feature, context);
-            if (context.detectionMode === "manholes" && feature.properties.dataset_id) {
-              setManholeRecommendOpen(false);
-              void runManholeFeatureRecommend(feature.properties.dataset_id, feature.properties.id);
-            }
           })
           .catch(() => {});
+      };
+
+      map.on("click", LAYER_ANOMALIES, (e: MapMouseEvent) => {
+        const hit = map.queryRenderedFeatures(e.point, { layers: [LAYER_ANOMALIES] });
+        if (!hit.length) return;
+        const id = hit[0].properties?.id as string | undefined;
+        if (!id) return;
+        openAnomalyFinding(id);
       });
       map.on("mouseenter", LAYER_ANOMALIES, () => (map.getCanvas().style.cursor = "pointer"));
       map.on("mouseleave", LAYER_ANOMALIES, () => (map.getCanvas().style.cursor = ""));
+
+      // Manhole heatmap — density visualization for condition-audit findings,
+      // shown instead of the plain dots above when in "manholes" mode.
+      map.addSource(MANHOLE_HEATMAP_SOURCE, {
+        type: "geojson",
+        data: { type: "FeatureCollection", features: [] },
+      });
+      map.addLayer({
+        id: LAYER_MANHOLE_HEATMAP,
+        type: "heatmap",
+        source: MANHOLE_HEATMAP_SOURCE,
+        layout: { visibility: "none" },
+        paint: {
+          "heatmap-weight": ["interpolate", ["linear"], ["coalesce", ["get", "severity"], 0], 0, 0, 0.5, 0.5, 1, 1],
+          "heatmap-intensity": ["interpolate", ["linear"], ["zoom"], 0, 1, 22, 3],
+          "heatmap-color": [
+            "interpolate", ["linear"], ["heatmap-density"],
+            0, "rgba(0, 0, 255, 0)",
+            0.2, "#3b82f6",
+            0.4, "#22c55e",
+            0.6, "#eab308",
+            0.8, "#f97316",
+            1, "#ef4444",
+          ],
+          "heatmap-radius": ["interpolate", ["linear"], ["zoom"], 0, 8, 22, 30],
+          "heatmap-opacity": 0.8,
+        },
+      });
+      // Invisible-but-clickable points on top of the heatmap so users can
+      // still click individual manholes while the heatmap overlay is active
+      // — radius must stay non-zero (opacity 0 makes it invisible) since a
+      // zero-radius circle has no rendered pixels for hit-testing to find.
+      map.addLayer({
+        id: LAYER_MANHOLE_HEATMAP_POINTS,
+        type: "circle",
+        source: MANHOLE_HEATMAP_SOURCE,
+        layout: { visibility: "none" },
+        paint: {
+          "circle-radius": ["interpolate", ["linear"], ["zoom"], 12, 8, 18, 14],
+          "circle-opacity": 0,
+        },
+      });
+      map.on("click", LAYER_MANHOLE_HEATMAP_POINTS, (e: MapMouseEvent) => {
+        const hit = map.queryRenderedFeatures(e.point, { layers: [LAYER_MANHOLE_HEATMAP_POINTS] });
+        if (!hit.length) return;
+        const id = hit[0].properties?.id as string | undefined;
+        if (!id) return;
+        openAnomalyFinding(id);
+      });
+      map.on("mouseenter", LAYER_MANHOLE_HEATMAP_POINTS, () => (map.getCanvas().style.cursor = "pointer"));
+      map.on("mouseleave", LAYER_MANHOLE_HEATMAP_POINTS, () => (map.getCanvas().style.cursor = ""));
 
       // A separate, top-most source keeps an attribute-table selection
       // visible even while the regular dataset source is being refreshed.
@@ -4542,23 +4297,6 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
             if (verificationContext) onFeatureSelect(selected, verificationContext);
             return;
           }
-        }
-        if (
-          aiOverlayEnabledRef.current &&
-          detectionModeRef.current === "manholes" &&
-          classMapRef.current[selected.properties.category ?? ""] === "Access_Point" &&
-          selected.properties.dataset_id
-        ) {
-          // The real pipe-suggestion card (material/diameter/RL/slope/route)
-          // — kept in its OWN state (manholeFeatureAnswer), never touching
-          // manholeRecommendAnswer/routes, so a "Full Drainage Network"
-          // already drawn on the map stays exactly as-is. Same courtesy as
-          // Poles/Drains: only hide the network SUMMARY PANEL (not its
-          // data) so the two cards don't visually stack in the same corner.
-          setManholeRecommendOpen(false);
-          if (verificationContext) onFeatureSelect(selected, verificationContext);
-          void runManholeFeatureRecommend(selected.properties.dataset_id, selected.properties.id);
-          return;
         }
         if (selected.properties.category === "site_photo") {
           setPhotoViewer({
@@ -5460,8 +5198,6 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
           onResetStyle: resetVisualizationStyle,
         }}
         detectionMode={detectionMode}
-        onRunManholeNetwork={runManholeNetwork}
-        manholeRecommendLoading={manholeRecommendLoading}
         classMap={classMap}
         extraVisibleCategories={extraVisibleCategories}
         onToggleExtraVisibleCategory={toggleExtraVisibleCategory}
@@ -5621,24 +5357,6 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
             </svg>
           </button>
         </div>
-        {manholeRecommendOpen && (
-          <ManholeRecommendCard
-            answer={manholeRecommendAnswer}
-            loading={manholeRecommendLoading}
-            error={manholeRecommendError}
-            onClose={closeManholeRecommend}
-            onView3D={() => setShow3DPlan(true)}
-          />
-        )}
-        {manholeFeatureOpen && (
-          <ManholeRecommendCard
-            answer={manholeFeatureAnswer}
-            loading={manholeFeatureLoading}
-            error={manholeFeatureError}
-            onClose={closeManholeFeature}
-            onView3D={() => setShow3DPlan(true)}
-          />
-        )}
         {measureActive && (
           <RulerPanel
             tab={measureTab}
@@ -5695,7 +5413,6 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
           features={loadedFeatures}
           classMap={classMap}
           anomalies={anomalies}
-          manholeAnswer={manholeFeatureOpen ? manholeFeatureAnswer : manholeRecommendAnswer}
           datasets={datasets}
           activeDatasetIds={activeDatasetIds}
           onClose={() => setShow3DPlan(false)}
@@ -5774,7 +5491,7 @@ function CommandCenter({
   datasets, activeDatasetIds, flyError, onSelectDataset, onSelectAllDatasets, expandedDatasetId, onToggleDatasetSettings,
   rasterSettingsById, onChangeRasterSettings, categoryStats, hiddenCategories, onToggleCategory,
   onSetAllCategoriesVisible, spatialAuditStatus, onOpenAttributeTable, status: _status, visualization,
-  detectionMode, onRunManholeNetwork, manholeRecommendLoading,
+  detectionMode,
   classMap, extraVisibleCategories, onToggleExtraVisibleCategory, onSetAllExtraVisibleCategories,
   onSetCategoriesVisible,
 }: {
@@ -5794,8 +5511,6 @@ function CommandCenter({
   status: ViewportStatus;
   visualization: VisualizationPanelProps;
   detectionMode: DetectionMode;
-  onRunManholeNetwork: (datasetIds: string[]) => void;
-  manholeRecommendLoading: boolean;
   classMap: Record<string, string>;
   extraVisibleCategories: Set<string>;
   onToggleExtraVisibleCategory: (category: string) => void;
@@ -6104,25 +5819,6 @@ function CommandCenter({
             <VisualizationPanel {...visualization} />
           </div>,
           document.body
-        )}
-
-        {activeDatasetIds.length > 0 && detectionMode === "manholes" && (
-          <div className="command-center__section">
-            <div className="command-center__section-head">
-              <span className="command-center__section-title">Spatial Audit</span>
-            </div>
-            <button
-              type="button"
-              className="command-center__audit-btn"
-              disabled={manholeRecommendLoading}
-              onClick={() => onRunManholeNetwork(activeDatasetIds)}
-              data-testid="run-manhole-network"
-              title="Build the complete manhole-to-manhole drainage network, with flow direction grounded in real surveyed levels / DTM / contour elevation"
-              style={{ marginTop: 8 }}
-            >
-              {manholeRecommendLoading ? "Building…" : "Full Drainage Network"}
-            </button>
-          </div>
         )}
 
         {categoryStats.length > 0 && (

@@ -1,39 +1,13 @@
 /** AI Assistant API client. */
 import { apiPost } from "./api";
 
-export type AiKind = "query" | "recommend" | "report" | "spacing" | "manhole_recommend";
+export type AiKind = "query" | "recommend" | "report" | "spacing";
 
 export interface NeededLocation {
   id: string;
   lon: number;
   lat: number;
   reason: string;
-}
-
-export interface PipeSpec {
-  material: string;
-  diameter_mm: number;
-  from_rl: number | null;
-  to_rl: number | null;
-  slope: number | null;
-}
-
-export interface PipeRoute {
-  from_id: string;
-  to_id: string | null;
-  coordinates: [number, number][];
-  pipe_spec: PipeSpec;
-  /** network-mode only: which real source grounded the flow direction
-   * (surveyed_invert / dtm_raster / nearest_contour / unknown), and
-   * whether a direction was actually confirmed vs just drawn. */
-  elevation_source?: string | null;
-  flow_confirmed?: boolean | null;
-  /** network-mode only: "sewage_line" (real surveyed pipe), "concrete_road"
-   * (no pipe path existed, followed the road network instead), or "bridge"
-   * (neither graph spanned the gap, a direct building-checked line was used
-   * to keep the network unified) — never left ambiguous which one grounds
-   * a given line. */
-  route_basis?: string | null;
 }
 
 export interface AiAnswer {
@@ -51,11 +25,6 @@ export interface AiAnswer {
   /** Spacing-only: proposed missing/service-gap IDs/points -> show green on map */
   needed_feature_ids: string[];
   needed_locations: NeededLocation[];
-  /** manhole_recommend-only: proposed/rehab pipe routes with real coordinates + specs */
-  routes: PipeRoute[];
-  /** network-mode only: manholes with no real sewage/drain pipe within reach
-   * — no route is drawn for these, so they need their own marker + reason. */
-  unconnected_manholes: NeededLocation[];
 }
 
 export const aiQuery = (body: {
@@ -86,9 +55,3 @@ export const aiSpacing = (body: {
   category: string;
   distance_m?: number;
 }) => apiPost<AiAnswer>("/api/v1/ai/spacing", body);
-
-export const aiManholeRecommend = (body: {
-  mode: "feature" | "area" | "network";
-  dataset_id: string;
-  feature_id?: string;
-}) => apiPost<AiAnswer>("/api/v1/ai/manhole-recommend", body);

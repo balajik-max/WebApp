@@ -3,7 +3,6 @@ import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import type { UrbanFeature } from "../lib/types";
 import type { DatasetRow, SpatialAnomaly } from "../lib/workflow";
-import type { AiAnswer, PipeRoute } from "../lib/ai";
 import { fetchDemGrid, fetchBuildingHeights, type DemGrid, type DemBounds } from "../lib/dem";
 import { colorForCategory } from "../lib/categoryColors";
 
@@ -11,7 +10,6 @@ interface Props {
   features: UrbanFeature[];
   classMap: Record<string, string>;
   anomalies: SpatialAnomaly[];
-  manholeAnswer: AiAnswer | null;
   datasets: DatasetRow[];
   activeDatasetIds: string[];
   onClose: () => void;
@@ -19,25 +17,12 @@ interface Props {
 
 const DEFAULT_BUILDING_HEIGHT_M = 6; // stated fallback when DSM/DTM sampling has no value here — never silently 0
 const MANHOLE_TOTAL_H = 3.0; // slab + chamber + shaft — lid tops out at this height above the chamber base
-const PIPE_RADIUS_M = 0.35;
-
-// Depth-based pipe color ramp (in scene-local metres below ground). Shallow
-// pipes are warm/light, deep pipes cool/dark — so the network reads as a
-// layered underground cross-section at a glance.
-function pipeDepthColor(depthM: number): THREE.Color {
-  const t = Math.max(0, Math.min(1, depthM / 8)); // ramp over 0..8 m
-  const shallow = new THREE.Color(0x38bdf8); // sky blue
-  const deep = new THREE.Color(0x1e3a8a); // navy
-  return shallow.clone().lerp(deep, t);
-}
 
 const ANOMALY_COLOR: Record<string, number> = {
   red: 0xdc2626,
   yellow: 0xeab308,
   green: 0x16a34a,
 };
-const PROPOSED_MANHOLE_COLOR = 0x22c55e;
-const PIPE_ROUTE_COLOR = 0x3aa1ff;
 
 interface Projector {
   toLocal: (lon: number, lat: number) => [number, number]; // -> [x, z] metres
@@ -814,45 +799,6 @@ function buildBuildingMesh(
   return mesh;
 }
 
-function buildPipeTube(
-  coords: [number, number][],
-  yStart: number,
-  yEnd: number,
-  projector: Projector,
-  color: THREE.Color = new THREE.Color(PIPE_ROUTE_COLOR),
-  radius: number = PIPE_RADIUS_M
-): THREE.Mesh {
-  const points = coords.map(([lon, lat], idx) => {
-    const [x, z] = projector.toLocal(lon, lat);
-    const t = coords.length > 1 ? idx / (coords.length - 1) : 0;
-    const y = yStart + (yEnd - yStart) * t;
-    return new THREE.Vector3(x, y, z);
-  });
-  const curve = new THREE.CatmullRomCurve3(points.length > 1 ? points : [points[0], points[0]]);
-  const geometry = new THREE.TubeGeometry(curve, Math.max(2, points.length * 4), radius, 14, false);
-  const material = new THREE.MeshStandardMaterial({ color, roughness: 0.55, metalness: 0.25 });
-  const mesh = new THREE.Mesh(geometry, material);
-  // Joint rings at regular spacing along the pipe, for a realistic segmented
-  // pipe look (child meshes inherit the parent's userData on raycast via the
-  // parent walk in the click handler).
-  const ringMat = new THREE.MeshStandardMaterial({ color: color.clone().offsetHSL(0, 0, -0.2), roughness: 0.7 });
-  const step = 6;
-  for (let i = step; i < points.length - 1; i += step) {
-    const p = points[i];
-    const prev = points[i - 1];
-    const next = points[Math.min(points.length - 1, i + 1)];
-    const dir = next.clone().sub(prev);
-    if (dir.lengthSq() < 1e-6) continue;
-    dir.normalize();
-    const ring = new THREE.Mesh(new THREE.TorusGeometry(radius * 1.12, radius * 0.22, 6, 14), ringMat);
-    ring.position.copy(p);
-    ring.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), dir);
-    mesh.add(ring);
-  }
-  mesh.userData.kind = "pipe";
-  return mesh;
-}
-
 // Realistic underground manhole: a concrete base slab, a cylindrical chamber
 // wall, a conical access shaft rising to a cast-iron lid at the top. The group
 // is centred so `y` is the chamber base; the lid sits at ground level when the
@@ -869,11 +815,9 @@ function buildManholeMarker(
 ): THREE.Group {
   const group = new THREE.Group();
   const concrete = new THREE.MeshStandardMaterial({ color: 0xb8b2a6, roughness: 0.95 });
-  // Chamber wall/lid use this manhole's real category color (matching the 2D
-  // Layers panel) — a proposed (AI-suggested) manhole isn't a real surveyed
-  // category, so it keeps its own distinct green regardless of bodyColor.
-  const wallColor = kind === "proposed-manhole" ? 0x2f9e44 : bodyColor;
-  const wall = new THREE.MeshStandardMaterial({ color: wallColor, roughness: 0.7 });
+  // Chamber wall/lid use this manhole's real category color, matching the 2D
+  // Layers panel.
+  const wall = new THREE.MeshStandardMaterial({ color: bodyColor, roughness: 0.7 });
 
   const CHAMBER_R = 1.4;
   const SHAFT_R = 0.6;
@@ -888,7 +832,7 @@ function buildManholeMarker(
   // reads as a hollow chamber when viewed from above in underground mode)
   const chamber = new THREE.Mesh(
     new THREE.CylinderGeometry(CHAMBER_R, CHAMBER_R, chamberH, 28, 1, true),
-    new THREE.MeshStandardMaterial({ color: wallColor, roughness: 0.7, side: THREE.DoubleSide })
+    new THREE.MeshStandardMaterial({ color: bodyColor, roughness: 0.7, side: THREE.DoubleSide })
   );
   chamber.position.y = 0.3 + chamberH / 2;
   group.add(chamber);
@@ -931,50 +875,7 @@ function buildManholeMarker(
   return group;
 }
 
-// Static flow-direction cones placed at even intervals along a pipe route.
-// Each cone points along the local tangent (downstream), so the connection's
-// flow direction is visible even when the surface is cut away.
-function buildFlowArrows(
-  route: PipeRoute,
-  yStart: number,
-  yEnd: number,
-  projector: Projector,
-  pipeColor: THREE.Color,
-  radius = PIPE_RADIUS_M
-): THREE.Group {
-  const group = new THREE.Group();
-  const coords = route.coordinates;
-  if (!coords || coords.length < 2) return group;
-
-  const points = coords.map(([lon, lat], idx) => {
-    const [x, z] = projector.toLocal(lon, lat);
-    const t = idx / (coords.length - 1);
-    return new THREE.Vector3(x, yStart + (yEnd - yStart) * t, z);
-  });
-
-  const coneGeo = new THREE.ConeGeometry(Math.max(0.6, radius * 1.8), Math.max(1.4, radius * 4), 12);
-  const mat = new THREE.MeshStandardMaterial({ color: pipeColor.clone().offsetHSL(0, -0.1, 0.15), roughness: 0.4 });
-
-  const count = Math.max(1, Math.round(points.length / 3));
-  for (let k = 1; k <= count; k++) {
-    const t = k / (count + 1);
-    const i = Math.min(points.length - 1, Math.floor(t * (points.length - 1)));
-    const a = points[i];
-    const b = points[Math.min(points.length - 1, i + 1)];
-    const dir = b.clone().sub(a);
-    if (dir.lengthSq() < 1e-6) continue;
-    dir.normalize();
-    const cone = new THREE.Mesh(coneGeo, mat);
-    cone.position.copy(a);
-    // ConeGeometry points +Y by default; orient it along the flow tangent.
-    cone.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir);
-    cone.userData = { kind: "flow-arrow", id: route.from_id };
-    group.add(cone);
-  }
-  return group;
-}
-
-export function Map3DViewer({ features, classMap, anomalies, manholeAnswer, datasets, activeDatasetIds, onClose }: Props) {
+export function Map3DViewer({ features, classMap, anomalies, datasets, activeDatasetIds, onClose }: Props) {
 
   const containerRef = useRef<HTMLDivElement | null>(null);
   const [loading, setLoading] = useState(true);
@@ -1187,7 +1088,6 @@ export function Map3DViewer({ features, classMap, anomalies, manholeAnswer, data
         const gfor = (f: UrbanFeature) => ensureGroup(gkey(f));
         ensureGroup("terrain");
         for (const c of categoryList) ensureGroup(`cat:${c.category}`);
-        if ((manholeAnswer?.routes?.length ?? 0) > 0) ensureGroup("pipes");
 
         if (grid) {
           const terrain = buildTerrainMesh(grid, projector, baseElevation);
@@ -1329,78 +1229,6 @@ export function Map3DViewer({ features, classMap, anomalies, manholeAnswer, data
           networkDepthRef.current = Math.min(networkDepthRef.current, baseY);
         }
 
-        if (manholeAnswer) {
-          for (const loc of manholeAnswer.needed_locations ?? []) {
-            const [x, z] = projector.toLocal(loc.lon, loc.lat);
-            const ground = elevAt(loc.lon, loc.lat);
-            const baseY = ground - MANHOLE_TOTAL_H;
-            const mesh = buildManholeMarker(x, baseY, z, PROPOSED_MANHOLE_COLOR, "proposed-manhole", loc.id, MANHOLE_TOTAL_H);
-            mesh.userData = {
-              kind: "proposed-manhole",
-              id: loc.id,
-              label: loc.id,
-              category: "Proposed manhole (AI-suggested)",
-              color: "#22c55e",
-              attributes: { Reason: loc.reason },
-              lon: loc.lon,
-              lat: loc.lat,
-            } satisfies Object3DDetail;
-            ensureGroup("proposed-manholes").add(mesh);
-            clickable.push(mesh);
-            networkDepthRef.current = Math.min(networkDepthRef.current, baseY);
-          }
-          for (const route of manholeAnswer.routes ?? []) {
-            // Pipe radius scales with the real diameter (mm→m, half = radius),
-            // clamped so even small service lines read as a proper pipe, not a
-            // wire. Real sewers are 300–1200 mm, so this matches the field.
-            const pipeR = Math.max(0.25, route.pipe_spec.diameter_mm / 2000);
-            // Anchor each END of the pipe into its manhole chamber: the chamber
-            // base sits at (ground - chamberH), and the invert enters a little
-            // above the chamber floor — so the pipe plugs into the chamber wall
-            // BELOW the lid instead of floating up near ground.
-            const startGround = elevAt(route.coordinates[0][0], route.coordinates[0][1]);
-            const yStart =
-              route.pipe_spec.from_rl !== null
-                ? route.pipe_spec.from_rl - baseElevation
-                : startGround - MANHOLE_TOTAL_H + 0.6;
-            const lastCoord = route.coordinates[route.coordinates.length - 1];
-            const endGround = elevAt(lastCoord[0], lastCoord[1]);
-            const yEnd =
-              route.pipe_spec.to_rl !== null
-                ? route.pipe_spec.to_rl - baseElevation
-                : endGround - MANHOLE_TOTAL_H + 0.6;
-            // Depth-based color: deeper pipe end drives the ramp so a steep
-            // falling main reads clearly darker than a shallow service line.
-            const depthM = Math.max(-yStart, -yEnd);
-            const pipeColor = pipeDepthColor(depthM);
-            const tube = buildPipeTube(route.coordinates, yStart, yEnd, projector, pipeColor, pipeR);
-            tube.userData = {
-              kind: "pipe",
-              id: route.from_id,
-              label: `${route.from_id} → ${route.to_id ?? "—"}`,
-              category: "Pipe connection (AI-suggested)",
-              color: "#3aa1ff",
-              attributes: {
-                From: route.from_id,
-                To: route.to_id ?? "—",
-                Material: route.pipe_spec.material,
-                "Diameter (mm)": route.pipe_spec.diameter_mm.toFixed(0),
-                "Depth below ground (m)": depthM.toFixed(1),
-                Flow: route.flow_confirmed ? "confirmed" : "drawn",
-                ...(route.route_basis ? { Basis: route.route_basis } : {}),
-              },
-              lon: route.coordinates[0][0],
-              lat: route.coordinates[0][1],
-            } satisfies Object3DDetail;
-            groups.pipes.add(tube);
-            clickable.push(tube);
-            // Flow-direction cones along the route (skip for bridge/estimated
-            // stubs where the geometry is a near-direct line).
-            const arrows = buildFlowArrows(route, yStart, yEnd, projector, pipeColor, pipeR);
-            groups.pipes.add(arrows);
-            networkDepthRef.current = Math.min(networkDepthRef.current, yStart, yEnd);
-          }
-        }
 
         // Real surveyed drainage assets (lines/polylines) drawn at terrain or
         // their surveyed invert, colored with the same category palette as the
@@ -2299,13 +2127,11 @@ export function Map3DViewer({ features, classMap, anomalies, manholeAnswer, data
               onClick={() => {
                 const allOn =
                   visible.terrain !== false &&
-                  categoryList.every((c) => visible[`cat:${c.category}`] !== false) &&
-                  ((manholeAnswer?.routes?.length ?? 0) === 0 || visible.pipes !== false);
+                  categoryList.every((c) => visible[`cat:${c.category}`] !== false);
                 setVisible((v) => {
                   const next = { ...v };
                   next.terrain = !allOn;
                   for (const c of categoryList) next[`cat:${c.category}`] = !allOn;
-                  if ((manholeAnswer?.routes?.length ?? 0) > 0) next.pipes = !allOn;
                   return next;
                 });
               }}
@@ -2363,24 +2189,6 @@ export function Map3DViewer({ features, classMap, anomalies, manholeAnswer, data
                 </div>
               );
             })}
-            {(manholeAnswer?.routes?.length ?? 0) > 0 && (() => {
-              const on = visible.pipes !== false;
-              return (
-                <div
-                  className={`layer-row${on ? "" : " layer-row--hidden"}`}
-                  onClick={() => setVisible((v) => ({ ...v, pipes: v.pipes === false ? true : false }))}
-                >
-                  <div className={`layer-row__checkbox${on ? " layer-row__checkbox--checked" : ""}`}>
-                    <svg className="layer-row__checkbox-mark" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3">
-                      <path d="M5 13l4 4L19 7" strokeLinecap="round" strokeLinejoin="round" />
-                    </svg>
-                  </div>
-                  <span className="layer-row__swatch" style={{ background: "#3aa1ff" }} />
-                  <span className="layer-row__name">Pipes (AI suggested)</span>
-                  <span className="layer-row__count" />
-                </div>
-              );
-            })()}
             {displayedLayers.length === 0 && <div className="layer-list__empty">No matching layers</div>}
           </div>
         </div>
