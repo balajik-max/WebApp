@@ -1925,6 +1925,20 @@ export function Map3DViewer({ features, classMap, anomalies, datasets, activeDat
         // outer one. Stopping at clickable-membership instead guarantees we
         // always land on the one object every builder actually attaches full
         // detail to.
+        // A hidden Layers-panel category only sets its GROUP's `.visible`
+        // to false for rendering — THREE.Raycaster ignores `.visible`
+        // entirely and would still report a "hit" underneath a hidden
+        // layer. Walk the object's own ancestor chain at click time (not
+        // once at scene-build time, since visibility toggles afterward) so
+        // a hidden layer is never selectable, matching the 2D Map Canvas.
+        const isVisibleInScene = (obj: THREE.Object3D): boolean => {
+          let o: THREE.Object3D | null = obj;
+          while (o) {
+            if (!o.visible) return false;
+            o = o.parent;
+          }
+          return true;
+        };
         const resolveHit = (hits: THREE.Intersection[]): (Object3DDetail & { object: THREE.Object3D }) | null => {
           if (hits.length === 0) return null;
           let obj: THREE.Object3D | null = hits[0].object;
@@ -1977,7 +1991,8 @@ export function Map3DViewer({ features, classMap, anomalies, datasets, activeDat
           pointer.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
           pointer.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
           raycaster.setFromCamera(pointer, camera);
-          const hit = resolveHit(raycaster.intersectObjects(clickable, true));
+          const visibleClickable = clickable.filter(isVisibleInScene);
+          const hit = resolveHit(raycaster.intersectObjects(visibleClickable, true));
           tintRestoreRef.current?.();
           tintRestoreRef.current = null;
           if (!hit) {
