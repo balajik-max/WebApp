@@ -75,7 +75,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.dataset import Dataset
 from app.models.point_verification import PointVerification, PointVerificationStatus
 from app.models.spatial_anomaly import AnomalyColor, AnomalyStatus, AnomalyType, SpatialAnomaly
-from app.services.manhole_recommend import is_bad_condition, is_good_condition, parse_level_m
+from app.services.manhole_recommend import classify_manhole_issue, is_bad_condition, is_good_condition, parse_level_m
 
 # Per-class DBSCAN epsilon (meters). Only Illumination_Asset is clustered in
 # Phase 1; other classes can get their own entry here later without touching
@@ -359,10 +359,10 @@ async def _detect_manhole_status(
             text(
                 "SELECT m.id AS manhole_id, ST_X(m.geom) AS x, ST_Y(m.geom) AS y, "
                 "       m.attributes AS attributes, "
-                "       nearest.drain_id, nearest.drain_category, nearest.distance_m "
+                "       nearest.drain_id, nearest.drain_category, nearest.drain_attributes, nearest.distance_m "
                 "FROM features m "
                 "LEFT JOIN LATERAL ( "
-                "  SELECT d.id AS drain_id, d.category AS drain_category, "
+                "  SELECT d.id AS drain_id, d.category AS drain_category, d.attributes AS drain_attributes, "
                 "         ST_Distance(m.geom::geography, d.geom::geography) AS distance_m "
                 "  FROM features d "
                 "  WHERE d.dataset_id = m.dataset_id "
@@ -386,8 +386,45 @@ async def _detect_manhole_status(
         raw_condition = (attrs.get("Condition") or "").strip() or None
         raw_top_level = (attrs.get("Top_Level") or "").strip() or None
         raw_silt = (attrs.get("Silt_Level") or "").strip() or None
+        raw_notes = (attrs.get("Notes") or attrs.get("Remarks") or "").strip() or None
         drain_category = (r["drain_category"] or "").lower()
+        drain_attrs = r["drain_attributes"] or {}
         distance_m = r["distance_m"]
+
+        # Real Sewage Line GIS data lets this be a stated fact, not a guess —
+        # try every attribute key seen across survey layers for the drain's
+        # own type/use/status text.
+        drain_type_raw = (
+            drain_attrs.get("Type")
+            or drain_attrs.get("type")
+            or drain_attrs.get("Type_of_Drain")
+            or drain_attrs.get("Type_of_UGD")
+            or drain_attrs.get("Drain_Type")
+            or drain_attrs.get("drain_type")
+            or ""
+        ).lower()
+        drain_use_raw = (
+            drain_attrs.get("Use")
+            or drain_attrs.get("use")
+            or drain_attrs.get("Drain_Use")
+            or drain_attrs.get("drain_use")
+            or ""
+        ).lower()
+        ugd_status = (drain_attrs.get("UGD_Status") or drain_attrs.get("ugd_status") or "").lower()
+        swd_status = (drain_attrs.get("SWD_Status") or drain_attrs.get("swd_status") or "").lower()
+
+        is_sewage = (
+            "sewage" in drain_type_raw or "sewer" in drain_type_raw
+            or "sewage" in drain_use_raw or "sewer" in drain_use_raw
+            or "sewage" in ugd_status or "sewer" in ugd_status
+        )
+        is_storm = "storm" in drain_type_raw or "storm" in drain_use_raw or "storm" in swd_status
+        is_drainage = (
+            "drain" in drain_category or "drain" in drain_type_raw
+            or "drain" in drain_use_raw or "swd" in swd_status
+        )
+
+        issue_info = classify_manhole_issue(raw_condition, raw_top_level, raw_silt, raw_notes)
 
         if raw_top_level is not None and parse_level_m(raw_top_level) is None:
             # A recorded-but-unparseable level (e.g. "Blocked") is a literal
@@ -442,10 +479,28 @@ async def _detect_manhole_status(
                     "manhole_id": str(r["manhole_id"]),
                     "basis": basis,
                     "surveyed_condition": raw_condition,
+                    "top_level": raw_top_level,
+                    "silt_level": raw_silt,
+                    "notes": raw_notes,
+                    "primary_issue": issue_info["primary_issue"],
+                    "issues": issue_info["issues"],
+                    "severity_hint": issue_info["severity_hint"],
                     "nearest_drain_id": str(r["drain_id"]) if r["drain_id"] else None,
                     "nearest_drain_category": r["drain_category"],
                     "nearest_drain_distance_m": round(float(r["distance_m"]), 2) if r["distance_m"] is not None else None,
                     "max_search_radius_m": MANHOLE_DRAIN_MAX_M,
+                    "connected_to_sewage": is_sewage,
+                    "connected_to_storm": is_storm,
+                    "connected_to_drainage": is_drainage,
+                    "drain_type": (
+                        drain_attrs.get("Type") or drain_attrs.get("type")
+                        or drain_attrs.get("Type_of_Drain") or drain_attrs.get("Type_of_UGD")
+                        or drain_attrs.get("Drain_Type") or drain_attrs.get("drain_type")
+                    ),
+                    "drain_use": (
+                        drain_attrs.get("Use") or drain_attrs.get("use")
+                        or drain_attrs.get("Drain_Use") or drain_attrs.get("drain_use")
+                    ),
                 },
             )
         )
