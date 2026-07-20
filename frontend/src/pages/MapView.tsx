@@ -149,7 +149,6 @@ export function MapView() {
           setVerificationTarget((current) =>
             current ? { ...current, feature: updated } : null,
           );
-          setPointVerificationRefresh((value) => value + 1);
         }}
         onQueueChanged={() =>
           setPointVerificationRefresh((value) => value + 1)

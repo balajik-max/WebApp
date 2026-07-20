@@ -93,7 +93,7 @@ export function AnomalyAlertCard({ anomaly, onClose, onStale }: Props) {
       </div>
 
       <footer className="anomaly-card__actions">
-        <span className="anomaly-card__workflow-note">AI controls Red, Yellow and Green. Blue is applied only after Commissioner approval.</span>
+        <span className="anomaly-card__workflow-note">AI controls Red, Yellow and Green. Blue is applied only after AEE approves the work as Good.</span>
       </footer>
     </aside>
   );

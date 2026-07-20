@@ -1,4 +1,4 @@
-"""Direct AE/AEE remediation evidence and Commissioner decisions."""
+"""AE field remediation, AEE review, Commissioner acceptance, and read-only MLA visibility."""
 from __future__ import annotations
 
 import enum
@@ -23,9 +23,10 @@ class PointVerificationStatus(str, enum.Enum):
 class RemediationWorkflowStatus(str, enum.Enum):
     AI_DETECTED = "AI_DETECTED"
     WORK_IN_PROGRESS = "WORK_IN_PROGRESS"
-    PENDING_COMMISSIONER_APPROVAL = "PENDING_COMMISSIONER_APPROVAL"
-    REJECTED_BY_COMMISSIONER = "REJECTED_BY_COMMISSIONER"
-    APPROVED_RESOLVED = "APPROVED_RESOLVED"
+    PENDING_AEE_APPROVAL = "PENDING_AEE_APPROVAL"
+    RETURNED_BY_AEE = "RETURNED_BY_AEE"
+    AEE_APPROVED = "AEE_APPROVED"
+    COMMISSIONER_ACCEPTED = "COMMISSIONER_ACCEPTED"
 
 
 class VerifiedCondition(str, enum.Enum):
@@ -65,10 +66,19 @@ class PointVerification(Base):
         UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True
     )
     field_submitter_role: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    ae_name_manual: Mapped[str | None] = mapped_column(String(255), nullable=True)
     issue_solved: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    issue_description: Mapped[str | None] = mapped_column(Text, nullable=True)
     short_description: Mapped[str | None] = mapped_column(String(2048), nullable=True)
     field_remarks: Mapped[str | None] = mapped_column(Text, nullable=True)
     submitted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    aee_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    aee_name_manual: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    aee_category: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    aee_decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    aee_remarks: Mapped[str | None] = mapped_column(Text, nullable=True)
     commissioner_decision: Mapped[str | None] = mapped_column(String(16), nullable=True)
     commissioner_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True

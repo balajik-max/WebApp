@@ -17,9 +17,8 @@ from app.main import app
 from app.models.point_verification import RemediationWorkflowStatus
 from app.models.spatial_anomaly import AnomalyColor, AnomalyStatus, AnomalyType, SpatialAnomaly
 from app.models.user import User, UserRole
-from app.schemas.point_verification import CommissionerDecisionIn, FieldSubmissionIn
 from app.schemas.ai import AnomalyStatusUpdate
-
+from app.schemas.point_verification import AeeDecisionIn, FieldSubmissionIn
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
 
@@ -58,24 +57,29 @@ class DirectWorkflowContractTests(unittest.TestCase):
             [
                 "AI_DETECTED",
                 "WORK_IN_PROGRESS",
-                "PENDING_COMMISSIONER_APPROVAL",
-                "REJECTED_BY_COMMISSIONER",
-                "APPROVED_RESOLVED",
+                "PENDING_AEE_APPROVAL",
+                "RETURNED_BY_AEE",
+                "AEE_APPROVED",
+                "COMMISSIONER_ACCEPTED",
             ],
         )
 
-    def test_ae_and_aee_share_the_same_guard(self) -> None:
-        for role in (UserRole.AE, UserRole.AEE):
-            allowed = asyncio.run(deps.require_field_officer(user(role)))
-            self.assertEqual(allowed.role, role)
-        for role in (UserRole.COMMISSIONER, UserRole.MLA):
+    def test_ae_is_the_only_field_worker(self) -> None:
+        self.assertEqual(asyncio.run(deps.require_ae(user(UserRole.AE))).role, UserRole.AE)
+        for role in (UserRole.AEE, UserRole.COMMISSIONER, UserRole.MLA):
             with self.assertRaises(HTTPException) as raised:
-                asyncio.run(deps.require_field_officer(user(role)))
+                asyncio.run(deps.require_ae(user(role)))
             self.assertEqual(raised.exception.status_code, 403)
 
-    def test_only_commissioner_can_decide(self) -> None:
-        allowed = asyncio.run(deps.require_commissioner(user(UserRole.COMMISSIONER)))
-        self.assertEqual(allowed.role, UserRole.COMMISSIONER)
+    def test_aee_is_the_only_reviewer(self) -> None:
+        self.assertEqual(asyncio.run(deps.require_aee(user(UserRole.AEE))).role, UserRole.AEE)
+        for role in (UserRole.AE, UserRole.COMMISSIONER, UserRole.MLA):
+            with self.assertRaises(HTTPException) as raised:
+                asyncio.run(deps.require_aee(user(role)))
+            self.assertEqual(raised.exception.status_code, 403)
+
+    def test_only_commissioner_can_accept(self) -> None:
+        self.assertEqual(asyncio.run(deps.require_commissioner(user(UserRole.COMMISSIONER))).role, UserRole.COMMISSIONER)
         for role in (UserRole.AE, UserRole.AEE, UserRole.MLA):
             with self.assertRaises(HTTPException) as raised:
                 asyncio.run(deps.require_commissioner(user(role)))
@@ -91,38 +95,26 @@ class DirectWorkflowContractTests(unittest.TestCase):
             "query_string": b"",
             "server": ("test", 80),
         })
-        with patch.object(
-            deps,
-            "decode_token",
-            return_value={"type": "access", "sub": str(mla.id)},
-        ):
+        with patch.object(deps, "decode_token", return_value={"type": "access", "sub": str(mla.id)}):
             with self.assertRaises(HTTPException) as raised:
                 asyncio.run(deps.get_current_user(request, _Db(mla)))  # type: ignore[arg-type]
         self.assertEqual(raised.exception.status_code, 403)
 
-    def test_field_form_contract_has_no_assignment_or_long_form_fields(self) -> None:
+    def test_ae_form_contract_is_small_and_manual_name_is_required(self) -> None:
         self.assertEqual(
             set(FieldSubmissionIn.model_fields),
-            {"anomaly_id", "detection_mode", "issue_solved", "short_description", "remarks"},
+            {"anomaly_id", "detection_mode", "ae_name", "issue_description", "work_completed", "remarks"},
         )
-        forbidden = {
-            "assigned_to", "assigned_by", "priority", "target_date", "contractor",
-            "team", "material", "quantity", "latitude", "longitude", "aee_recommendation",
-        }
+        forbidden = {"assigned_to", "priority", "target_date", "contractor", "material", "quantity", "latitude", "longitude"}
         self.assertTrue(forbidden.isdisjoint(FieldSubmissionIn.model_fields))
-        with self.assertRaises(ValueError):
-            FieldSubmissionIn(
-                anomaly_id=uuid.uuid4(),
-                detection_mode="poles",
-                issue_solved=False,
-                short_description="completed",
-            )
 
-    def test_commissioner_rejection_requires_reason(self) -> None:
+    def test_aee_return_requires_remarks(self) -> None:
         with self.assertRaises(ValueError):
-            CommissionerDecisionIn(anomaly_id=uuid.uuid4(), decision="REJECT", reason="  ")
-        approved = CommissionerDecisionIn(anomaly_id=uuid.uuid4(), decision="APPROVE")
-        self.assertEqual(approved.decision, "APPROVE")
+            AeeDecisionIn(anomaly_id=uuid.uuid4(), aee_name="AEE One", category="MODERATE", remarks="  ")
+        self.assertEqual(
+            AeeDecisionIn(anomaly_id=uuid.uuid4(), aee_name="AEE One", category="GOOD").category,
+            "GOOD",
+        )
 
     def test_required_endpoints_and_buffers(self) -> None:
         paths = app.openapi()["paths"]
@@ -130,18 +122,14 @@ class DirectWorkflowContractTests(unittest.TestCase):
             "/api/v1/point-verifications/{feature_id}/start-work": "post",
             "/api/v1/point-verifications/{feature_id}/evidence": "put",
             "/api/v1/point-verifications/{feature_id}/submit": "post",
-            "/api/v1/point-verifications/{feature_id}/commissioner-decision": "post",
+            "/api/v1/point-verifications/{feature_id}/aee-decision": "post",
+            "/api/v1/point-verifications/{feature_id}/commissioner-accept": "post",
         }
         for path, method in required.items():
             self.assertIn(method, paths[path])
-        serialized = "\n".join(paths).lower()
-        self.assertNotIn("architect-submit", serialized)
-        self.assertNotIn("admin-decision", serialized)
-        self.assertNotIn("aee-review", serialized)
-        self.assertNotIn("recommendation", serialized)
         self.assertEqual(point_verifications._BUFFER_BY_MODE, {"poles": 15.0, "drains": 30.0, "manholes": 15.0})
 
-    def test_blue_projection_requires_commissioner_approval(self) -> None:
+    def test_blue_projection_requires_aee_good_approval(self) -> None:
         anomaly = SpatialAnomaly(
             id=uuid.uuid4(),
             dataset_id=uuid.uuid4(),
@@ -155,10 +143,7 @@ class DirectWorkflowContractTests(unittest.TestCase):
             created_at=datetime.now(timezone.utc),
         )
         self.assertEqual(ai._anomaly_out(anomaly, 75.9, 14.4).status, "reviewing")
-        self.assertEqual(
-            ai._anomaly_out(anomaly, 75.9, 14.4, commissioner_approved=True).status,
-            "resolved",
-        )
+        self.assertEqual(ai._anomaly_out(anomaly, 75.9, 14.4, aee_approved=True).status, "resolved")
 
     def test_legacy_manual_anomaly_status_route_always_conflicts(self) -> None:
         with self.assertRaises(HTTPException) as raised:
@@ -173,12 +158,7 @@ class DirectWorkflowContractTests(unittest.TestCase):
 
     def test_ai_rerun_protects_every_non_initial_workflow_state(self) -> None:
         source = (BACKEND_ROOT / "app" / "services" / "spatial_audit.py").read_text(encoding="utf-8")
-        for status in (
-            "WORK_IN_PROGRESS",
-            "PENDING_COMMISSIONER_APPROVAL",
-            "REJECTED_BY_COMMISSIONER",
-            "APPROVED_RESOLVED",
-        ):
+        for status in ("WORK_IN_PROGRESS", "PENDING_AEE_APPROVAL", "RETURNED_BY_AEE", "AEE_APPROVED", "COMMISSIONER_ACCEPTED"):
             self.assertIn(f"RemediationWorkflowStatus.{status}", source)
 
 

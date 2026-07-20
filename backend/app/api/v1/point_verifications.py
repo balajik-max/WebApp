@@ -1,4 +1,4 @@
-"""Direct AE/AEE remediation of AI findings with Commissioner decisions."""
+"""AE field remediation, AEE review, Commissioner acceptance, and workflow notifications."""
 from __future__ import annotations
 
 import io
@@ -18,7 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload
 from starlette.background import BackgroundTask
 
-from app.api.deps import require_any, require_commissioner, require_field_officer, require_operational
+from app.api.deps import require_ae, require_aee, require_any, require_commissioner, require_operational
 from app.core.config import get_settings
 from app.db.session import get_db
 from app.models import (
@@ -36,7 +36,8 @@ from app.models import (
 from app.models.point_verification import RemediationWorkflowStatus
 from app.models.spatial_anomaly import AnomalyColor, AnomalyStatus, AnomalyType
 from app.schemas.point_verification import (
-    CommissionerDecisionIn,
+    AeeDecisionIn,
+    CommissionerAcceptanceIn,
     DetectionMode,
     FieldSubmissionIn,
     RemediationInboxItem,
@@ -67,9 +68,10 @@ _ALLOWED_IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".webp"}
 _MAX_IMAGE_BYTES = _SETTINGS.remediation_max_image_mb * 1024 * 1024
 _ACTIVE_WORKFLOW_STATUSES = {
     RemediationWorkflowStatus.WORK_IN_PROGRESS,
-    RemediationWorkflowStatus.PENDING_COMMISSIONER_APPROVAL,
-    RemediationWorkflowStatus.REJECTED_BY_COMMISSIONER,
-    RemediationWorkflowStatus.APPROVED_RESOLVED,
+    RemediationWorkflowStatus.PENDING_AEE_APPROVAL,
+    RemediationWorkflowStatus.RETURNED_BY_AEE,
+    RemediationWorkflowStatus.AEE_APPROVED,
+    RemediationWorkflowStatus.COMMISSIONER_ACCEPTED,
 }
 
 
@@ -341,7 +343,8 @@ async def _to_out(
     detection_mode: DetectionMode,
 ) -> WorkflowOut:
     active = row if row is not None and row.anomaly_id == anomaly.id else None
-    submitter_name = await _user_name(db, active.field_submitter_id) if active else None
+    submitter_account = await _user_name(db, active.field_submitter_id) if active else None
+    aee_account = await _user_name(db, active.aee_id) if active else None
     commissioner_name = await _user_name(db, active.commissioner_id) if active else None
     attributes = dict(feature.attributes or {})
     original_ai = active.original_ai_condition if active else anomaly.color.value.upper()
@@ -359,12 +362,14 @@ async def _to_out(
         current_condition=active.current_condition if active else original_ai,
         workflow_status=active.workflow_status if active else RemediationWorkflowStatus.AI_DETECTED,
         field_submitter_id=active.field_submitter_id if active else None,
-        field_submitter_name=submitter_name,
+        field_submitter_account_name=submitter_account,
         field_submitter_role=active.field_submitter_role if active else None,
+        ae_name=active.ae_name_manual if active else None,
         work_started_at=active.work_started_at if active else None,
         submitted_at=active.submitted_at if active else None,
         issue_solved=active.issue_solved if active else False,
-        short_description=active.short_description if active else None,
+        issue_description=active.issue_description if active else None,
+        work_completed=active.short_description if active else None,
         remarks=active.field_remarks if active else None,
         gps_validation_status=active.gps_validation_status if active else None,
         photo_latitude=active.evidence_latitude if active else None,
@@ -381,7 +386,12 @@ async def _to_out(
         after_photo_exif_latitude=active.after_photo_exif_latitude if active else None,
         after_photo_exif_longitude=active.after_photo_exif_longitude if active else None,
         after_photo_exif_captured_at=active.after_photo_exif_captured_at if active else None,
-        commissioner_decision=active.commissioner_decision if active else None,
+        aee_id=active.aee_id if active else None,
+        aee_account_name=aee_account,
+        aee_name=active.aee_name_manual if active else None,
+        aee_category=active.aee_category if active else None,
+        aee_decided_at=active.aee_decided_at if active else None,
+        aee_remarks=active.aee_remarks if active else None,
         commissioner_id=active.commissioner_id if active else None,
         commissioner_name=commissioner_name,
         commissioner_decided_at=active.commissioner_decided_at if active else None,
@@ -399,42 +409,161 @@ async def _to_out(
     )
 
 
-async def _notify_commissioners(db: AsyncSession, row: PointVerification, officer: User, feature: Feature) -> None:
-    ids = (
+async def _active_user_ids(db: AsyncSession, role: UserRole) -> list[uuid.UUID]:
+    return list((await db.execute(select(User.id).where(User.role == role, User.is_active.is_(True)))).scalars().all())
+
+
+async def _upsert_workflow_notification(
+    db: AsyncSession,
+    *,
+    user_id: uuid.UUID,
+    actor_id: uuid.UUID | None,
+    source: NotificationSource,
+    source_id: uuid.UUID,
+    feature_id: uuid.UUID,
+    message: str,
+) -> None:
+    """Create one current notification per recipient/workflow event.
+
+    A returned item may be corrected and resubmitted, and users can retry a
+    request after a network interruption. Reusing the existing notification
+    prevents duplicate badges while making the latest event unread again.
+    """
+    existing = (
         await db.execute(
-            select(User.id).where(User.role == UserRole.COMMISSIONER, User.is_active.is_(True))
+            select(Notification)
+            .where(
+                Notification.user_id == user_id,
+                Notification.source == source,
+                Notification.source_id == source_id,
+            )
+            # Notification.recipient and Notification.actor are joined eagerly.
+            # Lock only the notifications table; PostgreSQL rejects a blanket
+            # FOR UPDATE when nullable LEFT JOIN user rows are present.
+            .with_for_update(of=Notification)
         )
-    ).scalars().all()
-    for user_id in ids:
+    ).scalar_one_or_none()
+    if existing is None:
         db.add(
             Notification(
                 user_id=user_id,
-                actor_id=officer.id,
-                source=NotificationSource.REMEDIATION_SUBMITTED,
-                source_id=row.id,
-                feature_id=feature.id,
-                message=f"{officer.name} ({officer.role.value.upper()}) submitted remediation evidence for {feature.label or feature.category or feature.id}.",
+                actor_id=actor_id,
+                source=source,
+                source_id=source_id,
+                feature_id=feature_id,
+                message=message[:1024],
             )
+        )
+        return
+    existing.actor_id = actor_id
+    existing.feature_id = feature_id
+    existing.message = message[:1024]
+    existing.read_at = None
+    existing.created_at = datetime.now(timezone.utc)
+
+
+async def _notify_aees(db: AsyncSession, row: PointVerification, ae: User, feature: Feature) -> None:
+    for user_id in await _active_user_ids(db, UserRole.AEE):
+        await _upsert_workflow_notification(
+            db,
+            user_id=user_id,
+            actor_id=ae.id,
+            source=NotificationSource.REMEDIATION_SUBMITTED,
+            source_id=row.id,
+            feature_id=feature.id,
+            message=(
+                f"Work by AE {row.ae_name_manual or ae.name} is waiting for AEE approval. "
+                f"Issue: {row.issue_description or 'Field issue'}. Feature: {feature.label or feature.category or feature.id}."
+            ),
         )
 
 
-def _notify_submitter(db: AsyncSession, row: PointVerification, commissioner: User, approved: bool) -> None:
+async def _notify_commissioners_after_aee(db: AsyncSession, row: PointVerification, aee: User, feature: Feature) -> None:
+    for user_id in await _active_user_ids(db, UserRole.COMMISSIONER):
+        await _upsert_workflow_notification(
+            db,
+            user_id=user_id,
+            actor_id=aee.id,
+            source=NotificationSource.REMEDIATION_AEE_APPROVED,
+            source_id=row.id,
+            feature_id=feature.id,
+            message=(
+                f"Work completed by AE {row.ae_name_manual or '—'} and approved as Good by "
+                f"AEE {row.aee_name_manual or aee.name}. Open Commissioner Acceptance to review it. "
+                f"Feature: {feature.label or feature.category or feature.id}."
+            ),
+        )
+
+
+async def _notify_ae_after_aee(db: AsyncSession, row: PointVerification, aee: User, approved: bool) -> None:
     if row.field_submitter_id is None:
         return
     if approved:
-        message = f"{commissioner.name} approved your remediation. Current condition: Good."
+        source = NotificationSource.REMEDIATION_AEE_APPROVED
+        message = f"Your work was approved as Good by AEE {row.aee_name_manual or aee.name}."
     else:
-        message = f"{commissioner.name} rejected your remediation. Reason: {row.commissioner_remarks or 'Correction required'}"
-    db.add(
-        Notification(
-            user_id=row.field_submitter_id,
+        source = NotificationSource.REMEDIATION_RETURNED
+        message = (
+            f"Your work was returned by AEE {row.aee_name_manual or aee.name} as "
+            f"{row.aee_category or 'correction required'}. Remarks: {row.aee_remarks or 'Please correct and resubmit.'}"
+        )
+    await _upsert_workflow_notification(
+        db,
+        user_id=row.field_submitter_id,
+        actor_id=aee.id,
+        source=source,
+        source_id=row.id,
+        feature_id=row.feature_id,
+        message=message,
+    )
+
+
+async def _notify_aee_decision_confirmation(
+    db: AsyncSession,
+    row: PointVerification,
+    aee: User,
+    *,
+    approved: bool,
+) -> None:
+    source = (
+        NotificationSource.REMEDIATION_AEE_APPROVED
+        if approved
+        else NotificationSource.REMEDIATION_RETURNED
+    )
+    message = (
+        "You approved this work as Good. The AI point is now Blue in AI mode, "
+        "and the Commissioner has been notified."
+        if approved
+        else f"You returned this work as {row.aee_category or 'correction required'} to the AE."
+    )
+    await _upsert_workflow_notification(
+        db,
+        user_id=aee.id,
+        actor_id=aee.id,
+        source=source,
+        source_id=row.id,
+        feature_id=row.feature_id,
+        message=message,
+    )
+
+
+async def _notify_acceptance(db: AsyncSession, row: PointVerification, commissioner: User) -> None:
+    recipients = {row.field_submitter_id, row.aee_id}
+    for user_id in recipients:
+        if user_id is None:
+            continue
+        await _upsert_workflow_notification(
+            db,
+            user_id=user_id,
             actor_id=commissioner.id,
-            source=NotificationSource.REMEDIATION_APPROVED if approved else NotificationSource.REMEDIATION_REJECTED,
+            source=NotificationSource.REMEDIATION_COMMISSIONER_ACCEPTED,
             source_id=row.id,
             feature_id=row.feature_id,
-            message=message[:1024],
+            message=(
+                f"Commissioner {commissioner.name} accepted the work solved by AE "
+                f"{row.ae_name_manual or '—'} and approved by AEE {row.aee_name_manual or '—'}."
+            ),
         )
-    )
 
 
 def _record_activity(db: AsyncSession, row: PointVerification, actor: User, event: str, details: dict) -> None:
@@ -449,11 +578,11 @@ def _record_activity(db: AsyncSession, row: PointVerification, actor: User, even
     )
 
 
-@router.post("/{feature_id}/start-work", response_model=WorkflowOut, summary="AE or AEE voluntarily starts an available AI issue")
+@router.post("/{feature_id}/start-work", response_model=WorkflowOut, summary="AE starts an available AI issue")
 async def start_work(
     feature_id: uuid.UUID,
     body: StartWorkIn,
-    officer: User = Depends(require_field_officer),
+    officer: User = Depends(require_ae),
     db: AsyncSession = Depends(get_db),
 ) -> WorkflowOut:
     # Locking the source feature serializes every start attempt for the same
@@ -482,21 +611,25 @@ async def start_work(
     if row.workflow_status == RemediationWorkflowStatus.WORK_IN_PROGRESS:
         if row.field_submitter_id == officer.id:
             return await _to_out(db, feature, row, anomaly, body.detection_mode)
-        raise HTTPException(status_code=409, detail="Another field officer already started work on this issue")
-    if row.workflow_status == RemediationWorkflowStatus.REJECTED_BY_COMMISSIONER:
+        raise HTTPException(status_code=409, detail="Another AE already started work on this issue")
+    if row.workflow_status == RemediationWorkflowStatus.RETURNED_BY_AEE:
         if row.field_submitter_id != officer.id:
-            raise HTTPException(status_code=403, detail="Only the original submitting officer may correct rejected work")
-        row.commissioner_decision = None
-        row.commissioner_id = None
-        row.commissioner_decided_at = None
-        row.commissioner_remarks = None
+            raise HTTPException(status_code=403, detail="Only the original AE may correct returned work")
+        # Force the manually displayed names to be entered again for every
+        # correction/resubmission while prior names remain preserved in history.
+        row.ae_name_manual = None
+        row.aee_id = None
+        row.aee_name_manual = None
+        row.aee_category = None
+        row.aee_decided_at = None
+        row.aee_remarks = None
     elif row.workflow_status != RemediationWorkflowStatus.AI_DETECTED:
         raise HTTPException(status_code=409, detail=f"This issue is already {row.workflow_status.value}")
 
     now = datetime.now(timezone.utc)
     row.workflow_status = RemediationWorkflowStatus.WORK_IN_PROGRESS
     row.field_submitter_id = officer.id
-    row.field_submitter_role = officer.role.value
+    row.field_submitter_role = UserRole.AE.value
     row.work_started_at = now
     row.issue_solved = False
     row.original_ai_condition = anomaly.color.value.upper()
@@ -521,7 +654,7 @@ async def upload_evidence(
     detection_mode: DetectionMode = Form(...),
     before_image: UploadFile = File(...),
     after_image: UploadFile = File(...),
-    officer: User = Depends(require_field_officer),
+    officer: User = Depends(require_ae),
     db: AsyncSession = Depends(get_db),
 ) -> WorkflowOut:
     feature = await _load_feature(db, feature_id)
@@ -626,11 +759,11 @@ async def upload_evidence(
     return await _to_out(db, feature, row, anomaly, detection_mode)
 
 
-@router.post("/{feature_id}/submit", response_model=WorkflowOut, summary="AE or AEE submits completed field work directly to Commissioner")
-async def submit_to_commissioner(
+@router.post("/{feature_id}/submit", response_model=WorkflowOut, summary="AE submits completed field work to AEE for approval")
+async def submit_to_aee(
     feature_id: uuid.UUID,
     body: FieldSubmissionIn,
-    officer: User = Depends(require_field_officer),
+    ae: User = Depends(require_ae),
     db: AsyncSession = Depends(get_db),
 ) -> WorkflowOut:
     feature = await _load_feature(db, feature_id)
@@ -639,8 +772,8 @@ async def submit_to_commissioner(
     row = await _load_verification(db, feature_id, anomaly.id, lock=True)
     if row is None:
         raise HTTPException(status_code=404, detail="Start Work before submitting")
-    if row.field_submitter_id != officer.id:
-        raise HTTPException(status_code=403, detail="Only the officer who started work may submit it")
+    if row.field_submitter_id != ae.id:
+        raise HTTPException(status_code=403, detail="Only the AE who started work may submit it")
     if row.workflow_status != RemediationWorkflowStatus.WORK_IN_PROGRESS:
         raise HTTPException(status_code=409, detail="Work is not in a submittable state")
     if not row.before_photo_key or not row.after_photo_key:
@@ -648,34 +781,99 @@ async def submit_to_commissioner(
     if row.gps_validation_status != "PHOTO_EXIF_VERIFIED":
         raise HTTPException(status_code=422, detail="Backend photo GPS validation must succeed before submission")
 
+    row.ae_name_manual = body.ae_name.strip()
     row.issue_solved = True
-    row.short_description = body.short_description.strip()
+    row.issue_description = body.issue_description.strip()
+    row.short_description = body.work_completed.strip()
     row.field_remarks = (body.remarks or "").strip() or None
     row.submission_version += 1
     row.submitted_at = datetime.now(timezone.utc)
-    row.workflow_status = RemediationWorkflowStatus.PENDING_COMMISSIONER_APPROVAL
+    row.workflow_status = RemediationWorkflowStatus.PENDING_AEE_APPROVAL
     row.current_condition = row.original_ai_condition
     _append_history(
         row,
-        event="SUBMITTED_TO_COMMISSIONER",
-        actor=officer,
+        event="SUBMITTED_TO_AEE",
+        actor=ae,
         details={
-            "issue_solved": True,
-            "short_description": row.short_description,
+            "ae_name": row.ae_name_manual,
+            "issue_description": row.issue_description,
+            "work_completed": row.short_description,
             "remarks": row.field_remarks,
             "gps_validation_status": row.gps_validation_status,
         },
     )
     await db.flush()
-    _record_activity(db, row, officer, "SUBMITTED_TO_COMMISSIONER", {"version": row.submission_version})
-    await _notify_commissioners(db, row, officer, feature)
+    _record_activity(db, row, ae, "SUBMITTED_TO_AEE", {"version": row.submission_version, "ae_name": row.ae_name_manual})
+    await _notify_aees(db, row, ae, feature)
     return await _to_out(db, feature, row, anomaly, body.detection_mode)
 
 
-@router.post("/{feature_id}/commissioner-decision", response_model=WorkflowOut, summary="Commissioner approves or rejects submitted field work")
-async def commissioner_decision(
+@router.post("/{feature_id}/aee-decision", response_model=WorkflowOut, summary="AEE rates submitted work as Good, Moderate, or Bad")
+async def aee_decision(
     feature_id: uuid.UUID,
-    body: CommissionerDecisionIn,
+    body: AeeDecisionIn,
+    aee: User = Depends(require_aee),
+    db: AsyncSession = Depends(get_db),
+) -> WorkflowOut:
+    feature = await _load_feature(db, feature_id)
+    anomaly = await _load_anomaly(db, body.anomaly_id, lock=True)
+    row = await _load_verification(db, feature_id, anomaly.id, lock=True)
+    if row is None:
+        raise HTTPException(status_code=404, detail="AE field submission was not found")
+    if row.workflow_status != RemediationWorkflowStatus.PENDING_AEE_APPROVAL:
+        raise HTTPException(status_code=409, detail="This work is not waiting for AEE approval")
+    if row.field_submitter_id == aee.id:
+        raise HTTPException(status_code=403, detail="AEE cannot approve their own field submission")
+    if not row.detection_mode:
+        raise HTTPException(status_code=422, detail="The remediation record has no AI detection mode")
+    _validate_ai_candidate(feature, anomaly, row.detection_mode)  # type: ignore[arg-type]
+    if not row.issue_solved or not (row.issue_description or "").strip() or not (row.short_description or "").strip():
+        raise HTTPException(status_code=422, detail="Required AE work details are incomplete")
+    if not row.before_photo_key or not row.after_photo_key:
+        raise HTTPException(status_code=422, detail="Required Before and After evidence is incomplete")
+    if row.gps_validation_status != "PHOTO_EXIF_VERIFIED":
+        raise HTTPException(status_code=422, detail="Photo GPS evidence is not verified")
+
+    now = datetime.now(timezone.utc)
+    approved = body.category == "GOOD"
+    row.aee_id = aee.id
+    row.aee_name_manual = body.aee_name.strip()
+    row.aee_category = body.category
+    row.aee_decided_at = now
+    row.aee_remarks = (body.remarks or "").strip() or None
+    row.workflow_status = (
+        RemediationWorkflowStatus.AEE_APPROVED if approved else RemediationWorkflowStatus.RETURNED_BY_AEE
+    )
+    row.current_condition = "GOOD" if approved else row.original_ai_condition
+    anomaly.status = AnomalyStatus.RESOLVED if approved else AnomalyStatus.REVIEWING
+    event = "AEE_APPROVED_GOOD" if approved else f"AEE_RETURNED_{body.category}"
+    _append_history(
+        row,
+        event=event,
+        actor=aee,
+        details={
+            "aee_name": row.aee_name_manual,
+            "category": body.category,
+            "remarks": row.aee_remarks,
+        },
+    )
+    await db.flush()
+    _record_activity(db, row, aee, event, {"category": body.category, "aee_name": row.aee_name_manual})
+    await _notify_ae_after_aee(db, row, aee, approved)
+    await _notify_aee_decision_confirmation(db, row, aee, approved=approved)
+    if approved:
+        await _notify_commissioners_after_aee(db, row, aee, feature)
+    # Force notification/check-constraint errors to happen before a success
+    # response is returned. This prevents a temporary Blue UI followed by a
+    # transaction rollback and Red point after refresh.
+    await db.flush()
+    return await _to_out(db, feature, row, anomaly, row.detection_mode)  # type: ignore[arg-type]
+
+
+@router.post("/{feature_id}/commissioner-accept", response_model=WorkflowOut, summary="Commissioner accepts AEE-approved completed work")
+async def commissioner_accept(
+    feature_id: uuid.UUID,
+    body: CommissionerAcceptanceIn,
     commissioner: User = Depends(require_commissioner),
     db: AsyncSession = Depends(get_db),
 ) -> WorkflowOut:
@@ -683,59 +881,59 @@ async def commissioner_decision(
     anomaly = await _load_anomaly(db, body.anomaly_id, lock=True)
     row = await _load_verification(db, feature_id, anomaly.id, lock=True)
     if row is None:
-        raise HTTPException(status_code=404, detail="Field submission was not found")
-    if row.workflow_status != RemediationWorkflowStatus.PENDING_COMMISSIONER_APPROVAL:
-        raise HTTPException(status_code=409, detail="This work is not waiting for Commissioner approval")
-    if not row.issue_solved or not (row.short_description or "").strip():
-        raise HTTPException(status_code=422, detail="Required field-work details are incomplete")
-    if not row.before_photo_key or not row.after_photo_key:
-        raise HTTPException(status_code=422, detail="Required Before and After evidence is incomplete")
-    if row.gps_validation_status != "PHOTO_EXIF_VERIFIED":
-        raise HTTPException(status_code=422, detail="Photo GPS evidence is not verified")
+        raise HTTPException(status_code=404, detail="AEE-approved work was not found")
+    if row.workflow_status != RemediationWorkflowStatus.AEE_APPROVED:
+        raise HTTPException(status_code=409, detail="This work is not waiting for Commissioner acceptance")
+    if row.aee_category != "GOOD" or row.aee_id is None:
+        raise HTTPException(status_code=422, detail="Only AEE-approved Good work may be accepted")
+    if commissioner.id in {row.field_submitter_id, row.aee_id}:
+        raise HTTPException(status_code=403, detail="Commissioner cannot accept work they submitted or AEE-approved")
 
-    now = datetime.now(timezone.utc)
-    approved = body.decision == "APPROVE"
-    row.commissioner_decision = body.decision
+    row.commissioner_decision = "ACCEPT"
     row.commissioner_id = commissioner.id
-    row.commissioner_decided_at = now
-    row.commissioner_remarks = (body.reason or "").strip() or None
-    row.workflow_status = (
-        RemediationWorkflowStatus.APPROVED_RESOLVED
-        if approved else RemediationWorkflowStatus.REJECTED_BY_COMMISSIONER
-    )
-    row.current_condition = "GOOD" if approved else row.original_ai_condition
-    anomaly.status = AnomalyStatus.RESOLVED if approved else AnomalyStatus.REVIEWING
+    row.commissioner_decided_at = datetime.now(timezone.utc)
+    row.commissioner_remarks = (body.remarks or "").strip() or None
+    row.workflow_status = RemediationWorkflowStatus.COMMISSIONER_ACCEPTED
+    row.current_condition = "GOOD"
+    anomaly.status = AnomalyStatus.RESOLVED
     _append_history(
         row,
-        event="COMMISSIONER_APPROVED" if approved else "COMMISSIONER_REJECTED",
+        event="COMMISSIONER_ACCEPTED",
         actor=commissioner,
-        details={"decision": body.decision, "reason": row.commissioner_remarks},
+        details={"remarks": row.commissioner_remarks},
     )
     await db.flush()
-    _record_activity(db, row, commissioner, "COMMISSIONER_APPROVED" if approved else "COMMISSIONER_REJECTED", {"decision": body.decision})
-    _notify_submitter(db, row, commissioner, approved)
+    _record_activity(db, row, commissioner, "COMMISSIONER_ACCEPTED", {})
+    await _notify_acceptance(db, row, commissioner)
+    await db.flush()
     return await _to_out(db, feature, row, anomaly, row.detection_mode)  # type: ignore[arg-type]
 
 
-@router.get("/inbox", response_model=list[RemediationInboxItem], summary="Commissioner remediation queue")
+@router.get("/inbox", response_model=list[RemediationInboxItem], summary="AEE approval queue or Commissioner acceptance queue")
 async def remediation_inbox(
-    _: User = Depends(require_commissioner),
+    current_user: User = Depends(require_operational),
     db: AsyncSession = Depends(get_db),
 ) -> list[RemediationInboxItem]:
+    if current_user.role == UserRole.AEE:
+        queue_status = RemediationWorkflowStatus.PENDING_AEE_APPROVAL
+    elif current_user.role == UserRole.COMMISSIONER:
+        queue_status = RemediationWorkflowStatus.AEE_APPROVED
+    else:
+        return []
     rows = (
         await db.execute(
             select(
                 PointVerification,
                 Feature,
-                User.name,
+                Dataset,
                 func.ST_X(SpatialAnomaly.geom),
                 func.ST_Y(SpatialAnomaly.geom),
             )
             .join(Feature, Feature.id == PointVerification.feature_id)
+            .join(Dataset, Dataset.id == Feature.dataset_id)
             .join(SpatialAnomaly, SpatialAnomaly.id == PointVerification.anomaly_id)
-            .outerjoin(User, User.id == PointVerification.field_submitter_id)
-            .where(PointVerification.workflow_status == RemediationWorkflowStatus.PENDING_COMMISSIONER_APPROVAL)
-            .order_by(PointVerification.submitted_at.desc().nullslast())
+            .where(PointVerification.workflow_status == queue_status)
+            .order_by(PointVerification.updated_at.desc())
         )
     ).all()
     return [
@@ -743,7 +941,7 @@ async def remediation_inbox(
             verification_id=row.id,
             feature_id=feature.id,
             dataset_id=feature.dataset_id,
-            dataset_name=feature.dataset.name,
+            dataset_name=dataset.name,
             label=feature.label,
             asset_type=feature.category,
             source_layer=_source_layer(feature),
@@ -756,18 +954,21 @@ async def remediation_inbox(
             ai_detected_at=row.ai_detected_at,
             longitude=longitude,
             latitude=latitude,
-            field_submitter_name=name,
-            field_submitter_role=row.field_submitter_role,
-            short_description=row.short_description,
+            ae_name=row.ae_name_manual,
+            aee_name=row.aee_name_manual,
+            aee_category=row.aee_category,
+            issue_description=row.issue_description,
+            work_completed=row.short_description,
             submitted_at=row.submitted_at,
+            aee_decided_at=row.aee_decided_at,
             gps_validation_status=row.gps_validation_status,
             evidence_distance_m=row.evidence_distance_m,
         )
-        for row, feature, name, longitude, latitude in rows
+        for row, feature, dataset, longitude, latitude in rows
     ]
 
 
-@router.get("/updates", response_model=list[RemediationUpdateItem], summary="Current officer's Commissioner decisions")
+@router.get("/updates", response_model=list[RemediationUpdateItem], summary="Current user's remediation notifications")
 async def remediation_updates(
     current_user: User = Depends(require_any),
     db: AsyncSession = Depends(get_db),
@@ -790,7 +991,12 @@ async def remediation_updates(
             .outerjoin(SpatialAnomaly, SpatialAnomaly.id == PointVerification.anomaly_id)
             .where(
                 Notification.user_id == current_user.id,
-                Notification.source.in_([NotificationSource.REMEDIATION_APPROVED, NotificationSource.REMEDIATION_REJECTED]),
+                Notification.source.in_([
+                    NotificationSource.REMEDIATION_SUBMITTED,
+                    NotificationSource.REMEDIATION_AEE_APPROVED,
+                    NotificationSource.REMEDIATION_RETURNED,
+                    NotificationSource.REMEDIATION_COMMISSIONER_ACCEPTED,
+                ]),
             )
             .order_by(Notification.created_at.desc())
             .limit(50)
@@ -815,8 +1021,17 @@ async def remediation_updates(
             latitude=latitude,
             source=notification.source.value,
             message=notification.message,
-            commissioner_name=name,
+            actor_name=name,
+            ae_name=row.ae_name_manual if row else None,
+            aee_name=row.aee_name_manual if row else None,
+            aee_category=row.aee_category if row else None,
+            issue_description=row.issue_description if row else None,
+            work_completed=row.short_description if row else None,
+            ae_remarks=row.field_remarks if row else None,
+            aee_remarks=row.aee_remarks if row else None,
             commissioner_remarks=row.commissioner_remarks if row else None,
+            before_photo_url=_photo_url(row, "before", row.before_photo_key) if row else None,
+            after_photo_url=_photo_url(row, "after", row.after_photo_key) if row else None,
             workflow_status=row.workflow_status if row else None,
             created_at=notification.created_at,
             read_at=notification.read_at,
@@ -847,7 +1062,11 @@ async def export_point_verifications(
     dataset_id: uuid.UUID | None = Query(default=None),
     db: AsyncSession = Depends(get_db),
 ) -> Response:
-    stmt = select(PointVerification, Feature).join(Feature, Feature.id == PointVerification.feature_id)
+    stmt = (
+        select(PointVerification, Feature)
+        .join(Feature, Feature.id == PointVerification.feature_id)
+        .options(joinedload(Feature.dataset))
+    )
     if dataset_id is not None:
         stmt = stmt.where(Feature.dataset_id == dataset_id)
     rows = (await db.execute(stmt.order_by(PointVerification.updated_at.desc()))).all()
@@ -856,10 +1075,11 @@ async def export_point_verifications(
     sheet.title = "AI Remediation Register"
     headers = [
         "Feature ID", "Dataset", "Layer", "Asset Type", "Original GDB Condition", "Original AI Condition",
-        "Current Condition", "AI Mode", "Workflow Status", "Issue Solved", "Short Description", "Remarks",
-        "Submitted By", "Submitter Role", "Work Started", "Submitted", "GPS Status", "Photo Latitude",
+        "Current Condition", "AI Mode", "Workflow Status", "AE Name", "AE Login Account", "Issue",
+        "Work Completed", "AE Remarks", "Work Started", "Submitted to AEE", "GPS Status", "Photo Latitude",
         "Photo Longitude", "Distance (m)", "Allowed Distance (m)", "Before Image", "After Image",
-        "Commissioner", "Decision", "Decision Time", "Commissioner Remarks",
+        "AEE Name", "AEE Login Account", "AEE Category", "AEE Decision Time", "AEE Remarks",
+        "Commissioner", "Accepted Time", "Commissioner Remarks",
     ]
     sheet.append(headers)
     for cell in sheet[1]:
@@ -867,22 +1087,25 @@ async def export_point_verifications(
         cell.font = Font(color="FFFFFF", bold=True)
         cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
     fills = {
-        RemediationWorkflowStatus.APPROVED_RESOLVED.value: PatternFill("solid", fgColor="5B9BD5"),
-        RemediationWorkflowStatus.PENDING_COMMISSIONER_APPROVAL.value: PatternFill("solid", fgColor="FCE4A6"),
-        RemediationWorkflowStatus.REJECTED_BY_COMMISSIONER.value: PatternFill("solid", fgColor="F4CCCC"),
+        RemediationWorkflowStatus.AEE_APPROVED.value: PatternFill("solid", fgColor="5B9BD5"),
+        RemediationWorkflowStatus.COMMISSIONER_ACCEPTED.value: PatternFill("solid", fgColor="5B9BD5"),
+        RemediationWorkflowStatus.PENDING_AEE_APPROVAL.value: PatternFill("solid", fgColor="FCE4A6"),
+        RemediationWorkflowStatus.RETURNED_BY_AEE.value: PatternFill("solid", fgColor="F4CCCC"),
         RemediationWorkflowStatus.WORK_IN_PROGRESS.value: PatternFill("solid", fgColor="D9EAF7"),
     }
     for row, feature in rows:
         submitter = await _user_name(db, row.field_submitter_id)
+        aee_account = await _user_name(db, row.aee_id)
         commissioner = await _user_name(db, row.commissioner_id)
         sheet.append([
             feature.id, feature.dataset.name, _source_layer(feature), feature.category, _gdb_condition(feature.attributes or {}),
             row.original_ai_condition, row.current_condition, row.detection_mode, row.workflow_status.value,
-            row.issue_solved, row.short_description, row.field_remarks, submitter, row.field_submitter_role,
+            row.ae_name_manual, submitter, row.issue_description, row.short_description, row.field_remarks,
             _excel_datetime(row.work_started_at), _excel_datetime(row.submitted_at), row.gps_validation_status,
             row.evidence_latitude, row.evidence_longitude, row.evidence_distance_m, row.evidence_buffer_m,
             _photo_url(row, "before", row.before_photo_key), _photo_url(row, "after", row.after_photo_key),
-            commissioner, row.commissioner_decision, _excel_datetime(row.commissioner_decided_at), row.commissioner_remarks,
+            row.aee_name_manual, aee_account, row.aee_category, _excel_datetime(row.aee_decided_at), row.aee_remarks,
+            commissioner, _excel_datetime(row.commissioner_decided_at), row.commissioner_remarks,
         ])
         for cell in sheet[sheet.max_row]:
             cell.fill = fills.get(row.workflow_status.value, PatternFill("solid", fgColor="FFFFFF"))
@@ -901,7 +1124,7 @@ async def export_point_verifications(
     )
 
 
-@router.get("/export-resolved-gdb", dependencies=[Depends(require_operational)], summary="Generate a GDB copy from Commissioner-approved work")
+@router.get("/export-resolved-gdb", dependencies=[Depends(require_operational)], summary="Generate a GDB copy from AEE-approved Good work")
 async def export_resolved_gdb(
     dataset_id: uuid.UUID = Query(...),
     db: AsyncSession = Depends(get_db),
@@ -918,15 +1141,17 @@ async def export_resolved_gdb(
                        COALESCE(NULLIF(f.attributes->>'gdb_layer',''), NULLIF(f.attributes->>'LAYER',''), f.category) AS source_layer,
                        COALESCE(f.attributes->>'FID', f.attributes->>'fid', f.attributes->>'OBJECTID', f.attributes->>'objectid') AS source_fid,
                        COALESCE(pv.original_condition, f.attributes->>'Condition', f.attributes->>'condition') AS original_condition,
-                       field_user.name AS field_submitter_name, pv.short_description, pv.submitted_at,
+                       COALESCE(pv.ae_name_manual, field_user.name) AS field_submitter_name, pv.short_description, pv.submitted_at,
+                       COALESCE(pv.aee_name_manual, aee_user.name) AS aee_name, pv.aee_decided_at, pv.aee_remarks,
                        commissioner.name AS commissioner_name, pv.commissioner_decided_at,
                        pv.commissioner_remarks, pv.gps_validation_status
                 FROM point_verifications pv
                 JOIN features f ON f.id = pv.feature_id
                 LEFT JOIN users field_user ON field_user.id = pv.field_submitter_id
+                LEFT JOIN users aee_user ON aee_user.id = pv.aee_id
                 LEFT JOIN users commissioner ON commissioner.id = pv.commissioner_id
-                WHERE f.dataset_id = :dataset_id AND pv.workflow_status = 'APPROVED_RESOLVED'
-                ORDER BY pv.commissioner_decided_at DESC NULLS LAST
+                WHERE f.dataset_id = :dataset_id AND pv.workflow_status IN ('AEE_APPROVED','COMMISSIONER_ACCEPTED')
+                ORDER BY COALESCE(pv.commissioner_decided_at, pv.aee_decided_at) DESC NULLS LAST
                 """
             ),
             {"dataset_id": dataset_id},
@@ -938,8 +1163,8 @@ async def export_resolved_gdb(
             source_layer=str(row["source_layer"]), source_fid=row["source_fid"],
             original_condition=row["original_condition"], verified_condition="good",
             architect_name=row["field_submitter_name"], work_completed=row["short_description"],
-            work_completed_at=row["submitted_at"], admin_name=row["commissioner_name"],
-            resolved_at=row["commissioner_decided_at"], admin_remarks=row["commissioner_remarks"],
+            work_completed_at=row["submitted_at"], admin_name=row["aee_name"],
+            resolved_at=row["aee_decided_at"], admin_remarks=row["aee_remarks"],
             location_status=row["gps_validation_status"], anomaly_id=row["anomaly_id"],
         )
         for row in rows if row["source_layer"] and row["source_fid"] is not None

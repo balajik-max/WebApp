@@ -902,14 +902,14 @@ def _anomaly_out(
     lon: float,
     lat: float,
     *,
-    commissioner_approved: bool = False,
+    aee_approved: bool = False,
 ) -> SpatialAnomalyOut:
     # Blue is a workflow projection, never a manually mutable AI colour.
     # Historical/orphan `resolved` anomaly flags stay unresolved unless the
-    # canonical remediation row proves Commissioner approval.
+    # canonical remediation row proves AEE Good approval.
     public_status = (
         AnomalyStatus.RESOLVED.value
-        if commissioner_approved
+        if aee_approved
         else AnomalyStatus.REVIEWING.value
         if row.status == AnomalyStatus.RESOLVED
         else row.status.value
@@ -980,7 +980,7 @@ async def list_anomalies(
         .outerjoin(
             PointVerification,
             (PointVerification.anomaly_id == SpatialAnomaly.id)
-            & (PointVerification.workflow_status == RemediationWorkflowStatus.APPROVED_RESOLVED),
+            & (PointVerification.workflow_status.in_([RemediationWorkflowStatus.AEE_APPROVED, RemediationWorkflowStatus.COMMISSIONER_ACCEPTED])),
         )
         .where(SpatialAnomaly.dataset_id == dataset_id)
     )
@@ -990,7 +990,7 @@ async def list_anomalies(
         stmt = stmt.where(SpatialAnomaly.status == status_filter)
     rows = (await db.execute(stmt)).all()
     return [
-        _anomaly_out(row, lon, lat, commissioner_approved=approval_id is not None)
+        _anomaly_out(row, lon, lat, aee_approved=approval_id is not None)
         for row, lon, lat, approval_id in rows
     ]
 
@@ -1168,5 +1168,5 @@ async def update_anomaly_status(
     del anomaly_id, body, user, db
     raise HTTPException(
         status_code=409,
-        detail="Anomaly status is controlled by Start Work and Commissioner decision endpoints",
+        detail="Anomaly status is controlled by Start Work, AEE review, and Commissioner acceptance endpoints",
     )

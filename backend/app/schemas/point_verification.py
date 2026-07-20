@@ -1,4 +1,4 @@
-"""Contracts for direct AE/AEE remediation and Commissioner decisions."""
+"""Contracts for AE field work, AEE review, Commissioner acceptance, and notifications."""
 from __future__ import annotations
 
 import uuid
@@ -12,7 +12,7 @@ from app.models.point_verification import RemediationWorkflowStatus
 DetectionMode = Literal["poles", "drains", "manholes"]
 AiAnomalyType = Literal["pole_redundancy", "drain_encroachment", "manhole_status"]
 AiIssueColor = Literal["red", "yellow"]
-CommissionerDecision = Literal["APPROVE", "REJECT"]
+AeeCategory = Literal["GOOD", "MODERATE", "BAD"]
 
 
 class StartWorkIn(BaseModel):
@@ -23,27 +23,28 @@ class StartWorkIn(BaseModel):
 class FieldSubmissionIn(BaseModel):
     anomaly_id: uuid.UUID
     detection_mode: DetectionMode
-    issue_solved: bool
-    short_description: str = Field(min_length=3, max_length=2048)
+    ae_name: str = Field(min_length=2, max_length=255)
+    issue_description: str = Field(min_length=3, max_length=4096)
+    work_completed: str = Field(min_length=3, max_length=2048)
+    remarks: str | None = Field(default=None, max_length=4096)
+
+
+class AeeDecisionIn(BaseModel):
+    anomaly_id: uuid.UUID
+    aee_name: str = Field(min_length=2, max_length=255)
+    category: AeeCategory
     remarks: str | None = Field(default=None, max_length=4096)
 
     @model_validator(mode="after")
-    def require_solved(self) -> "FieldSubmissionIn":
-        if not self.issue_solved:
-            raise ValueError("Issue Solved / Work Performed must be confirmed")
+    def require_return_reason(self) -> "AeeDecisionIn":
+        if self.category in {"MODERATE", "BAD"} and not (self.remarks or "").strip():
+            raise ValueError("AEE remarks are required for Moderate or Bad work")
         return self
 
 
-class CommissionerDecisionIn(BaseModel):
+class CommissionerAcceptanceIn(BaseModel):
     anomaly_id: uuid.UUID
-    decision: CommissionerDecision
-    reason: str | None = Field(default=None, max_length=4096)
-
-    @model_validator(mode="after")
-    def require_rejection_reason(self) -> "CommissionerDecisionIn":
-        if self.decision == "REJECT" and not (self.reason or "").strip():
-            raise ValueError("A rejection reason is required")
-        return self
+    remarks: str | None = Field(default=None, max_length=4096)
 
 
 class WorkflowHistoryItem(BaseModel):
@@ -73,12 +74,14 @@ class WorkflowOut(BaseModel):
     workflow_status: RemediationWorkflowStatus
 
     field_submitter_id: uuid.UUID | None = None
-    field_submitter_name: str | None = None
+    field_submitter_account_name: str | None = None
     field_submitter_role: str | None = None
+    ae_name: str | None = None
     work_started_at: datetime | None = None
     submitted_at: datetime | None = None
     issue_solved: bool = False
-    short_description: str | None = None
+    issue_description: str | None = None
+    work_completed: str | None = None
     remarks: str | None = None
 
     gps_validation_status: str | None = None
@@ -97,7 +100,13 @@ class WorkflowOut(BaseModel):
     after_photo_exif_longitude: float | None = None
     after_photo_exif_captured_at: datetime | None = None
 
-    commissioner_decision: CommissionerDecision | None = None
+    aee_id: uuid.UUID | None = None
+    aee_account_name: str | None = None
+    aee_name: str | None = None
+    aee_category: AeeCategory | None = None
+    aee_decided_at: datetime | None = None
+    aee_remarks: str | None = None
+
     commissioner_id: uuid.UUID | None = None
     commissioner_name: str | None = None
     commissioner_decided_at: datetime | None = None
@@ -132,12 +141,23 @@ class RemediationInboxItem(BaseModel):
     ai_detected_at: datetime | None = None
     longitude: float
     latitude: float
-    field_submitter_name: str | None = None
-    field_submitter_role: str | None = None
-    short_description: str | None = None
+    ae_name: str | None = None
+    aee_name: str | None = None
+    aee_category: AeeCategory | None = None
+    issue_description: str | None = None
+    work_completed: str | None = None
     submitted_at: datetime | None = None
+    aee_decided_at: datetime | None = None
     gps_validation_status: str | None = None
     evidence_distance_m: float | None = None
+
+
+NotificationKind = Literal[
+    "remediation_submitted",
+    "remediation_aee_approved",
+    "remediation_returned",
+    "remediation_commissioner_accepted",
+]
 
 
 class RemediationUpdateItem(BaseModel):
@@ -156,10 +176,19 @@ class RemediationUpdateItem(BaseModel):
     ai_detected_at: datetime | None = None
     longitude: float | None = None
     latitude: float | None = None
-    source: Literal["remediation_approved", "remediation_rejected"]
+    source: NotificationKind
     message: str
-    commissioner_name: str | None = None
+    actor_name: str | None = None
+    ae_name: str | None = None
+    aee_name: str | None = None
+    aee_category: AeeCategory | None = None
+    issue_description: str | None = None
+    work_completed: str | None = None
+    ae_remarks: str | None = None
+    aee_remarks: str | None = None
     commissioner_remarks: str | None = None
+    before_photo_url: str | None = None
+    after_photo_url: str | None = None
     workflow_status: RemediationWorkflowStatus | None = None
     created_at: datetime
     read_at: datetime | None = None

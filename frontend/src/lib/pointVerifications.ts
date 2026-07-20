@@ -3,12 +3,14 @@ import { apiAssetUrl, apiDownload, apiGet, apiPost, apiPutForm } from "./api";
 export type WorkflowStatus =
   | "AI_DETECTED"
   | "WORK_IN_PROGRESS"
-  | "PENDING_COMMISSIONER_APPROVAL"
-  | "REJECTED_BY_COMMISSIONER"
-  | "APPROVED_RESOLVED";
+  | "PENDING_AEE_APPROVAL"
+  | "RETURNED_BY_AEE"
+  | "AEE_APPROVED"
+  | "COMMISSIONER_ACCEPTED";
 export type AiDetectionMode = "poles" | "drains" | "manholes";
 export type AiAnomalyType = "pole_redundancy" | "drain_encroachment" | "manhole_status";
 export type AiIssueColor = "red" | "yellow";
+export type AeeCategory = "GOOD" | "MODERATE" | "BAD";
 
 export interface WorkflowHistoryItem {
   event: string;
@@ -36,12 +38,14 @@ export interface PointVerificationRecord {
   current_condition: string | null;
   workflow_status: WorkflowStatus;
   field_submitter_id: string | null;
-  field_submitter_name: string | null;
+  field_submitter_account_name: string | null;
   field_submitter_role: string | null;
+  ae_name: string | null;
   work_started_at: string | null;
   submitted_at: string | null;
   issue_solved: boolean;
-  short_description: string | null;
+  issue_description: string | null;
+  work_completed: string | null;
   remarks: string | null;
   gps_validation_status: string | null;
   photo_latitude: number | null;
@@ -58,7 +62,12 @@ export interface PointVerificationRecord {
   after_photo_exif_latitude: number | null;
   after_photo_exif_longitude: number | null;
   after_photo_exif_captured_at: string | null;
-  commissioner_decision: "APPROVE" | "REJECT" | null;
+  aee_id: string | null;
+  aee_account_name: string | null;
+  aee_name: string | null;
+  aee_category: AeeCategory | null;
+  aee_decided_at: string | null;
+  aee_remarks: string | null;
   commissioner_id: string | null;
   commissioner_name: string | null;
   commissioner_decided_at: string | null;
@@ -81,14 +90,20 @@ export interface AiVerificationRequestContext {
 }
 
 export interface FieldSubmissionInput extends AiVerificationRequestContext {
-  issueSolved: boolean;
-  shortDescription: string;
+  aeName: string;
+  issueDescription: string;
+  workCompleted: string;
   remarks?: string | null;
 }
 
-export interface CommissionerDecisionInput extends AiVerificationRequestContext {
-  decision: "APPROVE" | "REJECT";
-  reason?: string | null;
+export interface AeeDecisionInput extends AiVerificationRequestContext {
+  aeeName: string;
+  category: AeeCategory;
+  remarks?: string | null;
+}
+
+export interface CommissionerAcceptanceInput extends AiVerificationRequestContext {
+  remarks?: string | null;
 }
 
 export interface RemediationInboxItem {
@@ -108,13 +123,22 @@ export interface RemediationInboxItem {
   ai_detected_at: string | null;
   longitude: number;
   latitude: number;
-  field_submitter_name: string | null;
-  field_submitter_role: string | null;
-  short_description: string | null;
+  ae_name: string | null;
+  aee_name: string | null;
+  aee_category: AeeCategory | null;
+  issue_description: string | null;
+  work_completed: string | null;
   submitted_at: string | null;
+  aee_decided_at: string | null;
   gps_validation_status: string | null;
   evidence_distance_m: number | null;
 }
+
+export type RemediationNotificationSource =
+  | "remediation_submitted"
+  | "remediation_aee_approved"
+  | "remediation_returned"
+  | "remediation_commissioner_accepted";
 
 export interface RemediationUpdateItem {
   notification_id: string;
@@ -132,10 +156,19 @@ export interface RemediationUpdateItem {
   ai_detected_at: string | null;
   longitude: number | null;
   latitude: number | null;
-  source: "remediation_approved" | "remediation_rejected";
+  source: RemediationNotificationSource;
   message: string;
-  commissioner_name: string | null;
+  actor_name: string | null;
+  ae_name: string | null;
+  aee_name: string | null;
+  aee_category: AeeCategory | null;
+  issue_description: string | null;
+  work_completed: string | null;
+  ae_remarks: string | null;
+  aee_remarks: string | null;
   commissioner_remarks: string | null;
+  before_photo_url: string | null;
+  after_photo_url: string | null;
   workflow_status: WorkflowStatus | null;
   created_at: string;
   read_at: string | null;
@@ -148,11 +181,7 @@ function workflowQuery(ai: AiVerificationRequestContext): string {
   }).toString();
 }
 
-export function fetchPointVerification(
-  featureId: string,
-  ai: AiVerificationRequestContext,
-  signal?: AbortSignal,
-) {
+export function fetchPointVerification(featureId: string, ai: AiVerificationRequestContext, signal?: AbortSignal) {
   return apiGet<PointVerificationRecord>(
     `/api/v1/point-verifications/${encodeURIComponent(featureId)}/workflow?${workflowQuery(ai)}`,
     signal,
@@ -189,21 +218,30 @@ export function submitFieldRemediation(featureId: string, input: FieldSubmission
     {
       anomaly_id: input.anomalyId,
       detection_mode: input.detectionMode,
-      issue_solved: input.issueSolved,
-      short_description: input.shortDescription,
+      ae_name: input.aeName,
+      issue_description: input.issueDescription,
+      work_completed: input.workCompleted,
       remarks: input.remarks || null,
     },
   );
 }
 
-export function submitCommissionerDecision(featureId: string, input: CommissionerDecisionInput) {
+export function submitAeeDecision(featureId: string, input: AeeDecisionInput) {
   return apiPost<PointVerificationRecord>(
-    `/api/v1/point-verifications/${encodeURIComponent(featureId)}/commissioner-decision`,
+    `/api/v1/point-verifications/${encodeURIComponent(featureId)}/aee-decision`,
     {
       anomaly_id: input.anomalyId,
-      decision: input.decision,
-      reason: input.reason || null,
+      aee_name: input.aeeName,
+      category: input.category,
+      remarks: input.remarks || null,
     },
+  );
+}
+
+export function submitCommissionerAcceptance(featureId: string, input: CommissionerAcceptanceInput) {
+  return apiPost<PointVerificationRecord>(
+    `/api/v1/point-verifications/${encodeURIComponent(featureId)}/commissioner-accept`,
+    { anomaly_id: input.anomalyId, remarks: input.remarks || null },
   );
 }
 

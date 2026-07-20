@@ -70,7 +70,8 @@ def require_roles(*allowed: UserRole):
 
 
 require_commissioner = require_roles(UserRole.COMMISSIONER)
-require_field_officer = require_roles(UserRole.AE, UserRole.AEE)
+require_ae = require_roles(UserRole.AE)
+require_aee = require_roles(UserRole.AEE)
 require_operational = require_roles(UserRole.COMMISSIONER, UserRole.AEE, UserRole.AE)
 require_any = require_roles(
     UserRole.COMMISSIONER, UserRole.AEE, UserRole.AE, UserRole.MLA

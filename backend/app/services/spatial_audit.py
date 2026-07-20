@@ -467,7 +467,7 @@ async def run_spatial_audit(dataset_id: uuid.UUID, db: AsyncSession) -> AuditSum
     # Preserve every finding already attached to the remediation workflow
     # across AI re-runs on the SAME dataset. This prevents a re-run from
     # orphaning active/rejected evidence or painting a new red duplicate on
-    # top of a Commissioner-approved blue point.
+    # top of an AEE-approved blue point.
     protected_rows = (
         await db.execute(
             select(SpatialAnomaly)
@@ -477,9 +477,10 @@ async def run_spatial_audit(dataset_id: uuid.UUID, db: AsyncSession) -> AuditSum
                 PointVerification.workflow_status.in_(
                     [
                         RemediationWorkflowStatus.WORK_IN_PROGRESS,
-                        RemediationWorkflowStatus.PENDING_COMMISSIONER_APPROVAL,
-                        RemediationWorkflowStatus.REJECTED_BY_COMMISSIONER,
-                        RemediationWorkflowStatus.APPROVED_RESOLVED,
+                        RemediationWorkflowStatus.PENDING_AEE_APPROVAL,
+                        RemediationWorkflowStatus.RETURNED_BY_AEE,
+                        RemediationWorkflowStatus.AEE_APPROVED,
+                        RemediationWorkflowStatus.COMMISSIONER_ACCEPTED,
                     ]
                 ),
             )

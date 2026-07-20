@@ -1184,15 +1184,28 @@ function primaryFeatureIdForAnomaly(anomaly: SpatialAnomaly): string | null {
   );
 }
 
+function detectionModeForAnomalyType(
+  anomalyType: SpatialAnomaly["anomaly_type"],
+): Exclude<DetectionMode, null> | null {
+  if (anomalyType === "pole_redundancy") return "poles";
+  if (anomalyType === "drain_encroachment") return "drains";
+  if (anomalyType === "manhole_status") return "manholes";
+  return null;
+}
+
 function aiVerificationContextForAnomaly(
   anomaly: SpatialAnomaly | undefined,
   mode: DetectionMode,
 ): AiVerificationContext | null {
-  if (!anomaly || !mode || (anomaly.color !== "red" && anomaly.color !== "yellow")) return null;
-  if (anomaly.anomaly_type !== DETECTION_MODE_ANOMALY_TYPE[mode]) return null;
+  if (!anomaly || (anomaly.color !== "red" && anomaly.color !== "yellow")) return null;
+  const anomalyMode = detectionModeForAnomalyType(anomaly.anomaly_type);
+  if (!anomalyMode) return null;
+  const resolvedMode = mode && DETECTION_MODE_ANOMALY_TYPE[mode] === anomaly.anomaly_type
+    ? mode
+    : anomalyMode;
   return {
     anomalyId: anomaly.id,
-    detectionMode: mode,
+    detectionMode: resolvedMode,
     anomalyType: anomaly.anomaly_type,
     aiColor: anomaly.color,
     severityScore: anomaly.severity_score,
@@ -3753,15 +3766,27 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
   }, [detectionMode, datasets]);
 
   const toggleDetectionMode = useCallback((mode: Exclude<DetectionMode, null>) => {
-    setDetectionMode((current) => (current === mode ? null : mode));
+    setDetectionMode((current) => {
+      const next = current === mode ? null : mode;
+      // MapLibre handlers are registered once and read from refs. Update the
+      // ref in the same user action so the very next click cannot see the
+      // previous mode while React is still committing state.
+      detectionModeRef.current = next;
+      return next;
+    });
     // Every fresh mode selection starts with the AI overlay off — isolate
     // the category first, plain colors, then the user explicitly turns AI
-    // on as a separate step.
+    // on as a separate step. Keep the event-handler ref synchronous too.
+    aiOverlayEnabledRef.current = false;
     setAiOverlayEnabled(false);
   }, []);
 
   const toggleAiOverlay = useCallback(() => {
-    setAiOverlayEnabled((v) => !v);
+    setAiOverlayEnabled((current) => {
+      const next = !current;
+      aiOverlayEnabledRef.current = next;
+      return next;
+    });
   }, []);
 
   // The Data Sources panel is explicitly multi-select ("multiple can be
@@ -4422,12 +4447,12 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
       map.on("click", LAYER_ANOMALIES, (e: MapMouseEvent) => {
         const hit = map.queryRenderedFeatures(e.point, { layers: [LAYER_ANOMALIES] });
         if (!hit.length) return;
-        const id = hit[0].properties?.id as string | undefined;
+        const id = String(hit[0].properties?.id ?? hit[0].id ?? "");
         if (!id) return;
 
         const anomaly = anomalyByIdRef.current[id];
         const activeMode = detectionModeRef.current;
-        const context = aiOverlayEnabledRef.current
+        const verificationContext = aiOverlayEnabledRef.current
           ? aiVerificationContextForAnomaly(anomaly, activeMode)
           : null;
         const primaryFeatureId = anomaly ? primaryFeatureIdForAnomaly(anomaly) : null;
@@ -4435,14 +4460,17 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
         // Preserve the previous AI UI: Poles/Drains still open the AI Alert
         // card; Manholes still use their richer recommendation card.
         if (activeMode !== "manholes") setSelectedAnomalyId(id);
-        if (!context || !primaryFeatureId) return;
+        if (!primaryFeatureId) return;
 
         aiAnomalyClickConsumedRef.current = true;
         window.requestAnimationFrame(() => { aiAnomalyClickConsumedRef.current = false; });
         void fetchFeatureById(primaryFeatureId)
           .then((feature) => {
-            onFeatureSelect(feature, context);
-            if (context.detectionMode === "manholes" && feature.properties.dataset_id) {
+            // Always hand the selected feature to MapView. Red/Yellow findings
+            // carry verificationContext and therefore open the remediation panel;
+            // other findings still behave like an ordinary feature selection.
+            onFeatureSelect(feature, verificationContext ?? null);
+            if (verificationContext?.detectionMode === "manholes" && feature.properties.dataset_id) {
               setManholeRecommendOpen(false);
               void runManholeFeatureRecommend(feature.properties.dataset_id, feature.properties.id);
             }
@@ -4506,6 +4534,10 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
         const activeMode = detectionModeRef.current;
         const selectedAnomaly = aiOverlayEnabledRef.current && activeMode
           ? anomalyByFeatureIdRef.current[selected.properties.id]
+            ?? Object.values(anomalyByIdRef.current).find((anomaly) => (
+              primaryFeatureIdForAnomaly(anomaly) === selected.properties.id
+              || anomaly.feature_ids.includes(selected.properties.id)
+            ))
           : undefined;
         const verificationContext = aiOverlayEnabledRef.current
           ? aiVerificationContextForAnomaly(selectedAnomaly, activeMode)
@@ -4514,7 +4546,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
           const anomalyId = buildingAnomalyIdMapRef.current[selected.properties.id];
           if (anomalyId) {
             setSelectedAnomalyId(anomalyId);
-            if (verificationContext) onFeatureSelect(selected, verificationContext);
+            onFeatureSelect(selected, verificationContext ?? null);
             return;
           }
         }
@@ -4531,7 +4563,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
           // Poles/Drains: only hide the network SUMMARY PANEL (not its
           // data) so the two cards don't visually stack in the same corner.
           setManholeRecommendOpen(false);
-          if (verificationContext) onFeatureSelect(selected, verificationContext);
+          onFeatureSelect(selected, verificationContext ?? null);
           void runManholeFeatureRecommend(selected.properties.dataset_id, selected.properties.id);
           return;
         }
@@ -4543,7 +4575,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
           });
           return;
         }
-        onFeatureSelect(selected, verificationContext);
+        onFeatureSelect(selected, verificationContext ?? null);
       };
       const handleFeatureHover = (e: MapMouseEvent) => {
         // While a measurement tool is actually armed/drawing, ordinary

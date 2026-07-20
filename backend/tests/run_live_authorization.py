@@ -1,4 +1,4 @@
-"""Read-only HTTP authorization proof using short-lived signed test tokens."""
+"""Read-only regression and HTTP RBAC proof for AE -> AEE -> Commissioner workflow."""
 from __future__ import annotations
 
 import asyncio
@@ -35,13 +35,26 @@ async def main() -> None:
     missing_feature = uuid.uuid4()
     missing_anomaly = uuid.uuid4()
     start_payload = {"anomaly_id": str(missing_anomaly), "detection_mode": "poles"}
-    decision_payload = {"anomaly_id": str(missing_anomaly), "decision": "APPROVE"}
+    submit_payload = {
+        **start_payload,
+        "ae_name": "Manual AE",
+        "issue_description": "Test issue",
+        "work_completed": "Test work completed",
+    }
+    aee_payload = {
+        "anomaly_id": str(missing_anomaly),
+        "aee_name": "Manual AEE",
+        "category": "GOOD",
+        "remarks": "Verified",
+    }
+    commissioner_payload = {"anomaly_id": str(missing_anomaly), "remarks": "Accepted"}
 
     async with httpx.AsyncClient(base_url="http://127.0.0.1:8001", timeout=20) as client:
         datasets_response = await client.get("/api/v1/datasets?limit=200", headers=headers[UserRole.MLA])
         assert datasets_response.status_code == 200
         datasets = datasets_response.json()
         assert isinstance(datasets, list) and datasets
+
         for path in (
             "/api/v1/features?bbox=-180,-90,180,90&limit=1",
             "/api/v1/analytics/overview",
@@ -66,22 +79,13 @@ async def main() -> None:
             ):
                 response = await client.get(path, headers=headers[UserRole.MLA])
                 assert response.status_code == 200, (path, response.status_code, response.text[:200])
-            anomalies = await client.get(
-                f"/api/v1/ai/audit/anomalies?dataset_id={vector['id']}",
-                headers=headers[UserRole.MLA],
-            )
+            anomalies = await client.get(f"/api/v1/ai/audit/anomalies?dataset_id={vector['id']}", headers=headers[UserRole.MLA])
             assert anomalies.status_code == 200
         if raster:
-            preview = await client.get(
-                f"/api/v1/datasets/{raster['id']}/raster-preview.png?mode=rgb",
-                headers=headers[UserRole.MLA],
-            )
+            preview = await client.get(f"/api/v1/datasets/{raster['id']}/raster-preview.png?mode=rgb", headers=headers[UserRole.MLA])
             assert preview.status_code == 200 and preview.headers.get("content-type", "").startswith("image/")
         if las:
-            preview = await client.get(
-                f"/api/v1/datasets/{las['id']}/point-cloud-preview?max_points=10000",
-                headers=headers[UserRole.MLA],
-            )
+            preview = await client.get(f"/api/v1/datasets/{las['id']}/point-cloud-preview?max_points=10000", headers=headers[UserRole.MLA])
             assert preview.status_code == 200, (preview.status_code, preview.text[:200])
         if model:
             assets = model["dataset_metadata"]["model_assets"]
@@ -93,50 +97,49 @@ async def main() -> None:
                 )
                 assert response.status_code == 200
 
+        assert (await client.get("/api/v1/point-verifications/inbox", headers=headers[UserRole.AEE])).status_code == 200
         assert (await client.get("/api/v1/point-verifications/inbox", headers=headers[UserRole.COMMISSIONER])).status_code == 200
         assert (await client.get(
             f"/api/v1/point-verifications/export-resolved-gdb?dataset_id={uuid.uuid4()}",
             headers=headers[UserRole.MLA],
         )).status_code == 403
 
-        for role in (UserRole.AE, UserRole.AEE):
-            assert (await client.post(
-                f"/api/v1/point-verifications/{missing_feature}/start-work",
-                json=start_payload,
-                headers=headers[role],
-            )).status_code == 404
-            assert (await client.post(
-                f"/api/v1/point-verifications/{missing_feature}/commissioner-decision",
-                json=decision_payload,
-                headers=headers[role],
-            )).status_code == 403
-
         assert (await client.post(
             f"/api/v1/point-verifications/{missing_feature}/start-work",
             json=start_payload,
-            headers=headers[UserRole.COMMISSIONER],
+            headers=headers[UserRole.AE],
+        )).status_code == 404
+        assert (await client.post(
+            f"/api/v1/point-verifications/{missing_feature}/start-work",
+            json=start_payload,
+            headers=headers[UserRole.AEE],
         )).status_code == 403
+        assert (await client.post(
+            f"/api/v1/point-verifications/{missing_feature}/aee-decision",
+            json=aee_payload,
+            headers=headers[UserRole.AE],
+        )).status_code == 403
+        assert (await client.post(
+            f"/api/v1/point-verifications/{missing_feature}/aee-decision",
+            json=aee_payload,
+            headers=headers[UserRole.AEE],
+        )).status_code == 404
+        assert (await client.post(
+            f"/api/v1/point-verifications/{missing_feature}/commissioner-accept",
+            json=commissioner_payload,
+            headers=headers[UserRole.AEE],
+        )).status_code == 403
+        assert (await client.post(
+            f"/api/v1/point-verifications/{missing_feature}/commissioner-accept",
+            json=commissioner_payload,
+            headers=headers[UserRole.COMMISSIONER],
+        )).status_code == 404
 
         mla_writes = [
-            await client.post(
-                f"/api/v1/point-verifications/{missing_feature}/start-work",
-                json=start_payload,
-                headers=headers[UserRole.MLA],
-            ),
-            await client.post(
-                f"/api/v1/point-verifications/{missing_feature}/submit",
-                json={
-                    **start_payload,
-                    "issue_solved": True,
-                    "short_description": "must be forbidden",
-                },
-                headers=headers[UserRole.MLA],
-            ),
-            await client.post(
-                f"/api/v1/point-verifications/{missing_feature}/commissioner-decision",
-                json=decision_payload,
-                headers=headers[UserRole.MLA],
-            ),
+            await client.post(f"/api/v1/point-verifications/{missing_feature}/start-work", json=start_payload, headers=headers[UserRole.MLA]),
+            await client.post(f"/api/v1/point-verifications/{missing_feature}/submit", json=submit_payload, headers=headers[UserRole.MLA]),
+            await client.post(f"/api/v1/point-verifications/{missing_feature}/aee-decision", json=aee_payload, headers=headers[UserRole.MLA]),
+            await client.post(f"/api/v1/point-verifications/{missing_feature}/commissioner-accept", json=commissioner_payload, headers=headers[UserRole.MLA]),
             await client.put(
                 f"/api/v1/point-verifications/{missing_feature}/evidence",
                 data={"anomaly_id": str(missing_anomaly), "detection_mode": "poles"},
@@ -148,7 +151,7 @@ async def main() -> None:
                 headers=headers[UserRole.MLA],
             ),
         ]
-        assert [response.status_code for response in mla_writes] == [403, 403, 403, 403, 403]
+        assert [response.status_code for response in mla_writes] == [403, 403, 403, 403, 403, 403]
 
     await engine.dispose()
     probed = [name for name, row in (("vector/GDB", vector), ("raster", raster), ("LAS/LAZ", las), ("3D OBJ", model)) if row]
