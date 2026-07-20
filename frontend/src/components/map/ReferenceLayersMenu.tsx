@@ -66,12 +66,12 @@ export function ReferenceLayersMenu({ value, onChange }: Props) {
         onClick={() => setOpen((current) => !current)}
         aria-expanded={open}
         aria-haspopup="dialog"
-        title="Reference layers"
+        aria-label={`Map Layers${enabledCount > 0 ? ` · ${enabledCount}` : ""}`}
+        title={`Map Layers${enabledCount > 0 ? ` · ${enabledCount}` : ""}`}
       >
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" width="15" height="15" style={{ marginRight: 4, verticalAlign: -2 }} aria-hidden="true">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" width="16" height="16" aria-hidden="true">
           <polygon points="12 2 3 7 12 12 21 7 12 2" /><polyline points="3 12 12 17 21 12" /><polyline points="3 17 12 22 21 17" />
         </svg>
-        <span className="map-controls__btn-label">Map Layers{enabledCount > 0 ? ` · ${enabledCount}` : ""}</span>
       </button>
       {open && anchor && createPortal(
         <div
