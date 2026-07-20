@@ -1,4 +1,3 @@
-import { useEffect, useState } from "react";
 import { useLanguage } from "../context/LanguageContext";
 
 const NAMMADVG_URL = "https://nammadvg.com";
@@ -150,8 +149,6 @@ const CITY_OFFICIALS: Department[] = [
  */
 export function GrievanceView() {
   const { lang } = useLanguage();
-  const [activeDeptId, setActiveDeptId] = useState<string>(CITY_OFFICIALS[0].id);
-  useEffect(() => {}, []);
 
   return (
     <div className="grievance-page" data-testid="grievance-page">
@@ -189,48 +186,43 @@ export function GrievanceView() {
           <div className="ds-officials__header">
             <div className="ds-officials__title-wrap">
               <h2 className="ds-officials__title">{lang === "kn" ? "ಅಧಿಕಾರಿಗಳನ್ನು ಸಂಪರ್ಕಿಸಿ" : "Connect Officials"}</h2>
-              <p className="ds-officials__sub">{lang === "kn" ? "ನಿಮ್ಮ ಸಮಸ್ಯೆಗೆ ಸರಿಯಾದ ಇಲಾಖೆಯನ್ನು ಆಯ್ಕೆಮಾಡಿ" : "Pick the right department for your concern"}</p>
+              <p className="ds-officials__sub">{lang === "kn" ? "ನಿಮ್ಮ ಸಮಸ್ಯೆಗೆ ಸರಿಯಾದ ಇಲಾಖೆಯನ್ನು ಆಯ್ಕೆಮಾಡಿ" : "Find the right department and contact for your concern"}</p>
             </div>
           </div>
 
-          <div className="ds-officials__tabs" role="tablist" aria-label="Department">
+          <div className="ds-officials__grid">
             {CITY_OFFICIALS.map((dept) => (
-              <button
-                key={dept.id}
-                type="button"
-                role="tab"
-                aria-selected={activeDeptId === dept.id}
-                className={`ds-officials__tab ${activeDeptId === dept.id ? "is-active" : ""}`}
-                onClick={() => setActiveDeptId(dept.id)}
-              >
-                {dept.name}
-              </button>
+              <div className="ds-officials__card" key={dept.id}>
+                <div className="ds-officials__panel-head">
+                  <h3 className="ds-officials__panel-title">{dept.name}</h3>
+                  <p className="ds-officials__scope">{dept.scope}</p>
+                </div>
+                <ul className="ds-officials__list">
+                  {dept.officials.map((o, i) => (
+                    <li className="ds-official" key={`${o.name}-${i}`}>
+                      <div className="ds-official__main">
+                        <span className="ds-official__name">{lang === "kn" ? o.nameKn : o.name}</span>
+                        <span className="ds-official__desg">{o.designation}</span>
+                      </div>
+                      {o.phone && o.phone !== "—" && (
+                        <a className="ds-official__phone" href={`tel:${o.phone}`}>
+                          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="13" height="13" aria-hidden="true">
+                            <path d="M22 16.92v3a2 2 0 01-2.18 2 19.79 19.79 0 01-8.63-3.07 19.5 19.5 0 01-6-6 19.79 19.79 0 01-3.07-8.67A2 2 0 014.11 2h3a2 2 0 012 1.72c.127.96.361 1.903.7 2.81a2 2 0 01-.45 2.11L8.09 9.91a16 16 0 006 6l1.27-1.27a2 2 0 012.11-.45c.907.339 1.85.573 2.81.7A2 2 0 0122 16.92z" strokeLinecap="round" strokeLinejoin="round" />
+                          </svg>
+                          {o.phone}
+                        </a>
+                      )}
+                    </li>
+                  ))}
+                </ul>
+                <div className="ds-officials__meta">
+                  <div><span>Office</span>{dept.office}</div>
+                  <div><span>Helpline</span>{dept.helpline}</div>
+                  <div><span>Email</span>{dept.email}</div>
+                </div>
+              </div>
             ))}
           </div>
-
-          {CITY_OFFICIALS.filter((d) => d.id === activeDeptId).map((dept) => (
-            <div className="ds-officials__panel" key={dept.id} role="tabpanel">
-              <p className="ds-officials__scope">{dept.scope}</p>
-              <ul className="ds-officials__list">
-                {dept.officials.map((o, i) => (
-                  <li className="ds-official" key={`${o.name}-${i}`}>
-                    <div className="ds-official__main">
-                      <span className="ds-official__name">{lang === "kn" ? o.nameKn : o.name}</span>
-                      <span className="ds-official__desg">{o.designation}</span>
-                    </div>
-                    {o.phone && o.phone !== "—" && (
-                      <a className="ds-official__phone" href={`tel:${o.phone}`}>{o.phone}</a>
-                    )}
-                  </li>
-                ))}
-              </ul>
-              <div className="ds-officials__meta">
-                <div><span>Office</span>{dept.office}</div>
-                <div><span>Helpline</span>{dept.helpline}</div>
-                <div><span>Email</span>{dept.email}</div>
-              </div>
-            </div>
-          ))}
         </section>
       </div>
     </div>
