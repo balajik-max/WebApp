@@ -456,6 +456,21 @@ export function WorkspaceLayout() {
 
   const [selectedDatasets, setSelectedDatasets] = useState<DatasetRow[]>([]);
   const selectedDatasetIds = useMemo(() => selectedDatasets.map((dataset) => dataset.id), [selectedDatasets]);
+
+  // Spatial Audit must run exactly once per fresh app load, triggered by the
+  // first AI Detection icon click — never again on subsequent clicks, and
+  // never again after leaving/returning to the Map tab. MapCanvas (like
+  // selectedDatasets above) unmounts on every tab switch, so this guard has
+  // to live up here to survive that; only a hard page reload resets it.
+  // `spatialAuditRequestedRef` records "the user asked for it" the instant
+  // the icon is clicked (synchronous, so rapid double-clicks can't race);
+  // `spatialAuditExecutedRef` records "we actually started it" once a
+  // dataset is active — kept separate so a click before any dataset is
+  // selected isn't wasted, it just runs as soon as one becomes active.
+  const spatialAuditRequestedRef = useRef(false);
+  const spatialAuditExecutedRef = useRef(false);
+  const [spatialAuditStatus, setSpatialAuditStatus] =
+    useState<"idle" | "running" | "success" | "error">("idle");
   // Drives the Data Sources drawer on the mobile Map page — lifted up here
   // (rather than living inside MapCanvas) so the topbar's menu button can
   // open it, the same way Gmail's hamburger opens its nav drawer from the
@@ -479,8 +494,12 @@ export function WorkspaceLayout() {
       setSelectedDatasets,
       commandCenterMobileOpen,
       setCommandCenterMobileOpen,
+      spatialAuditRequestedRef,
+      spatialAuditExecutedRef,
+      spatialAuditStatus,
+      setSpatialAuditStatus,
     }),
-    [selectedDatasets, commandCenterMobileOpen]
+    [selectedDatasets, commandCenterMobileOpen, spatialAuditStatus]
   );
 
   return (
