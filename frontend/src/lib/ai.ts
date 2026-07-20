@@ -1,7 +1,7 @@
 /** AI Assistant API client. */
-import { apiPost } from "./api";
+import { apiPost, apiPostForm } from "./api";
 
-export type AiKind = "query" | "recommend" | "report" | "spacing";
+export type AiKind = "query" | "recommend" | "report" | "spacing" | "urban_planning";
 
 export interface NeededLocation {
   id: string;
@@ -55,3 +55,20 @@ export const aiSpacing = (body: {
   category: string;
   distance_m?: number;
 }) => apiPost<AiAnswer>("/api/v1/ai/spacing", body);
+
+export const urbanPlanningSolution = (
+  featureId: string,
+  solutionText: string,
+  files: File[],
+  signal?: AbortSignal,
+) => {
+  const formData = new FormData();
+  formData.append("feature_id", featureId);
+  if (solutionText.trim()) {
+    formData.append("solution_text", solutionText);
+  }
+  for (const file of files) {
+    formData.append("files", file);
+  }
+  return apiPostForm<AiAnswer>("/api/v1/ai/urban-planning-solution", formData, signal);
+};
