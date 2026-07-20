@@ -1,0 +1,21 @@
+Proposed Solution for Manhole Issue at Ward 12, Davangere
+
+Issue Description:
+Manhole MH-045 on MG Road has a broken cover and collapsed brick masonry
+near the inlet pipe. Sewage is overflowing onto the road during peak hours,
+causing public health concerns and traffic disruption.
+
+Proposed Solution:
+1. Immediate desilting of the manhole using a super-suction vehicle.
+2. Removal of damaged brick masonry and replacement with RCC precast
+   cone segments (600mm diameter) for structural strength.
+3. Install a new ductile iron cover (class D400) with locking arrangement
+   to prevent theft and unauthorized opening.
+4. Relay the inlet pipe (existing 200mm PVC) with a 300mm RCC NP2 pipe
+   for increased flow capacity.
+5. Apply anti-corrosive coating on all metal parts.
+6. Restore road surface with hot mix asphalt around the manhole.
+
+Timeline: 7 working days
+Cost Estimate: ~₹45,000
+Required Approvals: Assistant Engineer (AE) approval before work order

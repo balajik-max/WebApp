@@ -66,7 +66,7 @@ class NeededLocation(BaseModel):
 
 
 class AiAnswer(BaseModel):
-    kind: Literal["query", "recommend", "report", "spacing"]
+    kind: Literal["query", "recommend", "report", "spacing", "urban_planning"]
     model: str
     prompt_tokens_hint: int
     context_rows: int

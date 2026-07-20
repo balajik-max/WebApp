@@ -1,4 +1,5 @@
 import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
+import { lazy, Suspense } from "react";
 import { AuthProvider } from "./context/AuthContext";
 import { ThemeProvider } from "./context/ThemeContext";
 import { LanguageProvider } from "./context/LanguageContext";
@@ -13,6 +14,11 @@ import { ActivityView } from "./pages/ActivityView";
 import { TasksView } from "./pages/TasksView";
 import { GrievanceView } from "./pages/GrievanceView";
 
+// The Welcome page (and its Three.js scene) is route-level lazy-loaded so the
+// authenticated application bundle never pays for it.
+const WelcomeView = lazy(() => import("./pages/WelcomeView"));
+const CreateAccountView = lazy(() => import("./pages/CreateAccount"));
+
 export default function App() {
   return (
     <ThemeProvider>
@@ -20,7 +26,31 @@ export default function App() {
         <AuthProvider>
           <BrowserRouter>
           <Routes>
+            <Route
+              path="/"
+              element={
+                <Suspense fallback={null}>
+                  <WelcomeView />
+                </Suspense>
+              }
+            />
+            <Route
+              path="/welcome"
+              element={
+                <Suspense fallback={null}>
+                  <WelcomeView />
+                </Suspense>
+              }
+            />
             <Route path="/login" element={<LoginPage />} />
+            <Route
+              path="/create-account"
+              element={
+                <Suspense fallback={null}>
+                  <CreateAccountView />
+                </Suspense>
+              }
+            />
 
             <Route
               element={
@@ -29,7 +59,6 @@ export default function App() {
                 </AuthShield>
               }
             >
-              <Route index element={<Navigate to="/map" replace />} />
               <Route path="/map" element={<MapView />} />
               <Route path="/datasets" element={<DatasetsView />} />
               <Route path="/analytics" element={<AnalyticsView />} />
@@ -39,7 +68,7 @@ export default function App() {
               <Route path="/profile" element={<ProfileView />} />
             </Route>
 
-            <Route path="*" element={<Navigate to="/map" replace />} />
+            <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>
         </BrowserRouter>
         </AuthProvider>
