@@ -602,11 +602,18 @@ def _anomaly_fact_sheet(row: SpatialAnomaly) -> str:
                 f"Nearest same-family pole is {m.get('nearest_neighbor_m')} m away — inside the {m.get('yellow_band_m')} m borderline band but not tight enough to count as a redundant cluster (threshold {m.get('eps_m')} m).",
             ]
     elif row.anomaly_type.value == "manhole_status":
+        sewage_line = (
+            "CONNECTED to a real surveyed sewage line" if m.get("connected_to_sewage")
+            else "NOT connected to a sewage line (nearest drain is not a sewage line — confirmed from real GIS data, not assumed)"
+        )
         lines += [
             f"Basis for this finding (the actual real evidence used, verified not estimated): {m.get('basis')}",
             f"Surveyed condition on file: {m.get('surveyed_condition') or 'not recorded'}",
             f"Nearest drain: {m.get('nearest_drain_category') or 'none found'}, {m.get('nearest_drain_distance_m')} m away (search radius {m.get('max_search_radius_m')} m).",
+            f"Sewage line connectivity: this manhole is {sewage_line}.",
         ]
+        if m.get("primary_issue"):
+            lines.append(f"Classified issue: {m.get('primary_issue')} (severity hint: {m.get('severity_hint') or 'unknown'}).")
 
     return "\n".join(lines)
 
@@ -758,7 +765,10 @@ def _manhole_status_explain_prompt(row: SpatialAnomaly, crib: str) -> str:
         "You are a senior municipal infrastructure auditor writing a finding note for "
         "a civil engineer who will act on it. Using ONLY the FACTS below, and never a "
         "number or detail not present in FACTS, write the note. Never mention that you "
-        "were given 'facts' or metadata — just report the finding. " + guidance + "\n\n"
+        "were given 'facts' or metadata — just report the finding. Always state this "
+        "manhole's sewage line connectivity plainly as part of 'Issue:' — if FACTS says "
+        "it is NOT connected to a sewage line, say exactly that ('not connected to the "
+        "sewage line'), never omit it or soften it into something vaguer. " + guidance + "\n\n"
         f"FACTS:\n{crib}"
     )
 

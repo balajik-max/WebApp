@@ -126,3 +126,50 @@ def is_good_condition(condition: str | None) -> bool:
         return False
     c = condition.strip().lower()
     return any(tok in c for tok in _GOOD_CONDITION_TOKENS)
+
+
+_MANHOLE_ISSUE_TOKENS = {
+    "blockage": ("blocked", "choked", "blockage", "obstruct", "clogged", "plugged", "clog"),
+    "garbage": ("garbage", "trash", "waste", "debris", "rubbish", "litter", "refuse"),
+    "siltation": ("silt", "siltation", "sediment", "mud", "sludge"),
+    "structural_damage": ("cracked", "broken", "damaged", "collapse", "collapsed", "defective", "deteriorated", "fracture"),
+    "cover_issue": ("cover", "lid", "frame", "missing", "displaced", "loose"),
+    "odor": ("odor", "odour", "smell", "stink", "foul"),
+    "inflow": ("inflow", "infiltration", "leak", "leaking"),
+}
+
+
+def classify_manhole_issue(
+    condition: str | None, top_level: str | None, silt_level: str | None, notes: str | None = None
+) -> dict:
+    """Classify specific manhole issues from survey attributes (free-text
+    keyword match, deterministic — no LLM). Returns primary_issue, the full
+    issues list, and a severity_hint used only to prioritize display."""
+    text_parts = []
+    for field in (condition, top_level, silt_level, notes):
+        if field and str(field).strip():
+            text_parts.append(str(field).strip().lower())
+    combined = " ".join(text_parts)
+
+    if not combined:
+        return {"primary_issue": None, "issues": [], "severity_hint": "unknown"}
+
+    found_issues = []
+    for issue_type, tokens in _MANHOLE_ISSUE_TOKENS.items():
+        if any(tok in combined for tok in tokens):
+            found_issues.append(issue_type)
+
+    if not found_issues:
+        if is_bad_condition(condition):
+            found_issues.append("general_deterioration")
+        elif is_good_condition(condition):
+            return {"primary_issue": None, "issues": ["no_issues_reported"], "severity_hint": "low"}
+
+    primary = found_issues[0] if found_issues else "general_deterioration"
+    severity = "high" if primary in ("blockage", "structural_damage", "garbage") else "medium"
+
+    return {
+        "primary_issue": primary,
+        "issues": found_issues,
+        "severity_hint": severity,
+    }
