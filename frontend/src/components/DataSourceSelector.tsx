@@ -77,13 +77,15 @@ export function DataSourceSelector({
               datasets.map((d) => {
                 const isActive = activeDatasetIds.includes(d.id);
                 const selectable = d.status === "ready";
-                // TIFF/GeoTIFF rasters (including DSM/DTM) are locked to a
-                // fixed render mode and expose no display settings. RGB is used
-                // for ordinary GeoTIFFs and Enhanced for DSM/DTM.
+                // TIFF/GeoTIFF rasters (including DSM/DTM) and LiDAR-derived
+                // DSM previews are locked to a fixed render mode and expose
+                // no display settings. RGB is used for ordinary GeoTIFFs,
+                // Enhanced for DSM/DTM and every LiDAR upload.
                 const hasRasterControls =
                   d.status === "ready"
                   && Boolean(d.dataset_metadata?.raster_overlay)
-                  && !isGeoTiffDataset(d);
+                  && !isGeoTiffDataset(d)
+                  && d.file_type !== "lidar";
                 // Vector/GDB datasets keep the coordinate-search branch's
                 // layer styling control.
                 const hasLayerControls = layerDatasetIds.includes(d.id);

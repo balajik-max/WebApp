@@ -20,6 +20,7 @@ _ELEVATION_KEYS = (
     "elevation",
     "Elevation",
     "ELEVATION",
+    "elevation_m",
     "z",
     "Z",
     "height",
@@ -50,7 +51,7 @@ async def sample_elevation(
                     ) AS distance_m
                 FROM features f
                 WHERE f.dataset_id = :dataset_id
-                  AND f.category = 'raster_pixel'
+                  AND f.category IN ('raster_pixel', 'lidar_point')
                 ORDER BY f.geom <-> ST_SetSRID(ST_MakePoint(:longitude, :latitude), 4326)
                 LIMIT 1
                 """

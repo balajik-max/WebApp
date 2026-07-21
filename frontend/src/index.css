@@ -5966,6 +5966,102 @@ body.is-resizing-sidebar {
   opacity: 0.4;
   cursor: not-allowed;
 }
+.ds-action-btn--crs {
+  border-color: var(--warning, #f59e0b);
+  color: var(--warning, #f59e0b);
+  background: rgba(245, 158, 11, 0.08);
+}
+.ds-action-btn--crs:hover:not(:disabled) {
+  background: rgba(245, 158, 11, 0.15);
+  color: var(--warning, #f59e0b);
+}
+
+/* CRS Warning Badge */
+.ds-table__warning {
+  display: inline-flex;
+  align-items: center;
+  font-size: 10px;
+  color: var(--warning, #f59e0b);
+  margin-top: 2px;
+  font-weight: 500;
+}
+
+/* Modal Overlay */
+.ds-modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+.ds-modal {
+  background: var(--surface-1);
+  border-radius: var(--radius-md);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.2);
+  min-width: 400px;
+  max-width: 500px;
+  max-height: 80vh;
+  overflow: auto;
+}
+.ds-modal__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--edge);
+}
+.ds-modal__header h3 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--ink);
+}
+.ds-modal__close {
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: var(--ink-dim);
+  padding: 4px;
+  border-radius: var(--radius-sm);
+}
+.ds-modal__close:hover {
+  background: var(--surface-3);
+  color: var(--ink);
+}
+.ds-modal__body {
+  padding: 20px;
+}
+.ds-modal__btn {
+  padding: 8px 16px;
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  border: 1px solid var(--edge);
+  transition: all var(--transition-fast);
+}
+.ds-modal__btn--cancel {
+  background: var(--surface-2);
+  color: var(--ink-dim);
+}
+.ds-modal__btn--cancel:hover:not(:disabled) {
+  background: var(--surface-3);
+  color: var(--ink);
+}
+.ds-modal__btn--primary {
+  background: var(--accent);
+  color: white;
+  border-color: var(--accent);
+}
+.ds-modal__btn--primary:hover:not(:disabled) {
+  opacity: 0.9;
+}
+.ds-modal__btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
 
 /* Empty State */
 .ds-table__empty {

@@ -46,7 +46,7 @@ from app.models import (
     Feature,
     User,
 )
-from app.schemas.dataset import DatasetOut, DatasetUpdate, DatasetUploadAccepted, WardOption
+from app.schemas.dataset import DatasetOut, DatasetUpdate, DatasetUploadAccepted, SourceCrsAssign, SourceCrsResponse, WardOption
 from app.services.attribute_table import (
     order_attribute_columns,
     populated_attribute_column_count,
@@ -173,6 +173,8 @@ _SUFFIX_TO_TYPE: dict[str, DatasetFileType] = {
     ".tif": DatasetFileType.GEOTIFF,
     ".tiff": DatasetFileType.GEOTIFF,
     ".geotiff": DatasetFileType.GEOTIFF,
+    ".las": DatasetFileType.LIDAR,       # LiDAR point cloud
+    ".laz": DatasetFileType.LIDAR,       # compressed LiDAR point cloud
     ".obj": DatasetFileType.OTHER,       # 3D model
     ".gdb": DatasetFileType.SHAPEFILE,   # Esri File Geodatabase
     ".jpg": DatasetFileType.IMAGE,
@@ -250,7 +252,7 @@ def _classify(filename: str, payload: bytes | None = None) -> DatasetFileType:
 async def upload_dataset(
     background_tasks: BackgroundTasks,
     response: Response,
-    file: UploadFile = File(..., description="GIS, raster, tabular, photo, or OBJ/OBJ bundle"),
+    file: UploadFile = File(..., description="GIS, raster, LiDAR, tabular, photo, or OBJ/OBJ bundle"),
     name: str = Form(..., min_length=1, max_length=255),
     description: str | None = Form(default=None, max_length=1024),
     ward: str | None = Form(default=None, max_length=128),
@@ -682,6 +684,121 @@ async def update_dataset(
     return DatasetOut.model_validate(row)
 
 
+@router.post(
+    "/{dataset_id}/source-crs",
+    response_model=SourceCrsResponse,
+    dependencies=[Depends(require_any)],
+    summary="Assign a source CRS to a point cloud dataset after upload",
+)
+async def assign_source_crs(
+    dataset_id: uuid.UUID,
+    body: SourceCrsAssign,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> SourceCrsResponse:
+    """Assign a coordinate reference system to a LiDAR/LAS/LAZ dataset that
+    was uploaded without embedded CRS metadata. This validates the CRS with
+    pyproj, updates the dataset metadata, and enables geographic placement
+    without requiring re-upload."""
+    row = (await db.execute(select(Dataset).where(Dataset.id == dataset_id))).scalar_one_or_none()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+    
+    # Only LiDAR datasets can have CRS assigned
+    if row.file_type != DatasetFileType.LIDAR:
+        raise HTTPException(status_code=400, detail="CRS assignment is only supported for LiDAR/LAS/LAZ datasets")
+    
+    # Validate the CRS with pyproj
+    try:
+        from pyproj import CRS, Transformer
+        source_crs = CRS.from_user_input(body.crs)
+        
+        # Verify it can transform to WGS84
+        transformer = Transformer.from_crs(source_crs, "EPSG:4326", always_xy=True)
+        
+        # Use dataset bounds to validate the transformation
+        lidar_meta = (row.dataset_metadata or {}).get("lidar") or {}
+        bounds_raw = lidar_meta.get("bounds_raw")
+        if bounds_raw:
+            min_x, min_y, min_z, max_x, maxy, maxz = bounds_raw
+            # Transform corner points
+            lon1, lat1 = transformer.transform(min_x, min_y)
+            lon2, lat2 = transformer.transform(max_x, maxy)
+            
+            # Verify results are finite and within reasonable ranges
+            import math
+            for val in [lon1, lat1, lon2, lat2]:
+                if not math.isfinite(val):
+                    raise HTTPException(
+                        status_code=400,
+                        detail="The selected CRS does not produce valid geographic coordinates for this point cloud"
+                    )
+            
+            # Verify resulting coordinates are within valid geographic ranges
+            for lon in [lon1, lon2]:
+                if not (-180.0 <= lon <= 180.0):
+                    raise HTTPException(
+                        status_code=400,
+                        detail="The selected CRS does not produce valid longitude values for this point cloud"
+                    )
+            for lat in [lat1, lat2]:
+                if not (-90.0 <= lat <= 90.0):
+                    raise HTTPException(
+                        status_code=400,
+                        detail="The selected CRS does not produce valid latitude values for this point cloud"
+                    )
+        
+        # Format CRS label
+        epsg = source_crs.to_epsg()
+        crs_label = f"EPSG:{epsg}" if epsg else source_crs.to_string()
+        
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid CRS: {exc}"
+        )
+    
+    # Update dataset metadata
+    merged = dict(row.dataset_metadata or {})
+    lidar_meta = merged.get("lidar") or {}
+    lidar_meta["source_crs"] = crs_label
+    lidar_meta["crs_status"] = "user_assigned"
+    lidar_meta["georeferenced"] = True
+    merged["lidar"] = lidar_meta
+    row.dataset_metadata = merged
+    
+    # Log the action
+    db.add(
+        ActivityLog(
+            actor_id=current_user.id,
+            action=ActivityAction.DATASET_STATUS_CHANGED,
+            entity_type="dataset",
+            entity_id=dataset_id,
+            payload={
+                "action": "assign_source_crs",
+                "crs": crs_label,
+                "at": datetime.now(timezone.utc).isoformat(),
+            },
+        )
+    )
+    await db.commit()
+    
+    log.info(
+        "CRS assigned to dataset %s: %s (user: %s)",
+        dataset_id, crs_label, current_user.id,
+    )
+    
+    return SourceCrsResponse(
+        dataset_id=dataset_id,
+        source_crs=crs_label,
+        crs_status="user_assigned",
+        georeferenced=True,
+        message=f"CRS assigned successfully. The point cloud is now georeferenced as {crs_label}.",
+    )
+
+
 @router.get(
     "/wards/list",
     response_model=list[WardOption],
@@ -882,6 +999,10 @@ _MAGIC: dict[str, list[bytes]] = {
     ".tif": [b"II\x2a\x00", b"MM\x00\x2a", b"II\x2b\x00", b"MM\x00\x2b"],
     ".tiff": [b"II\x2a\x00", b"MM\x00\x2a", b"II\x2b\x00", b"MM\x00\x2b"],
     ".geotiff": [b"II\x2a\x00", b"MM\x00\x2a", b"II\x2b\x00", b"MM\x00\x2b"],
+    # LAZ is LAS with a compression VLR added — the outer file header (and
+    # its magic) is identical for both, so one signature covers both.
+    ".las": [b"LASF"],
+    ".laz": [b"LASF"],
     ".obj": [b"#", b"v ", b"vt ", b"vn ", b"vp ", b"f ", b"o ", b"g ", b"s ", b"mtllib", b"usemtl"],
     ".jpg": [b"\xff\xd8\xff"],
     ".jpeg": [b"\xff\xd8\xff"],

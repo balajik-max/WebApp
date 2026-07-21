@@ -1,6 +1,6 @@
 ﻿import React, { useCallback, useEffect, useRef, useState } from "react";
 import JSZip from "jszip";
-import { deleteDataset, fetchDatasets, updateDataset, type DatasetRow } from "../lib/workflow";
+import { deleteDataset, fetchDatasets, updateDataset, assignSourceCrs, type DatasetRow } from "../lib/workflow";
 import { AttributeTable } from "../components/AttributeTable";
 import { UnclassifiedCategoriesPanel } from "../components/UnclassifiedCategoriesPanel";
 import { useLanguage } from "../context/LanguageContext";
@@ -9,7 +9,7 @@ const REFRESH_MS = 4000;
 
 const ACCEPTED_EXTENSIONS = [
   ".geojson", ".json", ".zip", ".shp", ".dbf", ".shx", ".prj", ".cpg", ".gpkg", ".kml", ".csv", ".tsv", ".xlsx", ".xls",
-  ".tif", ".tiff", ".geotiff", ".obj",
+  ".tif", ".tiff", ".geotiff", ".las", ".laz", ".obj",
   ".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp",
 ];
 
@@ -57,6 +57,10 @@ const FILE_TYPE_INFO: Record<string, { icon: React.ReactNode; label: string }> =
   tif: {
     icon: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" width="16" height="16"><path d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" strokeLinecap="round" strokeLinejoin="round" /></svg>,
     label: "GeoTIFF",
+  },
+  lidar: {
+    icon: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" width="16" height="16"><circle cx="6" cy="7" r="1.1" fill="currentColor" stroke="none" /><circle cx="12" cy="4.5" r="1.1" fill="currentColor" stroke="none" /><circle cx="18.5" cy="7.5" r="1.1" fill="currentColor" stroke="none" /><circle cx="4" cy="13" r="1.1" fill="currentColor" stroke="none" /><circle cx="10.5" cy="11.5" r="1.1" fill="currentColor" stroke="none" /><circle cx="16.5" cy="13.5" r="1.1" fill="currentColor" stroke="none" /><circle cx="20.5" cy="12" r="1.1" fill="currentColor" stroke="none" /><circle cx="7.5" cy="18.5" r="1.1" fill="currentColor" stroke="none" /><circle cx="13.5" cy="19.5" r="1.1" fill="currentColor" stroke="none" /><circle cx="19" cy="18" r="1.1" fill="currentColor" stroke="none" /></svg>,
+    label: "LiDAR",
   },
   obj: {
     icon: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" width="16" height="16"><path d="M14 10l-2 1m0 0l-2-1m2 1v2.5M20 7l-2 1m2-1l-2-1m2 1v2.5M14 4l-2-1-2 1M4 7l2-1M4 7l2 1M4 7v2.5M12 21l-2-1m2 1l2-1m-2 1v-2.5M6 18l-2-1v-2.5M18 18l2-1v-2.5" strokeLinecap="round" strokeLinejoin="round" /></svg>,
@@ -278,6 +282,8 @@ function getFileIcon(type: string): React.ReactNode {
     "tiff": "tif",
     "geotiff": "tif",
     "shapefile": "shapefile",
+    "las": "lidar",
+    "laz": "lidar",
   };
   const normalizedType = typeMap[type] ?? type;
   return FILE_TYPE_INFO[normalizedType]?.icon ?? <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" width="16" height="16"><path d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" strokeLinecap="round" strokeLinejoin="round" /></svg>;
@@ -311,6 +317,10 @@ export function DatasetsView() {
   const [wardDraft, setWardDraft] = useState("");
   const [wardSaving, setWardSaving] = useState(false);
   const [zipping, setZipping] = useState(false);
+  const [crsAssignFor, setCrsAssignFor] = useState<DatasetRow | null>(null);
+  const [crsInput, setCrsInput] = useState("");
+  const [crsSaving, setCrsSaving] = useState(false);
+  const [crsError, setCrsError] = useState<string | null>(null);
 
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const folderInputRef = useRef<HTMLInputElement | null>(null);
@@ -359,7 +369,7 @@ export function DatasetsView() {
     if (f && !ACCEPTED_EXTENSIONS.includes(extensionOf(f.name))) {
       setUploadFile(null);
       setUploadError(
-        `Unsupported file type "${extensionOf(f.name) || f.name}". Supported: GeoJSON, Shapefile, GeoPackage, KML, GeoTIFF, OBJ, CSV, TSV, XLSX, and photos (JPG/PNG/GIF/BMP/WEBP).`
+        `Unsupported file type "${extensionOf(f.name) || f.name}". Supported: GeoJSON, Shapefile, GeoPackage, KML, GeoTIFF, LAS/LAZ (LiDAR), OBJ, CSV, TSV, XLSX, and photos (JPG/PNG/GIF/BMP/WEBP).`
       );
       return;
     }
@@ -615,6 +625,25 @@ export function DatasetsView() {
     }
   }
 
+  async function saveCrs(id: string) {
+    if (!crsInput.trim()) {
+      setCrsError("Enter a CRS (e.g. EPSG:32643)");
+      return;
+    }
+    setCrsSaving(true);
+    setCrsError(null);
+    try {
+      await assignSourceCrs(id, crsInput.trim());
+      setCrsAssignFor(null);
+      setCrsInput("");
+      void refresh();
+    } catch (e) {
+      setCrsError((e as Error).message || "Failed to assign CRS");
+    } finally {
+      setCrsSaving(false);
+    }
+  }
+
   async function submit(e: React.FormEvent) {
     e.preventDefault();
     if (!uploadFile) {
@@ -865,7 +894,7 @@ export function DatasetsView() {
                   </span>
                 </span>
                 <span className="ds-dropzone__formats">
-                  GeoJSON Â· Shapefile Â· GeoPackage Â· KML Â· GeoTIFF Â· OBJ Â· CSV Â· Excel Â· Photos (JPG/PNG/GIF/BMP/WEBP)
+                  GeoJSON Â· Shapefile Â· GeoPackage Â· KML Â· GeoTIFF Â· LAS/LAZ Â· OBJ Â· CSV Â· Excel Â· Photos (JPG/PNG/GIF/BMP/WEBP)
                 </span>
               </label>
             ) : (
@@ -1052,6 +1081,14 @@ export function DatasetsView() {
                     {d.processing_error && (
                       <span className="ds-table__error">{d.processing_error}</span>
                     )}
+                    {d.status === "ready" && d.file_type === "lidar" && d.dataset_metadata?.lidar?.crs_status === "unknown" && (
+                      <span className="ds-table__warning" title="No embedded coordinate reference system found. The point cloud has been loaded using its original local coordinates.">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="12" height="12" style={{ marginRight: 4, flexShrink: 0 }}>
+                          <path d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" strokeLinecap="round" strokeLinejoin="round" />
+                        </svg>
+                        CRS unknown
+                      </span>
+                    )}
                   </div>
                 </div>
                 <div className="ds-table__td">
@@ -1087,7 +1124,11 @@ export function DatasetsView() {
                 <div className="ds-table__td">
                   <span
                     className="ds-table__badge ds-table__badge--type"
-                    title={d.dataset_metadata?.model_3d?.source_crs}
+                    title={
+                      d.dataset_metadata?.model_3d?.source_crs ??
+                      d.dataset_metadata?.lidar?.source_crs ??
+                      undefined
+                    }
                   >
                     {datasetDisplayType(d)}
                   </span>
@@ -1114,6 +1155,20 @@ export function DatasetsView() {
                     </svg>
                     {t("datasets.attributes")}
                   </button>
+                  {d.status === "ready" && d.file_type === "lidar" && d.dataset_metadata?.lidar?.crs_status === "unknown" && (
+                    <button
+                      type="button"
+                      className="ds-action-btn ds-action-btn--crs"
+                      data-testid={`assign-crs-${d.id}`}
+                      onClick={() => { setCrsAssignFor(d); setCrsInput(""); setCrsError(null); }}
+                      title="Assign a source CRS to place this point cloud on the map"
+                    >
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="14" height="14">
+                        <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 17.93c-3.95-.49-7-3.85-7-7.93 0-.62.08-1.21.21-1.79L9 15v1c0 1.1.9 2 2 2v1.93zm6.9-2.54c-.26-.81-1-1.39-1.9-1.39h-1v-3c0-.55-.45-1-1-1H8v-2h2c.55 0 1-.45 1-1V7h2c1.1 0 2-.9 2-2v-.41c2.93 1.19 5 4.06 5 7.41 0 2.08-.8 3.97-2.1 5.39z" strokeLinecap="round" strokeLinejoin="round" />
+                      </svg>
+                      CRS
+                    </button>
+                  )}
                   <button
                     type="button"
                     className="ds-action-btn ds-action-btn--delete"
@@ -1153,13 +1208,73 @@ export function DatasetsView() {
       {/* ── UNCLASSIFIED CATEGORIES (spatial audit classifier review) ── */}
       <UnclassifiedCategoriesPanel />
 
-      {/* â”€â”€ ATTRIBUTE TABLE OVERLAY â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */}
+      {/* ── ATTRIBUTE TABLE OVERLAY ── */}
       {openTableFor && (
         <AttributeTable
           datasetId={openTableFor.id}
           datasetName={openTableFor.name}
           onClose={() => setOpenTableFor(null)}
         />
+      )}
+
+      {/* ── ASSIGN CRS MODAL ── */}
+      {crsAssignFor && (
+        <div className="ds-modal-overlay" onClick={() => { if (!crsSaving) { setCrsAssignFor(null); setCrsError(null); } }}>
+          <div className="ds-modal" onClick={(e) => e.stopPropagation()} role="dialog" aria-label="Assign CRS">
+            <div className="ds-modal__header">
+              <h3>Assign Source CRS</h3>
+              <button type="button" className="ds-modal__close" onClick={() => { if (!crsSaving) { setCrsAssignFor(null); setCrsError(null); } }}>
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="18" height="18">
+                  <path d="M6 18L18 6M6 6l12 12" strokeLinecap="round" strokeLinejoin="round" />
+                </svg>
+              </button>
+            </div>
+            <div className="ds-modal__body">
+              <p style={{ marginBottom: 8, color: "var(--text-secondary)", fontSize: 13 }}>
+                Assign a coordinate reference system to <strong>{crsAssignFor.name}</strong>.
+                This enables geographic placement on the map without re-upload.
+              </p>
+              <p style={{ marginBottom: 12, color: "var(--text-muted)", fontSize: 12 }}>
+                Point count: {(crsAssignFor.dataset_metadata?.lidar?.point_count ?? 0).toLocaleString()}
+                {crsAssignFor.dataset_metadata?.lidar?.bounds_raw && (
+                  <> | Bounds: [{crsAssignFor.dataset_metadata.lidar.bounds_raw.slice(0, 2).map((v: number) => v.toFixed(1)).join(", ")}] to [{crsAssignFor.dataset_metadata.lidar.bounds_raw.slice(3, 5).map((v: number) => v.toFixed(1)).join(", ")}]</>
+                )}
+              </p>
+              <label style={{ display: "block", marginBottom: 4, fontSize: 13, fontWeight: 500 }}>Source CRS</label>
+              <input
+                className="ds-table__ward-input"
+                value={crsInput}
+                onChange={(e) => { setCrsInput(e.target.value); setCrsError(null); }}
+                placeholder="EPSG:32643"
+                disabled={crsSaving}
+                autoFocus
+                onKeyDown={(e) => { if (e.key === "Enter" && !crsSaving) void saveCrs(crsAssignFor.id); }}
+                style={{ width: "100%", marginBottom: 8 }}
+              />
+              {crsError && (
+                <div style={{ color: "var(--error)", fontSize: 12, marginBottom: 8 }}>{crsError}</div>
+              )}
+              <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+                <button
+                  type="button"
+                  className="ds-modal__btn ds-modal__btn--cancel"
+                  onClick={() => { if (!crsSaving) { setCrsAssignFor(null); setCrsError(null); } }}
+                  disabled={crsSaving}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  className="ds-modal__btn ds-modal__btn--primary"
+                  onClick={() => void saveCrs(crsAssignFor.id)}
+                  disabled={crsSaving || !crsInput.trim()}
+                >
+                  {crsSaving ? "Saving..." : "Assign CRS"}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );

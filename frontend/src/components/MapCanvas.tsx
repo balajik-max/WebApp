@@ -59,7 +59,7 @@ function isObjDataset(d: DatasetRow): boolean {
 
 function isVectorVisualizationDataset(d: DatasetRow): boolean {
   if (d.status !== "ready" || isObjDataset(d)) return false;
-  if (d.file_type === "geotiff" || d.file_type === "image") return false;
+  if (d.file_type === "geotiff" || d.file_type === "lidar" || d.file_type === "image") return false;
   if (d.dataset_metadata?.raster_overlay || d.dataset_metadata?.model_3d) return false;
   return true;
 }
@@ -191,12 +191,15 @@ export function isGeoTiffDataset(dataset: Pick<DatasetRow, "file_type">): boolea
   return dataset.file_type === "geotiff";
 }
 
-// Digital Surface / Terrain Model rasters. There is no dedicated dataset
-// "type" field for these — they are single-band elevation GeoTIFFs
+// Digital Surface / Terrain Model rasters. GeoTIFFs have no dedicated
+// dataset "type" field for these — they are single-band elevation rasters
 // distinguished by name, matching the backend's own established heuristic
-// (see manhole_recommend.py: `name ILIKE '%dtm%'` / `%dsm%`). DSM/DTM must
+// (see manhole_recommend.py: `name ILIKE '%dtm%'` / `%dsm%`). LiDAR uploads
+// need no name match: LidarReader's preview is *always* a Digital Surface
+// Model (highest return per grid cell) by construction. DSM/DTM must
 // always render in Enhanced mode and expose no per-dataset display settings.
 export function isElevationRasterDataset(dataset: Pick<DatasetRow, "file_type" | "name">): boolean {
+  if (dataset.file_type === "lidar") return true;
   if (dataset.file_type !== "geotiff") return false;
   // Match "dsm"/"dtm" as a distinct token in the name (case-insensitive),
   // allowing the usual separators used in dataset names — e.g.
@@ -3253,7 +3256,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     const map = mapRef.current;
     if (!map || !map.isStyleLoaded()) return;
     const overlay = dataset.dataset_metadata?.raster_overlay;
-    if (dataset.file_type !== "geotiff" || !overlay) return;
+    if ((dataset.file_type !== "geotiff" && dataset.file_type !== "lidar") || !overlay) return;
 
     const sourceId = rasterSourceId(dataset.id);
     const layerId = rasterLayerId(dataset.id);
@@ -5104,7 +5107,9 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
 
   const activeElevationDataset = useMemo(() => {
     for (const id of activeDatasetIds) {
-      const dataset = datasets.find((candidate) => candidate.id === id && candidate.file_type === "geotiff");
+      const dataset = datasets.find(
+        (candidate) => candidate.id === id && (candidate.file_type === "geotiff" || candidate.file_type === "lidar")
+      );
       if (dataset) return dataset;
     }
     return null;

@@ -44,3 +44,17 @@ class DatasetUploadAccepted(BaseModel):
 
     dataset: DatasetOut
     poll_url: str
+
+
+class SourceCrsAssign(BaseModel):
+    """Request body for assigning a CRS to a point cloud dataset after upload."""
+    crs: str
+
+
+class SourceCrsResponse(BaseModel):
+    """Response after successfully assigning a CRS."""
+    dataset_id: uuid.UUID
+    source_crs: str
+    crs_status: str
+    georeferenced: bool
+    message: str
