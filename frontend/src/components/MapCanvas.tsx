@@ -1,4 +1,4 @@
-﻿import { useEffect, useLayoutEffect, useRef, useState, useCallback, useImperativeHandle, useMemo, forwardRef, type MutableRefObject } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, useCallback, useImperativeHandle, useMemo, forwardRef, type MutableRefObject } from "react";
 import { createPortal } from "react-dom";
 import maplibregl, { Map as MLMap, MapMouseEvent, GeoJSONSource } from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
@@ -19,8 +19,8 @@ import {
   type FeatureTableRow, type LayerFeatureTableFilter,
   type VisualizationFieldGroupTree, type VisualizationFieldProfile, type VisualizationLayerGroupNode,
   type VisualizationLayerManifest, type VisualizationManifest,
-  fetchAnomalies, runSpatialAudit, updateAnomalyStatus, fetchAllClassMappings,
-  type SpatialAnomaly, type AnomalyStatus,
+  fetchAnomalies, runSpatialAudit, fetchAllClassMappings,
+  type SpatialAnomaly,
 } from "../lib/workflow";
 import { AttributeTable } from "./AttributeTable";
 import { PanoramaViewer } from "./PanoramaViewer";
@@ -55,6 +55,10 @@ function isObjDataset(d: DatasetRow): boolean {
   if (d.dataset_metadata?.model_assets) return true;
   const name = (d.storage_key ?? d.name).toLowerCase();
   return name.endsWith(".obj");
+}
+
+function isLasDataset(d: DatasetRow): boolean {
+  return d.file_type === "las";
 }
 
 function isVectorVisualizationDataset(d: DatasetRow): boolean {
@@ -103,7 +107,7 @@ interface Props {
   focusFeatureId?: string;
   /** Clears the one-shot route request after the feature has been handled. */
   onFocusHandled?: () => void;
-  /** Refetch point-verification state after an Admin or Architect update. */
+  /** Refetch workflow state after an AE/AEE or Commissioner update. */
   refreshToken?: number;
 
   /** Whether the mobile Data Sources drawer is open — lifted up to
@@ -143,6 +147,7 @@ const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "";
 const rasterSourceId = (datasetId: string) => `raster-preview-${datasetId}`;
 const rasterLayerId = (datasetId: string) => `raster-preview-layer-${datasetId}`;
 const obj3dLayerId = (datasetId: string) => `obj-3d-layer-${datasetId}`;
+const lasPointCloudLayerId = (datasetId: string) => `las-point-cloud-layer-${datasetId}`;
 
 export type RasterColorMode = "rgb" | "grayscale" | "enhanced";
 
@@ -283,6 +288,7 @@ const BASE_STYLE: maplibregl.StyleSpecification = {
     },
   },
   layers: [
+    { id: "map-background", type: "background", paint: { "background-color": "#030607" } },
     { id: "osm", type: "raster", source: "osm-tiles", minzoom: 0, maxzoom: 24 },
     {
       id: "satellite",
@@ -1045,7 +1051,7 @@ function featureFocusGeometry(feature: UrbanFeature): {
 
 
 // Blue is an AI-workflow color only. Normal map/category rendering always
-// keeps its original category color, even after Admin approval.
+// keeps its original category color, even after Commissioner approval.
 const POINT_ISSUE_RESOLVED_COLOR = "#2563eb";
 function withPointVerificationColor(
   fallback: maplibregl.ExpressionSpecification | string,
@@ -1143,7 +1149,7 @@ function summarizeAnomalyForTooltip(a: SpatialAnomaly): { color: AnomalyDisplayC
   return {
     color: resolved ? "blue" : a.color,
     typeLabel: ANOMALY_TYPE_LABEL[a.anomaly_type],
-    metric: resolved ? `Resolved and Admin approved · ${metric}` : metric,
+    metric: resolved ? `Resolved and Commissioner approved · ${metric}` : metric,
     resolved,
     longitude: a.lon,
     latitude: a.lat,
@@ -1160,15 +1166,28 @@ function primaryFeatureIdForAnomaly(anomaly: SpatialAnomaly): string | null {
   );
 }
 
+function detectionModeForAnomalyType(
+  anomalyType: SpatialAnomaly["anomaly_type"],
+): Exclude<DetectionMode, null> | null {
+  if (anomalyType === "pole_redundancy") return "poles";
+  if (anomalyType === "drain_encroachment") return "drains";
+  if (anomalyType === "manhole_status") return "manholes";
+  return null;
+}
+
 function aiVerificationContextForAnomaly(
   anomaly: SpatialAnomaly | undefined,
   mode: DetectionMode,
 ): AiVerificationContext | null {
-  if (!anomaly || !mode || (anomaly.color !== "red" && anomaly.color !== "yellow")) return null;
-  if (anomaly.anomaly_type !== DETECTION_MODE_ANOMALY_TYPE[mode]) return null;
+  if (!anomaly || (anomaly.color !== "red" && anomaly.color !== "yellow")) return null;
+  const anomalyMode = detectionModeForAnomalyType(anomaly.anomaly_type);
+  if (!anomalyMode) return null;
+  const resolvedMode = mode && DETECTION_MODE_ANOMALY_TYPE[mode] === anomaly.anomaly_type
+    ? mode
+    : anomalyMode;
   return {
     anomalyId: anomaly.id,
-    detectionMode: mode,
+    detectionMode: resolvedMode,
     anomalyType: anomaly.anomaly_type,
     aiColor: anomaly.color,
     severityScore: anomaly.severity_score,
@@ -1412,10 +1431,12 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
   );
   const rasterLayersRef = useRef<Set<string>>(new Set());
   const obj3dLayersRef = useRef<Set<string>>(new Set());
+  const lasPointCloudLayersRef = useRef<Set<string>>(new Set());
   // Dataset ids whose data is an OBJ mesh — their vertex point features are
   // drawn as the draped 3D mesh (Obj3DMapLayer), so they must NOT also be
   // plotted as flat 2D circles in the feature source below.
   const objDatasetIdsRef = useRef<Set<string>>(new Set());
+  const lasPointCloudDatasetIdsRef = useRef<Set<string>>(new Set());
   const [expandedDatasetId, setExpandedDatasetId] = useState<string | null>(null);
   const [rasterSettingsById, setRasterSettingsById] = useState<Record<string, RasterDisplaySettings>>({});
 
@@ -1827,11 +1848,11 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     }
   }, [placemarkDraft]);
 
-  // Keep a fast lookup of which datasets are OBJ meshes so applyFeatureCollection
-  // can drop their vertex points from the 2D feature layers (they are rendered
-  // as the 3D mesh instead).
+  // Keep fast lookups for datasets with dedicated 3D renderers so their
+  // sampled database points are not also painted as ordinary map circles.
   useEffect(() => {
     objDatasetIdsRef.current = new Set(datasets.filter(isObjDataset).map((d) => d.id));
+    lasPointCloudDatasetIdsRef.current = new Set(datasets.filter(isLasDataset).map((d) => d.id));
   }, [datasets]);
 
   const activeVectorDatasets = useMemo(
@@ -2887,11 +2908,12 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     // their vertex point features here — otherwise they also paint as flat
     // 2D circles on top of the mesh, which the user does not want.
     const objIds = objDatasetIdsRef.current;
-    const rawFeatures = objIds.size === 0
+    const pointCloudIds = lasPointCloudDatasetIdsRef.current;
+    const rawFeatures = objIds.size === 0 && pointCloudIds.size === 0
       ? (data.features as unknown as GeoJSON.Feature[])
       : (data.features as unknown as GeoJSON.Feature[]).filter((f) => {
           const did = String((f.properties as Record<string, unknown>)?.dataset_id ?? "");
-          return !objIds.has(did);
+          return !objIds.has(did) && !pointCloudIds.has(did);
         });
 
     // Add two internal top-level properties used only by the visualization UI.
@@ -3353,6 +3375,39 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     for (const id of Array.from(obj3dLayersRef.current)) removeObj3DLayer(id);
   }, [removeObj3DLayer]);
 
+  const removeLasPointCloudLayer = useCallback((datasetId: string) => {
+    lasPointCloudLayersRef.current.delete(datasetId);
+    const map = mapRef.current;
+    if (!map) return;
+    const layerId = lasPointCloudLayerId(datasetId);
+    if (map.getLayer(layerId)) map.removeLayer(layerId);
+  }, []);
+
+  const addLasPointCloudLayer = useCallback(async (dataset: DatasetRow) => {
+    const map = mapRef.current;
+    if (!map || !isLasDataset(dataset)) return;
+    lasPointCloudLayersRef.current.add(dataset.id);
+    const layerId = lasPointCloudLayerId(dataset.id);
+    if (map.getLayer(layerId)) {
+      map.setLayoutProperty(layerId, "visibility", "visible");
+      return;
+    }
+    const { LasPointCloudMapLayer } = await import("./LasPointCloudMapLayer");
+    if (!lasPointCloudLayersRef.current.has(dataset.id)) return;
+    const currentMap = mapRef.current;
+    if (!currentMap || currentMap.getLayer(layerId)) return;
+    const url = `${API_BASE}/api/v1/datasets/${dataset.id}/point-cloud-preview?max_points=2000000&format=npc2`;
+    currentMap.addLayer(new LasPointCloudMapLayer(
+      layerId,
+      url,
+      (message) => setFlyError(`Could not render LAS/LAZ point cloud: ${message}`),
+    ));
+  }, []);
+
+  const clearAllLasPointCloudLayers = useCallback(() => {
+    for (const id of Array.from(lasPointCloudLayersRef.current)) removeLasPointCloudLayer(id);
+  }, [removeLasPointCloudLayer]);
+
   const applyRasterDisplaySettings = useCallback((datasetId: string, nextSettings: RasterDisplaySettings) => {
     const map = mapRef.current;
     if (!map || !map.isStyleLoaded()) return;
@@ -3405,10 +3460,16 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     for (const id of Array.from(rasterLayersRef.current)) {
       if (!activeIds.has(id)) removeRasterOverlay(id);
     }
+    for (const id of Array.from(lasPointCloudLayersRef.current)) {
+      if (!activeIds.has(id)) removeLasPointCloudLayer(id);
+    }
     if (activeDatasetIds.length === 0) return;
     const matched = datasets.filter((d) => activeIds.has(d.id));
     if (matched.length === 0) return;
-    for (const d of matched) addRasterOverlay(d);
+    for (const d of matched) {
+      addRasterOverlay(d);
+      if (isLasDataset(d)) void addLasPointCloudLayer(d);
+    }
     filterRef.current = { datasetIds: activeDatasetIds };
     scheduleFetch();
     // Only re-run when the map/datasets actually become ready or the
@@ -3596,15 +3657,27 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
   }, [detectionMode, datasets]);
 
   const toggleDetectionMode = useCallback((mode: Exclude<DetectionMode, null>) => {
-    setDetectionMode((current) => (current === mode ? null : mode));
+    setDetectionMode((current) => {
+      const next = current === mode ? null : mode;
+      // MapLibre handlers are registered once and read from refs. Update the
+      // ref in the same user action so the very next click cannot see the
+      // previous mode while React is still committing state.
+      detectionModeRef.current = next;
+      return next;
+    });
     // Every fresh mode selection starts with the AI overlay off — isolate
     // the category first, plain colors, then the user explicitly turns AI
-    // on as a separate step.
+    // on as a separate step. Keep the event-handler ref synchronous too.
+    aiOverlayEnabledRef.current = false;
     setAiOverlayEnabled(false);
   }, []);
 
   const toggleAiOverlay = useCallback(() => {
-    setAiOverlayEnabled((v) => !v);
+    setAiOverlayEnabled((current) => {
+      const next = !current;
+      aiOverlayEnabledRef.current = next;
+      return next;
+    });
   }, []);
 
   // Marks "the user asked for the one-time Spatial Audit" — synchronous, so
@@ -3665,11 +3738,6 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
   }, [hasActiveDatasets, activeDatasetIds, runAudit, onSpatialAuditStatusChange, spatialAuditRequested, spatialAuditExecutedRef]);
 
   const selectedAnomaly = anomalies.find((a) => a.id === selectedAnomalyId) ?? null;
-
-  const handleAnomalyStatusChange = useCallback(async (anomalyId: string, next: AnomalyStatus) => {
-    const updated = await updateAnomalyStatus(anomalyId, next);
-    setAnomalies((prev) => prev.map((a) => (a.id === anomalyId ? updated : a)));
-  }, []);
 
   const handleAnomalyStale = useCallback((anomalyId: string) => {
     setAnomalies((prev) => prev.filter((a) => a.id !== anomalyId));
@@ -3782,26 +3850,34 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
       } else {
         removeObj3DLayer(dataset.id);
       }
+      removeLasPointCloudLayer(dataset.id);
       scheduleFetch();
       return;
     }
     addRasterOverlay(dataset);
+    const keepPointCloudCamera = !isLasDataset(dataset) && activeDatasetIds.some((id) => {
+      const activeDataset = datasets.find((candidate) => candidate.id === id);
+      return activeDataset ? isLasDataset(activeDataset) : false;
+    });
     // Load the complete updated dataset selection immediately. fitBounds
     // below changes only the camera and deliberately does not trigger a
     // second data request.
     scheduleFetch();
     try {
       const b = await fetchDatasetBounds(dataset.id);
-      if (isObjDataset(dataset)) {
+      if (isObjDataset(dataset) || isLasDataset(dataset)) {
         // Tilt into a 3/4 view so the newly-draped mesh actually reads as
-        // a 3D model instead of a flat top-down footprint.
-        map.setPitch(58);
+        // 3D geometry instead of a flat top-down footprint.
+        map.setPitch(isLasDataset(dataset) ? 64 : 58);
         map.setBearing(-18);
       }
-      map.fitBounds([[b.min_lon, b.min_lat], [b.max_lon, b.max_lat]], { padding: 80, duration: 1000, maxZoom: 18 });
+      if (!keepPointCloudCamera) {
+        map.fitBounds([[b.min_lon, b.min_lat], [b.max_lon, b.max_lat]], { padding: 80, duration: 1000, maxZoom: 18 });
+      }
       if (isObjDataset(dataset)) void addObj3DLayer(dataset, b);
+      if (isLasDataset(dataset)) void addLasPointCloudLayer(dataset);
     } catch (e) { setFlyError((e as Error).message); }
-  }, [activeDatasetIds, datasets, filter, scheduleFetch, addRasterOverlay, removeRasterOverlay, addObj3DLayer, removeObj3DLayer, hideObj3DLayer, onActiveDatasetsChange]);
+  }, [activeDatasetIds, datasets, filter, scheduleFetch, addRasterOverlay, removeRasterOverlay, addObj3DLayer, removeObj3DLayer, hideObj3DLayer, addLasPointCloudLayer, removeLasPointCloudLayer, onActiveDatasetsChange]);
 
   const clearAllDatasets = useCallback(() => {
     setActiveDatasetIds([]);
@@ -3809,9 +3885,10 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     filterRef.current = filter;
     clearAllRasterOverlays();
     clearAllObj3DLayers();
+    clearAllLasPointCloudLayers();
     onActiveDatasetsChange?.([]);
     scheduleFetch();
-  }, [filter, scheduleFetch, clearAllRasterOverlays, clearAllObj3DLayers, onActiveDatasetsChange]);
+  }, [filter, scheduleFetch, clearAllRasterOverlays, clearAllObj3DLayers, clearAllLasPointCloudLayers, onActiveDatasetsChange]);
 
   // Bulk toggle used by the Data Sources "Select All" control. Selecting every
   // dataset activates the full set at once without per-dataset camera moves;
@@ -4147,25 +4224,24 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
       });
 
       // Shared by both the plain anomaly-points layer and the manhole
-      // heatmap's invisible click layer — same finding, same AI Alert card,
-      // just a different visual treatment for manholes (heatmap density
-      // instead of individual red/yellow/green dots).
+      // heatmap's invisible click layer. It preserves the latest map UI while
+      // also forwarding Red/Yellow AI context into the AE/AEE workflow panel.
       const openAnomalyFinding = (id: string) => {
         const anomaly = anomalyByIdRef.current[id];
         const activeMode = detectionModeRef.current;
-        const context = aiOverlayEnabledRef.current
+        const verificationContext = aiOverlayEnabledRef.current
           ? aiVerificationContextForAnomaly(anomaly, activeMode)
           : null;
         const primaryFeatureId = anomaly ? primaryFeatureIdForAnomaly(anomaly) : null;
 
         setSelectedAnomalyId(id);
-        if (!context || !primaryFeatureId) return;
+        if (!primaryFeatureId) return;
 
         aiAnomalyClickConsumedRef.current = true;
         window.requestAnimationFrame(() => { aiAnomalyClickConsumedRef.current = false; });
         void fetchFeatureById(primaryFeatureId)
           .then((feature) => {
-            onFeatureSelect(feature, context);
+            onFeatureSelect(feature, verificationContext ?? null);
           })
           .catch(() => {});
       };
@@ -4285,6 +4361,10 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
         const activeMode = detectionModeRef.current;
         const selectedAnomaly = aiOverlayEnabledRef.current && activeMode
           ? anomalyByFeatureIdRef.current[selected.properties.id]
+            ?? Object.values(anomalyByIdRef.current).find((anomaly) => (
+              primaryFeatureIdForAnomaly(anomaly) === selected.properties.id
+              || anomaly.feature_ids.includes(selected.properties.id)
+            ))
           : undefined;
         const verificationContext = aiOverlayEnabledRef.current
           ? aiVerificationContextForAnomaly(selectedAnomaly, activeMode)
@@ -4293,10 +4373,11 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
           const anomalyId = buildingAnomalyIdMapRef.current[selected.properties.id];
           if (anomalyId) {
             setSelectedAnomalyId(anomalyId);
-            if (verificationContext) onFeatureSelect(selected, verificationContext);
+            onFeatureSelect(selected, verificationContext ?? null);
             return;
           }
         }
+
         if (selected.properties.category === "site_photo") {
           setPhotoViewer({
             url: `${API_BASE}/api/v1/features/${selected.properties.id}/photo`,
@@ -4305,7 +4386,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
           });
           return;
         }
-        onFeatureSelect(selected, verificationContext);
+        onFeatureSelect(selected, verificationContext ?? null);
       };
       const handleFeatureHover = (e: MapMouseEvent) => {
         // While a measurement tool is actually armed/drawing, ordinary
@@ -5233,7 +5314,6 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
           <AnomalyAlertCard
             anomaly={selectedAnomaly}
             onClose={() => setSelectedAnomalyId(null)}
-            onStatusChange={handleAnomalyStatusChange}
             onStale={handleAnomalyStale}
           />
         )}

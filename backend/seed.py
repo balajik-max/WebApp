@@ -92,6 +92,7 @@ async def _upsert_user(session: AsyncSession, spec: SeedSpec) -> tuple[User, boo
         existing.name = spec.name
     if existing.role != spec.role:
         existing.role = spec.role
+    existing.is_active = True
 
     return existing, False
 
@@ -113,28 +114,10 @@ async def main() -> int:
 
     specs = [
         SeedSpec(
-            email=settings.admin_email,
-            password=settings.admin_password,
-            name=settings.admin_name,
-            role=UserRole.ADMIN,
-        ),
-        SeedSpec(
-            email=settings.commissioner_email,
-            password=settings.commissioner_password,
-            name=settings.commissioner_name,
-            role=UserRole.COMMISSIONER,
-        ),
-        SeedSpec(
-            email=settings.aee_email,
-            password=settings.aee_password,
-            name=settings.aee_name,
-            role=UserRole.AEE,
-        ),
-        SeedSpec(
-            email=settings.ae_email,
-            password=settings.ae_password,
-            name=settings.ae_name,
-            role=UserRole.AE,
+            email=settings.mla_email,
+            password=settings.mla_password,
+            name=settings.mla_name,
+            role=UserRole.MLA,
         ),
         SeedSpec(
             email=settings.commissioner_email,

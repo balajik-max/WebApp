@@ -12,8 +12,6 @@ import { NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
 import { useAuth, type AuthUser, type Role } from "../context/AuthContext";
 import { useLanguage } from "../context/LanguageContext";
 import { STRINGS } from "../i18n/translations";
-import { listAssignedWork, subscribeAssignedWork, type AssignedWorkRecord } from "../lib/assignedWork";
-import { NotificationBell, type NotificationItem } from "./NotificationBell";
 import type { FeatureFilter } from "../lib/types";
 import { searchFeatureFids, type FidSearchResult } from "../lib/features";
 import type { DatasetRow } from "../lib/workflow";
@@ -259,6 +257,30 @@ const TABS: TabDef[] = [
     ),
   },
   {
+    to: "/layer-review",
+    label: "Layer Review",
+    tKey: "nav.layerReview",
+    testId: "tab-layer-review",
+    icon: (
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+        <path d="M12 2 2 7l10 5 10-5-10-5Z" />
+        <path d="M2 17l10 5 10-5M2 12l10 5 10-5" />
+      </svg>
+    ),
+  },
+  {
+    to: "/grievance",
+    label: "Grievance",
+    tKey: "nav.grievance",
+    testId: "tab-grievance",
+    icon: (
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+        <path d="M21 11.5a8.38 8.38 0 0 1-9 8.4 9 9 0 0 1-3.5-.7L3 21l1.8-5.5A8.38 8.38 0 0 1 12 3a8.5 8.5 0 0 1 9 8.5Z" />
+        <path d="M12 8v5M12 16h.01" />
+      </svg>
+    ),
+  },
+  {
     to: "/tasks",
     label: "Tasks",
     tKey: "nav.tasks",
@@ -416,32 +438,9 @@ export function WorkspaceLayout() {
           commissioner: "Commissioner",
           aee: "AEE",
           ae: "AE",
-          admin: "Administrator",
+          mla: "MLA (Read Only)",
         } as Record<string, string>)[user.role] ?? user.role
       : "";
-
-  const [assignedWorkRecords, setAssignedWorkRecords] = useState<AssignedWorkRecord[]>([]);
-  useEffect(() => {
-    if (user?.role !== "ae") {
-      setAssignedWorkRecords([]);
-      return;
-    }
-    setAssignedWorkRecords(listAssignedWork());
-    return subscribeAssignedWork(() => setAssignedWorkRecords(listAssignedWork()));
-  }, [user?.role]);
-
-  const workerNotifications = useMemo<NotificationItem[]>(() => {
-    if (user?.role !== "ae") return [];
-    return [...assignedWorkRecords]
-      .sort((a, b) => (a.assignedAt < b.assignedAt ? 1 : -1))
-      .slice(0, 4)
-      .map((record) => ({
-        id: record.id,
-        title: `${record.serial} · ${record.issueName}`,
-        body: `Deadline: ${record.deadline || "—"}${record.road ? ` · ${record.road}` : ""}`,
-        timestamp: new Date(record.assignedAt).toLocaleString(),
-      }));
-  }, [assignedWorkRecords, user?.role]);
 
   const [selectedDatasets, setSelectedDatasets] = useState<DatasetRow[]>([]);
   const selectedDatasetIds = useMemo(() => selectedDatasets.map((dataset) => dataset.id), [selectedDatasets]);
@@ -568,7 +567,6 @@ export function WorkspaceLayout() {
             <span className="lang-toggle__label">{lang === "en" ? "ಕನ್ನಡ" : "English"}</span>
           </button>
 
-          <NotificationBell notifications={workerNotifications} unreadCount={workerNotifications.length} />
 
           <button
             type="button"
@@ -599,17 +597,18 @@ export function useTabTitle(base = "Davangere Urban Survey") {
         ? "Map"
         : location.pathname.startsWith("/datasets")
           ? "Datasets"
-        : location.pathname.startsWith("/analytics")
-          ? "Analytics"
-          : location.pathname.startsWith("/grievance")
-            ? "Grievance"
-            : location.pathname.startsWith("/tasks")
-              ? "Tasks"
-              : location.pathname.startsWith("/activity")
-                ? "Activity"
-                : location.pathname.startsWith("/profile")
-                  ? "Profile"
-                  : "";
-    document.title = label ? `${label} · ${base}` : base;
+            : location.pathname.startsWith("/analytics")
+              ? "Analytics"
+              : location.pathname.startsWith("/layer-review")
+                ? "Layer Review"
+                : location.pathname.startsWith("/grievance")
+                  ? "Grievance"
+                  : location.pathname.startsWith("/tasks")
+                    ? "Tasks"
+                    : location.pathname.startsWith("/activity")
+                      ? "Activity"
+                      : location.pathname.startsWith("/profile")
+                        ? "Profile"
+                        : "";    document.title = label ? `${label} · ${base}` : base;
   }, [location.pathname, base]);
 }

@@ -10,9 +10,11 @@ Endpoints mount under `/api/v1/datasets/*`.
 """
 from __future__ import annotations
 
+import asyncio
 import io
 import logging
 import mimetypes
+import tempfile
 import uuid
 from datetime import date as date_type, datetime, timezone
 from pathlib import Path
@@ -47,6 +49,7 @@ from app.models import (
     User,
 )
 from app.schemas.dataset import DatasetOut, DatasetUpdate, DatasetUploadAccepted, WardOption
+from app.services.archive_inspection import inspect_zip_bytes
 from app.services.attribute_table import (
     order_attribute_columns,
     populated_attribute_column_count,
@@ -54,7 +57,7 @@ from app.services.attribute_table import (
 )
 from app.services.ingestion import ingest_dataset
 from app.services.readers import get_reader_for
-from app.services.storage import delete_object, delete_objects_with_prefix, ensure_bucket, upload_stream
+from app.services.storage import delete_object, delete_objects_with_prefix, download_to_file, ensure_bucket, upload_stream
 
 log = logging.getLogger("davangere.api.datasets")
 router = APIRouter()
@@ -173,6 +176,9 @@ _SUFFIX_TO_TYPE: dict[str, DatasetFileType] = {
     ".tif": DatasetFileType.GEOTIFF,
     ".tiff": DatasetFileType.GEOTIFF,
     ".geotiff": DatasetFileType.GEOTIFF,
+    ".ecw": DatasetFileType.GEOTIFF,
+    ".las": DatasetFileType.LAS,
+    ".laz": DatasetFileType.LAS,
     ".obj": DatasetFileType.OTHER,       # 3D model
     ".gdb": DatasetFileType.SHAPEFILE,   # Esri File Geodatabase
     ".jpg": DatasetFileType.IMAGE,
@@ -182,11 +188,6 @@ _SUFFIX_TO_TYPE: dict[str, DatasetFileType] = {
     ".bmp": DatasetFileType.IMAGE,
     ".webp": DatasetFileType.IMAGE,
 }
-
-_ZIP_IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp"}
-_ZIP_GIS_EXTS = {".shp", ".dbf", ".shx", ".prj", ".gpkg"}
-_ZIP_OBJ_EXTS = {".obj"}
-
 
 def _validate_zipped_shapefile(payload: bytes) -> None:
     """Require a complete, unambiguous shapefile before queueing ingestion."""
@@ -219,25 +220,39 @@ def _validate_zipped_shapefile(payload: bytes) -> None:
         )
 
 
+def _inspect_source_format(filename: str, payload: bytes | None = None) -> str:
+    ext = Path(filename).suffix.lower()
+    if ext == ".zip" and payload:
+        try:
+            return inspect_zip_bytes(payload).source_format
+        except ValueError:
+            return "zip"
+    return {
+        ".gdb": "gdb",
+        ".shp": "shapefile",
+        ".tif": "geotiff",
+        ".tiff": "geotiff",
+        ".geotiff": "geotiff",
+        ".ecw": "ecw",
+        ".obj": "obj",
+    }.get(ext, ext.lstrip(".") or "unknown")
+
+
 def _classify(filename: str, payload: bytes | None = None) -> DatasetFileType:
     ext = Path(filename).suffix.lower()
     if ext == ".zip" and payload:
-        # A zip could be a shapefile/GDB bundle, a batch of geo-tagged
-        # photos, or a 3D model bundle (.obj + .mtl + textures) — peek at
-        # its real contents rather than assuming, so the dataset row's
-        # declared type matches what actually got ingested.
-        import zipfile
-
         try:
-            with zipfile.ZipFile(io.BytesIO(payload)) as zf:
-                names = [n for n in zf.namelist() if not n.endswith("/")]
-            if any(Path(n).suffix.lower() in _ZIP_OBJ_EXTS for n in names):
-                return DatasetFileType.OTHER
-            if not any(Path(n).suffix.lower() in _ZIP_GIS_EXTS or ".gdb/" in n.lower() for n in names):
-                if any(Path(n).suffix.lower() in _ZIP_IMAGE_EXTS for n in names):
-                    return DatasetFileType.IMAGE
-        except zipfile.BadZipFile:
-            pass
+            kind = inspect_zip_bytes(payload).kind
+        except ValueError:
+            kind = "unknown"
+        if kind == "obj":
+            return DatasetFileType.OTHER
+        if kind == "images":
+            return DatasetFileType.IMAGE
+        if kind in {"geotiff", "ecw"}:
+            return DatasetFileType.GEOTIFF
+        if kind in {"gdb", "shapefile", "vector"}:
+            return DatasetFileType.SHAPEFILE
     return _SUFFIX_TO_TYPE.get(ext, DatasetFileType.OTHER)
 
 
@@ -250,7 +265,7 @@ def _classify(filename: str, payload: bytes | None = None) -> DatasetFileType:
 async def upload_dataset(
     background_tasks: BackgroundTasks,
     response: Response,
-    file: UploadFile = File(..., description="GIS, raster, tabular, photo, or OBJ/OBJ bundle"),
+    file: UploadFile = File(..., description="GIS, raster, tabular, photo, LAS/LAZ point cloud, or OBJ/OBJ bundle"),
     name: str = Form(..., min_length=1, max_length=255),
     description: str | None = Form(default=None, max_length=1024),
     ward: str | None = Form(default=None, max_length=128),
@@ -319,6 +334,7 @@ async def upload_dataset(
             "original_filename": file.filename,
             "content_type": file.content_type,
             "uploaded_at": datetime.now(timezone.utc).isoformat(),
+            "source_format": _inspect_source_format(file.filename, payload),
         },
         uploaded_by=current_user.id,
     )
@@ -504,6 +520,49 @@ async def get_raw_file(dataset_id: uuid.UUID, db: AsyncSession = Depends(get_db)
         raise HTTPException(status_code=404, detail="Source file not found in storage") from exc
 
     return Response(content=raw_bytes, media_type="application/octet-stream")
+
+
+@router.get(
+    "/{dataset_id}/point-cloud-preview",
+    dependencies=[Depends(require_any)],
+    summary="Dense XYZ/RGB preview stream for a LAS or LAZ dataset",
+)
+async def get_point_cloud_preview(
+    dataset_id: uuid.UUID,
+    max_points: int = Query(default=2_000_000, ge=10_000, le=2_000_000),
+    db: AsyncSession = Depends(get_db),
+) -> Response:
+    row = (await db.execute(select(Dataset).where(Dataset.id == dataset_id))).scalar_one_or_none()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+    if row.file_type != DatasetFileType.LAS or not row.storage_key:
+        raise HTTPException(status_code=400, detail="Dataset is not a LAS/LAZ point cloud")
+
+    from app.services.readers.las_reader import build_point_cloud_preview
+
+    original_name = str((row.dataset_metadata or {}).get("original_filename") or "point-cloud.las")
+    suffix = Path(original_name).suffix.lower()
+    if suffix not in {".las", ".laz"}:
+        suffix = ".las"
+
+    try:
+        with tempfile.TemporaryDirectory(prefix="naksha-point-cloud-") as temp_dir:
+            local_path = Path(temp_dir) / f"source{suffix}"
+            await download_to_file(row.storage_key, local_path)
+            preview = await asyncio.to_thread(build_point_cloud_preview, local_path, max_points)
+    except Exception as exc:  # noqa: BLE001
+        log.exception("Could not build point-cloud preview for dataset %s", dataset_id)
+        raise HTTPException(status_code=422, detail=f"Could not render LAS/LAZ point cloud: {exc}") from exc
+
+    return Response(
+        content=preview.payload,
+        media_type="application/vnd.naksha.point-cloud",
+        headers={
+            "Cache-Control": "private, max-age=3600",
+            "X-Point-Count": str(preview.point_count),
+            "X-Point-Color-Mode": preview.color_mode,
+        },
+    )
 
 
 @router.get(
@@ -882,6 +941,9 @@ _MAGIC: dict[str, list[bytes]] = {
     ".tif": [b"II\x2a\x00", b"MM\x00\x2a", b"II\x2b\x00", b"MM\x00\x2b"],
     ".tiff": [b"II\x2a\x00", b"MM\x00\x2a", b"II\x2b\x00", b"MM\x00\x2b"],
     ".geotiff": [b"II\x2a\x00", b"MM\x00\x2a", b"II\x2b\x00", b"MM\x00\x2b"],
+    ".ecw": [],  # validated by GDAL/rasterio after upload
+    ".las": [b"LASF"],
+    ".laz": [b"LASF"],
     ".obj": [b"#", b"v ", b"vt ", b"vn ", b"vp ", b"f ", b"o ", b"g ", b"s ", b"mtllib", b"usemtl"],
     ".jpg": [b"\xff\xd8\xff"],
     ".jpeg": [b"\xff\xd8\xff"],

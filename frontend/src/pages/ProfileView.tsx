@@ -23,7 +23,11 @@ export function ProfileView() {
   const { t } = useLanguage();
 
   const initial = (user?.name ?? "?").trim().charAt(0).toUpperCase();
-  const roleLabel = user ? t((ROLE_KEY[user.role] ?? "common.admin") as "common.admin") : "…";
+  const roleLabel = user
+    ? user.role === "mla"
+      ? "MLA (Read Only)"
+      : t((ROLE_KEY[user.role] ?? "common.admin") as "common.admin")
+    : "…";
 
   return (
     <div className="profile-page" data-testid="profile-page">

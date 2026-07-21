@@ -80,16 +80,7 @@ class Settings(BaseSettings):
     remediation_drain_buffer_m: float = Field(default=30.0, validation_alias="REMEDIATION_DRAIN_BUFFER_M")
     remediation_max_image_mb: int = Field(default=12, validation_alias="REMEDIATION_MAX_IMAGE_MB")
 
-    # --- Seed users ------------------------------------------------------
-    admin_email: str = Field(validation_alias="ADMIN_EMAIL")
-    admin_password: str = Field(validation_alias="ADMIN_PASSWORD")
-    admin_name: str = Field(default="System Administrator", validation_alias="ADMIN_NAME")
-
-    architect_email: str = Field(validation_alias="ARCHITECT_EMAIL")
-    architect_password: str = Field(validation_alias="ARCHITECT_PASSWORD")
-    architect_name: str = Field(default="City Architect", validation_alias="ARCHITECT_NAME")
-
-    # --- Additional civic-engineering roles (R&D) -----------------------
+    # --- Active application users ---------------------------------------
     commissioner_email: str = Field(default="commissioner@davangere.gov.in", validation_alias="COMMISSIONER_EMAIL")
     commissioner_password: str = Field(validation_alias="COMMISSIONER_PASSWORD")
     commissioner_name: str = Field(default="City Commissioner", validation_alias="COMMISSIONER_NAME")
@@ -101,6 +92,10 @@ class Settings(BaseSettings):
     ae_email: str = Field(default="ae@davangere.gov.in", validation_alias="AE_EMAIL")
     ae_password: str = Field(validation_alias="AE_PASSWORD")
     ae_name: str = Field(default="Assistant Engineer", validation_alias="AE_NAME")
+
+    mla_email: str = Field(default="mla@davangere.gov.in", validation_alias="MLA_EMAIL")
+    mla_password: str = Field(default="Mla@12345", validation_alias="MLA_PASSWORD")
+    mla_name: str = Field(default="Member of Legislative Assembly", validation_alias="MLA_NAME")
 
 
 @lru_cache

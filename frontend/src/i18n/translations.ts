@@ -13,6 +13,7 @@ export const STRINGS: Dict = {
   "nav.map": { en: "Map", kn: "ನಕ್ಷೆ" },
   "nav.datasets": { en: "Datasets", kn: "ಡೇಟಾಸೆಟ್‌ಗಳು" },
   "nav.analytics": { en: "Analytics", kn: "ವಿಶ್ಲೇಷಣೆ" },
+  "nav.layerReview": { en: "Layer Review", kn: "\u0CB2\u0CC7\u0CAF\u0CB0\u0CCD \u0CAA\u0CB0\u0CBF\u0CB6\u0CC0\u0CB2\u0CA8\u0CC6" },
   "nav.tasks": { en: "Tasks", kn: "ಕಾರ್ಯಗಳು" },
   "nav.activity": { en: "Activity", kn: "ಚಟುವಟಿಕೆ" },
   "nav.grievance": { en: "Grievance", kn: "ದೂರು" },

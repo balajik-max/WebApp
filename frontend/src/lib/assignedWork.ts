@@ -1,11 +1,4 @@
-/**
- * Client-side store for AEE "Assign Work" records.
- *
- * There is no backend endpoint for this yet, so records live in
- * localStorage. Serials are recomputed on every write so the earliest
- * work (by date) is always #001, matching the AEE Activity view.
- */
-
+/** Client-side store for legacy AEE Assign Work records. */
 const STORAGE_KEY = "davangere.assignedWork";
 const CHANGE_EVENT = "davangere:assigned-work-changed";
 
@@ -47,11 +40,11 @@ function resequence(records: AssignedWorkRecord[]): AssignedWorkRecord[] {
     .map((record, index) => ({ ...record, serial: `#${String(index + 1).padStart(3, "0")}` }));
 }
 
-function writeAll(records: AssignedWorkRecord[]) {
+function writeAll(records: AssignedWorkRecord[]): void {
   try {
     window.localStorage.setItem(STORAGE_KEY, JSON.stringify(records));
   } catch {
-    /* ignore */
+    // Storage can be unavailable in strict privacy modes; the server workflow remains unaffected.
   }
   window.dispatchEvent(new Event(CHANGE_EVENT));
 }

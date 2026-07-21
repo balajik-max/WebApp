@@ -5,20 +5,6 @@ import { useAuth } from "../context/AuthContext";
 import { useLanguage } from "../context/LanguageContext";
 import { listAssignedWork, subscribeAssignedWork, type AssignedWorkRecord } from "../lib/assignedWork";
 
-/**
- * AEE Activity dashboard.
- *
- * Visibility is enforced in two layers:
- *  1. The nav tab that links here is only rendered for AEE users
- *     (see `TabsNav` in WorkspaceLayout).
- *  2. As defence-in-depth, this route itself redirects any non-AEE user
- *     away — the Activity surface is not exposed to unauthorized roles even
- *     if they hit /activity directly.
- *
- * Shows the work items an AEE has assigned to field teams from the AI
- * Issue Remediation popup (Manhole, RED severity). Falls back to the
- * original "coming soon" placeholder until the first item is assigned.
- */
 const DETECTION_KEY: Record<string, string> = {
   poles: "tasks.detection.poles",
   drains: "tasks.detection.drains",
@@ -36,9 +22,7 @@ export function ActivityView() {
     return subscribeAssignedWork(() => setRecords(listAssignedWork()));
   }, [user?.role]);
 
-  if (user?.role !== "aee") {
-    return <Navigate to="/map" replace />;
-  }
+  if (user?.role !== "aee") return <Navigate to="/map" replace />;
 
   if (records.length === 0) {
     return (
@@ -47,6 +31,7 @@ export function ActivityView() {
           <span className="activity-coming-soon__eyebrow">{t("activity.aeeEyebrow")}</span>
           <h1>{t("nav.activity")}</h1>
           <p>{t("activity.comingSoon")}</p>
+          <small>Pending AE submissions are available from Workflow Notifications and AEE Approvals on the map.</small>
         </div>
       </div>
     );

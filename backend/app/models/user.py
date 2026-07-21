@@ -1,9 +1,9 @@
-"""users table — role hierarchy is commissioner > admin > architect.
+"""Users and active operational roles.
 
 The role enum is deliberately a `str` enum stored as a plain VARCHAR
 (`native_enum=False`), so adding a new role is a code-only change that needs
-no database migration. New roles simply append a member here and are lifted
-into the RBAC guards / seed logic as required.
+no native PostgreSQL enum migration. Admin and Architect remain enum members
+only so historically referenced rows decode safely; startup deactivates them.
 """
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ import enum
 import uuid
 from datetime import datetime
 
-from sqlalchemy import Enum as SAEnum, String
+from sqlalchemy import Boolean, Enum as SAEnum, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
@@ -22,6 +22,7 @@ class UserRole(str, enum.Enum):
     COMMISSIONER = "commissioner"
     AEE = "aee"  # Assistant Executive Engineer
     AE = "ae"  # Assistant Engineer
+    MLA = "mla"  # Strictly read-only
     ADMIN = "admin"
     ARCHITECT = "architect"
 
@@ -37,6 +38,7 @@ class User(Base):
         SAEnum(UserRole, name="user_role", native_enum=False, length=32),
         nullable=False,
     )
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
 
     created_at: Mapped[datetime] = created_at_col()
     updated_at: Mapped[datetime] = updated_at_col()

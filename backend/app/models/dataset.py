@@ -27,6 +27,7 @@ class DatasetFileType(str, enum.Enum):
     KML = "kml"
     CSV = "csv"
     GEOTIFF = "geotiff"
+    LAS = "las"
     IMAGE = "image"
     OTHER = "other"
 

@@ -5,20 +5,6 @@ import { useAuth } from "../context/AuthContext";
 import { useLanguage } from "../context/LanguageContext";
 import { listAssignedWork, subscribeAssignedWork, type AssignedWorkRecord } from "../lib/assignedWork";
 
-/**
- * AE Tasks dashboard.
- *
- * Visibility is enforced in two layers:
- *  1. The nav tab that links here is only rendered for AE users
- *     (see `TabsNav` in WorkspaceLayout).
- *  2. As defence-in-depth, this route itself redirects any non-AE user
- *     away — the Tasks surface is not exposed to unauthorized roles even
- *     if they hit /tasks directly.
- *
- * Shows the work items an AEE has assigned to this AE from the AI Issue
- * Remediation popup (Manhole/Pole, RED severity). Falls back to the
- * original "coming soon" placeholder until the first item is assigned.
- */
 const DETECTION_KEY: Record<string, string> = {
   poles: "tasks.detection.poles",
   drains: "tasks.detection.drains",
@@ -36,9 +22,7 @@ export function TasksView() {
     return subscribeAssignedWork(() => setRecords(listAssignedWork()));
   }, [user?.role]);
 
-  if (user?.role !== "ae") {
-    return <Navigate to="/map" replace />;
-  }
+  if (user?.role !== "ae") return <Navigate to="/map" replace />;
 
   if (records.length === 0) {
     return (
@@ -47,6 +31,7 @@ export function TasksView() {
           <span className="tasks-coming-soon__eyebrow">{t("tasks.aeEyebrow")}</span>
           <h1>{t("nav.tasks")}</h1>
           <p>{t("tasks.comingSoon")}</p>
+          <small>Open a Red or Yellow AI point on the map to start field remediation.</small>
         </div>
       </div>
     );

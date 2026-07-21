@@ -23,41 +23,37 @@ from app.models import (
     Dataset,
     DatasetStatus,
 )
-from app.services.readers import DatasetReader, GISReader, ImageReader, ObjReader, get_reader_for
+from app.services.archive_inspection import inspect_zip_path
+from app.services.readers import (
+    DatasetReader,
+    GISReader,
+    ImageReader,
+    ObjReader,
+    RasterReader,
+    get_reader_for,
+)
 from app.services.storage import download_to_file
 
 log = logging.getLogger("davangere.ingestion")
 
-_IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp"}
-_GIS_EXTS = {".shp", ".dbf", ".shx", ".prj", ".gpkg"}
-_OBJ_EXTS = {".obj"}
 _PROCESSING_ERROR_MAX_LENGTH = 2048
 
 
 def _pick_zip_reader(local_path: Path) -> DatasetReader:
-    """A `.zip` could be a shapefile/GDB bundle, a batch of geo-tagged
-    photos (a zipped folder of images, or several individually-selected
-    photos zipped client-side), or a 3D model bundle (.obj + .mtl +
-    textures, zipped client-side from a browsed folder) — peek at its real
-    contents instead of assuming, since they all share the same extension."""
-    import zipfile
-
-    try:
-        with zipfile.ZipFile(local_path) as zf:
-            names = [n for n in zf.namelist() if not n.endswith("/")]
-    except zipfile.BadZipFile:
-        return GISReader()  # let the existing reader produce its own clear error
-
-    has_obj = any(Path(n).suffix.lower() in _OBJ_EXTS for n in names)
-    if has_obj:
+    """Inspect ZIP members and dispatch to the reader for the real payload."""
+    inspection = inspect_zip_path(local_path)
+    if inspection.kind == "obj":
         return ObjReader()
-    has_gis = any(Path(n).suffix.lower() in _GIS_EXTS or ".gdb/" in n.lower() for n in names)
-    if has_gis:
+    if inspection.kind in {"gdb", "shapefile", "vector"}:
         return GISReader()
-    has_images = any(Path(n).suffix.lower() in _IMAGE_EXTS for n in names)
-    if has_images:
+    if inspection.kind in {"geotiff", "ecw"}:
+        return RasterReader()
+    if inspection.kind == "images":
         return ImageReader()
-    return GISReader()
+    raise ValueError(
+        "ZIP contents are not supported. Upload a FileGDB, shapefile bundle, "
+        "GeoTIFF/ECW raster, OBJ bundle, or image archive."
+    )
 
 
 async def _set_status(
@@ -144,7 +140,16 @@ async def ingest_dataset(*, dataset_id: uuid.UUID, storage_key: str, filename: s
                 return
 
             if local.suffix.lower() == ".zip":
-                reader = _pick_zip_reader(local)
+                try:
+                    reader = _pick_zip_reader(local)
+                except Exception as exc:  # noqa: BLE001
+                    log.exception("Could not classify ZIP contents for dataset %s", dataset_id)
+                    await _set_status(
+                        dataset_id,
+                        DatasetStatus.FAILED,
+                        error=f"archive_error: {exc}",
+                    )
+                    return
 
             try:
                 result = await reader.read(local, str(dataset_id))

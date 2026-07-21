@@ -10,6 +10,7 @@ import { MapView } from "./pages/MapView";
 import { DatasetsView } from "./pages/DatasetsView";
 import { AnalyticsView } from "./pages/AnalyticsView";
 import { ProfileView } from "./pages/ProfileView";
+import { LayerReviewView } from "./pages/LayerReviewView";
 import { ActivityView } from "./pages/ActivityView";
 import { TasksView } from "./pages/TasksView";
 import { GrievanceView } from "./pages/GrievanceView";
@@ -62,6 +63,7 @@ export default function App() {
               <Route path="/map" element={<MapView />} />
               <Route path="/datasets" element={<DatasetsView />} />
               <Route path="/analytics" element={<AnalyticsView />} />
+              <Route path="/layer-review" element={<LayerReviewView />} />
               <Route path="/activity" element={<ActivityView />} />
               <Route path="/tasks" element={<TasksView />} />
               <Route path="/grievance" element={<GrievanceView />} />

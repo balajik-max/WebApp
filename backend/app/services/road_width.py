@@ -309,4 +309,3 @@ async def detect_road_width_narrowing(
         db.add_all(anomalies)
         await db.flush()
     return counts
-

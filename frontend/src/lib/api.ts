@@ -128,6 +128,25 @@ export async function apiPostForm<T>(
   return body as T;
 }
 
+export async function apiPutForm<T>(
+  path: string,
+  payload: FormData,
+  signal?: AbortSignal
+): Promise<T> {
+  const res = await doFetch(path, {
+    method: "PUT",
+    credentials: "include",
+    headers: { Accept: "application/json" },
+    body: payload,
+    signal,
+  });
+  const body = await parseBody(res);
+  if (!res.ok) {
+    throw new ApiError(res.status, `${res.status} ${res.statusText}`, body);
+  }
+  return body as T;
+}
+
 export async function apiPatch<T>(
   path: string,
   payload: unknown,

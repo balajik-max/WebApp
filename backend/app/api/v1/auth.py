@@ -70,7 +70,7 @@ async def login(
     result = await db.execute(select(User).where(User.email == email))
     user = result.scalar_one_or_none()
 
-    if user is None or not verify_password(payload.password, user.password_hash):
+    if user is None or not user.is_active or not verify_password(payload.password, user.password_hash):
         raise HTTPException(status_code=401, detail="Invalid email or password")
 
     access = create_access_token(user_id=user.id, email=user.email, role=user.role.value)
@@ -130,7 +130,7 @@ async def refresh_token(
     user_id = uuid.UUID(str(payload["sub"]))
     result = await db.execute(select(User).where(User.id == user_id))
     user = result.scalar_one_or_none()
-    if user is None:
+    if user is None or not user.is_active:
         raise HTTPException(status_code=401, detail="User not found")
 
     access = create_access_token(user_id=user.id, email=user.email, role=user.role.value)

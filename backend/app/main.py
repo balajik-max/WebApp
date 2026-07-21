@@ -1,7 +1,7 @@
 """
 FastAPI application factory & lifespan.
 Boots the async engine, creates spatial tables (via Alembic in prod),
-seeds admin + architect users, and mounts all API routers.
+seeds the four active application roles, and mounts all API routers.
 """
 from __future__ import annotations
 

@@ -1383,42 +1383,21 @@ export function Map3DViewer({ features, classMap, anomalies, datasets, activeDat
           groups.terrain.add(terrain);
           surfaceMeshes.push(terrain);
         } else {
+          // Single fallback ground: size it to the feature extent so there's
+          // exactly one visible surface beneath all surveyed features.
+          const fb = featureBBox(features);
+          const w = fb ? Math.abs(projector.toLocal(fb.max_lon, fb.max_lat)[0] - projector.toLocal(fb.min_lon, fb.min_lat)[0]) + 80 : 1000;
+          const h = fb ? Math.abs(projector.toLocal(fb.max_lon, fb.max_lat)[1] - projector.toLocal(fb.min_lon, fb.min_lat)[1]) + 80 : 1000;
+          const cx = fb ? (projector.toLocal(fb.min_lon, fb.min_lat)[0] + projector.toLocal(fb.max_lon, fb.max_lat)[0]) / 2 : 0;
+          const cz = fb ? (projector.toLocal(fb.min_lon, fb.min_lat)[1] + projector.toLocal(fb.max_lon, fb.max_lat)[1]) / 2 : 0;
           const ground = new THREE.Mesh(
-            new THREE.PlaneGeometry(1000, 1000),
-            new THREE.MeshStandardMaterial({ color: 0xd8d2c2, transparent: true, opacity: 0.4, side: THREE.DoubleSide })
+            new THREE.PlaneGeometry(w, h),
+            new THREE.MeshStandardMaterial({ color: 0xcbb894, transparent: true, opacity: 0.5, side: THREE.DoubleSide, roughness: 0.9 })
           );
           ground.rotation.x = -Math.PI / 2;
+          ground.position.set(cx, -0.1, cz);
           groups.terrain.add(ground);
           surfaceMeshes.push(ground);
-        }
-
-        // Guarantee visible ground beneath EVERY surveyed feature ONLY when
-        // there's no real DTM at all. When a grid DOES exist but doesn't
-        // quite span the full feature extent, sampleGridPlanar already
-        // clamps out-of-bounds queries to the nearest edge cell (a sensible
-        // real elevation, not NaN) — adding a SEPARATE flat floor on top of
-        // the real (non-flat) terrain mesh in that case just produced two
-        // visibly disjointed ground panels, one flat and one following the
-        // real relief, stepping apart at their edges.
-        const fb = featureBBox(features);
-        if (fb && !grid) {
-          const [x0, z0] = projector.toLocal(fb.min_lon, fb.min_lat);
-          const [x1, z1] = projector.toLocal(fb.max_lon, fb.max_lat);
-          const floor = new THREE.Mesh(
-            new THREE.PlaneGeometry(Math.abs(x1 - x0) + 80, Math.abs(z1 - z0) + 80),
-            new THREE.MeshStandardMaterial({
-              color: 0xcbb894,
-              transparent: true,
-              opacity: 0.5,
-              depthWrite: false,
-              side: THREE.DoubleSide,
-              roughness: 0.9,
-            })
-          );
-          floor.rotation.x = -Math.PI / 2;
-          floor.position.set((x0 + x1) / 2, -0.1, (z0 + z1) / 2);
-          groups.terrain.add(floor);
-          surfaceMeshes.push(floor);
         }
 
         // Seat features on the terrain surface. For nodata cells fall back to
