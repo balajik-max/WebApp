@@ -7,12 +7,10 @@ import { MapCanvas, type AiVerificationContext } from "../components/MapCanvas";
 import { ReportGenerator } from "../components/WardReportPanel";
 import { AiAssistant } from "../components/AiAssistant";
 import { PointVerificationPanel } from "../components/PointVerificationPanel";
-import { RemediationInbox } from "../components/RemediationInbox";
 import { RemediationUpdates } from "../components/RemediationUpdates";
 import { useOutletContext, useSearchParams } from "react-router-dom";
 import type { AiHighlight, FeatureFilter, UrbanFeature } from "../lib/types";
 import type {
-  RemediationInboxItem,
   RemediationUpdateItem,
 } from "../lib/pointVerifications";
 import type { DatasetRow } from "../lib/workflow";
@@ -183,15 +181,6 @@ export function MapView() {
   }, [searchParams, setSearchParams]);
 
 
-  const handleRemediationLocate = useCallback(
-    (item: RemediationInboxItem) => {
-      const next = new URLSearchParams(searchParams);
-      next.set("locateFeature", item.feature_id);
-      setSearchParams(next, { replace: true });
-    },
-    [searchParams, setSearchParams],
-  );
-
   const handleRemediationUpdateLocate = useCallback(
     (item: RemediationUpdateItem) => {
       if (!item.feature_id) return;
@@ -274,11 +263,6 @@ export function MapView() {
         }
       />
 
-
-      <RemediationInbox
-        refreshToken={pointVerificationRefresh}
-        onLocate={handleRemediationLocate}
-      />
 
       <RemediationUpdates
         refreshToken={pointVerificationRefresh}

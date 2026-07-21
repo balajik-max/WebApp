@@ -546,7 +546,9 @@ const CADASTRAL_POINT_ICON_DEFAULT = "cadastral-point-default";
 const CADASTRAL_POINT_ICON_TREE = "cadastral-point-tree";
 const CADASTRAL_POINT_ICON_PALM = "cadastral-point-palm";
 const CADASTRAL_POINT_ICON_POLE = "cadastral-point-pole";
+const CADASTRAL_POINT_ICON_POWER_LIGHT_POLE = "cadastral-point-power-light-pole";
 const CADASTRAL_POINT_ICON_LIGHT = "cadastral-point-light";
+const CADASTRAL_POINT_ICON_SOLAR_LIGHT = "cadastral-point-solar-light";
 const CADASTRAL_POINT_ICON_MANHOLE = "cadastral-point-manhole";
 const CADASTRAL_POINT_ICON_CAMERA = "cadastral-point-camera";
 const CADASTRAL_POINT_ICON_LEVEL = "cadastral-point-level";
@@ -555,6 +557,8 @@ const CADASTRAL_POINT_ICON_TRANSFORMER = "cadastral-point-transformer";
 const CADASTRAL_POINT_ICON_SIGN = "cadastral-point-sign";
 const CADASTRAL_POINT_ICON_GATE = "cadastral-point-gate";
 const CADASTRAL_POINT_ICON_WATER = "cadastral-point-water";
+const CADASTRAL_POINT_ICON_WATER_TANK = "cadastral-point-water-tank";
+const CADASTRAL_POINT_ICON_WATER_PUMP = "cadastral-point-water-pump";
 const CADASTRAL_POINT_ICON_TEMPLE = "cadastral-point-temple";
 const REFERENCE_SURVEY_BUILDING_LABELS = "reference-survey-building-labels";
 const REFERENCE_SURVEY_ROAD_LABELS = "reference-survey-road-labels";
@@ -914,6 +918,15 @@ const LAYER_QUICK_ANALYSIS_MANHOLE_UNCONNECTED_RING = "quick-analysis-manhole-un
 const QUICK_ANALYSIS_FLOW_ARROW_GOOD = "quick-analysis-flow-arrow-good";
 const QUICK_ANALYSIS_FLOW_ARROW_WARNING = "quick-analysis-flow-arrow-warning";
 const QUICK_ANALYSIS_FLOW_ARROW_CRITICAL = "quick-analysis-flow-arrow-critical";
+
+const QUICK_ANALYSIS_POWER_LINE_SOURCE = "quick-analysis-power-lines-source";
+const LAYER_QUICK_ANALYSIS_POWER_LINE = "quick-analysis-power-line";
+
+const QUICK_ANALYSIS_WATER_LINE_SOURCE = "quick-analysis-water-lines-source";
+const LAYER_QUICK_ANALYSIS_WATER_LINE = "quick-analysis-water-line";
+
+const QUICK_ANALYSIS_TELECOM_LINE_SOURCE = "quick-analysis-telecom-lines-source";
+const LAYER_QUICK_ANALYSIS_TELECOM_LINE = "quick-analysis-telecom-line";
 
 // Spatial Audit Engine — persisted findings (pole redundancy, drain
 // encroachment, manhole status), one shared point layer colored by the
@@ -1289,15 +1302,28 @@ type CadastralPointIconKind =
   | "tree"
   | "palm"
   | "pole"
+  | "power-pole"
+  | "power-light-pole"
   | "light"
+  | "light-pole"
+  | "high-mast"
+  | "solar-light"
   | "manhole"
+  | "inlet"
+  | "gully"
   | "camera"
   | "level"
   | "landmark"
+  | "monument"
   | "transformer"
+  | "tower"
+  | "flag-pole"
   | "sign"
   | "gate"
   | "water"
+  | "water-tank"
+  | "overhead-tank"
+  | "water-pump"
   | "temple";
 
 function buildCadastralPointIconImageData(kind: CadastralPointIconKind): ImageData {
@@ -1351,36 +1377,120 @@ function buildCadastralPointIconImageData(kind: CadastralPointIconKind): ImageDa
       }
       break;
     }
-    case "pole": {
+    case "pole":
+    case "power-pole": {
+      // High crossarm power pole carrying insulator pins
       ctx.beginPath();
       ctx.moveTo(24, 10);
-      ctx.lineTo(24, 36);
-      strokeOnly(1.9, softStroke);
+      ctx.lineTo(24, 37);
+      strokeOnly(2.2, softStroke);
+      // Top main crossarm
       ctx.beginPath();
-      ctx.moveTo(18, 16);
-      ctx.lineTo(30, 16);
-      strokeOnly(1.7, softStroke);
+      ctx.moveTo(15, 16);
+      ctx.lineTo(33, 16);
+      strokeOnly(2.0, "#334155");
+      // Secondary lower crossarm
       ctx.beginPath();
-      ctx.arc(24, 9, 2.4, 0, Math.PI * 2);
-      ctx.fillStyle = "#cbd5e1";
-      ctx.fill();
-      strokeOnly(1.2, softStroke);
+      ctx.moveTo(18, 22);
+      ctx.lineTo(30, 22);
+      strokeOnly(1.8, "#475569");
+      // 3 Ceramic Insulators on top crossarm
+      for (const x of [16, 24, 32]) {
+        ctx.beginPath();
+        ctx.arc(x, 13, 2.0, 0, Math.PI * 2);
+        ctx.fillStyle = "#e2e8f0";
+        ctx.fill();
+        strokeOnly(1.2, "#0f172a");
+      }
       break;
     }
-    case "light": {
+    case "power-light-pole": {
+      // Power pole with crossarm + streetlight fixture
       ctx.beginPath();
       ctx.moveTo(22, 10);
-      ctx.lineTo(22, 35);
-      strokeOnly(1.9, softStroke);
+      ctx.lineTo(22, 37);
+      strokeOnly(2.2, softStroke);
+      // Crossarm
       ctx.beginPath();
-      ctx.moveTo(22, 15);
-      ctx.lineTo(29, 15);
-      strokeOnly(1.7, softStroke);
+      ctx.moveTo(14, 16);
+      ctx.lineTo(30, 16);
+      strokeOnly(2.0, "#334155");
+      // Insulators
+      for (const x of [15, 22, 29]) {
+        ctx.beginPath();
+        ctx.arc(x, 13, 1.8, 0, Math.PI * 2);
+        ctx.fillStyle = "#e2e8f0";
+        ctx.fill();
+        strokeOnly(1.1, "#0f172a");
+      }
+      // Arm extending right with glowing street light
       ctx.beginPath();
-      ctx.arc(31, 17, 3.2, 0, Math.PI * 2);
-      ctx.fillStyle = "#f8e36b";
+      ctx.moveTo(22, 21);
+      ctx.quadraticCurveTo(30, 20, 34, 24);
+      strokeOnly(1.8, "#475569");
+      // Glowing Lamp head
+      ctx.beginPath();
+      ctx.arc(34, 25, 3.8, 0, Math.PI * 2);
+      ctx.fillStyle = "#fbbf24";
       ctx.fill();
-      strokeOnly(1.4, softStroke);
+      strokeOnly(1.4, "#b45309");
+      break;
+    }
+    case "light":
+    case "light-pole": {
+      // Curved modern arch streetlight post
+      ctx.beginPath();
+      ctx.moveTo(20, 37);
+      ctx.lineTo(20, 15);
+      ctx.quadraticCurveTo(20, 10, 29, 11);
+      strokeOnly(2.2, softStroke);
+      // Lamp head cap
+      ctx.beginPath();
+      ctx.ellipse(30, 13, 3.8, 2.2, 0, 0, Math.PI * 2);
+      ctx.fillStyle = "#cbd5e1";
+      ctx.fill();
+      strokeOnly(1.3, "#334155");
+      // Bright glowing light bulb
+      ctx.beginPath();
+      ctx.arc(30, 16, 3.0, 0, Math.PI * 2);
+      ctx.fillStyle = "#fde047";
+      ctx.fill();
+      strokeOnly(1.3, "#ca8a04");
+      break;
+    }
+    case "solar-light": {
+      // Straight pole with tilted solar PV panel on top + LED module below
+      ctx.beginPath();
+      ctx.moveTo(24, 15);
+      ctx.lineTo(24, 37);
+      strokeOnly(2.2, softStroke);
+      // Tilted Solar Panel box on top
+      ctx.save();
+      ctx.translate(24, 11);
+      ctx.rotate(-0.25);
+      ctx.beginPath();
+      roundRectPath(ctx, -9, -4, 18, 8, 1);
+      ctx.fillStyle = "#0284c7";
+      ctx.fill();
+      strokeOnly(1.4, "#0284c7");
+      // Panel grid lines
+      ctx.beginPath();
+      ctx.moveTo(-3, -4);
+      ctx.lineTo(-3, 4);
+      ctx.moveTo(3, -4);
+      ctx.lineTo(3, 4);
+      strokeOnly(1.0, "#38bdf8");
+      ctx.restore();
+      // LED Light fixture below panel
+      ctx.beginPath();
+      ctx.moveTo(24, 18);
+      ctx.lineTo(30, 20);
+      strokeOnly(1.6, softStroke);
+      ctx.beginPath();
+      ctx.arc(31, 21, 2.8, 0, Math.PI * 2);
+      ctx.fillStyle = "#38bdf8";
+      ctx.fill();
+      strokeOnly(1.2, "#0369a1");
       break;
     }
     case "manhole": {
@@ -1459,17 +1569,33 @@ function buildCadastralPointIconImageData(kind: CadastralPointIconKind): ImageDa
       break;
     }
     case "transformer": {
+      // High voltage golden-yellow transformer cabinet with red lightning bolt
       ctx.beginPath();
-      ctx.rect(16, 16, 16, 16);
-      ctx.fillStyle = "#f8e36b";
+      roundRectPath(ctx, 15, 14, 18, 18, 2);
+      ctx.fillStyle = "#f59e0b";
       ctx.fill();
-      strokeOnly(1.6);
+      strokeOnly(1.8, "#78350f");
+      // Side cooling fins lines
+      for (const y of [18, 22, 26]) {
+        ctx.beginPath();
+        ctx.moveTo(12, y);
+        ctx.lineTo(15, y);
+        ctx.moveTo(33, y);
+        ctx.lineTo(36, y);
+        strokeOnly(1.4, "#475569");
+      }
+      // High-voltage lightning bolt in center
       ctx.beginPath();
-      ctx.moveTo(20, 20);
-      ctx.lineTo(28, 28);
-      ctx.moveTo(28, 20);
-      ctx.lineTo(20, 28);
-      strokeOnly(1.4);
+      ctx.moveTo(25, 17);
+      ctx.lineTo(21, 23);
+      ctx.lineTo(24, 23);
+      ctx.lineTo(22, 29);
+      ctx.lineTo(27, 22);
+      ctx.lineTo(24, 22);
+      ctx.closePath();
+      ctx.fillStyle = "#dc2626";
+      ctx.fill();
+      strokeOnly(1.0, "#7f1d1d");
       break;
     }
     case "sign": {
@@ -1505,18 +1631,49 @@ function buildCadastralPointIconImageData(kind: CadastralPointIconKind): ImageDa
       strokeOnly(1.3, "#b45309");
       break;
     }
-    case "water": {
+    case "water":
+    case "water-tank": {
+      // Cylinder water storage tank with legs and water wave
       ctx.beginPath();
-      ctx.rect(15, 14, 18, 11);
-      ctx.fillStyle = "#7dd3fc";
+      roundRectPath(ctx, 15, 14, 18, 14, 3);
+      ctx.fillStyle = "#0284c7";
       ctx.fill();
-      strokeOnly(1.5, "#0f172a");
+      strokeOnly(1.6, "#0c4a6e");
+      // Water level highlight line
       ctx.beginPath();
-      ctx.moveTo(18, 25);
-      ctx.lineTo(18, 34);
-      ctx.moveTo(30, 25);
-      ctx.lineTo(30, 34);
-      strokeOnly(1.4, "#0f172a");
+      ctx.moveTo(17, 20);
+      ctx.quadraticCurveTo(24, 23, 31, 20);
+      strokeOnly(1.3, "#7dd3fc");
+      // Legs
+      ctx.beginPath();
+      ctx.moveTo(17, 28);
+      ctx.lineTo(17, 36);
+      ctx.moveTo(31, 28);
+      ctx.lineTo(31, 36);
+      strokeOnly(1.6, softStroke);
+      break;
+    }
+    case "water-pump": {
+      // Hydro pump unit icon with water droplet
+      ctx.beginPath();
+      ctx.arc(24, 22, 7.5, 0, Math.PI * 2);
+      ctx.fillStyle = "#0284c7";
+      ctx.fill();
+      strokeOnly(1.6, "#0c4a6e");
+      // Inlet & outlet pipe stubs
+      ctx.beginPath();
+      ctx.moveTo(12, 22);
+      ctx.lineTo(16.5, 22);
+      ctx.moveTo(31.5, 22);
+      ctx.lineTo(36, 22);
+      ctx.moveTo(24, 29.5);
+      ctx.lineTo(24, 35);
+      strokeOnly(2.2, "#0369a1");
+      // Inner droplet shape
+      ctx.beginPath();
+      ctx.arc(24, 23, 2.5, 0, Math.PI * 2);
+      ctx.fillStyle = "#bae6fd";
+      ctx.fill();
       break;
     }
     case "temple": {
@@ -1541,6 +1698,127 @@ function buildCadastralPointIconImageData(kind: CadastralPointIconKind): ImageDa
       ctx.moveTo(18, 36);
       ctx.lineTo(30, 36);
       strokeOnly(1.4, "#7c2d12");
+      break;
+    }
+    case "high-mast": {
+      ctx.beginPath();
+      ctx.moveTo(24, 12);
+      ctx.lineTo(24, 37);
+      strokeOnly(2.4, softStroke);
+      ctx.beginPath();
+      ctx.ellipse(24, 13, 8, 3, 0, 0, Math.PI * 2);
+      ctx.fillStyle = "#cbd5e1";
+      ctx.fill();
+      strokeOnly(1.4, "#334155");
+      for (const x of [16, 21, 27, 32]) {
+        ctx.beginPath();
+        ctx.arc(x, 16, 2.5, 0, Math.PI * 2);
+        ctx.fillStyle = "#fde047";
+        ctx.fill();
+        strokeOnly(1.2, "#ca8a04");
+      }
+      break;
+    }
+    case "tower": {
+      ctx.beginPath();
+      ctx.moveTo(24, 10);
+      ctx.lineTo(15, 37);
+      ctx.moveTo(24, 10);
+      ctx.lineTo(33, 37);
+      strokeOnly(2.0, "#dc2626");
+      for (const y of [18, 26, 33]) {
+        ctx.beginPath();
+        ctx.moveTo(24 - (y - 10) * 0.33, y);
+        ctx.lineTo(24 + (y - 10) * 0.33, y);
+        strokeOnly(1.6, "#f8fafc");
+      }
+      ctx.beginPath();
+      ctx.arc(24, 9, 3.2, 0, Math.PI * 2);
+      ctx.fillStyle = "#ef4444";
+      ctx.fill();
+      strokeOnly(1.2, "#7f1d1d");
+      break;
+    }
+    case "flag-pole": {
+      ctx.beginPath();
+      ctx.moveTo(18, 10);
+      ctx.lineTo(18, 37);
+      strokeOnly(2.2, softStroke);
+      ctx.beginPath();
+      ctx.arc(18, 9, 2.5, 0, Math.PI * 2);
+      ctx.fillStyle = "#f59e0b";
+      ctx.fill();
+      strokeOnly(1.0, "#78350f");
+      ctx.beginPath();
+      ctx.moveTo(18, 11);
+      ctx.quadraticCurveTo(25, 13, 32, 11);
+      ctx.lineTo(32, 22);
+      ctx.quadraticCurveTo(25, 24, 18, 22);
+      ctx.closePath();
+      ctx.fillStyle = "#0284c7";
+      ctx.fill();
+      strokeOnly(1.4, "#0369a1");
+      break;
+    }
+    case "inlet": {
+      ctx.beginPath();
+      roundRectPath(ctx, 14, 16, 20, 16, 2);
+      ctx.fillStyle = "#475569";
+      ctx.fill();
+      strokeOnly(1.6, "#0f172a");
+      for (const x of [18, 22, 26, 30]) {
+        ctx.beginPath();
+        ctx.moveTo(x, 17);
+        ctx.lineTo(x, 31);
+        strokeOnly(1.4, "#0f172a");
+      }
+      break;
+    }
+    case "gully": {
+      ctx.beginPath();
+      roundRectPath(ctx, 15, 15, 18, 18, 2);
+      ctx.fillStyle = "#334155";
+      ctx.fill();
+      strokeOnly(1.6, "#0f172a");
+      ctx.beginPath();
+      ctx.arc(24, 24, 4.5, 0, Math.PI * 2);
+      ctx.fillStyle = "#0284c7";
+      ctx.fill();
+      strokeOnly(1.2, "#0c4a6e");
+      break;
+    }
+    case "overhead-tank": {
+      ctx.beginPath();
+      roundRectPath(ctx, 14, 10, 20, 14, 3);
+      ctx.fillStyle = "#0284c7";
+      ctx.fill();
+      strokeOnly(1.8, "#0c4a6e");
+      ctx.beginPath();
+      ctx.moveTo(16, 24);
+      ctx.lineTo(14, 37);
+      ctx.moveTo(32, 24);
+      ctx.lineTo(34, 37);
+      ctx.moveTo(16, 26);
+      ctx.lineTo(32, 35);
+      ctx.moveTo(32, 26);
+      ctx.lineTo(16, 35);
+      strokeOnly(1.6, softStroke);
+      break;
+    }
+    case "monument": {
+      ctx.beginPath();
+      ctx.moveTo(24, 10);
+      ctx.lineTo(21, 28);
+      ctx.lineTo(27, 28);
+      ctx.closePath();
+      ctx.fillStyle = "#94a3b8";
+      ctx.fill();
+      strokeOnly(1.6, "#334155");
+      ctx.beginPath();
+      roundRectPath(ctx, 16, 28, 16, 8, 1);
+      ctx.fillStyle = "#64748b";
+      ctx.fill();
+      strokeOnly(1.6, "#1e293b");
       break;
     }
     default: {
@@ -1739,22 +2017,34 @@ function addCadastralPointIconLayer(
 function cadastralPointIconKindForFeature(feature: UrbanFeature): CadastralPointIconKind {
   const category = normalizeCategoryName(feature.properties.category ?? "");
   const canonicalClass = feature.properties.canonical_class ?? "";
-  if (["coconut tree", "other tree", "tree", "planter box"].includes(category)) return "tree";
-  if (["power pole with light", "light pole", "solar light", "high mast"].includes(category)) return "light";
-  if (["power pole", "flag pole", "microwave tower"].includes(category)) return "pole";
+
+  if (["coconut tree", "other tree", "tree", "planter box"].includes(category)) return category === "coconut tree" ? "palm" : "tree";
+  if (category === "power pole with light") return "power-light-pole";
+  if (category === "power pole") return "power-pole";
+  if (category === "light pole") return "light-pole";
+  if (category === "high mast") return "high-mast";
+  if (category === "solar light") return "solar-light";
   if (category === "transformer") return "transformer";
+  if (["microwave tower", "tower"].includes(category)) return "tower";
+  if (category === "flag pole") return "flag-pole";
   if (["road sign", "road sign single pole", "road sign double pole"].includes(category)) return "sign";
   if (category === "gate") return "gate";
-  if (["water tank", "water pump", "overhead tank"].includes(category)) return "water";
-  if (["manhole", "inlet", "gully"].includes(category)) return "manhole";
+  if (category === "overhead tank") return "overhead-tank";
+  if (["water tank", "tank"].includes(category)) return "water-tank";
+  if (category === "water pump") return "water-pump";
+  if (category === "manhole") return "manhole";
+  if (category === "inlet") return "inlet";
+  if (category === "gully") return "gully";
   if (category === "cc camera") return "camera";
-  if (category === "drain levels") return "level";
+  if (["drain levels", "chainage", "level"].includes(category)) return "level";
   if (category === "temple") return "temple";
-  if (["monument", "mionument", "landmark"].includes(category)) return "landmark";
+  if (["monument", "mionument"].includes(category)) return "monument";
+  if (category === "landmark") return "landmark";
+
   if (canonicalClass === "Vegetation") return category === "coconut tree" ? "palm" : "tree";
-  if (canonicalClass === "Illumination_Asset") return "light";
+  if (canonicalClass === "Illumination_Asset") return "light-pole";
   if (canonicalClass === "Access_Point") return "manhole";
-  if (canonicalClass === "Utility_Pole") return "pole";
+  if (canonicalClass === "Utility_Pole") return "power-pole";
   if (canonicalClass === "Drainage_Level_Point") return "level";
   return "default";
 }
@@ -1792,25 +2082,38 @@ function cadastralMarkerSize(zoom: number): number {
 
 function cadastralMarkerMinZoom(feature: UrbanFeature): number {
   switch (cadastralPointIconKindForFeature(feature)) {
-    // Names/landmarks are useful while navigating a whole ward.
+    // Names/landmarks/towers are useful while navigating a whole ward.
     case "landmark":
+    case "monument":
     case "temple":
+    case "tower":
+    case "overhead-tank":
       return 15;
     // Tall or civic assets remain useful at street/block scale.
     case "pole":
+    case "power-pole":
+    case "power-light-pole":
     case "light":
+    case "light-pole":
+    case "high-mast":
+    case "solar-light":
     case "transformer":
+    case "flag-pole":
       return 17.5;
     // Small ground/detail assets only appear when user is close enough.
     case "tree":
     case "palm":
       return 19.25;
     case "manhole":
+    case "inlet":
+    case "gully":
     case "level":
     case "camera":
     case "sign":
     case "gate":
     case "water":
+    case "water-tank":
+    case "water-pump":
     case "default":
       return 18.5;
   }
@@ -2523,8 +2826,8 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
 ) {
   const [sidebarPanel, setSidebarPanel] = useState<"layers" | "analysis">("layers");
   // The card list always remains in the Quick Analysis sidebar. A selected
-  // card drives a dedicated dashboard over the cadastral canvas instead.
   const [quickAnalysisCardId, setQuickAnalysisCardId] = useState<string | null>(null);
+  const [utilitySubCategory, setUtilitySubCategory] = useState<string>("all");
   const [quickAnalysisFeatures, setQuickAnalysisFeatures] = useState<UrbanFeature[]>([]);
   const [quickAnalysisLoading, setQuickAnalysisLoading] = useState(false);
   const [quickAnalysisError, setQuickAnalysisError] = useState<string | null>(null);
@@ -3374,18 +3677,14 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     const map = mapRef.current;
     for (const marker of cadastralPointMarkersRef.current) marker.remove();
     cadastralPointMarkersRef.current = [];
-    const quickAnalysisPointClasses = quickAnalysisCardId === "manhole-detail"
-      ? new Set(["Access_Point"])
-      : quickAnalysisCardId === "utility-tracker"
-        ? new Set(["Access_Point", "Illumination_Asset", "Utility_Pole"])
-        : null;
     if (
       !mapReady
       || !map
       || basemap !== "cadastral"
       || detectionMode
       || roadInspectionActive
-      || (quickAnalysisCardId !== null && quickAnalysisPointClasses === null)
+      || quickAnalysisCardId === "drain-encroachment"
+      || quickAnalysisCardId === "road-width"
     ) return;
 
     const markers: maplibregl.Marker[] = [];
@@ -3393,10 +3692,39 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     const visibleFeatures = loadedFeatures.filter((feature) => {
       if (feature.geometry.type !== "Point") return false;
       const category = feature.properties.category ?? "uncategorized";
+      const normCat = normalizeCategoryName(category);
+      const canon = feature.properties.canonical_class ?? "";
+
+      if (quickAnalysisCardId === "manhole-detail") {
+        if (canon !== "Access_Point" && normCat !== "manhole") return false;
+      } else if (quickAnalysisCardId === "utility-tracker") {
+        const isUtilityPoint = ["power pole", "power pole with light", "light pole", "solar light", "transformer", "high mast", "flag pole", "microwave tower", "tower", "water tank", "water pump", "overhead tank", "cc camera"].includes(normCat)
+          || ["Utility_Pole", "Illumination_Asset", "Electrical_Asset", "Hydrological_Asset", "Telecom_Asset", "Security_Asset"].includes(canon);
+        if (!isUtilityPoint) return false;
+
+        if (utilitySubCategory && utilitySubCategory !== "all") {
+          if (utilitySubCategory === "electricity") {
+            const isElec = ["power pole", "power pole with light", "light pole", "solar light", "transformer", "high mast", "flag pole", "microwave tower", "tower"].includes(normCat)
+              || ["Utility_Pole", "Illumination_Asset", "Electrical_Asset"].includes(canon);
+            if (!isElec) return false;
+          } else if (utilitySubCategory === "water") {
+            const isWater = ["water tank", "water pump", "overhead tank"].includes(normCat)
+              || ["Hydrological_Asset"].includes(canon);
+            if (!isWater) return false;
+          } else if (utilitySubCategory === "telecom") {
+            const isTelecom = ["cc camera"].includes(normCat)
+              || ["Telecom_Asset", "Security_Asset"].includes(canon);
+            if (!isTelecom) return false;
+          } else {
+            if (normCat !== utilitySubCategory) return false;
+          }
+        }
+      }
+
       return category !== "raster_pixel"
         && category !== "site_photo"
+        && category !== "3d_vertex"
         && !hiddenCategories.has(category)
-        && (!quickAnalysisPointClasses || quickAnalysisPointClasses.has(feature.properties.canonical_class ?? ""))
         && (feature.properties as unknown as Record<string, unknown>)[CADASTRAL_DUPLICATE_POINT_PROP] !== true;
     });
     let cancelled = false;
@@ -3422,7 +3750,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
           // A focused point-analysis card must show its subject at the fitted
           // ward extent. The normal cadastral min-zoom rule is for the busy
           // all-assets map and would hide manholes/utilities here.
-          element.dataset.minZoom = String(quickAnalysisPointClasses ? 0 : cadastralMarkerMinZoom(feature));
+          element.dataset.minZoom = String(quickAnalysisCardId ? 0 : cadastralMarkerMinZoom(feature));
           applyCadastralMarkerZoom(element, map.getZoom());
           if (quickAnalysisCardId === "manhole-detail") {
             // Select the exact marker that was clicked. The transparent map
@@ -3468,7 +3796,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
       for (const marker of markers) marker.remove();
       if (cadastralPointMarkersRef.current === markers) cadastralPointMarkersRef.current = [];
     };
-  }, [basemap, detectionMode, hiddenCategories, loadedFeatures, mapReady, quickAnalysisCardId, roadInspectionActive]);
+  }, [basemap, detectionMode, hiddenCategories, loadedFeatures, mapReady, quickAnalysisCardId, roadInspectionActive, utilitySubCategory]);
 
   useEffect(() => {
     basemapRef.current = basemap;
@@ -4508,7 +4836,8 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     const isDrainAnalysis = quickAnalysisCardId === "drain-encroachment";
     const isManholeDetail = quickAnalysisCardId === "manhole-detail";
     const isRoadWidth = quickAnalysisCardId === "road-width";
-    const hasFocusedCadastralSubject = isDrainAnalysis || isManholeDetail || isRoadWidth;
+    const isUtilityTracker = quickAnalysisCardId === "utility-tracker";
+    const hasFocusedCadastralSubject = isDrainAnalysis || isManholeDetail || isRoadWidth || isUtilityTracker;
     const activeFeatureId = selectedQuickAnalysisFeature?.properties.id ?? "";
     const selectedManholeId = isManholeDetail
       && selectedQuickAnalysisFeature?.properties.canonical_class === "Access_Point"
@@ -4555,8 +4884,8 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
           ? (hasDrainSelection
               ? ["case", ["==", ["get", "id"], activeFeatureId], 1, 0.2]
               : 0.98)
-          : isRoadWidth
-            ? 0.35
+          : (isRoadWidth || isUtilityTracker)
+            ? 0.18
             : 0.82
       );
       if (isDrainAnalysis || isRoadWidth) map.moveLayer(LAYER_LINES_CADASTRAL);
@@ -5575,7 +5904,26 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     return failures.length === 0;
   }, []);
 
+  const closeQuickAnalysis = useCallback(() => {
+    if (measureActiveRef.current) closeMeasureSafely();
+    quickAnalysisToolRef.current = null;
+    setQuickAnalysisTool(null);
+    setSelectedQuickAnalysisFeature(null);
+    setSelectedQuickAnalysisConnection(null);
+    setUtilitySubCategory("all");
+    quickAnalysisFitKeyRef.current = "";
+    quickAnalysisActiveRef.current = false;
+    setQuickAnalysisCardId(null);
+  }, [closeMeasureSafely]);
+
   const selectQuickAnalysis = useCallback((cardId: string) => {
+    // Clicking the already-open card again is a deselect, not a re-select —
+    // otherwise there's no way to close a card from the Quick Analysis list
+    // itself (only via the dashboard's own × button).
+    if (quickAnalysisCardId === cardId) {
+      closeQuickAnalysis();
+      return;
+    }
     const config = QUICK_ANALYSIS_MAP_CONFIG[cardId];
     if (!config) return;
     // Save the ordinary map state once, before the dashboard takes over the
@@ -5588,21 +5936,11 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     setQuickAnalysisTool(null);
     setSelectedQuickAnalysisFeature(null);
     setSelectedQuickAnalysisConnection(null);
+    setUtilitySubCategory("all");
     quickAnalysisFitKeyRef.current = "";
     quickAnalysisActiveRef.current = true;
     setQuickAnalysisCardId(cardId);
-  }, [aiOverlayEnabled, basemap, closeMeasureSafely, detectionMode]);
-
-  const closeQuickAnalysis = useCallback(() => {
-    if (measureActiveRef.current) closeMeasureSafely();
-    quickAnalysisToolRef.current = null;
-    setQuickAnalysisTool(null);
-    setSelectedQuickAnalysisFeature(null);
-    setSelectedQuickAnalysisConnection(null);
-    quickAnalysisFitKeyRef.current = "";
-    quickAnalysisActiveRef.current = false;
-    setQuickAnalysisCardId(null);
-  }, [closeMeasureSafely]);
+  }, [aiOverlayEnabled, basemap, closeMeasureSafely, closeQuickAnalysis, detectionMode, quickAnalysisCardId]);
 
   const activateQuickAnalysisSelect = useCallback(() => {
     if (measureActiveRef.current) closeMeasureSafely();
@@ -5765,11 +6103,34 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
       quickAnalysisFeatures.forEach((feature) => {
         if (feature.properties.canonical_class === "Access_Point") selectable.add(feature.properties.id);
       });
+    } else if (quickAnalysisCardId === "utility-tracker") {
+      quickAnalysisFeatures.forEach((feature) => {
+        const cat = feature.properties.category ?? "";
+        const normCat = normalizeCategoryName(cat);
+        if (normCat === "manhole" || normCat === "inlet" || normCat === "gully" || normCat.includes("drain") || normCat.includes("building") || normCat.includes("road")) return;
+        if (!utilitySubCategory || utilitySubCategory === "all") {
+          selectable.add(feature.properties.id);
+        } else if (utilitySubCategory === "electricity") {
+          if (["power pole", "power pole with light", "light pole", "solar light", "transformer", "high mast", "flag pole", "microwave tower"].includes(normCat) || ["Utility_Pole", "Illumination_Asset"].includes(feature.properties.canonical_class ?? "")) {
+            selectable.add(feature.properties.id);
+          }
+        } else if (utilitySubCategory === "water") {
+          if (["water line", "pipe", "sewage line", "water tank", "water pump", "overhead tank"].includes(normCat)) {
+            selectable.add(feature.properties.id);
+          }
+        } else if (utilitySubCategory === "telecom") {
+          if (["cc camera", "ofc line", "cable"].includes(normCat)) {
+            selectable.add(feature.properties.id);
+          }
+        } else if (normCat === utilitySubCategory) {
+          selectable.add(feature.properties.id);
+        }
+      });
     } else if (quickAnalysisCardId) {
       quickAnalysisFeatures.forEach((feature) => selectable.add(feature.properties.id));
     }
     quickAnalysisSelectableFeatureIdsRef.current = selectable;
-  }, [quickAnalysisCardId, quickAnalysisFeatures, quickDrainEncroachment]);
+  }, [quickAnalysisCardId, quickAnalysisFeatures, quickDrainEncroachment, utilitySubCategory]);
 
   // Render the complete surveyed drain geometry in its own high-contrast
   // overlay and frame the camera around that network. The red cross source
@@ -5911,6 +6272,65 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
       if (map.getLayer(LAYER_QUICK_ANALYSIS_MANHOLE_UNCONNECTED_RING)) map.moveLayer(LAYER_QUICK_ANALYSIS_MANHOLE_UNCONNECTED_RING);
     }
   }, [mapReady, quickAnalysisCardId, quickAnalysisManholeNetwork]);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!mapReady || !map) return;
+
+    const powerSource = map.getSource(QUICK_ANALYSIS_POWER_LINE_SOURCE) as GeoJSONSource | undefined;
+    const waterSource = map.getSource(QUICK_ANALYSIS_WATER_LINE_SOURCE) as GeoJSONSource | undefined;
+    const telecomSource = map.getSource(QUICK_ANALYSIS_TELECOM_LINE_SOURCE) as GeoJSONSource | undefined;
+
+    if (quickAnalysisCardId !== "utility-tracker") {
+      powerSource?.setData({ type: "FeatureCollection", features: [] });
+      waterSource?.setData({ type: "FeatureCollection", features: [] });
+      telecomSource?.setData({ type: "FeatureCollection", features: [] });
+      return;
+    }
+
+    const isPowerVisible = utilitySubCategory === "all" || utilitySubCategory === "electricity" || utilitySubCategory === "power line" || utilitySubCategory === "electric line";
+    const isWaterVisible = utilitySubCategory === "all" || utilitySubCategory === "water" || utilitySubCategory === "water line" || utilitySubCategory === "pipe" || utilitySubCategory === "sewage line";
+    const isTelecomVisible = utilitySubCategory === "all" || utilitySubCategory === "telecom" || utilitySubCategory === "ofc line" || utilitySubCategory === "cable";
+
+    const powerFeatures = isPowerVisible
+      ? quickAnalysisFeatures.filter((f) => {
+          const category = normalizeCategoryName(f.properties.category ?? "");
+          if (utilitySubCategory === "power line" && category !== "power line") return false;
+          if (utilitySubCategory === "electric line" && category !== "electric line") return false;
+          return (category.includes("power line") || category.includes("electric line") || (f.properties.canonical_class === "Line_Asset" && category.includes("power")))
+            && (f.geometry.type === "LineString" || f.geometry.type === "MultiLineString");
+        })
+      : [];
+
+    const waterFeatures = isWaterVisible
+      ? quickAnalysisFeatures.filter((f) => {
+          const category = normalizeCategoryName(f.properties.category ?? "");
+          if (utilitySubCategory === "water line" && category !== "water line") return false;
+          if (utilitySubCategory === "pipe" && category !== "pipe") return false;
+          if (utilitySubCategory === "sewage line" && category !== "sewage line") return false;
+          return (category.includes("water line") || category === "pipe" || category.includes("sewage line"))
+            && (f.geometry.type === "LineString" || f.geometry.type === "MultiLineString");
+        })
+      : [];
+
+    const telecomFeatures = isTelecomVisible
+      ? quickAnalysisFeatures.filter((f) => {
+          const category = normalizeCategoryName(f.properties.category ?? "");
+          if (utilitySubCategory === "ofc line" && category !== "ofc line") return false;
+          if (utilitySubCategory === "cable" && category !== "cable") return false;
+          return (category === "ofc line" || category === "cable")
+            && (f.geometry.type === "LineString" || f.geometry.type === "MultiLineString");
+        })
+      : [];
+
+    powerSource?.setData({ type: "FeatureCollection", features: powerFeatures });
+    waterSource?.setData({ type: "FeatureCollection", features: waterFeatures });
+    telecomSource?.setData({ type: "FeatureCollection", features: telecomFeatures });
+
+    if (powerFeatures.length > 0 && map.getLayer(LAYER_QUICK_ANALYSIS_POWER_LINE)) map.moveLayer(LAYER_QUICK_ANALYSIS_POWER_LINE);
+    if (waterFeatures.length > 0 && map.getLayer(LAYER_QUICK_ANALYSIS_WATER_LINE)) map.moveLayer(LAYER_QUICK_ANALYSIS_WATER_LINE);
+    if (telecomFeatures.length > 0 && map.getLayer(LAYER_QUICK_ANALYSIS_TELECOM_LINE)) map.moveLayer(LAYER_QUICK_ANALYSIS_TELECOM_LINE);
+  }, [mapReady, quickAnalysisCardId, quickAnalysisFeatures, utilitySubCategory]);
 
   useEffect(() => {
     const map = mapRef.current;
@@ -6429,8 +6849,10 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
         [CADASTRAL_POINT_ICON_DEFAULT, "default"],
         [CADASTRAL_POINT_ICON_TREE, "tree"],
         [CADASTRAL_POINT_ICON_PALM, "palm"],
-        [CADASTRAL_POINT_ICON_POLE, "pole"],
-        [CADASTRAL_POINT_ICON_LIGHT, "light"],
+        [CADASTRAL_POINT_ICON_POLE, "power-pole"],
+        [CADASTRAL_POINT_ICON_POWER_LIGHT_POLE, "power-light-pole"],
+        [CADASTRAL_POINT_ICON_LIGHT, "light-pole"],
+        [CADASTRAL_POINT_ICON_SOLAR_LIGHT, "solar-light"],
         [CADASTRAL_POINT_ICON_MANHOLE, "manhole"],
         [CADASTRAL_POINT_ICON_CAMERA, "camera"],
         [CADASTRAL_POINT_ICON_LEVEL, "level"],
@@ -6439,6 +6861,8 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
         [CADASTRAL_POINT_ICON_SIGN, "sign"],
         [CADASTRAL_POINT_ICON_GATE, "gate"],
         [CADASTRAL_POINT_ICON_WATER, "water"],
+        [CADASTRAL_POINT_ICON_WATER_TANK, "water-tank"],
+        [CADASTRAL_POINT_ICON_WATER_PUMP, "water-pump"],
         [CADASTRAL_POINT_ICON_TEMPLE, "temple"],
       ];
       for (const [imageId, kind] of cadastralPointImages) {
@@ -6556,6 +6980,51 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
           "circle-stroke-color": "#22d3ee",
           "circle-stroke-width": ["case", ["==", ["get", "selected"], true], 4, 2.2],
           "circle-stroke-opacity": ["case", ["==", ["get", "dimmed"], true], 0.3, 1],
+        },
+      });
+      map.addSource(QUICK_ANALYSIS_POWER_LINE_SOURCE, {
+        type: "geojson",
+        data: { type: "FeatureCollection", features: [] },
+      });
+      map.addLayer({
+        id: LAYER_QUICK_ANALYSIS_POWER_LINE,
+        type: "line",
+        source: QUICK_ANALYSIS_POWER_LINE_SOURCE,
+        layout: { "line-cap": "round", "line-join": "round" },
+        paint: {
+          "line-color": "#d97706",
+          "line-width": ["interpolate", ["linear"], ["zoom"], 12, 1.2, 16, 1.8, 20, 2.5],
+          "line-opacity": 0.9,
+        },
+      });
+      map.addSource(QUICK_ANALYSIS_WATER_LINE_SOURCE, {
+        type: "geojson",
+        data: { type: "FeatureCollection", features: [] },
+      });
+      map.addLayer({
+        id: LAYER_QUICK_ANALYSIS_WATER_LINE,
+        type: "line",
+        source: QUICK_ANALYSIS_WATER_LINE_SOURCE,
+        layout: { "line-cap": "round", "line-join": "round" },
+        paint: {
+          "line-color": "#0284c7",
+          "line-width": ["interpolate", ["linear"], ["zoom"], 12, 1.2, 16, 1.8, 20, 2.5],
+          "line-opacity": 0.9,
+        },
+      });
+      map.addSource(QUICK_ANALYSIS_TELECOM_LINE_SOURCE, {
+        type: "geojson",
+        data: { type: "FeatureCollection", features: [] },
+      });
+      map.addLayer({
+        id: LAYER_QUICK_ANALYSIS_TELECOM_LINE,
+        type: "line",
+        source: QUICK_ANALYSIS_TELECOM_LINE_SOURCE,
+        layout: { "line-cap": "round", "line-join": "round" },
+        paint: {
+          "line-color": "#a855f7",
+          "line-width": ["interpolate", ["linear"], ["zoom"], 12, 1.2, 16, 1.8, 20, 2.5],
+          "line-opacity": 0.9,
         },
       });
       map.addSource(QUICK_ANALYSIS_MANHOLE_CONNECTION_SOURCE, {
@@ -8426,6 +8895,8 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
             selectedFeature={selectedQuickAnalysisFeature}
             selectedConnection={selectedQuickAnalysisConnection}
             activeTool={measureActive ? "measure" : quickAnalysisTool}
+            utilitySubCategory={utilitySubCategory}
+            onSelectUtilitySubCategory={setUtilitySubCategory}
             onActivateSelect={activateQuickAnalysisSelect}
             onActivateMeasure={activateQuickAnalysisMeasure}
             onClearSelectedFeature={() => setSelectedQuickAnalysisFeature(null)}
@@ -8456,6 +8927,8 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
           referenceLayers={referenceLayers}
           onToggleReferenceLayer={handleToggleReferenceLayer}
           hideBasemap={sidebarPanel === "analysis"}
+          measureActive={measureActive}
+          onToggleMeasure={toggleMeasureActive}
         />}
         {!quickAnalysisCardId && <HoverTooltip hover={hover} />}
         {selectedAnomaly && (
@@ -8566,23 +9039,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
           />
           <button
             type="button"
-            className={`map-measure-btn${measureActive ? " map-measure-btn--active" : ""}`}
-            onClick={toggleMeasureActive}
-            title="Measure"
-            aria-label="Open Measure tools"
-            aria-pressed={measureActive}
-            data-testid="topbar-measure"
-          >
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-              <rect x="2.5" y="8" width="19" height="8" rx="1.5" transform="rotate(-45 12 12)" />
-              <g transform="rotate(-45 12 12)">
-                <path d="M6 8v3M9.5 8v2M13 8v3M16.5 8v2" />
-              </g>
-            </svg>
-          </button>
-          <button
-            type="button"
-            className="map-measure-btn"
+            className="map-side-btn"
             onClick={() => setShow3DPlan(true)}
             title="3D Viewer"
             aria-label="Open 3D Viewer"
@@ -9750,6 +10207,8 @@ function MapControls({
   referenceLayers,
   onToggleReferenceLayer,
   hideBasemap,
+  measureActive,
+  onToggleMeasure,
 }: {
   basemap: Basemap;
   onChangeBasemap: (b: Basemap) => void;
@@ -9776,11 +10235,12 @@ function MapControls({
   onToggleCoordinateSearch: () => void;
   referenceLayers: ReferenceLayerVisibility;
   onToggleReferenceLayer: (key: keyof ReferenceLayerVisibility, visible: boolean) => void;
+  measureActive: boolean;
+  onToggleMeasure: () => void;
 }) {
-  const [menuOpen, setMenuOpen] = useState(false);
   const [basemapMenuOpen, setBasemapMenuOpen] = useState(false);
   const [toolsMenuOpen, setToolsMenuOpen] = useState(false);
-  const [activeToolsSection, setActiveToolsSection] = useState<"ai" | "map" | "location" | null>(null);
+  const [activeToolsSection, setActiveToolsSection] = useState<"location" | null>(null);
   const [menuPos, setMenuPos] = useState<{ top: number; left: number } | null>(null);
   // AI Detection is an independent floating control, not a tools-menu
   // category — its own open state, own outside-click handling, own anchor.
@@ -9793,10 +10253,17 @@ function MapControls({
   // icon click close the status card without also opening the list.
   const [showDetectionList, setShowDetectionList] = useState(false);
   const [showDetectionStatus, setShowDetectionStatus] = useState(false);
+  // useDraggableMapPanel persists an absolute drag offset across opens
+  // (correct for panels with a fixed anchor). This menu's anchor moves
+  // (aiWrapRef slides with the toolbox state), so trusting its persisted
+  // style from a stale/previous anchor position visibly drops the menu on
+  // top of the icon instead of beside it. Only trust it once the user has
+  // actually dragged THIS open; otherwise always use the freshly measured
+  // menuPos below.
+  const [aiMenuDragged, setAiMenuDragged] = useState(false);
   const [aiOffsetY, setAiOffsetY] = useState(0);
   const toolsControlRef = useRef<HTMLDivElement | null>(null);
   const basemapControlRef = useRef<HTMLDivElement | null>(null);
-  const menuRef = useRef<HTMLDivElement | null>(null);
   const toolsToggleRef = useRef<HTMLButtonElement | null>(null);
   const toolsPanelsRef = useRef<HTMLDivElement | null>(null);
   const aiWrapRef = useRef<HTMLDivElement | null>(null);
@@ -9809,28 +10276,6 @@ function MapControls({
     margin: 8,
     disabled: isMobile,
   });
-
-  useEffect(() => {
-    if (!menuOpen) return;
-    const onClickOutside = (e: MouseEvent) => {
-      const target = e.target as Node;
-      if (
-        menuRef.current && !menuRef.current.contains(target) &&
-        portalMenuRef.current && !portalMenuRef.current.contains(target)
-      ) {
-        setMenuOpen(false);
-      }
-    };
-    const onEscape = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setMenuOpen(false);
-    };
-    document.addEventListener("mousedown", onClickOutside);
-    document.addEventListener("keydown", onEscape);
-    return () => {
-      document.removeEventListener("mousedown", onClickOutside);
-      document.removeEventListener("keydown", onEscape);
-    };
-  }, [menuOpen]);
 
   useEffect(() => {
     if (!basemapMenuOpen) return;
@@ -9858,6 +10303,7 @@ function MapControls({
   // icon (right edge + spacing), not below it.
   useEffect(() => {
     if (!showDetectionList || !aiWrapRef.current) return;
+    setAiMenuDragged(false);
     const rect = aiWrapRef.current.getBoundingClientRect();
     setMenuPos({ top: rect.top, left: rect.right + 8 });
   }, [showDetectionList]);
@@ -9980,6 +10426,7 @@ function MapControls({
     placemarkMode ||
     myPlacesOpen ||
     coordinateSearchOpen ||
+    measureActive ||
     Object.values(referenceLayers).some(Boolean)
   );
 
@@ -10038,7 +10485,7 @@ function MapControls({
           data-testid="map-tools-toggle"
           title={toolsMenuOpen ? "Close tools" : "Open tools"}
         >
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" width="18" height="18" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" width="19" height="19" aria-hidden="true">
             <rect x="3" y="8" width="18" height="12" rx="2" />
             <path d="M8 8V6a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
             <path d="M3 13h18" />
@@ -10057,42 +10504,6 @@ function MapControls({
           <div className="map-tools__category-rail" aria-label="Tool categories">
             <button
               type="button"
-              className={`map-tools__category-btn${activeToolsSection === "ai" ? " map-tools__category-btn--active" : ""}${(detectionMode || roadInspectionActive) ? " map-tools__category-btn--has-active" : ""}`}
-              onClick={() => {
-                setMenuOpen(false);
-                setActiveToolsSection((current) => current === "ai" ? null : "ai");
-              }}
-              aria-label="AI detection tools"
-              aria-expanded={activeToolsSection === "ai"}
-              title="AI detection"
-              data-testid="map-tools-category-ai"
-            >
-              <svg viewBox="0 0 24 24" fill="currentColor" width="19" height="19" aria-hidden="true">
-                <path d="M12 2l1.8 5.2L19 9l-5.2 1.8L12 16l-1.8-5.2L5 9l5.2-1.8L12 2Z" />
-                <path d="m19 13 .9 2.1L22 16l-2.1.9L19 19l-.9-2.1L16 16l2.1-.9L19 13Z" />
-              </svg>
-              {(detectionMode || roadInspectionActive) && <span className="map-tools__category-dot" aria-hidden="true" />}
-            </button>
-
-            <button
-              type="button"
-              className={`map-tools__category-btn${activeToolsSection === "map" ? " map-tools__category-btn--active" : ""}`}
-              onClick={() => {
-                setActiveToolsSection((current) => current === "map" ? null : "map");
-              }}
-              aria-label="Map view tools"
-              aria-expanded={activeToolsSection === "map"}
-              title="Map view"
-              data-testid="map-tools-category-map"
-            >
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" width="19" height="19" aria-hidden="true">
-                <path d="m3 6 5-3 8 3 5-3v15l-5 3-8-3-5 3V6Z" />
-                <path d="M8 3v15M16 6v15" />
-              </svg>
-            </button>
-
-            <button
-              type="button"
               className={`map-tools__category-btn${activeToolsSection === "location" ? " map-tools__category-btn--active" : ""}${(streetPickMode || placemarkMode || myPlacesOpen || coordinateSearchOpen || Object.values(referenceLayers).some(Boolean)) ? " map-tools__category-btn--has-active" : ""}`}
               onClick={() => {
                 setActiveToolsSection((current) => current === "location" ? null : "location");
@@ -10108,114 +10519,30 @@ function MapControls({
               </svg>
               {(streetPickMode || placemarkMode || myPlacesOpen || coordinateSearchOpen || Object.values(referenceLayers).some(Boolean)) && <span className="map-tools__category-dot" aria-hidden="true" />}
             </button>
+
+            {/* Direct action, not a category with a sub-panel — one click
+                after opening the toolbox reaches Measure, same depth as
+                every other rail button, instead of being buried inside the
+                Location panel's list of six tools. */}
+            <button
+              type="button"
+              className={`map-tools__category-btn${measureActive ? " map-tools__category-btn--active" : ""}`}
+              onClick={onToggleMeasure}
+              aria-label="Measure distances and areas on the map"
+              aria-pressed={measureActive}
+              title="Measure"
+              data-testid="map-tools-category-measure"
+            >
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" width="17" height="17" aria-hidden="true">
+                <rect x="2.5" y="8" width="19" height="8" rx="1.5" transform="rotate(-45 12 12)" />
+                <g transform="rotate(-45 12 12)">
+                  <path d="M6 8v3M9.5 8v2M13 8v3M16.5 8v2" />
+                </g>
+              </svg>
+            </button>
           </div>
 
           <div className="map-tools__content">
-          {activeToolsSection === "ai" && (
-          <div className="map-tools__floating-panel map-tools__floating-panel--ai" data-testid="ai-tools-panel">
-            <div className="map-controls map-controls--floating-panel">
-              <div className="map-controls__group ai-detection-control" data-testid="ai-detection-control" ref={menuRef}>
-          <button
-            type="button"
-            className={`map-controls__btn${(detectionMode || roadInspectionActive) ? " map-controls__btn--active" : ""}`}
-            onClick={() => setMenuOpen((v) => !v)}
-            data-testid="ai-detection-toggle"
-          >
-            <svg viewBox="0 0 24 24" fill="currentColor" width="14" height="14" style={{ marginRight: 4, verticalAlign: -2 }}>
-              <path d="M12 2l1.8 5.2L19 9l-5.2 1.8L12 16l-1.8-5.2L5 9l5.2-1.8L12 2z" />
-              <path d="M19 13l.9 2.1L22 16l-2.1.9L19 19l-.9-2.1L16 16l2.1-.9L19 13z" />
-            </svg>
-            AI Detection{roadInspectionActive ? ": Road Inspection" : detectionMode ? `: ${DETECTION_MODE_LABEL[detectionMode]}` : ""}
-          </button>
-          {detectionMode && (
-            <button
-              type="button"
-              className={`ai-overlay-toggle${aiOverlayEnabled ? " ai-overlay-toggle--on" : ""}`}
-              onClick={onToggleAiOverlay}
-              data-testid="ai-overlay-toggle"
-              title={aiOverlayEnabled ? "Turn off the AI red/yellow/green overlay" : "Turn on the AI red/yellow/green overlay"}
-            >
-              <span className="ai-overlay-toggle__track">
-                <span className="ai-overlay-toggle__knob" />
-              </span>
-              AI {aiOverlayEnabled ? "ON" : "OFF"}
-            </button>
-          )}
-          {menuOpen && menuPos && createPortal(
-            <div
-              className="ai-detection-menu"
-              data-testid="ai-detection-menu"
-              ref={(node) => {
-                portalMenuRef.current = node;
-                aiMenuDrag.panelRef.current = node;
-              }}
-              style={{ position: "fixed", top: menuPos.top, left: menuPos.left, ...aiMenuDrag.style }}
-            >
-              <div className="ai-detection-menu__dragbar" onPointerDown={aiMenuDrag.onDragStart}>
-                <span>AI Detection</span>
-                <small>Drag</small>
-                <button type="button" onClick={() => setMenuOpen(false)} aria-label="Close AI Detection">×</button>
-              </div>
-              {(["poles", "drains", "manholes", "roads"] as const).map((mode) => (
-                <button
-                  type="button"
-                  key={mode}
-                  className={`ai-detection-menu__item${detectionMode === mode ? " ai-detection-menu__item--active" : ""}`}
-                  onClick={() => { onToggleDetectionMode(mode); setMenuOpen(false); }}
-                  data-testid={`detection-mode-${mode}`}
-                >
-                  {DETECTION_MODE_LABEL[mode]}
-                </button>
-              ))}
-              <button
-                type="button"
-                className={`ai-detection-menu__item${roadInspectionActive ? " ai-detection-menu__item--active" : ""}`}
-                onClick={() => { onToggleRoadInspection(); setMenuOpen(false); }}
-                data-testid="road-inspection-mode"
-              >
-                Road Inspection
-              </button>
-            </div>,
-            document.body
-          )}
-              </div>
-            </div>
-          </div>
-          )}
-
-          {activeToolsSection === "map" && (
-          <div className="map-tools__floating-panel map-tools__floating-panel--map" data-testid="map-view-panel">
-            <div className="map-controls map-controls--floating-panel">
-              <div className="map-controls__group" data-testid="basemap-toggle">
-          <button className={`map-controls__btn${basemap === "street" ? " map-controls__btn--active" : ""}`} onClick={() => onChangeBasemap("street")} data-testid="basemap-street">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="14" height="14" style={{ marginRight: 4, verticalAlign: -2 }}>
-              <path d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-4 0h4" />
-            </svg>
-            <span className="map-controls__btn-label">Map</span>
-          </button>
-          <button className={`map-controls__btn${basemap === "satellite" ? " map-controls__btn--active" : ""}`} onClick={() => onChangeBasemap("satellite")} data-testid="basemap-satellite">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="14" height="14" style={{ marginRight: 4, verticalAlign: -2 }}>
-              <circle cx="12" cy="12" r="10" />
-              <path d="M2 12h20M12 2a15.3 15.3 0 014 10 15.3 15.3 0 01-4 10 15.3 15.3 0 01-4-10 15.3 15.3 0 014-10z" />
-            </svg>
-            <span className="map-controls__btn-label">Satellite</span>
-          </button>
-          <button
-            className={`map-controls__btn${basemap === "off" ? " map-controls__btn--active" : ""}`}
-            onClick={() => onChangeBasemap("off")}
-            data-testid="basemap-off"
-            title="Hide the basemap so raster overlays/vector data aren't limited by its tile resolution when zooming in close"
-          >
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="14" height="14" style={{ marginRight: 4, verticalAlign: -2 }}>
-              <path d="M3 3l18 18M10.58 10.58a2 2 0 002.83 2.83M9.88 4.24A9.4 9.4 0 0112 4c5 0 8.5 4 10 8-.46 1.3-1.13 2.6-2 3.79M6.6 6.6C4.7 8 3.2 10 2 12c1.5 4 5 8 10 8 1.35 0 2.63-.28 3.8-.78" />
-            </svg>
-            <span className="map-controls__btn-label">Off</span>
-          </button>
-              </div>
-            </div>
-          </div>
-          )}
-
           {activeToolsSection === "location" && (
           <div className="map-tools__floating-panel map-tools__floating-panel--location" data-testid="location-tools-panel">
             <div className="map-controls map-controls--floating-panel map-controls--location-panel">
@@ -10297,7 +10624,7 @@ function MapControls({
         >
           <button
             type="button"
-            className={`map-tools__ai-standalone${(showDetectionList || showDetectionStatus) ? " map-tools__ai-standalone--active" : ""}${detectionMode ? " map-tools__ai-standalone--has-active" : ""}`}
+            className={`map-tools__ai-standalone${(showDetectionList || showDetectionStatus) ? " map-tools__ai-standalone--active" : ""}${(detectionMode || roadInspectionActive) ? " map-tools__ai-standalone--has-active" : ""}`}
             onClick={handleAiIconClick}
             aria-label="AI detection tools"
             aria-haspopup="true"
@@ -10309,7 +10636,7 @@ function MapControls({
               <path d="M12 2l1.8 5.2L19 9l-5.2 1.8L12 16l-1.8-5.2L5 9l5.2-1.8L12 2Z" />
               <path d="m19 13 .9 2.1L22 16l-2.1.9L19 19l-.9-2.1L16 16l2.1-.9L19 13Z" />
             </svg>
-            {detectionMode && <span className="map-tools__category-dot" aria-hidden="true" />}
+            {(detectionMode || roadInspectionActive) && <span className="map-tools__category-dot" aria-hidden="true" />}
           </button>
 
           {showDetectionList && menuPos && createPortal(
@@ -10320,10 +10647,20 @@ function MapControls({
                 portalMenuRef.current = node;
                 aiMenuDrag.panelRef.current = node;
               }}
-              style={{ position: "fixed", top: menuPos.top, left: menuPos.left, ...aiMenuDrag.style }}
-              onPointerDown={aiMenuDrag.onDragStart}
+              style={{ position: "fixed", ...(aiMenuDragged ? aiMenuDrag.style : { top: menuPos.top, left: menuPos.left }) }}
             >
-              {(["poles", "drains", "manholes"] as const).map((mode) => (
+              <div
+                className="floating-map-panel__dragbar"
+                onPointerDown={(event) => {
+                  setAiMenuDragged(true);
+                  aiMenuDrag.onDragStart(event);
+                }}
+              >
+                <span>AI Detection</span>
+                <small>Drag</small>
+                <button type="button" onClick={() => setShowDetectionList(false)} aria-label="Close AI Detection">×</button>
+              </div>
+              {(["poles", "drains", "manholes", "roads"] as const).map((mode) => (
                 <button
                   type="button"
                   key={mode}
@@ -10345,6 +10682,18 @@ function MapControls({
                   {DETECTION_MODE_LABEL[mode]}
                 </button>
               ))}
+              <button
+                type="button"
+                className={`ai-detection-menu__item${roadInspectionActive ? " ai-detection-menu__item--active" : ""}`}
+                onClick={() => {
+                  onToggleRoadInspection();
+                  setShowDetectionList(false);
+                  setShowDetectionStatus(true);
+                }}
+                data-testid="road-inspection-mode"
+              >
+                Road Inspection
+              </button>
             </div>,
             document.body
           )}
@@ -10356,11 +10705,12 @@ function MapControls({
               list (see handleAiIconClick above). Reuses the same
               aiOverlayEnabled/onToggleAiOverlay state as everything else;
               no new or duplicate detection state. */}
-          {showDetectionStatus && detectionMode && (
+          {showDetectionStatus && (detectionMode || roadInspectionActive) && (
             <div className="ai-status-card" data-testid="ai-status-card">
               <span className="ai-status-card__label">
-                AI Detection : {DETECTION_MODE_LABEL[detectionMode]}
+                AI Detection : {roadInspectionActive ? "Road Inspection" : detectionMode ? DETECTION_MODE_LABEL[detectionMode] : ""}
               </span>
+              {detectionMode && (
               <button
                 type="button"
                 className={`ai-overlay-toggle${aiOverlayEnabled ? " ai-overlay-toggle--on" : ""}`}
@@ -10373,6 +10723,7 @@ function MapControls({
                 </span>
                 <span className="map-controls__btn-label">{aiOverlayEnabled ? "ON" : "OFF"}</span>
               </button>
+              )}
             </div>
           )}
         </div>

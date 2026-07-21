@@ -2222,6 +2222,104 @@ body.is-resizing-sidebar {
   color: var(--accent);
 }
 
+.quick-map-dashboard__utility-filter {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px;
+  background: var(--surface-muted);
+  border-bottom: 1px solid var(--edge);
+  box-sizing: border-box;
+  width: 100%;
+}
+
+.quick-map-dashboard__utility-groups {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 4px;
+  width: 100%;
+}
+
+.quick-map-dashboard__utility-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 6px 4px;
+  border-radius: 6px;
+  border: 1px solid var(--edge);
+  background: var(--surface);
+  color: var(--ink-mute);
+  font-size: 11px;
+  font-weight: 500;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: all 0.15s ease;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.quick-map-dashboard__utility-btn:hover {
+  border-color: var(--accent);
+  color: var(--ink);
+}
+
+.quick-map-dashboard__utility-btn.is-active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #ffffff;
+  font-weight: 600;
+  box-shadow: 0 1px 4px rgba(20, 184, 166, 0.25);
+}
+
+.quick-map-dashboard__utility-btn span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
+}
+
+.quick-map-dashboard__utility-select-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  width: 100%;
+}
+
+.quick-map-dashboard__utility-select-wrap label {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--ink-mute);
+  font-weight: 600;
+}
+
+.quick-map-dashboard__utility-select {
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
+  padding: 6px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--edge);
+  background: var(--surface);
+  color: var(--ink);
+  font-size: 11.5px;
+  font-weight: 500;
+  outline: none;
+  cursor: pointer;
+  transition: border-color 0.15s ease;
+}
+
+.quick-map-dashboard__utility-select option {
+  background: var(--surface);
+  color: var(--ink);
+  padding: 6px;
+}
+
+.quick-map-dashboard__utility-select:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 6px rgba(20, 184, 166, 0.4);
+}
+
 .quick-map-dashboard__metrics {
   display: grid;
   gap: 7px;
@@ -4200,7 +4298,7 @@ body.is-resizing-sidebar {
 .ai-detection-menu {
   /* position: fixed + top/left are set inline (computed from the AI icon's
      own rect) since this is portaled to document.body â€” see MapControls. */
-  min-width: 150px;
+  min-width: 170px;
   background: var(--glass-strong);
   backdrop-filter: blur(16px) saturate(1.4);
   border: 1px solid var(--edge);
@@ -4213,6 +4311,14 @@ body.is-resizing-sidebar {
   z-index: 2000;
   transform-origin: left center;
   animation: ai-detection-menu-in 180ms ease-out;
+}
+
+/* The dragbar is the only draggable region — a header bleeding to the
+   panel's own edges/radius, distinct from the padded item list below it,
+   so pointerdown on an item never fights the drag gesture. */
+.ai-detection-menu > .floating-map-panel__dragbar {
+  margin: -6px -6px 4px -6px;
+  border-radius: var(--radius-md) var(--radius-md) 0 0;
 }
 
 @keyframes ai-detection-menu-in {
@@ -4488,7 +4594,7 @@ body.is-resizing-sidebar {
 }
 
 .basemap-picker__toggle {
-  border-radius: var(--radius-md);
+  border-radius: 50%;
   box-shadow: var(--shadow-md);
 }
 
@@ -4727,8 +4833,8 @@ body.is-resizing-sidebar {
 
 .look-around-compass--collapsed {
   position: relative;
-  width: 42px;
-  height: 42px;
+  width: 36px;
+  height: 36px;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -4773,11 +4879,9 @@ body.is-resizing-sidebar {
   pointer-events: none;
 }
 
-/* Round map-side control (compass, 3D viewer, …), stacked below the
-   compass via .map-side-controls — shared glass-pill round treatment.
-   NOTE: the Measure trigger was consolidated into Location Tools, so this
-   class is no longer the Measure button; the 3D viewer reuses it. */
-.map-measure-btn {
+/* Round map-side control (3D viewer), stacked below the compass via
+   .map-side-controls — shared glass-pill round treatment. */
+.map-side-btn {
   width: 36px;
   height: 36px;
   display: flex;
@@ -4793,9 +4897,9 @@ body.is-resizing-sidebar {
   transition: all var(--transition-fast);
 }
 
-.map-measure-btn svg { width: 16px; height: 16px; }
+.map-side-btn svg { width: 19px; height: 19px; }
 
-.map-measure-btn:hover { border-color: var(--accent); color: var(--ink); }
+.map-side-btn:hover { border-color: var(--accent); color: var(--ink); }
 
 @media (prefers-reduced-motion: reduce) {
   .look-around-compass__ring,
@@ -13789,6 +13893,143 @@ body.is-dragging-map-panel * {
   cursor: pointer;
 }
 
+/* ======================================================================
+   THREE FLOATING TOOLS PANELS V3
+   UI-only wrapper: existing tool buttons and handlers are unchanged.
+   ====================================================================== */
+.map-tools {
+  position: absolute;
+  top: 12px;
+  left: 12px;
+  z-index: 32;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+  max-width: calc(100% - 24px);
+  isolation: isolate;
+}
+
+.map-tools__panels {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+  max-width: min(640px, calc(100vw - 24px));
+  max-height: calc(100vh - 68px);
+  overflow: auto;
+  padding: 1px;
+}
+
+.map-tools__floating-panel {
+  width: max-content;
+  max-width: 100%;
+  padding: 5px;
+  border: 1px solid var(--edge);
+  border-radius: calc(var(--radius-md) + 1px);
+  background: var(--glass-strong);
+  backdrop-filter: blur(18px) saturate(1.4);
+  box-shadow: var(--shadow-md);
+}
+
+.map-controls.map-controls--floating-panel {
+  position: static;
+  z-index: auto;
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  max-width: none;
+  isolation: auto;
+}
+
+.map-tools__floating-panel .map-controls__group {
+  max-width: 100%;
+  flex-wrap: wrap;
+  box-shadow: none;
+}
+
+.map-tools__floating-panel .map-controls__btn {
+  min-height: 36px;
+  justify-content: center;
+  padding: 8px 11px;
+  white-space: nowrap;
+}
+
+/* ── Toggle (hamburger entry-point) ──────────────────────────────────── */
+/* Same round 36px pill as .map-tools__category-btn / .map-tools__ai-standalone
+   so the toggle reads as one button in the same family, not a separate shape. */
+.map-tools__toggle {
+  position: relative;
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--edge);
+  border-radius: 50%;
+  background: var(--glass-strong);
+  backdrop-filter: blur(16px) saturate(1.4);
+  box-shadow: var(--shadow-md);
+  color: var(--ink);
+  cursor: pointer;
+  transition: transform var(--transition-fast), border-color var(--transition-fast), background var(--transition-fast), color var(--transition-fast);
+}
+
+.map-tools__toggle:hover {
+  transform: translateY(-1px);
+  border-color: color-mix(in srgb, var(--accent) 58%, var(--edge));
+  background: var(--surface-3);
+}
+
+.map-tools__toggle--open {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: var(--accent-ink);
+}
+
+.map-tools__toggle--has-active:not(.map-tools__toggle--open) {
+  border-color: color-mix(in srgb, var(--accent) 52%, var(--edge));
+}
+
+.map-tools__active-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  background: currentColor;
+  box-shadow: 0 0 0 3px color-mix(in srgb, currentColor 18%, transparent);
+}
+
+@media (max-width: 700px) {
+  .map-tools {
+    top: 8px;
+    left: 8px;
+    max-width: calc(100% - 16px);
+  }
+
+  .map-tools__panels {
+    max-width: calc(100vw - 16px);
+    max-height: calc(100vh - 58px);
+  }
+
+  .map-tools__floating-panel {
+    width: calc(100vw - 18px);
+  }
+
+  .map-controls.map-controls--floating-panel {
+    flex-wrap: wrap;
+  }
+
+  .map-tools__floating-panel .map-controls__group {
+    width: 100%;
+  }
+
+  .map-tools__floating-panel .map-controls__btn {
+    flex: 1 1 auto;
+    font-size: 9px;
+  }
+}
+
 @media (max-width: 760px) {
   .point-verification-backdrop { padding: 8px; }
   .point-verification-dialog { max-height: 97vh; border-radius: 14px; }
@@ -14510,8 +14751,6 @@ body.is-dragging-map-panel * {
   position: relative;
   width: 36px;
   height: 36px;
-  width: 42px;
-  height: 42px;
   display: inline-flex;
   align-items: center;
   justify-content: center;

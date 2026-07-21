@@ -295,6 +295,9 @@ function analyticsScopeParams(
   return params;
 }
 
+const analyticsFeaturesCache = new Map<string, Promise<FeatureCollectionResponse>>();
+const drainEncroachmentCache = new Map<string, Promise<DrainEncroachmentReport>>();
+
 export function fetchAnalyticsFeatures(
   datasetIds: string[],
   categories: string[],
@@ -321,7 +324,18 @@ export function fetchAnalyticsFeatures(
   }
   params.set("bbox", "-180,-90,180,90");
   params.set("exclude_internal", "true");
-  return apiGet<FeatureCollectionResponse>(`/api/v1/features?${params.toString()}`, signal);
+
+  const cacheKey = params.toString();
+  if (analyticsFeaturesCache.has(cacheKey)) {
+    return analyticsFeaturesCache.get(cacheKey)!;
+  }
+
+  const promise = apiGet<FeatureCollectionResponse>(`/api/v1/features?${params.toString()}`, signal).catch((err) => {
+    analyticsFeaturesCache.delete(cacheKey);
+    throw err;
+  });
+  analyticsFeaturesCache.set(cacheKey, promise);
+  return promise;
 }
 
 export interface DrainEncroachmentBuilding {
@@ -358,8 +372,17 @@ export interface DrainEncroachmentReport {
 
 export function fetchDrainEncroachment(datasetIds: string[], signal?: AbortSignal) {
   const params = new URLSearchParams();
-  datasetIds.forEach((id) => params.append("dataset_id", id));
-  return apiGet<DrainEncroachmentReport>(`/api/v1/analytics/drain-encroachment?${params.toString()}`, signal);
+  [...datasetIds].sort().forEach((id) => params.append("dataset_id", id));
+  const cacheKey = params.toString();
+  if (drainEncroachmentCache.has(cacheKey)) {
+    return drainEncroachmentCache.get(cacheKey)!;
+  }
+  const promise = apiGet<DrainEncroachmentReport>(`/api/v1/analytics/drain-encroachment?${params.toString()}`, signal).catch((err) => {
+    drainEncroachmentCache.delete(cacheKey);
+    throw err;
+  });
+  drainEncroachmentCache.set(cacheKey, promise);
+  return promise;
 }
 
 export function fetchAnalyticsFeatureTable(

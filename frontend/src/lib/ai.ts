@@ -91,8 +91,24 @@ export const aiSpacing = (body: {
   distance_m?: number;
 }) => apiPost<AiAnswer>("/api/v1/ai/spacing", body);
 
+const manholeNetworkCache = new Map<string, Promise<AiAnswer>>();
+
 export const aiManholeRecommend = (body: {
   mode: "feature" | "area" | "network";
   dataset_id: string;
   feature_id?: string;
-}) => apiPost<AiAnswer>("/api/v1/ai/manhole-recommend", body);
+}) => {
+  if (body.mode === "network" && body.dataset_id) {
+    const cacheKey = body.dataset_id;
+    if (manholeNetworkCache.has(cacheKey)) {
+      return manholeNetworkCache.get(cacheKey)!;
+    }
+    const promise = apiPost<AiAnswer>("/api/v1/ai/manhole-recommend", body).catch((err) => {
+      manholeNetworkCache.delete(cacheKey);
+      throw err;
+    });
+    manholeNetworkCache.set(cacheKey, promise);
+    return promise;
+  }
+  return apiPost<AiAnswer>("/api/v1/ai/manhole-recommend", body);
+};

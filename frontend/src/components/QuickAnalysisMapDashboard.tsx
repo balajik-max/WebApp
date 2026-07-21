@@ -45,6 +45,8 @@ interface QuickAnalysisMapDashboardProps {
   selectedFeature: UrbanFeature | null;
   selectedConnection: ManholeConnectionDetail | null;
   activeTool: QuickAnalysisTool;
+  utilitySubCategory?: string;
+  onSelectUtilitySubCategory?: (subCategory: string) => void;
   onActivateSelect: () => void;
   onActivateMeasure: () => void;
   onClearSelectedFeature: () => void;
@@ -60,6 +62,36 @@ const CHART_TOOLTIP_STYLE = {
   color: "#e5edf6",
   fontSize: 11,
 };
+
+function normalizeCategoryName(value: string): string {
+  return value.trim().toLowerCase().replace(/[_-]+/g, " ").replace(/\s+/g, " ");
+}
+
+const EXCLUDED_UTILITY_CATEGORIES = new Set([
+  "manhole", "inlet", "gully", "building", "building extenstions", "building ruin",
+  "building underconstruction", "closed drain", "drain levels", "concrete road",
+  "road centerline", "road hump", "road sign", "road sign single pole", "road sign double pole",
+  "kerb top", "kerb bottom", "concrete edge", "wall", "fence", "gate", "sidewalk",
+  "temple", "landmark", "monument", "mionument", "arch", "coconut tree", "other tree", "tree",
+  "planter box", "3d_vertex", "raster_pixel", "site_photo", "chainage"
+]);
+
+function isUtilityFeature(feature: UrbanFeature): boolean {
+  const cat = (feature.properties.category ?? "").trim();
+  const norm = normalizeCategoryName(cat);
+  if (EXCLUDED_UTILITY_CATEGORIES.has(norm)) return false;
+  const canon = feature.properties.canonical_class ?? "";
+  if (["Utility_Pole", "Illumination_Asset"].includes(canon)) return true;
+  const utilityKeywords = ["pole", "light", "transformer", "water", "power", "electric", "cable", "ofc", "pipe", "camera", "tank", "tower"];
+  return utilityKeywords.some((k) => norm.includes(k));
+}
+
+function groupForCategory(normCat: string): "electricity" | "water" | "telecom" | "other" {
+  if (["power pole", "power pole with light", "light pole", "solar light", "transformer", "power line", "electric line", "high mast", "flag pole", "microwave tower"].includes(normCat)) return "electricity";
+  if (["water line", "pipe", "sewage line", "water tank", "water pump", "overhead tank"].includes(normCat)) return "water";
+  if (["cc camera", "ofc line", "cable"].includes(normCat)) return "telecom";
+  return "other";
+}
 
 function categoryBreakdown(features: UrbanFeature[]): LegendEntry[] {
   const counts = new Map<string, number>();
@@ -135,19 +167,122 @@ export function QuickAnalysisMapDashboard({
   manholeNetworkLoading, manholeNetworkError, manholeNetworkRouteCount, manholeNetworkFlowCount,
   manholeNetworkStatusCounts,
   anomalies,
-  selectedFeature, selectedConnection, activeTool, onActivateMeasure,
+  selectedFeature, selectedConnection, activeTool, utilitySubCategory = "all", onSelectUtilitySubCategory, onActivateMeasure,
   onClearSelectedFeature, onClearSelectedConnection, onClose,
 }: QuickAnalysisMapDashboardProps) {
   const [readiness, setReadiness] = useState<ManholeReadinessReport | null>(null);
   const [toolsOpen, setToolsOpen] = useState(false);
   const isDrainAnalysis = cardId === "drain-encroachment";
+
   const dashboardFeatures = useMemo(
-    () => cardId === "manhole-detail"
-      ? features.filter((feature) => feature.properties.category?.trim().toLowerCase() === "manhole")
-      : features,
-    [cardId, features]
+    () => {
+      if (cardId === "manhole-detail") {
+        return features.filter((feature) => feature.properties.category?.trim().toLowerCase() === "manhole");
+      }
+      if (cardId === "utility-tracker") {
+        const utilityFeatures = features.filter(isUtilityFeature);
+        if (!utilitySubCategory || utilitySubCategory === "all") return utilityFeatures;
+        return utilityFeatures.filter((feature) => {
+          const cat = feature.properties.category ?? "";
+          const norm = normalizeCategoryName(cat);
+          const canon = feature.properties.canonical_class ?? "";
+          if (utilitySubCategory === "electricity") {
+            return ["power pole", "power pole with light", "light pole", "solar light", "transformer", "power line", "electric line", "high mast", "flag pole", "microwave tower"].includes(norm)
+              || ["Utility_Pole", "Illumination_Asset"].includes(canon);
+          }
+          if (utilitySubCategory === "water") {
+            return ["water line", "pipe", "sewage line", "water tank", "water pump", "overhead tank"].includes(norm);
+          }
+          if (utilitySubCategory === "telecom") {
+            return ["cc camera", "ofc line", "cable"].includes(norm);
+          }
+          return norm === utilitySubCategory;
+        });
+      }
+      return features;
+    },
+    [cardId, features, utilitySubCategory]
   );
   const categoryStats = useMemo(() => categoryBreakdown(dashboardFeatures), [dashboardFeatures]);
+
+  const utilityData = useMemo(() => {
+    if (cardId !== "utility-tracker") {
+      return { groups: [], filteredSubCats: [], activeGroup: "all" as const, elecCount: 0, waterCount: 0, telecomCount: 0, total: 0 };
+    }
+    const utilityFeatures = features.filter(isUtilityFeature);
+    const catCounts = new Map<string, number>();
+
+    let elecCount = 0;
+    let waterCount = 0;
+    let telecomCount = 0;
+
+    for (const f of utilityFeatures) {
+      const cat = (f.properties.category ?? "").trim();
+      if (!cat) continue;
+      const norm = normalizeCategoryName(cat);
+      catCounts.set(cat, (catCounts.get(cat) ?? 0) + 1);
+
+      const group = groupForCategory(norm);
+      if (group === "electricity" || ["Utility_Pole", "Illumination_Asset"].includes(f.properties.canonical_class ?? "")) {
+        elecCount += 1;
+      } else if (group === "water") {
+        waterCount += 1;
+      } else if (group === "telecom") {
+        telecomCount += 1;
+      }
+    }
+
+    const groups = [
+      { id: "all", label: "All" },
+      { id: "electricity", label: "Electricity" },
+      { id: "water", label: "Water" },
+      { id: "telecom", label: "Telecom" },
+    ];
+
+    const currentSubCat = utilitySubCategory || "all";
+    let activeGroup: "all" | "electricity" | "water" | "telecom" = "all";
+    if (currentSubCat === "electricity" || groupForCategory(currentSubCat) === "electricity") {
+      activeGroup = "electricity";
+    } else if (currentSubCat === "water" || groupForCategory(currentSubCat) === "water") {
+      activeGroup = "water";
+    } else if (currentSubCat === "telecom" || groupForCategory(currentSubCat) === "telecom") {
+      activeGroup = "telecom";
+    }
+
+    const allSubCats = [...catCounts.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .map(([cat, count]) => {
+        const norm = normalizeCategoryName(cat);
+        return {
+          id: norm,
+          label: cat,
+          count,
+          group: groupForCategory(norm),
+          color: colorForCategory(cat),
+        };
+      });
+
+    const filteredSubCats = activeGroup === "all"
+      ? allSubCats
+      : allSubCats.filter((sub) => sub.group === activeGroup);
+
+    return { groups, filteredSubCats, activeGroup, elecCount, waterCount, telecomCount, total: utilityFeatures.length };
+  }, [cardId, features, utilitySubCategory]);
+
+  const utilityLineLengths = useMemo(() => {
+    if (cardId !== "utility-tracker") return { powerM: 0, waterM: 0 };
+    let powerM = 0;
+    let waterM = 0;
+    for (const f of features) {
+      const cat = (f.properties.category ?? "").trim().toLowerCase();
+      if (f.geometry.type === "LineString" || f.geometry.type === "MultiLineString") {
+        const len = featureLengthMeters(f);
+        if (cat.includes("power line") || cat.includes("electric line")) powerM += len;
+        if (cat.includes("water line") || cat.includes("pipe") || cat.includes("sewage line")) waterM += len;
+      }
+    }
+    return { powerM, waterM };
+  }, [cardId, features]);
 
   useEffect(() => {
     if (cardId !== "survey-kpis" || datasetIds.length === 0) return;
@@ -170,6 +305,29 @@ export function QuickAnalysisMapDashboard({
         rightEmptyLabel: "No drain/building intersections were found in the active dataset.",
       };
     }
+    if (cardId === "utility-tracker") {
+      const totalPowerLines = features.filter((f) => (f.properties.category ?? "").toLowerCase().includes("power line") || (f.properties.category ?? "").toLowerCase().includes("electric line")).length;
+      const totalWaterLines = features.filter((f) => (f.properties.category ?? "").toLowerCase().includes("water line") || (f.properties.category ?? "").toLowerCase().includes("pipe")).length;
+      const totalPoles = features.filter((f) => (f.properties.category ?? "").toLowerCase().includes("pole") || (f.properties.category ?? "").toLowerCase().includes("light")).length;
+      const activeLabel = utilitySubCategory === "all" || !utilitySubCategory
+        ? "All Utilities"
+        : utilitySubCategory === "electricity"
+          ? "⚡ Electricity"
+          : utilitySubCategory === "water"
+            ? "💧 Water System"
+            : utilitySubCategory;
+
+      return {
+        bottom: [
+          { label: "Active View", value: String(dashboardFeatures.length), sub: activeLabel },
+          { label: "Poles & Lighting", value: String(totalPoles), sub: "5 distinct icons" },
+          { label: "Power Grid Lines", value: formatLength(utilityLineLengths.powerM), sub: `${totalPowerLines} wire segments` },
+          { label: "Water Pipe Network", value: formatLength(utilityLineLengths.waterM), sub: `${totalWaterLines} pipe segments` },
+        ],
+        rightHeading: "Category distribution",
+        right: categoryStats.slice(0, 7).map((c) => ({ label: c.category, count: c.count, color: c.color })),
+      };
+    }
     return computeDashboardData(cardId, {
       loadedFeatures: dashboardFeatures,
       categoryStats,
@@ -177,7 +335,7 @@ export function QuickAnalysisMapDashboard({
       activeDatasetIds: datasetIds,
       readiness,
     });
-  }, [cardId, categoryStats, dashboardFeatures, datasetIds, drainEncroachment, readiness]);
+  }, [cardId, categoryStats, dashboardFeatures, datasetIds, drainEncroachment, features, readiness, utilityLineLengths.powerM, utilityLineLengths.waterM, utilitySubCategory]);
 
   const generalAnalytics = useMemo(() => {
     const geometry = [
@@ -250,6 +408,39 @@ export function QuickAnalysisMapDashboard({
     { label: "Check", count: manholeNetworkStatusCounts.warning, color: "#eab308" },
     { label: "Attention", count: manholeNetworkStatusCounts.critical, color: "#dc2626" },
   ];
+  // Distinct from manholeNetworkData above: that donut classifies each
+  // ROUTE's connection quality (Verified/Check/Attention/Not connected).
+  // This groups manholes by WHAT is physically wrong with them (condition
+  // audit's primary_issue), a different axis — so the bar chart and donut
+  // in the Manhole Detail card show complementary facts, not the same
+  // counts twice.
+  const MANHOLE_ISSUE_LABEL: Record<string, string> = {
+    blockage: "Blockage",
+    garbage: "Garbage",
+    siltation: "Siltation",
+    structural_damage: "Structural",
+    cover_issue: "Cover",
+    odor: "Odor",
+    inflow: "Inflow",
+    general_deterioration: "General wear",
+  };
+  const MANHOLE_ISSUE_PALETTE = ["#ef4444", "#f59e0b", "#c2410c", "#8b5cf6", "#38bdf8", "#ec4899", "#14b8a6", "#94a3b8"];
+  const manholeIssueBreakdown = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const a of anomalies) {
+      if (a.anomaly_type !== "manhole_status") continue;
+      const issue = String(a.anomaly_metadata?.primary_issue ?? "");
+      if (!issue || issue === "no_issues_reported") continue;
+      counts.set(issue, (counts.get(issue) ?? 0) + 1);
+    }
+    return [...counts.entries()]
+      .map(([issue, count], index) => ({
+        label: MANHOLE_ISSUE_LABEL[issue] ?? issue.replace(/_/g, " "),
+        count,
+        color: MANHOLE_ISSUE_PALETTE[index % MANHOLE_ISSUE_PALETTE.length],
+      }))
+      .sort((a, b) => b.count - a.count);
+  }, [anomalies]);
   const roadWidthAnomalies = useMemo(
     () => anomalies.filter((a) => a.anomaly_type === "road_width_narrowing"),
     [anomalies, cardId]
@@ -262,6 +453,21 @@ export function QuickAnalysisMapDashboard({
       { label: "Yellow — watch", value: counts.yellow, color: "#eab308" },
       { label: "Green — OK", value: counts.green, color: "#22c55e" },
     ].filter((entry) => entry.value > 0);
+  }, [roadWidthAnomalies]);
+  // Distinct from roadWidthSeverity above: that donut counts how many
+  // segments fall in each severity bucket. This ranks the individual
+  // WORST segments by their real % narrowing, same "top offenders" shape
+  // as the drain-encroachment bar — so the bar and donut here show
+  // complementary facts instead of the same red/yellow counts twice.
+  const roadWidthTopSegments = useMemo(() => {
+    return [...roadWidthAnomalies]
+      .sort((a, b) => (Number(b.anomaly_metadata?.drop_pct) || 0) - (Number(a.anomaly_metadata?.drop_pct) || 0))
+      .slice(0, 8)
+      .map((a) => ({
+        name: String(a.anomaly_metadata?.centerline_feature_id ?? a.id).slice(0, 6),
+        drop_pct: Number(a.anomaly_metadata?.drop_pct) || 0,
+        color: a.color === "red" ? "#ef4444" : a.color === "yellow" ? "#eab308" : "#22c55e",
+      }));
   }, [roadWidthAnomalies]);
   const roadWidthAvgWidthM = roadWidthAnomalies.length
     ? roadWidthAnomalies.reduce((sum, a) => sum + (Number(a.anomaly_metadata?.width_m) || 0), 0) / roadWidthAnomalies.length
@@ -345,6 +551,52 @@ export function QuickAnalysisMapDashboard({
           </div>
           <button type="button" className="quick-map-dashboard__close" onClick={onClose} aria-label="Close analysis dashboard" title="Back to map">×</button>
         </header>
+
+        {cardId === "utility-tracker" && (
+          <div className="quick-map-dashboard__utility-filter">
+            <div className="quick-map-dashboard__utility-groups">
+              {utilityData.groups.map((group) => {
+                const active = utilityData.activeGroup === group.id;
+                return (
+                  <button
+                    key={group.id}
+                    type="button"
+                    className={`quick-map-dashboard__utility-btn${active ? " is-active" : ""}`}
+                    onClick={() => onSelectUtilitySubCategory?.(group.id)}
+                  >
+                    <span>{group.label}</span>
+                  </button>
+                );
+              })}
+            </div>
+            {utilityData.filteredSubCats.length > 0 && (
+              <div className="quick-map-dashboard__utility-select-wrap">
+                <label htmlFor="utility-subcat-select">Sub-category Filter:</label>
+                <select
+                  id="utility-subcat-select"
+                  className="quick-map-dashboard__utility-select"
+                  value={utilitySubCategory || "all"}
+                  onChange={(e) => onSelectUtilitySubCategory?.(e.target.value)}
+                >
+                  {utilityData.activeGroup === "all" ? (
+                    <option value="all">All Sub-categories ({utilityData.total})</option>
+                  ) : utilityData.activeGroup === "electricity" ? (
+                    <option value="electricity">All Electricity ({utilityData.elecCount})</option>
+                  ) : utilityData.activeGroup === "water" ? (
+                    <option value="water">All Water ({utilityData.waterCount})</option>
+                  ) : (
+                    <option value="telecom">All Telecom ({utilityData.telecomCount})</option>
+                  )}
+                  {utilityData.filteredSubCats.map((sub) => (
+                    <option key={sub.id} value={sub.id}>
+                      {sub.label} ({sub.count})
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
+          </div>
+        )}
 
         {selectedConnection ? (
           <div className="quick-map-dashboard__selection">
@@ -464,20 +716,24 @@ export function QuickAnalysisMapDashboard({
         ) : cardId === "manhole-detail" ? (
           <div className="quick-map-dashboard__analysis-grid">
             <article className="quick-map-dashboard__chart-card">
-              <h3>Connection condition</h3>
-              <p>Each mapped line is classified from its verified connection and flow evidence</p>
+              <h3>Condition issues</h3>
+              <p>Problem types found by the condition audit — separate from connection status</p>
               <div className="quick-map-dashboard__chart">
-                <ResponsiveContainer width="100%" height="100%">
-                  <BarChart data={manholeNetworkData} margin={{ top: 6, right: 8, bottom: 0, left: -22 }}>
-                    <CartesianGrid stroke="#27364a" strokeDasharray="3 3" vertical={false} />
-                    <XAxis dataKey="label" tick={{ fill: "#94a3b8", fontSize: 9 }} axisLine={false} tickLine={false} />
-                    <YAxis allowDecimals={false} tick={{ fill: "#94a3b8", fontSize: 9 }} axisLine={false} tickLine={false} />
-                    <Tooltip contentStyle={CHART_TOOLTIP_STYLE} cursor={{ fill: "rgba(20,184,166,0.08)" }} />
-                    <Bar dataKey="count" name="Connections" radius={[4, 4, 0, 0]}>
-                      {manholeNetworkData.map((entry) => <Cell key={entry.label} fill={entry.color} />)}
-                    </Bar>
-                  </BarChart>
-                </ResponsiveContainer>
+                {manholeIssueBreakdown.length > 0 ? (
+                  <ResponsiveContainer width="100%" height="100%">
+                    <BarChart data={manholeIssueBreakdown} margin={{ top: 6, right: 8, bottom: 0, left: -22 }}>
+                      <CartesianGrid stroke="#27364a" strokeDasharray="3 3" vertical={false} />
+                      <XAxis dataKey="label" tick={{ fill: "#94a3b8", fontSize: 8 }} axisLine={false} tickLine={false} interval={0} />
+                      <YAxis allowDecimals={false} tick={{ fill: "#94a3b8", fontSize: 9 }} axisLine={false} tickLine={false} />
+                      <Tooltip contentStyle={CHART_TOOLTIP_STYLE} cursor={{ fill: "rgba(20,184,166,0.08)" }} />
+                      <Bar dataKey="count" name="Manholes" radius={[4, 4, 0, 0]}>
+                        {manholeIssueBreakdown.map((entry) => <Cell key={entry.label} fill={entry.color} />)}
+                      </Bar>
+                    </BarChart>
+                  </ResponsiveContainer>
+                ) : (
+                  <p className="quick-map-dashboard__message">No condition issues found by the audit for this dataset.</p>
+                )}
               </div>
             </article>
             <article className="quick-map-dashboard__chart-card quick-map-dashboard__chart-card--donut">
@@ -587,20 +843,24 @@ export function QuickAnalysisMapDashboard({
         ) : cardId === "road-width" ? (
           <div className="quick-map-dashboard__analysis-grid">
             <article className="quick-map-dashboard__chart-card">
-              <h3>Narrowing severity</h3>
-              <p>Flagged carriageway stretches below the local average width</p>
+              <h3>Worst narrowed segments</h3>
+              <p>Top flagged stretches ranked by % narrower than the local average</p>
               <div className="quick-map-dashboard__chart">
-                <ResponsiveContainer width="100%" height="100%">
-                  <BarChart data={roadWidthSeverity} margin={{ top: 6, right: 8, bottom: 0, left: -22 }}>
-                    <CartesianGrid stroke="#27364a" strokeDasharray="3 3" vertical={false} />
-                    <XAxis dataKey="label" tick={{ fill: "#94a3b8", fontSize: 8 }} axisLine={false} tickLine={false} interval={0} />
-                    <YAxis allowDecimals={false} domain={[0, Math.max(1, ...roadWidthSeverity.map((e) => e.value))]} tick={{ fill: "#94a3b8", fontSize: 9 }} axisLine={false} tickLine={false} />
-                    <Tooltip contentStyle={CHART_TOOLTIP_STYLE} cursor={{ fill: "rgba(20,184,166,0.08)" }} />
-                    <Bar dataKey="value" name="Segments" radius={[4, 4, 0, 0]}>
-                      {roadWidthSeverity.map((entry) => <Cell key={entry.label} fill={entry.color} />)}
-                    </Bar>
-                  </BarChart>
-                </ResponsiveContainer>
+                {roadWidthTopSegments.length > 0 ? (
+                  <ResponsiveContainer width="100%" height="100%">
+                    <BarChart data={roadWidthTopSegments} margin={{ top: 6, right: 8, bottom: 0, left: -22 }}>
+                      <CartesianGrid stroke="#27364a" strokeDasharray="3 3" vertical={false} />
+                      <XAxis dataKey="name" tick={{ fill: "#94a3b8", fontSize: 8 }} axisLine={false} tickLine={false} interval={0} />
+                      <YAxis allowDecimals={false} tick={{ fill: "#94a3b8", fontSize: 9 }} axisLine={false} tickLine={false} />
+                      <Tooltip contentStyle={CHART_TOOLTIP_STYLE} cursor={{ fill: "rgba(20,184,166,0.08)" }} formatter={(value: number) => [`${value}%`, "Narrowing"]} />
+                      <Bar dataKey="drop_pct" name="Narrowing %" radius={[4, 4, 0, 0]}>
+                        {roadWidthTopSegments.map((entry) => <Cell key={entry.name} fill={entry.color} />)}
+                      </Bar>
+                    </BarChart>
+                  </ResponsiveContainer>
+                ) : (
+                  <p className="quick-map-dashboard__message">No narrowed segments found by the audit for this dataset.</p>
+                )}
               </div>
             </article>
 
