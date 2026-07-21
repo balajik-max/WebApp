@@ -1,7 +1,7 @@
 /** AI Assistant API client. */
-import { apiPost } from "./api";
+import { apiPost, apiPostForm } from "./api";
 
-export type AiKind = "query" | "recommend" | "report" | "spacing" | "manhole_recommend";
+export type AiKind = "query" | "recommend" | "report" | "spacing" | "manhole_recommend" | "urban_planning";
 
 export interface NeededLocation {
   id: string;
@@ -111,4 +111,21 @@ export const aiManholeRecommend = (body: {
     return promise;
   }
   return apiPost<AiAnswer>("/api/v1/ai/manhole-recommend", body);
+};
+
+export const urbanPlanningSolution = (
+  featureId: string,
+  solutionText: string,
+  files: File[],
+  signal?: AbortSignal,
+) => {
+  const formData = new FormData();
+  formData.append("feature_id", featureId);
+  if (solutionText.trim()) {
+    formData.append("solution_text", solutionText);
+  }
+  for (const file of files) {
+    formData.append("files", file);
+  }
+  return apiPostForm<AiAnswer>("/api/v1/ai/urban-planning-solution", formData, signal);
 };

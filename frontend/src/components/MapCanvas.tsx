@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState, useCallback, useImperativeHandle, useMemo, forwardRef, type MutableRefObject } from "react";
+﻿import { useEffect, useLayoutEffect, useRef, useState, useCallback, useImperativeHandle, useMemo, forwardRef, type MutableRefObject } from "react";
 import { createPortal } from "react-dom";
 import maplibregl, { Map as MLMap, MapMouseEvent, MapLayerMouseEvent, GeoJSONSource } from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
@@ -7,6 +7,12 @@ import { fetchFeatureById, fetchFeaturesInViewport, fetchVisualizationLayerFeatu
 import type { AiHighlight, FeatureFilter, UrbanFeature, FeatureCollectionResponse } from "../lib/types";
 import { ApiError } from "../lib/api";
 import { colorForCategory, UNCATEGORIZED_COLOR } from "../lib/categoryColors";
+import {
+  type DetectionMode,
+  DETECTION_MODE_TARGET_CLASSES,
+  DETECTION_MODE_ANOMALY_TYPE,
+  DETECTION_MODE_LABEL,
+} from "../lib/detectionMode";
 import {
   fetchDatasets, fetchDatasetBounds, fetchVisualizationManifest,
   type DatasetBounds, type DatasetRow,
@@ -43,6 +49,7 @@ import { ManholeRecommendCard } from "./ManholeRecommendCard";
 import { Map3DViewer } from "./Map3DViewer";
 import { GroupedFieldList } from "./GroupedFieldList";
 import { aiManholeRecommend, type AiAnswer } from "../lib/ai";
+import { useLanguage } from "../context/LanguageContext";
 
 // .obj datasets are persisted with file_type "other" (the enum has no
 // dedicated OBJ value), so detect them from the stored filename instead.
@@ -57,7 +64,7 @@ function isObjDataset(d: DatasetRow): boolean {
 
 function isVectorVisualizationDataset(d: DatasetRow): boolean {
   if (d.status !== "ready" || isObjDataset(d)) return false;
-  if (d.file_type === "geotiff" || d.file_type === "image") return false;
+  if (d.file_type === "geotiff" || d.file_type === "lidar" || d.file_type === "image") return false;
   if (d.dataset_metadata?.raster_overlay || d.dataset_metadata?.model_3d) return false;
   return true;
 }
@@ -116,10 +123,11 @@ interface Props {
 
   /** Session-scoped Spatial Audit trigger guard — owned by WorkspaceLayout
    * (like the props above) so it survives this component unmounting on tab
-   * navigation. `spatialAuditRequestedRef` flips true the instant the AI
+   * navigation. `spatialAuditRequested` flips true the instant the AI
    * Detection icon is first clicked; `spatialAuditExecutedRef` flips true
    * once the audit has actually been kicked off for an active dataset. */
-  spatialAuditRequestedRef: MutableRefObject<boolean>;
+  spatialAuditRequested: boolean;
+  setSpatialAuditRequested: (v: boolean) => void;
   spatialAuditExecutedRef: MutableRefObject<boolean>;
   spatialAuditStatus: "idle" | "running" | "success" | "error";
   onSpatialAuditStatusChange: (status: "idle" | "running" | "success" | "error") => void;
@@ -225,12 +233,15 @@ export function isGeoTiffDataset(dataset: Pick<DatasetRow, "file_type">): boolea
   return dataset.file_type === "geotiff";
 }
 
-// Digital Surface / Terrain Model rasters. There is no dedicated dataset
-// "type" field for these — they are single-band elevation GeoTIFFs
+// Digital Surface / Terrain Model rasters. GeoTIFFs have no dedicated
+// dataset "type" field for these — they are single-band elevation rasters
 // distinguished by name, matching the backend's own established heuristic
-// (see manhole_recommend.py: `name ILIKE '%dtm%'` / `%dsm%`). DSM/DTM must
+// (see manhole_recommend.py: `name ILIKE '%dtm%'` / `%dsm%`). LiDAR uploads
+// need no name match: LidarReader's preview is *always* a Digital Surface
+// Model (highest return per grid cell) by construction. DSM/DTM must
 // always render in Enhanced mode and expose no per-dataset display settings.
 export function isElevationRasterDataset(dataset: Pick<DatasetRow, "file_type" | "name">): boolean {
+  if (dataset.file_type === "lidar") return true;
   if (dataset.file_type !== "geotiff") return false;
   // Match "dsm"/"dtm" as a distinct token in the name (case-insensitive),
   // allowing the usual separators used in dataset names — e.g.
@@ -953,6 +964,9 @@ const MANHOLE_UNCONNECTED_SOURCE = "manhole-recommend-unconnected";
 const LAYER_MANHOLE_UNCONNECTED = "manhole-recommend-unconnected-circle";
 const MANHOLE_ROUTE_COLOR = "#3aa1ff";
 const MANHOLE_UNCONNECTED_COLOR = "#9b59b6";
+const MANHOLE_HEATMAP_SOURCE = "manhole-heatmap-source";
+const LAYER_MANHOLE_HEATMAP = "manhole-heatmap-layer";
+const LAYER_MANHOLE_HEATMAP_POINTS = "manhole-heatmap-points";
 const ANOMALY_COLOR_EXPR: maplibregl.ExpressionSpecification = [
   "case",
   ["==", ["get", "status"], "resolved"], "#2563eb",
@@ -2458,10 +2472,6 @@ function buildCategoryColorExpression(
   return ["match", ["coalesce", ["get", "category"], "uncategorized"], ...pairs, UNCATEGORIZED_COLOR] as unknown as maplibregl.ExpressionSpecification;
 }
 
-/** AI Detection focus modes — each isolates the map to one asset family and
- * one anomaly type, instead of showing every layer/finding at once. */
-export type DetectionMode = "poles" | "drains" | "manholes" | "roads" | null;
-
 interface QuickAnalysisMapConfig {
   title: string;
   description: string;
@@ -2498,20 +2508,6 @@ const QUICK_ANALYSIS_MAP_CONFIG: Record<string, QuickAnalysisMapConfig> = {
     title: "Road Width Check",
     description: "Road segments narrowed below the local average, marked on the cadastral map.",
   },
-};
-
-const DETECTION_MODE_TARGET_CLASSES: Record<Exclude<DetectionMode, null>, string[]> = {
-  poles: ["Illumination_Asset"],
-  drains: ["Building", "Drainage_Asset"],
-  manholes: ["Access_Point"],
-  roads: ["Road_Centerline", "Road_Surface"],
-};
-
-const DETECTION_MODE_ANOMALY_TYPE: Record<Exclude<DetectionMode, null>, string> = {
-  poles: "pole_redundancy",
-  drains: "drain_encroachment",
-  manholes: "manhole_status",
-  roads: "road_width_narrowing",
 };
 
 // Deliberately darker/more saturated than the category-color palette used
@@ -2585,8 +2581,6 @@ function summarizeAnomalyForTooltip(a: SpatialAnomaly): { color: AnomalyDisplayC
         ? `Nearest drain: ${m.nearest_drain_category} (${m.nearest_drain_distance_m ?? "?"}m)`
         : "No nearby drain found"
     );
-  } else if (a.anomaly_type === "road_width_narrowing") {
-    metric = `Width ${m.width_m ?? "?"}m — down ${m.drop_pct ?? "?"}% from ~${m.rolling_avg_m ?? "?"}m avg`;
   }
   const resolved = a.status === "resolved";
   return {
@@ -2819,11 +2813,12 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     onQuickAnalysisActiveChange,
     refreshToken = 0,
     commandCenterMobileOpen, onCommandCenterMobileOpenChange,
-    spatialAuditRequestedRef, spatialAuditExecutedRef,
+    spatialAuditRequested, setSpatialAuditRequested, spatialAuditExecutedRef,
     spatialAuditStatus, onSpatialAuditStatusChange,
   },
   ref
 ) {
+  const { t } = useLanguage();
   const [sidebarPanel, setSidebarPanel] = useState<"layers" | "analysis">("layers");
   // The card list always remains in the Quick Analysis sidebar. A selected
   const [quickAnalysisCardId, setQuickAnalysisCardId] = useState<string | null>(null);
@@ -5202,7 +5197,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     const map = mapRef.current;
     if (!map || !map.isStyleLoaded()) return;
     const overlay = dataset.dataset_metadata?.raster_overlay;
-    if (dataset.file_type !== "geotiff" || !overlay) return;
+    if ((dataset.file_type !== "geotiff" && dataset.file_type !== "lidar") || !overlay) return;
 
     const sourceId = rasterSourceId(dataset.id);
     const layerId = rasterLayerId(dataset.id);
@@ -5378,21 +5373,6 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     return () => ctrl.abort();
   }, [activeDatasetIds, refreshToken]);
 
-  // Parse a "LINESTRING(lon lat, ...)" / "SRID=4326;LINESTRING(...)" WKT into
-  // GeoJSON [lon, lat] coordinates. Returns null if not a line.
-  const wktLineCoords = (wkt: string | undefined): [number, number][] | null => {
-    if (!wkt) return null;
-    const m = wkt.match(/LINESTRING\s*\(([^)]+)\)/i);
-    if (!m) return null;
-    return m[1]
-      .trim()
-      .split(",")
-      .map((pair) => {
-        const [lon, lat] = pair.trim().split(/\s+/).map(Number);
-        return [lon, lat] as [number, number];
-      });
-  };
-
   // Push the fetched anomalies into the map source whenever they change.
   useEffect(() => {
     const map = mapRef.current;
@@ -5408,29 +5388,20 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
         properties: { id: a.id, color: a.color, anomaly_type: a.anomaly_type, status: a.status },
       })),
     });
-    // Road-width narrowing is rendered as a line (the affected carriageway
-    // stretch), not a point — feed its WKT geometry into a separate source.
-    const roadSrc = map.getSource(ANOMALY_ROAD_LINE_SOURCE) as GeoJSONSource | undefined;
-    if (roadSrc) {
-      roadSrc.setData({
-        type: "FeatureCollection",
-        features: anomalies
-          .filter((a) => a.anomaly_type === "road_width_narrowing")
-          .map((a) => {
-            const coords = wktLineCoords(a.anomaly_metadata?.affected_line_wkt as string | undefined);
-            return coords
-              ? {
-                  type: "Feature" as const,
-                  id: a.id,
-                  geometry: { type: "LineString" as const, coordinates: coords },
-                  properties: { id: a.id, color: a.color, anomaly_type: a.anomaly_type },
-                }
-              : null;
-          })
-          .filter((f): f is NonNullable<typeof f> => f !== null),
-      });
-    }
   }, [mapReady, anomalies]);
+
+  const wktLineCoords = (wkt: string | undefined): [number, number][] | null => {
+    if (!wkt) return null;
+    const m = wkt.match(/LINESTRING\s*\(([^)]+)\)/i);
+    if (!m) return null;
+    return m[1]
+      .trim()
+      .split(",")
+      .map((pair) => {
+        const [lon, lat] = pair.trim().split(/\s+/).map(Number);
+        return [lon, lat] as [number, number];
+      });
+  };
 
   // Keep the clicked road visible as the report card is read, even though
   // Road Inspection intentionally hides all non-road map categories.
@@ -5752,10 +5723,11 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
       // mode the point layer shows nothing; in other modes it shows that
       // mode's type (never road_width_narrowing). With no mode but the overlay
       // on (e.g. after "Run Spatial Audit") it shows every type except
-      // road_width_narrowing. Drains mode suppresses points entirely — it
-      // communicates through polygon fill instead.
+      // road_width_narrowing. Drains mode suppresses points entirely (it
+      // communicates through polygon fill), and Manholes mode suppresses them
+      // too — the manhole heatmap overlay replaces the individual dots there.
       const anomalyType =
-        aiOn && detectionMode !== null && detectionMode !== "drains" && detectionMode !== "roads"
+        aiOn && detectionMode !== null && detectionMode !== "drains" && detectionMode !== "roads" && detectionMode !== "manholes"
           ? DETECTION_MODE_ANOMALY_TYPE[detectionMode]
           : null;
       let pointFilter: maplibregl.FilterSpecification;
@@ -5789,6 +5761,43 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mapReady, detectionMode, roadInspectionActive, anomalies, aiOverlayEnabled, quickAnalysisCardId]);
 
+  // Manhole heatmap — populate from the real, persisted manhole_status audit
+  // findings (the same red/yellow/green results the individual anomaly
+  // points would otherwise show), weighted so red hotspots dominate the
+  // density and resolved findings fade out. Visible only in "manholes" AI
+  // detection mode; hidden (and cleared) otherwise.
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!mapReady || !map) return;
+    const isManholes = aiOverlayEnabled && detectionMode === "manholes";
+    const visibility = isManholes ? "visible" : "none";
+    if (map.getLayer(LAYER_MANHOLE_HEATMAP)) {
+      map.setLayoutProperty(LAYER_MANHOLE_HEATMAP, "visibility", visibility);
+    }
+    if (map.getLayer(LAYER_MANHOLE_HEATMAP_POINTS)) {
+      map.setLayoutProperty(LAYER_MANHOLE_HEATMAP_POINTS, "visibility", visibility);
+    }
+    const src = map.getSource(MANHOLE_HEATMAP_SOURCE) as GeoJSONSource | undefined;
+    if (!src) return;
+    if (!isManholes) {
+      src.setData({ type: "FeatureCollection", features: [] });
+      return;
+    }
+    const weightForAnomaly = (color: string, status: string): number => {
+      if (status === "resolved") return 0.1;
+      if (color === "red") return 1;
+      if (color === "yellow") return 0.55;
+      return 0.2; // green
+    };
+    const features: GeoJSON.Feature[] = anomalies
+      .filter((a) => a.anomaly_type === "manhole_status")
+      .map((a) => ({
+        type: "Feature",
+        geometry: { type: "Point", coordinates: [a.lon, a.lat] },
+        properties: { id: a.id, severity: weightForAnomaly(a.color, a.status), color: a.color, status: a.status },
+      }));
+    src.setData({ type: "FeatureCollection", features });
+  }, [mapReady, detectionMode, aiOverlayEnabled, anomalies]);
   // Manholes mode is only useful alongside the geotagged photo evidence —
   // auto-include the image dataset so its site-photo pins appear without
   // requiring a second manual click, without flying the camera anywhere.
@@ -5868,8 +5877,9 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
   // the actual run is gated separately (see the effect above) on
   // spatialAuditExecutedRef, which this deliberately does not touch.
   const requestSpatialAuditOnce = useCallback(() => {
-    spatialAuditRequestedRef.current = true;
-  }, [spatialAuditRequestedRef]);
+    console.log("[SpatialAudit] requestSpatialAuditOnce called");
+    setSpatialAuditRequested(true);
+  }, [setSpatialAuditRequested]);
 
   // The Data Sources panel is explicitly multi-select ("multiple can be
   // shown together"), so the audit must run for every currently-active
@@ -6410,21 +6420,24 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
   }, [mapReady, measureActive, quickAnalysisTool]);
 
   // Fires once per fresh app load, on the first AI Detection icon click —
-  // see WorkspaceLayout for why the guard refs live outside this component.
-  // `spatialAuditRequestedRef` is set synchronously on that click; this
+  // see WorkspaceLayout for why the guard lives outside this component.
+  // `spatialAuditRequested` is set synchronously on that click; this
   // effect is what actually runs the (reused, unmodified) audit function
   // once a dataset is active, so a click before any dataset is selected
   // isn't wasted and doesn't need a second click to take effect.
   const hasActiveDatasets = activeDatasetIds.length > 0;
   useEffect(() => {
-    if (!spatialAuditRequestedRef.current || spatialAuditExecutedRef.current) return;
+    console.log("[SpatialAudit] effect fired:", { spatialAuditRequested, executed: spatialAuditExecutedRef.current, hasActiveDatasets, datasetCount: activeDatasetIds.length });
+    if (!spatialAuditRequested || spatialAuditExecutedRef.current) return;
     if (!hasActiveDatasets) return;
+    console.log("[SpatialAudit] starting audit for datasets:", activeDatasetIds);
     spatialAuditExecutedRef.current = true;
     onSpatialAuditStatusChange("running");
     void runAudit(activeDatasetIds).then((ok) => {
+      console.log("[SpatialAudit] audit completed:", { ok });
       onSpatialAuditStatusChange(ok ? "success" : "error");
     });
-  }, [hasActiveDatasets, activeDatasetIds, runAudit, onSpatialAuditStatusChange, spatialAuditRequestedRef, spatialAuditExecutedRef]);
+  }, [hasActiveDatasets, activeDatasetIds, runAudit, onSpatialAuditStatusChange, spatialAuditRequested, spatialAuditExecutedRef]);
 
   const runManholeFeatureRecommend = useCallback(async (datasetId: string, featureId: string) => {
     setManholeFeatureOpen(true);
@@ -6704,7 +6717,6 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
         API_BASE && url.startsWith(API_BASE) ? { url, credentials: "include" } : { url },
     });
     mapRef.current = map;
-    if (typeof window !== "undefined") (window as unknown as { __mapCanvas?: unknown }).__mapCanvas = map;
 
     // Keeps the custom horizontal zoom slider's thumb synced to the map's
     // actual zoom regardless of how it changed (wheel, pinch, double-click,
@@ -7481,8 +7493,6 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
         id: LAYER_ANOMALIES,
         type: "circle",
         source: ANOMALY_SOURCE,
-        // Road-width narrowing is drawn as a line elsewhere, never as dots.
-        filter: ["!=", ["get", "anomaly_type"], "road_width_narrowing"],
         paint: {
           "circle-radius": ["interpolate", ["linear"], ["zoom"], 8, 6, 12, 10, 16, 15],
           "circle-color": ANOMALY_COLOR_EXPR,
@@ -7612,12 +7622,11 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
         setHover(null);
       });
 
-      map.on("click", LAYER_ANOMALIES, (e: MapMouseEvent) => {
-        const hit = map.queryRenderedFeatures(e.point, { layers: [LAYER_ANOMALIES] });
-        if (!hit.length) return;
-        const id = hit[0].properties?.id as string | undefined;
-        if (!id) return;
-
+      // Shared by both the plain anomaly-points layer and the manhole
+      // heatmap's invisible click layer — same finding, same AI Alert card,
+      // just a different visual treatment for manholes (heatmap density
+      // instead of individual red/yellow/green dots).
+      const openAnomalyFinding = (id: string) => {
         const anomaly = anomalyByIdRef.current[id];
         const activeMode = detectionModeRef.current;
         const context = aiOverlayEnabledRef.current
@@ -7641,6 +7650,12 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
             }
           })
           .catch(() => {});
+      };
+      map.on("click", LAYER_ANOMALIES, (e: MapMouseEvent) => {
+        const hit = map.queryRenderedFeatures(e.point, { layers: [LAYER_ANOMALIES] });
+        if (!hit.length) return;
+        const id = hit[0].properties?.id as string | undefined;
+        if (id) openAnomalyFinding(id);
       });
       map.on("mouseenter", LAYER_ANOMALIES, () => (map.getCanvas().style.cursor = "pointer"));
       map.on("mouseleave", LAYER_ANOMALIES, () => (map.getCanvas().style.cursor = ""));
@@ -7654,6 +7669,57 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
       });
       map.on("mouseenter", LAYER_ANOMALIES_ROAD, () => (map.getCanvas().style.cursor = "pointer"));
       map.on("mouseleave", LAYER_ANOMALIES_ROAD, () => (map.getCanvas().style.cursor = ""));
+
+      // Manhole heatmap — density visualization for condition-audit findings,
+      // shown instead of the plain dots above when in "manholes" mode.
+      map.addSource(MANHOLE_HEATMAP_SOURCE, {
+        type: "geojson",
+        data: { type: "FeatureCollection", features: [] },
+      });
+      map.addLayer({
+        id: LAYER_MANHOLE_HEATMAP,
+        type: "heatmap",
+        source: MANHOLE_HEATMAP_SOURCE,
+        layout: { visibility: "none" },
+        paint: {
+          "heatmap-weight": ["interpolate", ["linear"], ["coalesce", ["get", "severity"], 0], 0, 0, 0.5, 0.5, 1, 1],
+          "heatmap-intensity": ["interpolate", ["linear"], ["zoom"], 0, 1, 22, 3],
+          "heatmap-color": [
+            "interpolate", ["linear"], ["heatmap-density"],
+            0, "rgba(0, 0, 255, 0)",
+            0.2, "#3b82f6",
+            0.4, "#22c55e",
+            0.6, "#eab308",
+            0.8, "#f97316",
+            1, "#ef4444",
+          ],
+          "heatmap-radius": ["interpolate", ["linear"], ["zoom"], 0, 8, 22, 30],
+          "heatmap-opacity": 0.8,
+        },
+      });
+      // Invisible-but-clickable points on top of the heatmap so users can
+      // still click individual manholes while the heatmap overlay is active
+      // — radius must stay non-zero (opacity 0 makes it invisible) since a
+      // zero-radius circle has no rendered pixels for hit-testing to find.
+      map.addLayer({
+        id: LAYER_MANHOLE_HEATMAP_POINTS,
+        type: "circle",
+        source: MANHOLE_HEATMAP_SOURCE,
+        layout: { visibility: "none" },
+        paint: {
+          "circle-radius": ["interpolate", ["linear"], ["zoom"], 12, 8, 18, 14],
+          "circle-opacity": 0,
+        },
+      });
+      map.on("click", LAYER_MANHOLE_HEATMAP_POINTS, (e: MapMouseEvent) => {
+        const hit = map.queryRenderedFeatures(e.point, { layers: [LAYER_MANHOLE_HEATMAP_POINTS] });
+        if (!hit.length) return;
+        const id = hit[0].properties?.id as string | undefined;
+        if (!id) return;
+        openAnomalyFinding(id);
+      });
+      map.on("mouseenter", LAYER_MANHOLE_HEATMAP_POINTS, () => (map.getCanvas().style.cursor = "pointer"));
+      map.on("mouseleave", LAYER_MANHOLE_HEATMAP_POINTS, () => (map.getCanvas().style.cursor = ""));
 
       map.addSource(ROAD_INSPECTION_SOURCE, {
         type: "geojson",
@@ -8723,7 +8789,9 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
 
   const activeElevationDataset = useMemo(() => {
     for (const id of activeDatasetIds) {
-      const dataset = datasets.find((candidate) => candidate.id === id && candidate.file_type === "geotiff");
+      const dataset = datasets.find(
+        (candidate) => candidate.id === id && (candidate.file_type === "geotiff" || candidate.file_type === "lidar")
+      );
       if (dataset) return dataset;
     }
     return null;
@@ -8954,7 +9022,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
         )}
         {placemarkMode && !placemarkDraft && (
           <div className="placemark-pick-hint" data-testid="placemark-pick-hint">
-            Click the map to place a pin · right-click or Esc to cancel
+            {t("map.placemarkHint")}
           </div>
         )}
         {coordinateSearchOpen && (
@@ -9041,8 +9109,8 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
             type="button"
             className="map-side-btn"
             onClick={() => setShow3DPlan(true)}
-            title="3D Viewer"
-            aria-label="Open 3D Viewer"
+            title={t("map.view.3dViewer")}
+            aria-label={t("map.view.3dViewer")}
             data-testid="topbar-3d-viewer"
           >
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
@@ -9089,7 +9157,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
         )}
         {streetPickMode && (
           <div className="street-pick-hint" data-testid="street-pick-hint">
-            Click a road location to open the nearest 360° Street View
+            {t("map.streetPickHint")}
           </div>
         )}
         {activeDatasetIds.length === 0 && !filter.ward && !filter.category && (filter.categories?.length ?? 0) === 0 && filter.severity === undefined && (
@@ -9100,7 +9168,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
             padding: "14px 22px", color: "var(--ink-mute)", fontSize: 13, fontWeight: 500,
             backdropFilter: "blur(4px)", border: "1px solid var(--edge)",
           }}>
-            Select a dataset from the Command Center to view it on the map
+            {t("map.view.selectDataset")}
           </div>
         )}
       </div>
@@ -9232,6 +9300,7 @@ function CommandCenter({
   onSetAllExtraVisibleCategories: (categories: string[]) => void;
   onSetCategoriesVisible: (categories: string[], visible: boolean) => void;
 }) {
+  const { t } = useLanguage();
   const [layerQuery, setLayerQuery] = useState("");
   const [layerMenu, setLayerMenu] = useState<{ category: string; x: number; y: number } | null>(null);
   const [openSections, setOpenSections] = useState<Record<"dataSources" | "spatialAudit" | "categoryVisibility", boolean>>(() => {
@@ -9496,7 +9565,7 @@ function CommandCenter({
             type="button"
             className="command-center__close"
             onClick={onRequestClose}
-            aria-label="Close data sources"
+            aria-label={t("map.cc.closeDataSources")}
             data-testid="command-center-close"
           >
             <svg viewBox="0 0 24 24" aria-hidden="true" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2">
@@ -9533,7 +9602,7 @@ function CommandCenter({
             className="visualization-popup"
             role="dialog"
             aria-modal="false"
-            aria-label="Geometry styling"
+            aria-label={t("map.viz.geometryStylingLabel")}
             style={{
               top: visualizationPopupPosition.top,
               left: visualizationPopupPosition.left,
@@ -9543,9 +9612,9 @@ function CommandCenter({
             }}
           >
             <div className="floating-map-panel__dragbar" onPointerDown={visualizationDrag.onDragStart}>
-              <span>Geometry Styling</span>
-              <small>Drag to reposition</small>
-              <button type="button" onClick={() => setVisualizationOpen(false)} aria-label="Close Geometry Styling">×</button>
+              <span>{t("map.viz.geometryStyling")}</span>
+              <small>{t("map.viz.dragToReposition")}</small>
+              <button type="button" onClick={() => setVisualizationOpen(false)} aria-label={t("map.viz.geometryStylingLabel")}>×</button>
             </div>
             <VisualizationPanel {...visualization} />
           </div>,
@@ -9597,7 +9666,7 @@ function CommandCenter({
                 <svg className={`command-center__chevron${openSections.categoryVisibility ? " command-center__chevron--open" : ""}`} viewBox="0 0 24 24" aria-hidden="true">
                   <path d="m8 10 4 4 4-4" />
                 </svg>
-                <span className="command-center__section-title">Category Visibility</span>
+                <span className="command-center__section-title">{t("map.cc.categoryVisibility")}</span>
               </button>
               {openSections.categoryVisibility &&
               <button
@@ -9618,7 +9687,7 @@ function CommandCenter({
                   }
                 }}
               >
-                {(detectionMode ? extraVisibleCategories.size === 0 : hiddenCategories.size > 0) ? "Show all" : "Hide all"}
+                {(detectionMode ? extraVisibleCategories.size === 0 : hiddenCategories.size > 0) ? t("map.cc.showAll") : t("map.cc.hideAll")}
               </button>}
             </div>
             {openSections.categoryVisibility && <div id="category-visibility-panel">
@@ -9631,8 +9700,8 @@ function CommandCenter({
                 type="search"
                 value={layerQuery}
                 onChange={(event) => setLayerQuery(event.target.value)}
-                placeholder="Search layers..."
-                aria-label="Search layers"
+                placeholder={t("map.cc.searchLayersPlaceholder")}
+                aria-label={t("map.cc.searchLayersPlaceholder")}
                 data-testid="layer-search"
               />
               {layerQuery && (
@@ -9788,9 +9857,9 @@ function CommandCenter({
                             </span>
                             {open && (
                               <ul className="layer-attributes">
-                                {node.fields.length === 0 ? (
-                                  <li className="layer-attributes__empty">No attributes</li>
-                                ) : (
+                                 {node.fields.length === 0 ? (
+                                   <li className="layer-attributes__empty">{t("map.cc.noAttributes")}</li>
+                                 ) : (
                                   node.fields.map((field) => (
                                     <li key={field.name} className="layer-attributes__item" title={field.name}>
                                       <span className="layer-attributes__name">{field.name}</span>
@@ -9865,10 +9934,10 @@ function CommandCenter({
               )}
               {groupedCategoryView
                 ? groupedCategoryView.groups.reduce((sum, g) => sum + g.layers.length, 0) === 0 && (
-                  <div className="layer-list__empty">No matching layers</div>
+                  <div className="layer-list__empty">{t("map.cc.noMatchingLayers")}</div>
                 )
                 : displayedLayers.length === 0 && (
-                  <div className="layer-list__empty">No matching layers</div>
+                  <div className="layer-list__empty">{t("map.cc.noMatchingLayers")}</div>
                 )}
             </div>
             </div>}
@@ -9880,7 +9949,7 @@ function CommandCenter({
           <svg viewBox="0 0 24 24" aria-hidden="true" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
             <path d="M5 13l4 4L19 7" />
           </svg>
-          <span>Spatial Audit run success</span>
+          <span>{t("map.cc.spatialAuditSuccess")}</span>
         </div>
       )}
       <div className="command-center__footer">
@@ -9891,8 +9960,8 @@ function CommandCenter({
           className="layer-context-menu"
           style={{ left: layerMenu.x, top: layerMenu.y }}
           role="menu"
-          aria-label={`${layerMenu.category} layer actions`}
-          data-testid="layer-context-menu"
+           aria-label={`${layerMenu.category} ${t("map.measure.layerActions")}`}
+           data-testid="layer-context-menu"
           onContextMenu={(event) => event.preventDefault()}
         >
           <div className="layer-context-menu__title" title={layerMenu.category}>
@@ -9910,7 +9979,7 @@ function CommandCenter({
               <rect x="3" y="4" width="18" height="16" rx="2" />
               <path d="M3 9h18M9 9v11M15 9v11" />
             </svg>
-            Open attribute table
+            {t("map.cc.openAttributeTable")}
           </button>
         </div>,
         document.body
@@ -9952,6 +10021,7 @@ function VisualizationPanel({
   onLineWidthChange,
   onResetStyle,
 }: VisualizationPanelProps) {
+  const { t } = useLanguage();
   const effectiveDatasetId = selectedDatasetId;
   const selectedDataset = datasets.find((dataset) => dataset.id === effectiveDatasetId) ?? null;
   const manifest = effectiveDatasetId ? manifests[effectiveDatasetId] ?? null : null;
@@ -10008,14 +10078,14 @@ function VisualizationPanel({
   }, [manifestGroups, target, field]);
 
   const modeOptions: Array<{ value: VisualizationMode; label: string; enabled: boolean }> = [
-    { value: "default", label: "Default", enabled: true },
-    { value: "category", label: "Category", enabled: targetFields.some((candidate) => (
+    { value: "default", label: t("map.viz.default"), enabled: true },
+    { value: "category", label: t("map.viz.category"), enabled: targetFields.some((candidate) => (
       (candidate.detected_type === "string" || candidate.detected_type === "boolean")
       && (candidate.unique_count ?? 0) > 1
       && (candidate.unique_count ?? 0) <= 50
     )) },
-    { value: "numeric", label: "Numeric", enabled: targetFields.some((candidate) => candidate.detected_type === "number") },
-    { value: "missing-data", label: "Missing", enabled: targetFields.some((candidate) => candidate.missing_count > 0) },
+    { value: "numeric", label: t("map.viz.numeric"), enabled: targetFields.some((candidate) => candidate.detected_type === "number") },
+    { value: "missing-data", label: t("map.viz.missing"), enabled: targetFields.some((candidate) => candidate.missing_count > 0) },
   ];
 
   const countFor = (renderer: "point" | "line" | "polygon") => geometryLayers[renderer]
@@ -10030,9 +10100,9 @@ function VisualizationPanel({
     label: string;
     count: number;
   }> = [
-    { value: "point", label: "Points", count: pointCount },
-    { value: "line", label: "Lines", count: lineCount },
-    { value: "polygon", label: "Polygons", count: polygonCount },
+    { value: "point", label: t("map.viz.points"), count: pointCount },
+    { value: "line", label: t("map.viz.lines"), count: lineCount },
+    { value: "polygon", label: t("map.viz.polygons"), count: polygonCount },
   ];
 
   useEffect(() => {
@@ -10045,34 +10115,34 @@ function VisualizationPanel({
     <section className="visualization-panel visualization-panel--v3" data-testid="visualization-panel">
       <div className="visualization-panel__head">
         <div>
-          <div className="visualization-panel__eyebrow">Visualization</div>
-          <div className="visualization-panel__title">Geometry Styling</div>
+          <div className="visualization-panel__eyebrow">{t("map.viz.visualization")}</div>
+          <div className="visualization-panel__title">{t("map.viz.geometryStyling")}</div>
         </div>
-        <span className="visualization-panel__live"><span aria-hidden="true" /> Live</span>
+        <span className="visualization-panel__live"><span aria-hidden="true" /> {t("map.viz.live")}</span>
       </div>
 
       {!selectedDataset ? (
         <div className="visualization-panel__empty">
-          Click Layer beside an active vector data source to open geometry styling.
+          {t("map.viz.clickLayer")}
         </div>
       ) : (
         <>
           <div className="visualization-panel__dataset" title={selectedDataset.name}>{selectedDataset.name}</div>
 
-          {loading && <div className="visualization-panel__loading"><span className="visualization-panel__spinner" />Profiling geometry and fields…</div>}
-          {error && !loading && <div className="visualization-panel__error">Could not load visualization profile: {error}</div>}
+          {loading && <div className="visualization-panel__loading"><span className="visualization-panel__spinner" />{t("map.viz.profiling")}</div>}
+          {error && !loading && <div className="visualization-panel__error">{t("map.viz.couldNotLoad")}{error}</div>}
 
           {manifest && !loading && (
             <>
               <div className="visualization-panel__summary visualization-panel__summary--v3">
-                <div><strong>{compactFeatureCount(allCount)}</strong><span>Features</span></div>
-                <div><strong>{[pointCount, lineCount, polygonCount].filter((count) => count > 0).length}</strong><span>Geometry types</span></div>
-                <div><strong>{manifest.source_format.toUpperCase()}</strong><span>Source</span></div>
+                <div><strong>{compactFeatureCount(allCount)}</strong><span>{t("map.viz.features")}</span></div>
+                <div><strong>{[pointCount, lineCount, polygonCount].filter((count) => count > 0).length}</strong><span>{t("map.viz.geometryTypes")}</span></div>
+                <div><strong>{manifest.source_format.toUpperCase()}</strong><span>{t("map.viz.source")}</span></div>
               </div>
 
               <div className="visualization-target-block">
-                <div className="visualization-target-block__label">Target geometry</div>
-                <div className="visualization-target-grid" role="group" aria-label="Target geometry">
+                <div className="visualization-target-block__label">{t("map.viz.targetGeometry")}</div>
+                <div className="visualization-target-grid" role="group" aria-label={t("map.viz.targetGeometry")}>
                   {targetOptions.map((option) => (
                     <button
                       key={option.value}
@@ -10175,13 +10245,6 @@ const MEASURE_TAB_HINTS: Record<MeasureTab, string> = {
   path: "Click to add points, right-click to finish",
   polygon: "Click to add points, right-click to finish",
   circle: "Measure the radius, perimeter, and area of a circle on the ground",
-};
-
-const DETECTION_MODE_LABEL: Record<Exclude<DetectionMode, null>, string> = {
-  poles: "Poles",
-  drains: "Drains",
-  manholes: "Manholes",
-  roads: "Road Width",
 };
 
 function MapControls({

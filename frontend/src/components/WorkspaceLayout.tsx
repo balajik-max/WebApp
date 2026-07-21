@@ -10,6 +10,8 @@ import {
 } from "react";
 import { NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
 import { useAuth, type AuthUser, type Role } from "../context/AuthContext";
+import { useLanguage } from "../context/LanguageContext";
+import { STRINGS } from "../i18n/translations";
 import { listAssignedWork, subscribeAssignedWork, type AssignedWorkRecord } from "../lib/assignedWork";
 import { NotificationBell, type NotificationItem } from "./NotificationBell";
 import type { FeatureFilter } from "../lib/types";
@@ -211,6 +213,7 @@ function FidSearch({ datasetIds }: { datasetIds: string[] }) {
 interface TabDef {
   to: string;
   label: string;
+  tKey: keyof typeof STRINGS;
   testId: string;
   icon: ReactNode;
   /** When set, the tab is only shown to users whose role is in this list. */
@@ -221,6 +224,7 @@ const TABS: TabDef[] = [
   {
     to: "/map",
     label: "Map",
+    tKey: "nav.map",
     testId: "tab-map",
     icon: (
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinejoin="round" aria-hidden="true">
@@ -232,6 +236,7 @@ const TABS: TabDef[] = [
   {
     to: "/datasets",
     label: "Datasets",
+    tKey: "nav.datasets",
     testId: "tab-datasets",
     icon: (
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinejoin="round" aria-hidden="true">
@@ -245,6 +250,7 @@ const TABS: TabDef[] = [
   {
     to: "/analytics",
     label: "Analytics",
+    tKey: "nav.analytics",
     testId: "tab-analytics",
     icon: (
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" aria-hidden="true">
@@ -255,6 +261,7 @@ const TABS: TabDef[] = [
   {
     to: "/tasks",
     label: "Tasks",
+    tKey: "nav.tasks",
     testId: "tab-tasks",
     roles: ["ae"],
     icon: (
@@ -267,6 +274,7 @@ const TABS: TabDef[] = [
   {
     to: "/activity",
     label: "Activity",
+    tKey: "nav.activity",
     testId: "tab-activity",
     roles: ["aee"],
     icon: (
@@ -293,6 +301,7 @@ const TABS: TabDef[] = [
  * aligned with what's actually visible.
  */
 function TabsNav({ pathname, user }: { pathname: string; user: AuthUser | null }) {
+  const { t } = useLanguage();
   const tabs = useMemo(
     () =>
       TABS.filter(
@@ -315,13 +324,14 @@ function TabsNav({ pathname, user }: { pathname: string; user: AuthUser | null }
   // instant it happens, without waiting for the router's re-render —
   // synced back to the real route below the moment pathname changes.
   const activeIndex = tabs.findIndex((tab) => pathname.startsWith(tab.to));
-  const resolvedActiveIndex = activeIndex === -1 ? 0 : activeIndex;
+  const resolvedActiveIndex = activeIndex === -1 ? -1 : activeIndex;
   const [visualActiveIndex, setVisualActiveIndex] = useState(resolvedActiveIndex);
   useEffect(() => {
     setVisualActiveIndex(resolvedActiveIndex);
   }, [resolvedActiveIndex]);
 
   const measure = useCallback(() => {
+    if (visualActiveIndex === -1) { setIndicator(null); return; }
     const el = tabRefs.current[visualActiveIndex];
     const list = listRef.current;
     if (!el || !list) return;
@@ -377,7 +387,7 @@ function TabsNav({ pathname, user }: { pathname: string; user: AuthUser | null }
             aria-current={index === resolvedActiveIndex ? "page" : undefined}
           >
             <span className="tabs__icon">{tab.icon}</span>
-            <span className="tabs__label">{tab.label}</span>
+            <span className="tabs__label">{t(tab.tKey)}</span>
           </NavLink>
         ))}
       </div>
@@ -396,6 +406,7 @@ function TabsNav({ pathname, user }: { pathname: string; user: AuthUser | null }
  */
 export function WorkspaceLayout() {
   const { user } = useAuth();
+  const { t, lang, toggle } = useLanguage();
   const location = useLocation();
   const navigate = useNavigate();
 
@@ -440,15 +451,23 @@ export function WorkspaceLayout() {
   // never again after leaving/returning to the Map tab. MapCanvas (like
   // selectedDatasets above) unmounts on every tab switch, so this guard has
   // to live up here to survive that; only a hard page reload resets it.
-  // `spatialAuditRequestedRef` records "the user asked for it" the instant
+  // `spatialAuditRequested` records "the user asked for it" the instant
   // the icon is clicked (synchronous, so rapid double-clicks can't race);
   // `spatialAuditExecutedRef` records "we actually started it" once a
   // dataset is active — kept separate so a click before any dataset is
   // selected isn't wasted, it just runs as soon as one becomes active.
-  const spatialAuditRequestedRef = useRef(false);
   const spatialAuditExecutedRef = useRef(false);
+  const [spatialAuditRequested, setSpatialAuditRequested] = useState(false);
   const [spatialAuditStatus, setSpatialAuditStatus] =
     useState<"idle" | "running" | "success" | "error">("idle");
+
+  // Auto-hide the "Spatial Audit run success" banner after a few seconds so
+  // it doesn't sit there permanently. Errors stay until the next attempt.
+  useEffect(() => {
+    if (spatialAuditStatus !== "success") return;
+    const timer = window.setTimeout(() => setSpatialAuditStatus("idle"), 5000);
+    return () => window.clearTimeout(timer);
+  }, [spatialAuditStatus]);
   // Drives the Data Sources drawer on the mobile Map page — lifted up here
   // (rather than living inside MapCanvas) so the topbar's menu button can
   // open it, the same way Gmail's hamburger opens its nav drawer from the
@@ -472,12 +491,13 @@ export function WorkspaceLayout() {
       setSelectedDatasets,
       commandCenterMobileOpen,
       setCommandCenterMobileOpen,
-      spatialAuditRequestedRef,
+      spatialAuditRequested,
+      setSpatialAuditRequested,
       spatialAuditExecutedRef,
       spatialAuditStatus,
       setSpatialAuditStatus,
     }),
-    [selectedDatasets, commandCenterMobileOpen, spatialAuditStatus]
+    [selectedDatasets, commandCenterMobileOpen, spatialAuditStatus, spatialAuditRequested]
   );
 
   return (
@@ -529,6 +549,25 @@ export function WorkspaceLayout() {
         )}
 
         <div className="workspace__right">
+          <NavLink
+            to="/grievance"
+            data-testid="tab-grievance"
+            className={({ isActive }) => `tabs__single${isActive ? " active" : ""}`}
+          >
+            <span>{t("nav.grievance")}</span>
+          </NavLink>
+          <button
+            type="button"
+            className="lang-toggle"
+            onClick={toggle}
+            data-testid="lang-toggle"
+            title={lang === "en" ? "Switch to Kannada" : "ಇಂಗ್ಲಿಷ್‌ಗೆ ಬದಲಾಯಿಸಿ"}
+            aria-label="Toggle language"
+          >
+            <span className="lang-toggle__code">{lang === "en" ? "EN" : "KN"}</span>
+            <span className="lang-toggle__label">{lang === "en" ? "ಕನ್ನಡ" : "English"}</span>
+          </button>
+
           <NotificationBell notifications={workerNotifications} unreadCount={workerNotifications.length} />
 
           <button
@@ -560,8 +599,10 @@ export function useTabTitle(base = "Davangere Urban Survey") {
         ? "Map"
         : location.pathname.startsWith("/datasets")
           ? "Datasets"
-            : location.pathname.startsWith("/analytics")
-            ? "Analytics"
+        : location.pathname.startsWith("/analytics")
+          ? "Analytics"
+          : location.pathname.startsWith("/grievance")
+            ? "Grievance"
             : location.pathname.startsWith("/tasks")
               ? "Tasks"
               : location.pathname.startsWith("/activity")

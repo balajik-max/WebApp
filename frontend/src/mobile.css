@@ -319,3 +319,76 @@
     display: none;
   }
 }
+
+/* Welcome walkthrough + auth pages on phone-width viewports. */
+@media (max-width: 768px) {
+  .welcome-header {
+    padding: 12px 16px;
+  }
+  .welcome-brand__name {
+    font-size: 0.95rem;
+  }
+  .welcome-login-button {
+    padding: 9px 16px;
+    font-size: 0.9rem;
+  }
+  .welcome-hero {
+    padding: 0 16px 14vh;
+  }
+  .welcome-hero__card {
+    padding: 22px 22px;
+  }
+  .welcome-section {
+    padding: 0 18px;
+    min-height: 110vh;
+  }
+  .welcome-section--right {
+    justify-content: flex-start;
+    text-align: left;
+  }
+  .welcome-section--right .welcome-section__card {
+    border-right: none;
+    border-left: 5px solid var(--w-green);
+  }
+  .welcome-section__card {
+    max-width: 100%;
+  }
+  .welcome-getstarted__card {
+    padding: 30px 22px;
+  }
+  .welcome-getstarted__actions {
+    flex-direction: column;
+  }
+  .welcome-cta {
+    width: 100%;
+  }
+  .auth-card {
+    padding: 26px 20px;
+  }
+}
+
+/* Login split-screen stacks vertically on narrow viewports; the form stays
+   the first priority and the 3D visual shrinks to a reduced-height panel. */
+@media (max-width: 900px) {
+  .login-split-page {
+    flex-direction: column;
+    min-height: 100vh;
+  }
+  .login-split-page__auth {
+    flex: none;
+    width: 100%;
+    padding: 32px 20px;
+  }
+  .login-split-page__visual {
+    flex: none;
+    width: 100%;
+    height: 320px;
+    min-height: 320px;
+  }
+  .urban-planning-visual__overlay {
+    padding: 20px;
+  }
+  .urban-planning-visual__tags {
+    justify-content: flex-start;
+  }
+}

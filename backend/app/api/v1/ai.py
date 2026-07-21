@@ -13,8 +13,9 @@ from __future__ import annotations
 import logging
 import uuid
 from datetime import datetime, timezone
+from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -67,6 +68,185 @@ from app.services.road_inspection import build_road_inspection
 
 log = logging.getLogger("davangere.api.ai")
 router = APIRouter()
+
+# ---------------------------------------------------------------------------
+# Urban Planning Solution — user-provided text/files → AI explanation
+# ---------------------------------------------------------------------------
+SUPPORTED_EXTS = {".txt", ".pdf", ".docx"}
+
+async def _extract_file_text(file: UploadFile) -> str:
+    content = await file.read()
+    name = (file.filename or "").lower()
+
+    if name.endswith(".txt"):
+        return content.decode("utf-8", errors="replace")
+
+    if name.endswith(".pdf"):
+        from io import BytesIO
+        from pypdf import PdfReader
+        reader = PdfReader(BytesIO(content))
+        return "\n".join(page.extract_text() or "" for page in reader.pages)
+
+    if name.endswith(".docx"):
+        from io import BytesIO
+        import docx
+        doc = docx.Document(BytesIO(content))
+        return "\n".join(p.text for p in doc.paragraphs)
+
+    return f"[Unsupported file: {file.filename} — skipped]"
+
+
+def _build_feature_context(feature: Feature | None) -> str:
+    if feature is None:
+        return "MANHOLE: Feature not found in database."
+    lines = [
+        "=== MANHOLE SURVEY DATA ===",
+        f"Feature ID: {feature.id}",
+        f"Label: {feature.label or 'N/A'}",
+        f"Category: {feature.category or 'N/A'}",
+        f"Severity: {feature.severity:.2f}",
+        "--- Survey Attributes ---",
+    ]
+    attrs = feature.attributes or {}
+    key_fields = [
+        "Condition", "condition",
+        "Top_Level", "top_level", "RL", "rl",
+        "Bottom_Level", "bottom_level", "Invert_Level", "invert_level",
+        "Silt_Level", "silt_level",
+        "Gradient", "gradient",
+        "Pipe_Type", "pipe_type",
+        "Diameter", "diameter",
+        "Cover_Type", "cover_type",
+        "Road_Name", "road_name",
+        "Ward", "ward",
+        "X_Long", "x_long", "Y_Lat", "y_lat",
+        "Remarks", "remarks", "Notes", "notes",
+    ]
+    shown = set()
+    for key in key_fields:
+        val = attrs.get(key)
+        if val is not None and key not in shown:
+            lines.append(f"  {key}: {val}")
+            shown.add(key)
+    for k, v in attrs.items():
+        if k not in shown and v is not None and str(v).strip():
+            lines.append(f"  {k}: {v}")
+    return "\n".join(lines)
+
+
+def _build_anomaly_context(anomaly: SpatialAnomaly) -> str:
+    lines = [
+        "=== AI ANOMALY FINDING ===",
+        f"Type: {anomaly.anomaly_type.value}",
+        f"Color: {anomaly.color.value}",
+        f"Severity Score: {anomaly.severity_score:.1f}/100",
+        f"Status: {anomaly.status.value}",
+    ]
+    meta = anomaly.anomaly_metadata or {}
+    for k, v in meta.items():
+        lines.append(f"  {k}: {v}")
+    if anomaly.explanation_text:
+        lines.append(f"AI Explanation: {anomaly.explanation_text}")
+    return "\n".join(lines)
+
+
+@router.post(
+    "/urban-planning-solution",
+    response_model=AiAnswer,
+    dependencies=[Depends(require_any)],
+    summary="Generate an AI explanation from user-provided solution text and/or files",
+)
+async def urban_planning_solution(
+    feature_id: uuid.UUID = Form(...),
+    solution_text: str | None = Form(default=None, max_length=50000),
+    files: list[UploadFile] = File(default=[]),
+    db: AsyncSession = Depends(get_db),
+) -> AiAnswer:
+    from app.core.config import get_settings
+
+    model = get_settings().ollama_model
+
+    gathered: list[str] = []
+
+    if solution_text and solution_text.strip():
+        gathered.append(f"## User's Written Solution\n{solution_text.strip()}\n")
+
+    for f in files:
+        if f.filename:
+            ext = Path(f.filename).suffix.lower()
+            if ext not in SUPPORTED_EXTS:
+                gathered.append(f"[Skipped unsupported file: {f.filename}]\n")
+                continue
+        try:
+            text = await _extract_file_text(f)
+            if text.strip():
+                gathered.append(f"## Uploaded File: {f.filename}\n{text.strip()}\n")
+        except Exception as exc:
+            gathered.append(f"[Error reading {f.filename}: {exc}]\n")
+
+    combined = "\n".join(gathered).strip()
+    if not combined:
+        return _insufficient(
+            "urban_planning",
+            model,
+            {"reason": "no solution text or file content provided"},
+        )
+
+    feature = (await db.execute(select(Feature).where(Feature.id == feature_id))).scalar_one_or_none()
+    anomaly = (
+        await db.execute(
+            select(SpatialAnomaly).where(SpatialAnomaly.feature_ids.any(feature_id))
+        )
+    ).scalar_one_or_none()
+
+    feature_section = _build_feature_context(feature)
+    anomaly_section = _build_anomaly_context(anomaly) if anomaly else "ANOMALY: No active anomaly finding for this feature."
+    user_section = f"## User's Proposed Solution\n{combined}"
+
+    context = (
+        f"{feature_section}\n\n"
+        f"{anomaly_section}\n\n"
+        f"{user_section}"
+    )
+
+    user_prompt = (
+        "You are a senior urban infrastructure engineer evaluating a proposed solution "
+        "for a specific manhole. Below you have:\n"
+        "1. The MANHOLE SURVEY DATA (real attributes from the GIS database)\n"
+        "2. The AI ANOMALY FINDING (automated audit result for this manhole)\n"
+        "3. The USER'S PROPOSED SOLUTION (what the user suggests doing)\n\n"
+        "Generate a structured evaluation with these sections:\n\n"
+        "`## Current Manhole Condition` — Summarize this manhole's real surveyed condition, "
+        "bottom level, gradient, pipe details, and any AI anomaly finding. Cite specific "
+        "attribute values from the survey data.\n\n"
+        "`## Summary of Proposed Solution` — Restate what the user is proposing.\n\n"
+        "`## Suitability Assessment` — Evaluate whether the proposed solution is appropriate "
+        "for THIS specific manhole's condition. Consider:\n"
+        "  - Does the solution address the actual surveyed issues?\n"
+        "  - Is the approach suitable for the manhole's bottom level and gradient?\n"
+        "  - Are the proposed materials/pipe sizes appropriate for the existing setup?\n"
+        "  - Are there any gaps or mismatches between the solution and the real condition?\n\n"
+        "`## Verdict` — Clearly state whether the solution is: **Suitable**, **Partially Suitable** "
+        "(with modifications needed), or **Not Suitable** for this manhole. Give a brief reason.\n\n"
+        "`## Recommendations` — Concrete suggestions to improve or adjust the solution based "
+        "on the manhole's actual surveyed attributes.\n\n"
+        "CRITICAL: Base your entire response ONLY on the data provided below. Never invent "
+        "attribute values. If specific data is missing, state that clearly.\n\n"
+        f"CONTEXT:\n{context}"
+    )
+
+    reply = await run_grounded_completion(context=context, user_prompt=user_prompt, num_predict=1024, num_ctx=4096)
+
+    return AiAnswer(
+        kind="urban_planning",
+        model=reply.model,
+        prompt_tokens_hint=reply.prompt_tokens_hint,
+        context_rows=len(gathered),
+        grounded=True,
+        answer_markdown=reply.text,
+        generated_at=datetime.now(timezone.utc),
+        debug={"feature_id": str(feature_id)},
+    )
 
 
 def _insufficient(kind: str, model: str, debug: dict | None) -> AiAnswer:

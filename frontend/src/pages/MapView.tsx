@@ -48,7 +48,8 @@ interface LayoutCtx {
   setSelectedDatasets: (rows: DatasetRow[]) => void;
   commandCenterMobileOpen: boolean;
   setCommandCenterMobileOpen: (open: boolean) => void;
-  spatialAuditRequestedRef: MutableRefObject<boolean>;
+  spatialAuditRequested: boolean;
+  setSpatialAuditRequested: (v: boolean) => void;
   spatialAuditExecutedRef: MutableRefObject<boolean>;
   spatialAuditStatus: SpatialAuditStatus;
   setSpatialAuditStatus: (status: SpatialAuditStatus) => void;
@@ -61,7 +62,8 @@ export function MapView() {
     setSelectedDatasets,
     commandCenterMobileOpen,
     setCommandCenterMobileOpen,
-    spatialAuditRequestedRef,
+    spatialAuditRequested,
+    setSpatialAuditRequested,
     spatialAuditExecutedRef,
     spatialAuditStatus,
     setSpatialAuditStatus,
@@ -211,7 +213,8 @@ export function MapView() {
         refreshToken={pointVerificationRefresh}
         commandCenterMobileOpen={commandCenterMobileOpen}
         onCommandCenterMobileOpenChange={setCommandCenterMobileOpen}
-        spatialAuditRequestedRef={spatialAuditRequestedRef}
+        spatialAuditRequested={spatialAuditRequested}
+        setSpatialAuditRequested={setSpatialAuditRequested}
         spatialAuditExecutedRef={spatialAuditExecutedRef}
         spatialAuditStatus={spatialAuditStatus}
         onSpatialAuditStatusChange={setSpatialAuditStatus}

@@ -110,7 +110,7 @@ class PipeRouteOut(BaseModel):
 
 
 class AiAnswer(BaseModel):
-    kind: Literal["query", "recommend", "report", "spacing", "manhole_recommend"]
+    kind: Literal["query", "recommend", "report", "spacing", "manhole_recommend", "urban_planning"]
     model: str
     prompt_tokens_hint: int
     context_rows: int

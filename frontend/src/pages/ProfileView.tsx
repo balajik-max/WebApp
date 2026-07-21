@@ -1,12 +1,13 @@
 import { Link } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
 import { useTheme } from "../context/ThemeContext";
+import { useLanguage } from "../context/LanguageContext";
 
-const ROLE_LABELS: Record<string, string> = {
-  commissioner: "Commissioner",
-  aee: "AEE",
-  ae: "AE",
-  admin: "Administrator",
+const ROLE_KEY: Record<string, string> = {
+  commissioner: "common.commissioner",
+  aee: "common.aee",
+  ae: "common.ae",
+  admin: "common.admin",
 };
 
 function formatDate(iso: string | undefined): string {
@@ -19,9 +20,10 @@ function formatDate(iso: string | undefined): string {
 export function ProfileView() {
   const { user, logout } = useAuth();
   const { theme, setTheme } = useTheme();
+  const { t } = useLanguage();
 
   const initial = (user?.name ?? "?").trim().charAt(0).toUpperCase();
-  const roleLabel = user ? (ROLE_LABELS[user.role] ?? user.role) : "…";
+  const roleLabel = user ? t((ROLE_KEY[user.role] ?? "common.admin") as "common.admin") : "…";
 
   return (
     <div className="profile-page" data-testid="profile-page">
@@ -30,7 +32,7 @@ export function ProfileView() {
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" width="16" height="16">
             <path d="M15 18l-6-6 6-6" />
           </svg>
-          Back to Map
+          {t("common.backToMap")}
         </Link>
 
         <div className="profile-card">
@@ -43,23 +45,23 @@ export function ProfileView() {
           </div>
 
           <div className="profile-card__section">
-            <div className="profile-card__section-title">Account Details</div>
+            <div className="profile-card__section-title">{t("common.accountDetails")}</div>
             <dl className="profile-card__grid">
-              <dt>Email</dt>
+              <dt>{t("common.email")}</dt>
               <dd data-testid="profile-email">{user?.email ?? "—"}</dd>
-              <dt>Role</dt>
+              <dt>{t("common.role")}</dt>
               <dd>{roleLabel}</dd>
-              <dt>User ID</dt>
+              <dt>{t("common.userId")}</dt>
               <dd className="profile-card__mono">{user?.id ?? "—"}</dd>
-              <dt>Member Since</dt>
+              <dt>{t("common.memberSince")}</dt>
               <dd>{formatDate(user?.created_at)}</dd>
             </dl>
           </div>
 
           <div className="profile-card__section">
-            <div className="profile-card__section-title">Appearance</div>
+            <div className="profile-card__section-title">{t("common.appearance")}</div>
             <div className="profile-card__theme-row">
-              <span>Theme</span>
+              <span>{t("common.theme")}</span>
               <div className="profile-card__theme-toggle" role="group" aria-label="Theme">
                 <button
                   type="button"
@@ -67,7 +69,7 @@ export function ProfileView() {
                   onClick={() => setTheme("light")}
                   data-testid="profile-theme-light"
                 >
-                  ☀ Light
+                  ☀ {t("common.light")}
                 </button>
                 <button
                   type="button"
@@ -75,7 +77,7 @@ export function ProfileView() {
                   onClick={() => setTheme("dark")}
                   data-testid="profile-theme-dark"
                 >
-                  ☾ Dark
+                  ☾ {t("common.dark")}
                 </button>
               </div>
             </div>
@@ -88,7 +90,7 @@ export function ProfileView() {
               onClick={() => void logout()}
               data-testid="profile-signout"
             >
-              Sign Out
+              {t("common.signout")}
             </button>
           </div>
         </div>

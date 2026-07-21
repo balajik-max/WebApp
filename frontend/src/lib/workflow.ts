@@ -100,6 +100,24 @@ export interface DatasetRow {
       is_geo_referenced?: boolean;
       asset_keys?: Record<string, string>;
     };
+    lidar?: {
+      point_count: number;
+      z_min: number;
+      z_max: number;
+      z_mean: number;
+      classification_counts: Record<string, number>;
+      source_crs: string | null;
+      crs_status: "embedded" | "sidecar" | "user_assigned" | "project_default" | "unknown";
+      georeferenced: boolean;
+      las_version: string;
+      point_format: number;
+      dimensions: string[];
+      scales: number[];
+      offsets: number[];
+      bounds_raw: number[] | null;
+      compressed: boolean;
+      warnings: Array<{ code: string; message: string }>;
+    };
     [key: string]: unknown;
   };
   created_at: string;
@@ -131,6 +149,18 @@ export function deleteDataset(id: string, signal?: AbortSignal) {
 
 export function updateDataset(id: string, body: { ward?: string | null; description?: string | null }) {
   return apiPatch<DatasetRow>(`/api/v1/datasets/${id}`, body);
+}
+
+export interface SourceCrsResponse {
+  dataset_id: string;
+  source_crs: string;
+  crs_status: string;
+  georeferenced: boolean;
+  message: string;
+}
+
+export function assignSourceCrs(id: string, crs: string) {
+  return apiPost<SourceCrsResponse>(`/api/v1/datasets/${id}/source-crs`, { crs });
 }
 
 export interface WardOption {
