@@ -73,9 +73,10 @@ from sqlalchemy import delete, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.dataset import Dataset
-from app.models.point_verification import PointVerification, PointVerificationStatus
+from app.models.point_verification import PointVerification
 from app.models.spatial_anomaly import AnomalyColor, AnomalyStatus, AnomalyType, SpatialAnomaly
 from app.services.manhole_recommend import classify_manhole_issue, is_bad_condition, is_good_condition, parse_level_m
+from app.services.road_compat import backfill_road_classification
 from app.services.road_width import detect_road_width_narrowing
 
 # Per-class DBSCAN epsilon (meters). Only Illumination_Asset is clustered in
@@ -521,24 +522,21 @@ async def run_spatial_audit(dataset_id: uuid.UUID, db: AsyncSession) -> AuditSum
         raise ValueError(f"Dataset {dataset_id} not found")
     ward = dataset.ward
 
-    # Preserve every finding already attached to the remediation workflow
-    # across AI re-runs on the SAME dataset. This prevents a re-run from
-    # orphaning pending/rejected evidence or painting a new red duplicate on
-    # top of an Admin-approved blue point.
+    # Upgrade legacy road taxonomy inside the same audit transaction. This is
+    # idempotent and deterministic, and lets old persistent volumes participate
+    # in Road AI Detection without requiring a dataset re-upload.
+    await backfill_road_classification(db)
+
+    # Preserve every finding already attached to any remediation workflow
+    # across AI re-runs on the SAME dataset. The earlier implementation only
+    # checked legacy Architect/Admin status values, which could delete an
+    # anomaly used by an active AE/AEE/Commissioner task. A linked workflow
+    # record is now the authoritative protection signal regardless of stage.
     protected_rows = (
         await db.execute(
             select(SpatialAnomaly)
             .join(PointVerification, PointVerification.anomaly_id == SpatialAnomaly.id)
-            .where(
-                SpatialAnomaly.dataset_id == dataset_id,
-                PointVerification.status.in_(
-                    [
-                        PointVerificationStatus.PENDING_ADMIN,
-                        PointVerificationStatus.REJECTED,
-                        PointVerificationStatus.RESOLVED,
-                    ]
-                ),
-            )
+            .where(SpatialAnomaly.dataset_id == dataset_id)
         )
     ).scalars().all()
     protected_ids = {row.id for row in protected_rows}
@@ -607,4 +605,3 @@ async def run_spatial_audit(dataset_id: uuid.UUID, db: AsyncSession) -> AuditSum
         manhole_status=counts[AnomalyType.MANHOLE_STATUS],
         road_width_narrowing=counts[AnomalyType.ROAD_WIDTH_NARROWING],
     )
-

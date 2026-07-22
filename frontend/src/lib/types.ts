@@ -10,6 +10,7 @@ export interface FeatureProperties {
   label: string | null;
   category: string | null;
   severity: number;
+  canonical_class?: string | null;
   attributes: FeatureAttributes;
   readiness_field?: string | null;
   readiness_field_label?: string | null;

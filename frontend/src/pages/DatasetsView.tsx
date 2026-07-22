@@ -273,7 +273,11 @@ function validateShapefileBundle(files: File[]): { stem: string; files: File[] }
 }
 
 function datasetDisplayType(dataset: DatasetRow): string {
-  return dataset.dataset_metadata?.model_3d ? "OBJ 3D" : dataset.file_type;
+  return dataset.dataset_metadata?.model_3d
+    ? "OBJ 3D"
+    : (dataset.file_type === "las" || dataset.file_type === "lidar")
+      ? "LiDAR"
+      : dataset.file_type;
 }
 
 function getFileIcon(type: string): React.ReactNode {
@@ -894,7 +898,7 @@ export function DatasetsView() {
                   </span>
                 </span>
                 <span className="ds-dropzone__formats">
-                  GeoJSON Â· Shapefile Â· GeoPackage Â· KML Â· GeoTIFF Â· LAS/LAZ Â· OBJ Â· CSV Â· Excel Â· Photos (JPG/PNG/GIF/BMP/WEBP)
+                  GeoJSON · Shapefile · GeoPackage · KML · GeoTIFF · LAS/LAZ · OBJ · CSV · Excel · Photos (JPG/PNG/GIF/BMP/WEBP)
                 </span>
               </label>
             ) : (
@@ -1081,7 +1085,7 @@ export function DatasetsView() {
                     {d.processing_error && (
                       <span className="ds-table__error">{d.processing_error}</span>
                     )}
-                    {d.status === "ready" && d.file_type === "lidar" && d.dataset_metadata?.lidar?.crs_status === "unknown" && (
+                    {d.status === "ready" && (d.file_type === "lidar" || d.file_type === "las") && d.dataset_metadata?.lidar?.crs_status === "unknown" && (
                       <span className="ds-table__warning" title="No embedded coordinate reference system found. The point cloud has been loaded using its original local coordinates.">
                         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="12" height="12" style={{ marginRight: 4, flexShrink: 0 }}>
                           <path d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" strokeLinecap="round" strokeLinejoin="round" />
@@ -1155,7 +1159,7 @@ export function DatasetsView() {
                     </svg>
                     {t("datasets.attributes")}
                   </button>
-                  {d.status === "ready" && d.file_type === "lidar" && d.dataset_metadata?.lidar?.crs_status === "unknown" && (
+                  {d.status === "ready" && (d.file_type === "lidar" || d.file_type === "las") && d.dataset_metadata?.lidar?.crs_status === "unknown" && (
                     <button
                       type="button"
                       className="ds-action-btn ds-action-btn--crs"

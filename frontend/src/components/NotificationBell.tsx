@@ -17,6 +17,7 @@ export interface NotificationItem {
   body?: string;
   timestamp?: string;
   read?: boolean;
+  workflowVerificationId?: string | null;
 }
 
 export interface NotificationBellProps {
@@ -27,12 +28,17 @@ export interface NotificationBellProps {
   notifications?: NotificationItem[];
   /** Called when the bell is activated (e.g. to lazy-load from the API). */
   onOpen?: () => void;
+  /** Opens the exact workflow associated with the selected notification. */
+  onNotificationClick?: (item: NotificationItem) => void | Promise<void>;
+  loading?: boolean;
 }
 
 export function NotificationBell({
   unreadCount = 0,
   notifications = [],
   onOpen,
+  onNotificationClick,
+  loading = false,
 }: NotificationBellProps) {
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement | null>(null);
@@ -112,17 +118,27 @@ export function NotificationBell({
             {notifications.length > 0 ? (
               <ul className="notif__list">
                 {notifications.map((item) => (
-                  <li key={item.id} className="notif__item">
-                    <div className="notif__item-title">{item.title}</div>
-                    {item.body && <div className="notif__item-body">{item.body}</div>}
-                    {item.timestamp && (
-                      <div className="notif__item-time">{item.timestamp}</div>
-                    )}
+                  <li key={item.id} className={`notif__item${item.read ? "" : " notif__item--unread"}`}>
+                    <button
+                      type="button"
+                      className="notif__item-button"
+                      disabled={!item.workflowVerificationId}
+                      onClick={() => {
+                        setOpen(false);
+                        void onNotificationClick?.(item);
+                      }}
+                    >
+                      <div className="notif__item-title">{item.title}</div>
+                      {item.body && <div className="notif__item-body">{item.body}</div>}
+                      {item.timestamp && (
+                        <div className="notif__item-time">{item.timestamp}</div>
+                      )}
+                    </button>
                   </li>
                 ))}
               </ul>
             ) : (
-              <div className="notif__empty">No new notifications</div>
+              <div className="notif__empty">{loading ? "Loading notifications…" : "No new notifications"}</div>
             )}
           </div>
         </div>

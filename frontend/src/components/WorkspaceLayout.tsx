@@ -12,11 +12,15 @@ import { NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
 import { useAuth, type AuthUser, type Role } from "../context/AuthContext";
 import { useLanguage } from "../context/LanguageContext";
 import { STRINGS } from "../i18n/translations";
-import { listAssignedWork, subscribeAssignedWork, type AssignedWorkRecord } from "../lib/assignedWork";
 import { NotificationBell, type NotificationItem } from "./NotificationBell";
 import type { FeatureFilter } from "../lib/types";
 import { searchFeatureFids, type FidSearchResult } from "../lib/features";
 import type { DatasetRow } from "../lib/workflow";
+import {
+  fetchRemediationUpdates,
+  markRemediationUpdateRead,
+  type RemediationUpdateItem,
+} from "../lib/pointVerifications";
 
 type ClearButtonPhase = "hidden" | "detaching" | "visible" | "reattaching";
 
@@ -248,6 +252,18 @@ const TABS: TabDef[] = [
     ),
   },
   {
+    to: "/layer-review",
+    label: "Layer Review",
+    tKey: "nav.layerReview",
+    testId: "tab-layer-review",
+    icon: (
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+        <path d="m12 3 9 5-9 5-9-5 9-5Z" />
+        <path d="m3 12 9 5 9-5M3 16l9 5 9-5" />
+      </svg>
+    ),
+  },
+  {
     to: "/analytics",
     label: "Analytics",
     tKey: "nav.analytics",
@@ -266,8 +282,8 @@ const TABS: TabDef[] = [
     roles: ["ae"],
     icon: (
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-        <path d="M9 11.5l2 2 4-4.5" />
-        <rect x="3" y="3" width="18" height="18" rx="2.2" />
+        <path d="M9 5h10M9 12h10M9 19h10" />
+        <path d="m4 5 1.2 1.2L7.5 4M4 12l1.2 1.2L7.5 11M4 19l1.2 1.2L7.5 18" />
       </svg>
     ),
   },
@@ -279,14 +295,15 @@ const TABS: TabDef[] = [
     roles: ["aee"],
     icon: (
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-        <path d="M22 12h-4l-3 9L9 3l-3 9H2" />
+        <path d="M4 19V9M10 19V5M16 19v-7M22 19H2" />
+        <path d="m4 9 6-4 6 7 6-5" />
       </svg>
     ),
   },
 ];
 
 /**
- * MAP / DATASETS / ANALYTICS (+ TASKS for AE, + ACTIVITY for AEE) tabs with
+ * MAP / DATASETS / LAYER REVIEW / ANALYTICS tabs with
  * one shared green sliding indicator (Google-Earth-Pro-nav-style, not
  * per-tab backgrounds).
  * The indicator is a single absolutely-positioned element measured against
@@ -295,10 +312,8 @@ const TABS: TabDef[] = [
  * disappear-and-reappear the way stacking two independent `.active`
  * backgrounds on different DOM nodes would.
  *
- * Tabs are filtered by the current user's role so role-restricted entries
- * (e.g. ACTIVITY → AEE) appear only for authorized users; measurement and
- * rendering always operate on the same filtered list so the indicator stays
- * aligned with what's actually visible.
+ * The same measured tab list is shared by desktop and mobile navigation so
+ * the indicator stays aligned with the routes that are actually visible.
  */
 function TabsNav({ pathname, user }: { pathname: string; user: AuthUser | null }) {
   const { t } = useLanguage();
@@ -416,32 +431,95 @@ export function WorkspaceLayout() {
           commissioner: "Commissioner",
           aee: "AEE",
           ae: "AE",
+          mla: "MLA",
           admin: "Administrator",
+          architect: "Architect",
         } as Record<string, string>)[user.role] ?? user.role
       : "";
 
-  const [assignedWorkRecords, setAssignedWorkRecords] = useState<AssignedWorkRecord[]>([]);
-  useEffect(() => {
-    if (user?.role !== "ae") {
-      setAssignedWorkRecords([]);
+  const [workflowUpdates, setWorkflowUpdates] = useState<RemediationUpdateItem[]>([]);
+  const [notificationsLoading, setNotificationsLoading] = useState(false);
+
+  const loadWorkflowNotifications = useCallback(async () => {
+    if (!user) {
+      setWorkflowUpdates([]);
       return;
     }
-    setAssignedWorkRecords(listAssignedWork());
-    return subscribeAssignedWork(() => setAssignedWorkRecords(listAssignedWork()));
-  }, [user?.role]);
+    const controller = new AbortController();
+    setNotificationsLoading(true);
+    try {
+      setWorkflowUpdates(await fetchRemediationUpdates(controller.signal));
+    } catch (reason) {
+      if ((reason as Error).name !== "AbortError") {
+        console.error("Unable to load workflow notifications", reason);
+      }
+    } finally {
+      setNotificationsLoading(false);
+    }
+  }, [user?.id]);
 
-  const workerNotifications = useMemo<NotificationItem[]>(() => {
-    if (user?.role !== "ae") return [];
-    return [...assignedWorkRecords]
-      .sort((a, b) => (a.assignedAt < b.assignedAt ? 1 : -1))
-      .slice(0, 4)
-      .map((record) => ({
-        id: record.id,
-        title: `${record.serial} · ${record.issueName}`,
-        body: `Deadline: ${record.deadline || "—"}${record.road ? ` · ${record.road}` : ""}`,
-        timestamp: new Date(record.assignedAt).toLocaleString(),
-      }));
-  }, [assignedWorkRecords, user?.role]);
+  useEffect(() => {
+    void loadWorkflowNotifications();
+    const timer = window.setInterval(() => void loadWorkflowNotifications(), 30_000);
+    const refresh = () => void loadWorkflowNotifications();
+    window.addEventListener("remediation-notifications-changed", refresh);
+    return () => {
+      window.clearInterval(timer);
+      window.removeEventListener("remediation-notifications-changed", refresh);
+    };
+  }, [loadWorkflowNotifications]);
+
+  const workflowNotifications = useMemo<NotificationItem[]>(() =>
+    workflowUpdates.map((item) => {
+      const title =
+        item.source === "remediation_submitted"
+          ? user?.role === "admin"
+            ? "Architect remediation approval required"
+            : "AEE approval required"
+          : item.source === "remediation_returned"
+            ? "Work returned for correction"
+            : item.source === "remediation_commissioner_accepted"
+              ? "Commissioner accepted work"
+              : item.source === "remediation_approved"
+                ? "Admin approved remediation"
+                : item.source === "remediation_rejected"
+                  ? "Admin returned remediation"
+                  : item.source === "remediation_aee_approved" && user?.role === "commissioner"
+                    ? "Commissioner acceptance required"
+                    : "AEE approved work as Good";
+      return {
+        id: item.notification_id,
+        title,
+        body: item.message,
+        timestamp: new Date(item.created_at).toLocaleString(),
+        read: Boolean(item.read_at),
+        workflowVerificationId: item.verification_id,
+      };
+    }), [workflowUpdates, user?.role]);
+
+  const unreadWorkflowCount = useMemo(
+    () => workflowUpdates.filter((item) => !item.read_at).length,
+    [workflowUpdates],
+  );
+
+  const openWorkflowNotification = useCallback(async (item: NotificationItem) => {
+    if (!item.workflowVerificationId) return;
+    setWorkflowUpdates((current) => current.map((update) =>
+      update.notification_id === item.id
+        ? { ...update, read_at: update.read_at ?? new Date().toISOString() }
+        : update
+    ));
+    try {
+      await markRemediationUpdateRead(item.id);
+    } catch (reason) {
+      console.error("Unable to mark workflow notification as read", reason);
+    }
+    const query = new URLSearchParams({
+      workflowVerification: item.workflowVerificationId,
+      workflowNotification: item.id,
+    });
+    navigate(`/map?${query.toString()}`);
+  }, [navigate]);
 
   const [selectedDatasets, setSelectedDatasets] = useState<DatasetRow[]>([]);
   const selectedDatasetIds = useMemo(() => selectedDatasets.map((dataset) => dataset.id), [selectedDatasets]);
@@ -568,7 +646,13 @@ export function WorkspaceLayout() {
             <span className="lang-toggle__label">{lang === "en" ? "ಕನ್ನಡ" : "English"}</span>
           </button>
 
-          <NotificationBell notifications={workerNotifications} unreadCount={workerNotifications.length} />
+          <NotificationBell
+            notifications={workflowNotifications}
+            unreadCount={unreadWorkflowCount}
+            loading={notificationsLoading}
+            onOpen={() => void loadWorkflowNotifications()}
+            onNotificationClick={openWorkflowNotification}
+          />
 
           <button
             type="button"
@@ -599,17 +683,19 @@ export function useTabTitle(base = "Davangere Urban Survey") {
         ? "Map"
         : location.pathname.startsWith("/datasets")
           ? "Datasets"
-        : location.pathname.startsWith("/analytics")
-          ? "Analytics"
-          : location.pathname.startsWith("/grievance")
-            ? "Grievance"
+        : location.pathname.startsWith("/layer-review")
+          ? "Layer Review"
+          : location.pathname.startsWith("/analytics")
+            ? "Analytics"
             : location.pathname.startsWith("/tasks")
               ? "Tasks"
               : location.pathname.startsWith("/activity")
                 ? "Activity"
-                : location.pathname.startsWith("/profile")
-                  ? "Profile"
-                  : "";
+                : location.pathname.startsWith("/grievance")
+                  ? "Grievance"
+                  : location.pathname.startsWith("/profile")
+                    ? "Profile"
+                    : "";
     document.title = label ? `${label} · ${base}` : base;
   }, [location.pathname, base]);
 }

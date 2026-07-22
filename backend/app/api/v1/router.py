@@ -9,6 +9,7 @@ from app.api.v1 import (
     datasets,
     features,
     health,
+    legacy_point_verifications,
     map_context,
     placemarks,
     point_verifications,
@@ -32,4 +33,5 @@ api_router.include_router(classification.router, prefix="/v1/classification", ta
 api_router.include_router(visualization.router, prefix="/v1/visualization", tags=["visualization"])
 api_router.include_router(placemarks.router, prefix="/v1/placemarks", tags=["placemarks"])
 api_router.include_router(point_verifications.router, prefix="/v1/point-verifications", tags=["point-verifications"])
+api_router.include_router(legacy_point_verifications.router, prefix="/v1/point-verifications", tags=["point-verifications-legacy"])
 api_router.include_router(map_context.router, prefix="/v1/map-context", tags=["map-context"])

@@ -1,0 +1,21 @@
+PASS: All backend Python files parse successfully
+PASS: AE Tasks backend endpoint exists
+PASS: AEE Activity backend endpoint exists
+PASS: AE endpoint uses require_ae
+PASS: AEE endpoint uses require_aee
+PASS: Dashboard opens persistent verification records
+PASS: LAS database enum compatibility retained
+PASS: Tasks route exists
+PASS: Activity route exists
+PASS: Tasks tab is AE-only
+PASS: Activity tab is AEE-only
+PASS: Shared workflow dashboard component exists
+PASS: Tasks page exists
+PASS: Activity page exists
+PASS: Old davangere.assignedWork localStorage is absent
+PASS: Old assignedWork import is absent
+PASS: No floating RemediationUpdates component was reintroduced
+PASS: Layer Review remains present
+PASS: Existing notification bell remains present
+
+NOTE: Frontend changed files were syntax-checked with TypeScript transpileModule. A full yarn production build must be run in Docker on the target machine because this execution environment has no npm network access.

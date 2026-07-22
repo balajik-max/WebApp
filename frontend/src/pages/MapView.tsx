@@ -7,10 +7,8 @@ import { MapCanvas, type AiVerificationContext } from "../components/MapCanvas";
 import { ReportGenerator } from "../components/WardReportPanel";
 import { AiAssistant } from "../components/AiAssistant";
 import { PointVerificationPanel } from "../components/PointVerificationPanel";
-import { RemediationUpdates } from "../components/RemediationUpdates";
 import { useOutletContext, useSearchParams } from "react-router-dom";
 import type { AiHighlight, FeatureFilter, UrbanFeature } from "../lib/types";
-import type { RemediationUpdateItem } from "../lib/pointVerifications";
 import type { DatasetRow } from "../lib/workflow";
 import { useIsMobile } from "../lib/useIsMobile";
 
@@ -21,6 +19,7 @@ type SpatialAuditStatus = "idle" | "running" | "success" | "error";
 // `.command-center` under the 768px breakpoint). Widened from the previous
 // 340px value to 357px so geometry-group and datasource names have more room
 // before truncating.
+const SIDEBAR_RAIL_WIDTH = 48;
 const DEFAULT_SIDEBAR_WIDTH = 357;
 const MIN_SIDEBAR_WIDTH = 280;
 const MAX_SIDEBAR_WIDTH = 520;
@@ -69,6 +68,8 @@ export function MapView() {
     ai: AiVerificationContext;
   } | null>(null);
   const [aiHighlights, setAiHighlights] = useState<AiHighlight[]>([]);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [quickAnalysisActive, setQuickAnalysisActive] = useState(false);
   const [pointVerificationRefresh, setPointVerificationRefresh] = useState(0);
 
   const isMobile = useIsMobile();
@@ -155,6 +156,7 @@ export function MapView() {
 
   const [searchParams, setSearchParams] = useSearchParams();
   const locateFeatureId = searchParams.get("locateFeature") ?? undefined;
+  const workflowVerificationId = searchParams.get("workflowVerification");
 
   const handleSelect = useCallback(
     (
@@ -175,19 +177,9 @@ export function MapView() {
     setSearchParams(next, { replace: true });
   }, [searchParams, setSearchParams]);
 
-  const handleRemediationUpdateLocate = useCallback(
-    (item: RemediationUpdateItem) => {
-      if (!item.feature_id) return;
-      const next = new URLSearchParams(searchParams);
-      next.set("locateFeature", item.feature_id);
-      setSearchParams(next, { replace: true });
-    },
-    [searchParams, setSearchParams],
-  );
-
   return (
     <div
-      className="map-page map-page--dual"
+      className={`map-page map-page--dual${sidebarCollapsed ? " map-page--sidebar-collapsed" : ""}`}
       data-testid="map-page"
       style={!isMobile ? ({ "--map-sidebar-width": `${sidebarWidth}px` } as CSSProperties) : undefined}
     >
@@ -199,6 +191,9 @@ export function MapView() {
         aiHighlights={aiHighlights}
         focusFeatureId={locateFeatureId}
         onFocusHandled={handleFeatureLocated}
+        sidebarCollapsed={sidebarCollapsed}
+        onToggleSidebar={() => setSidebarCollapsed((current) => !current)}
+        onQuickAnalysisActiveChange={setQuickAnalysisActive}
         refreshToken={pointVerificationRefresh}
         commandCenterMobileOpen={commandCenterMobileOpen}
         onCommandCenterMobileOpenChange={setCommandCenterMobileOpen}
@@ -209,10 +204,10 @@ export function MapView() {
         onSpatialAuditStatusChange={setSpatialAuditStatus}
       />
 
-      {!isMobile && (
+      {!isMobile && !sidebarCollapsed && (
         <div
           className="map-page__sidebar-resize-handle"
-          style={{ left: sidebarWidth }}
+          style={{ left: SIDEBAR_RAIL_WIDTH + sidebarWidth }}
           role="separator"
           aria-orientation="vertical"
           aria-label="Resize left sidebar"
@@ -230,18 +225,27 @@ export function MapView() {
         />
       )}
 
-      <ReportGenerator datasets={selectedDatasets} />
+      {!quickAnalysisActive && <ReportGenerator datasets={selectedDatasets} />}
 
-      <AiAssistant
-        filter={filter}
-        selectedFeature={selected}
-        onAiHighlights={setAiHighlights}
-      />
+      {!quickAnalysisActive && (
+        <AiAssistant
+          filter={filter}
+          selectedFeature={selected}
+          onAiHighlights={setAiHighlights}
+        />
+      )}
 
       <PointVerificationPanel
         feature={verificationTarget?.feature ?? null}
         aiVerification={verificationTarget?.ai ?? null}
-        onClose={() => setVerificationTarget(null)}
+        verificationId={workflowVerificationId}
+        onClose={() => {
+          setVerificationTarget(null);
+          const next = new URLSearchParams(searchParams);
+          next.delete("workflowVerification");
+          next.delete("workflowNotification");
+          setSearchParams(next, { replace: true });
+        }}
         onUpdated={(updated) => {
           setSelected(updated);
           setVerificationTarget((current) =>
@@ -254,10 +258,6 @@ export function MapView() {
         }
       />
 
-      <RemediationUpdates
-        refreshToken={pointVerificationRefresh}
-        onLocate={handleRemediationUpdateLocate}
-      />
     </div>
   );
 }

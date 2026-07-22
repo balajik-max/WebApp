@@ -9,7 +9,7 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
 import { apiGet, apiPost, ApiError } from "../lib/api";
 
-export type Role = "commissioner" | "aee" | "ae" | "admin" | "architect";
+export type Role = "commissioner" | "aee" | "ae" | "mla" | "admin" | "architect";
 
 export interface AuthUser {
   id: string;

@@ -38,6 +38,7 @@ from app.core.security import hash_password, verify_password  # noqa: E402
 from app.db.init_db import init_database  # noqa: E402
 from app.db.session import SessionLocal  # noqa: E402
 from app.models import ActivityAction, ActivityLog, User, UserRole  # noqa: E402
+from app.services.road_compat import backfill_road_classification  # noqa: E402
 
 
 log = logging.getLogger("davangere.seed")
@@ -92,6 +93,7 @@ async def _upsert_user(session: AsyncSession, spec: SeedSpec) -> tuple[User, boo
         existing.name = spec.name
     if existing.role != spec.role:
         existing.role = spec.role
+    existing.is_active = True
 
     return existing, False
 
@@ -119,22 +121,10 @@ async def main() -> int:
             role=UserRole.ADMIN,
         ),
         SeedSpec(
-            email=settings.commissioner_email,
-            password=settings.commissioner_password,
-            name=settings.commissioner_name,
-            role=UserRole.COMMISSIONER,
-        ),
-        SeedSpec(
-            email=settings.aee_email,
-            password=settings.aee_password,
-            name=settings.aee_name,
-            role=UserRole.AEE,
-        ),
-        SeedSpec(
-            email=settings.ae_email,
-            password=settings.ae_password,
-            name=settings.ae_name,
-            role=UserRole.AE,
+            email=settings.architect_email,
+            password=settings.architect_password,
+            name=settings.architect_name,
+            role=UserRole.ARCHITECT,
         ),
         SeedSpec(
             email=settings.commissioner_email,
@@ -153,10 +143,29 @@ async def main() -> int:
             password=settings.ae_password,
             name=settings.ae_name,
             role=UserRole.AE,
+        ),
+        SeedSpec(
+            email=settings.mla_email,
+            password=settings.mla_password,
+            name=settings.mla_name,
+            role=UserRole.MLA,
         ),
     ]
 
     await _seed(specs)
+
+    # Existing PostGIS volumes may contain road features classified before the
+    # Road_Centerline/Road_Surface taxonomy split. Migrate only deterministic
+    # road synonyms so Road AI Detection, Road Inspection, and Road Width Check
+    # work immediately after an upgrade without re-uploading any dataset.
+    async with SessionLocal() as session:
+        road_counts = await backfill_road_classification(session, commit=True)
+    log.info(
+        "Road compatibility verified: %d centerline row(s), %d surface row(s) migrated.",
+        road_counts["Road_Centerline"],
+        road_counts["Road_Surface"],
+    )
+
     log.info("Seed complete: %d user(s) verified.", len(specs))
     return 0
 

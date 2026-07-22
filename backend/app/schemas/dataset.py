@@ -45,7 +45,6 @@ class DatasetUploadAccepted(BaseModel):
     dataset: DatasetOut
     poll_url: str
 
-
 class SourceCrsAssign(BaseModel):
     """Request body for assigning a CRS to a point cloud dataset after upload."""
     crs: str

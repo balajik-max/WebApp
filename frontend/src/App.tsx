@@ -10,9 +10,10 @@ import { MapView } from "./pages/MapView";
 import { DatasetsView } from "./pages/DatasetsView";
 import { AnalyticsView } from "./pages/AnalyticsView";
 import { ProfileView } from "./pages/ProfileView";
-import { ActivityView } from "./pages/ActivityView";
-import { TasksView } from "./pages/TasksView";
 import { GrievanceView } from "./pages/GrievanceView";
+import { LayerReviewView } from "./pages/LayerReviewView";
+import { TasksView } from "./pages/TasksView";
+import { ActivityView } from "./pages/ActivityView";
 
 // The Welcome page (and its Three.js scene) is route-level lazy-loaded so the
 // authenticated application bundle never pays for it.
@@ -62,8 +63,9 @@ export default function App() {
               <Route path="/map" element={<MapView />} />
               <Route path="/datasets" element={<DatasetsView />} />
               <Route path="/analytics" element={<AnalyticsView />} />
-              <Route path="/activity" element={<ActivityView />} />
+              <Route path="/layer-review" element={<LayerReviewView />} />
               <Route path="/tasks" element={<TasksView />} />
+              <Route path="/activity" element={<ActivityView />} />
               <Route path="/grievance" element={<GrievanceView />} />
               <Route path="/profile" element={<ProfileView />} />
             </Route>
