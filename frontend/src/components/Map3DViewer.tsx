@@ -2352,7 +2352,6 @@ export function Map3DViewer({ features, classMap, anomalies, datasets, activeDat
         for (const pl of powerLines) {
           const raw = (pl.properties.category ?? "").toLowerCase();
           const isWater = raw.includes("water");
-          const isElectric = !isWater && raw.includes("electric");
           // This feature's OWN raw category color ("Water Line" / "Electric
           // Line" / "Power Line" are different raw categories sharing one
           // canonical class) — matches the 2D Layers panel exactly.
@@ -2369,18 +2368,14 @@ export function Map3DViewer({ features, classMap, anomalies, datasets, activeDat
             if (isWater) {
               // Buried water main: translucent pipe following the terrain.
               buildBuriedLine(pl, line, 2.5, 0.55, lineColor, 0.85, "waterline");
-            } else if (isElectric) {
-              // Buried electric service cable — underground wiring, not an
-              // overhead line.
-              buildBuriedLine(pl, line, 2.0, 0.3, lineColor, 1, "electricline");
             } else {
-              // Power line: a real OVERHEAD 3-phase conductor hanging from
-              // whatever real grid poles are actually there (light, power,
-              // or combo — solar poles are excluded from polePositions,
-              // they're off-grid). The poles are a separately-surveyed layer
-              // that lies ON the line but not on its vertices, so we INSERT
-              // a pole-top vertex wherever a grid pole sits on a segment —
-              // the conductor then visibly lands on every real support
+              // Power line (includes Electric Line): a real OVERHEAD 3-phase
+              // conductor hanging from whatever real grid poles are actually there
+              // (light, power, or combo — solar poles are excluded from
+              // polePositions, they're off-grid). The poles are a separately-
+              // surveyed layer that lies ON the line but not on its vertices, so
+              // we INSERT a pole-top vertex wherever a grid pole sits on a
+              // segment — the conductor then visibly lands on every real support
               // instead of floating past them at a flat height.
               const POLE_SNAP_TOL = 4; // metres from the line to count as a support
               const vlocal = line.map(([lon, lat]) => {
