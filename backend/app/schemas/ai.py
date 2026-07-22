@@ -147,6 +147,7 @@ class AuditRunResponse(BaseModel):
     drain_encroachment: dict[str, int]
     manhole_status: dict[str, int]
     road_width_narrowing: dict[str, int]
+    powerline_proximity: dict[str, int]
 
 
 class SpatialAnomalyOut(BaseModel):

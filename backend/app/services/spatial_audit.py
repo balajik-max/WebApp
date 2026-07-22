@@ -66,8 +66,10 @@ fine" is itself useful.
 """
 from __future__ import annotations
 
+import re
 import uuid
 from dataclasses import dataclass, field
+from typing import Any
 
 from sqlalchemy import delete, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -117,6 +119,26 @@ MANHOLE_DRAIN_MAX_M = 50.0
 # instead of nearly everything landing in red.
 MANHOLE_RED_DISTANCE_M = 5.0
 
+# Powerline proximity — three real distance tiers, not a flat "within X is
+# dangerous": RED (critical, essentially touching), YELLOW (marginal, worth
+# reviewing), GREEN (real clearance, confirmed OK) — same "every candidate
+# gets a row, never a quiet unflagged state" philosophy as manhole_status.
+# Buildings farther than POWERLINE_SEARCH_RADIUS_M aren't reported at all —
+# clearly not "near" a powerline in any meaningful sense.
+POWERLINE_RED_DISTANCE_M = 0.5
+POWERLINE_YELLOW_DISTANCE_M = 1.0
+POWERLINE_SEARCH_RADIUS_M = 1.5
+# Kept as the historical/display name for the RED threshold in existing
+# anomaly_metadata consumers.
+POWERLINE_DANGER_DISTANCE_M = POWERLINE_RED_DISTANCE_M
+
+# Fallback pole height when a pole exists nearby but has no real recorded
+# height of its own — matches Map3DViewer.tsx's own DEFAULT_POLE_HEIGHT_M,
+# so the backend's "is this building tall enough to reach the conductor"
+# judgment lines up with what the 3D view actually draws the conductor at
+# (the real nearest pole's height, not an independently-chosen constant).
+DEFAULT_POLE_HEIGHT_M = 7.0
+
 
 @dataclass(slots=True)
 class AuditSummary:
@@ -124,6 +146,7 @@ class AuditSummary:
     drain_encroachment: dict[str, int] = field(default_factory=dict)
     manhole_status: dict[str, int] = field(default_factory=dict)
     road_width_narrowing: dict[str, int] = field(default_factory=dict)
+    powerline_proximity: dict[str, int] = field(default_factory=dict)
 
 
 def _primary_feature_id(anomaly: SpatialAnomaly) -> str | None:
@@ -514,6 +537,214 @@ async def _detect_manhole_status(
     return counts
 
 
+_FLOOR_LEVEL_RE = re.compile(r"^G(?:\+(\d+))?$", re.IGNORECASE)
+
+
+def _parse_floor_level_string(raw: str) -> int | None:
+    """This survey records storeys as "G" (ground only, 1 storey) or "G+N"
+    (ground + N upper storeys, N+1 total) under a "Floor" field — a real
+    surveyed storey count under a different naming/format convention than
+    the plain numeric floors/no_of_floors attributes handled below."""
+    m = _FLOOR_LEVEL_RE.match(raw.strip())
+    if not m:
+        return None
+    return int(m.group(1)) + 1 if m.group(1) else 1
+
+
+def _extract_building_height_m(attributes: dict[str, Any] | None) -> float | None:
+    """Case-insensitive scan for a real surveyed height/floor-count
+    attribute — same convention the 3D viewer uses for its own building
+    heights (Map3DViewer.tsx's readAttr/parseFloorLevelString), kept
+    consistent here so a building this detector judges "too short to reach
+    a conductor" matches what a user would actually see rendered in 3D."""
+    if not attributes:
+        return None
+    for key, value in attributes.items():
+        if key.lower() in ("height", "building_height", "elevation"):
+            try:
+                v = float(value)  # type: ignore[arg-type]
+            except (TypeError, ValueError):
+                continue
+            if v > 0:
+                return v
+    for key, value in attributes.items():
+        if key.lower() in ("floors", "no_of_floors", "num_floors", "stories"):
+            try:
+                v = float(value)  # type: ignore[arg-type]
+            except (TypeError, ValueError):
+                continue
+            if v > 0:
+                return v * 3.2  # ~3.2 m per floor, matching the 3D viewer's own estimate
+    for key, value in attributes.items():
+        if key.lower() == "floor" and isinstance(value, str):
+            floors = _parse_floor_level_string(value)
+            if floors:
+                return floors * 3.2
+    return None
+
+
+async def _detect_powerline_proximity(
+    dataset_id: uuid.UUID, ward: str | None, db: AsyncSession
+) -> dict[str, int]:
+    """Detect buildings within POWERLINE_SEARCH_RADIUS_M of REAL OVERHEAD
+    power lines — but ONLY when the building is real tall enough to
+    physically reach the nearest real pole's own conductor height in the
+    first place. A single-storey building standing right under a 7 m
+    overhead line has a genuine large vertical gap regardless of how close
+    their footprints sit horizontally; flagging it as "dangerous" purely on
+    2D distance would be a false positive. Only once the building's own
+    real height reaches (or exceeds) the REAL nearest pole's own surveyed
+    height (not a flat assumption — see _nearest_pole_height_m) does
+    horizontal proximity become a real contact risk.
+
+    The Power_Line canonical class also absorbs "Water Line" and "Electric
+    Line" (buried utilities, not overhead conductors — see
+    class_taxonomy.py) under the SAME class as real "Power Line"/
+    "Powerline" categories. A building's water/sewer service pipe running
+    right into its own wall is completely normal and carries zero
+    electrocution risk, so those raw categories are explicitly excluded
+    from this join — otherwise a nearby buried pipe could dominate the
+    "nearest powerline" distance and produce a meaningless result.
+
+    Every building that passes the height gate gets a row, colored by real
+    distance tier (RED <= 0.5 m, YELLOW <= 1.0 m, GREEN beyond that but
+    still within the search radius) — same "every candidate is reported,
+    never a quiet unflagged state" philosophy as manhole_status, instead of
+    a flat "dangerous or not shown at all" rule.
+
+    Uses ST_DWithin with geography for accurate meter-based distance.
+    """
+    rows = (
+        await db.execute(
+            text(
+                "SELECT b.id AS building_id, b.attributes AS building_attributes, "
+                "       ST_X(ST_Centroid(b.geom)) AS x, ST_Y(ST_Centroid(b.geom)) AS y, "
+                "       MIN(ST_Distance(b.geom::geography, p.geom::geography)) AS nearest_powerline_m, "
+                "       array_agg(DISTINCT p.id) AS powerline_ids, "
+                "       array_agg(DISTINCT p.category) AS powerline_categories "
+                "FROM features b "
+                "JOIN features p ON p.dataset_id = b.dataset_id "
+                "  AND p.attributes->>'_canonical_class' = 'Power_Line' "
+                "  AND p.category !~* 'water|electric' "
+                "WHERE b.dataset_id = :dataset_id "
+                "  AND b.attributes->>'_canonical_class' = 'Building' "
+                "  AND ST_DWithin(b.geom::geography, p.geom::geography, :radius_m) "
+                "GROUP BY b.id"
+            ),
+            {"dataset_id": str(dataset_id), "radius_m": POWERLINE_SEARCH_RADIUS_M},
+        )
+    ).mappings().all()
+
+    # Real pole positions + their own real height — used to judge each
+    # candidate building against the REAL support nearest to it, instead of
+    # one flat assumed conductor height. Matches the same convention
+    # Map3DViewer.tsx uses to draw the conductor at the real pole's height.
+    pole_rows = (
+        await db.execute(
+            text(
+                "SELECT ST_X(geom) AS x, ST_Y(geom) AS y, attributes AS attrs, category "
+                "FROM features "
+                "WHERE dataset_id = :dataset_id "
+                "  AND attributes->>'_canonical_class' IN ('Illumination_Asset', 'Utility_Pole') "
+                "  AND ST_GeometryType(geom) = 'ST_Point'"
+            ),
+            {"dataset_id": str(dataset_id)},
+        )
+    ).mappings().all()
+    poles = [
+        (float(pr["x"]), float(pr["y"]), _extract_building_height_m(pr["attrs"]) or DEFAULT_POLE_HEIGHT_M)
+        for pr in pole_rows
+        if "solar" not in (pr["category"] or "").lower()
+    ]
+
+    def nearest_pole_height_m(x: float, y: float) -> float:
+        if not poles:
+            return DEFAULT_POLE_HEIGHT_M
+        best_d2 = float("inf")
+        best_h = DEFAULT_POLE_HEIGHT_M
+        for px, py, ph in poles:
+            d2 = (px - x) ** 2 + (py - y) ** 2
+            if d2 < best_d2:
+                best_d2 = d2
+                best_h = ph
+        return best_h
+
+    counts = {"red": 0, "yellow": 0, "green": 0}
+    anomalies: list[SpatialAnomaly] = []
+
+    for r in rows:
+        distance_m = float(r["nearest_powerline_m"] or 0.0)
+        conductor_height_m = nearest_pole_height_m(float(r["x"]), float(r["y"]))
+
+        building_height_m = _extract_building_height_m(r["building_attributes"])
+        # Only skip when there's REAL surveyed evidence this building is
+        # shorter than the REAL nearest pole's conductor height — no
+        # height/floor-count attribute at all (true for every building in
+        # some surveys) means genuinely unknown, not "safe". Treating
+        # unknown as safe would silently turn this detector into a no-op on
+        # any dataset that never recorded building height. Only a building
+        # with a REAL recorded height/floor count below that real conductor
+        # height is excluded; everything else still goes through the real
+        # distance tiers below.
+        if building_height_m is not None and building_height_m < conductor_height_m:
+            continue
+
+        if distance_m <= POWERLINE_RED_DISTANCE_M:
+            color = AnomalyColor.RED
+            counts["red"] += 1
+            severity = 80.0 + (POWERLINE_RED_DISTANCE_M - distance_m) * 40.0
+            tier_label = "critical"
+        elif distance_m <= POWERLINE_YELLOW_DISTANCE_M:
+            color = AnomalyColor.YELLOW
+            counts["yellow"] += 1
+            severity = 40.0 + (POWERLINE_YELLOW_DISTANCE_M - distance_m) * 40.0
+            tier_label = "marginal — worth reviewing"
+        else:
+            color = AnomalyColor.GREEN
+            counts["green"] += 1
+            severity = 10.0
+            tier_label = "real clearance — confirmed OK"
+
+        height_note = (
+            f"Building ({building_height_m:.1f} m tall) is"
+            if building_height_m is not None
+            else "Building is"
+        )
+        height_suffix = "" if building_height_m is not None else " (building height not surveyed)"
+
+        anomalies.append(
+            SpatialAnomaly(
+                dataset_id=dataset_id,
+                ward=ward,
+                anomaly_type=AnomalyType.POWERLINE_PROXIMITY,
+                color=color,
+                severity_score=round(min(100.0, max(0.0, severity)), 1),
+                geom=f"SRID=4326;POINT({r['x']} {r['y']})",
+                feature_ids=[r["building_id"], *r["powerline_ids"]],
+                anomaly_metadata={
+                    "building_id": str(r["building_id"]),
+                    "nearest_powerline_distance_m": round(distance_m, 2),
+                    "red_threshold_m": POWERLINE_RED_DISTANCE_M,
+                    "yellow_threshold_m": POWERLINE_YELLOW_DISTANCE_M,
+                    "danger_threshold_m": POWERLINE_DANGER_DISTANCE_M,
+                    "building_height_m": round(building_height_m, 2) if building_height_m is not None else None,
+                    "nearest_pole_height_m": round(conductor_height_m, 2),
+                    "powerline_ids": [str(pid) for pid in r["powerline_ids"]],
+                    "powerline_categories": r["powerline_categories"],
+                    "basis": (
+                        f"{height_note} {distance_m:.2f} m from a power line "
+                        f"(~{conductor_height_m:.1f} m conductor height, nearest real pole) — {tier_label}{height_suffix}"
+                    ),
+                },
+            )
+        )
+
+    if anomalies:
+        db.add_all(anomalies)
+        await db.flush()
+    return counts
+
+
 async def run_spatial_audit(dataset_id: uuid.UUID, db: AsyncSession) -> AuditSummary:
     dataset = (
         await db.execute(select(Dataset).where(Dataset.id == dataset_id))
@@ -560,6 +791,7 @@ async def run_spatial_audit(dataset_id: uuid.UUID, db: AsyncSession) -> AuditSum
     await _detect_drain_encroachment(dataset_id, ward, db)
     await _detect_manhole_status(dataset_id, ward, db)
     await detect_road_width_narrowing(dataset_id, ward, db)
+    await _detect_powerline_proximity(dataset_id, ward, db)
     await db.flush()
 
     if protected_keys:
@@ -594,6 +826,7 @@ async def run_spatial_audit(dataset_id: uuid.UUID, db: AsyncSession) -> AuditSum
         AnomalyType.DRAIN_ENCROACHMENT: _empty_counts(),
         AnomalyType.MANHOLE_STATUS: _empty_counts(),
         AnomalyType.ROAD_WIDTH_NARROWING: _empty_counts(),
+        AnomalyType.POWERLINE_PROXIMITY: _empty_counts(),
     }
     for row in visible:
         counts[row.anomaly_type][row.color.value] += 1
@@ -604,4 +837,5 @@ async def run_spatial_audit(dataset_id: uuid.UUID, db: AsyncSession) -> AuditSum
         drain_encroachment=counts[AnomalyType.DRAIN_ENCROACHMENT],
         manhole_status=counts[AnomalyType.MANHOLE_STATUS],
         road_width_narrowing=counts[AnomalyType.ROAD_WIDTH_NARROWING],
+        powerline_proximity=counts[AnomalyType.POWERLINE_PROXIMITY],
     )

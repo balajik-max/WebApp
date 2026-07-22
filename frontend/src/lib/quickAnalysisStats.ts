@@ -28,6 +28,7 @@ const ANOMALY_TYPE_LABEL: Record<AnomalyType, string> = {
   pole_redundancy: "Pole redundancy",
   manhole_status: "Manhole condition",
   road_width_narrowing: "Road narrowing",
+  powerline_proximity: "Powerline proximity",
 };
 
 function normalizeCategory(value: string | null | undefined): string {

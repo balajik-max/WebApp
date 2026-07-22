@@ -53,6 +53,19 @@ function classifyIlluminationSubtype(rawCategory: string | null): "light" | "sol
   return "light";
 }
 
+// Real surveyed conductor count ("Ways" attribute: 1, 2, or 3) — some
+// overhead runs are a single service wire, some a two-wire span, and only
+// the real 3-phase distribution lines carry all three. Drawing a fixed 3
+// wires regardless of what was actually surveyed misrepresented the
+// simpler runs. Falls back to the standard 3-phase spacing when the
+// attribute is absent or an unrecognised value, since that was the
+// previous (and still most common) real-world case.
+function wireOffsetsForWays(ways: number | null): number[] {
+  if (ways === 1) return [0];
+  if (ways === 2) return [-0.4, 0.4];
+  return [-0.75, 0, 0.75];
+}
+
 // Standard 2D segment-intersection test, used to find exactly where a
 // flagged drain's centerline actually crosses a building's own footprint
 // ring — so the encroachment finding can be marked at that real point
@@ -1442,6 +1455,93 @@ export function Map3DViewer({ features, classMap, anomalies, datasets, activeDat
           const n = typeof v === "number" ? v : parseFloat(String(v));
           return Number.isFinite(n) ? n : null;
         };
+        // Same lookup, but for a value that isn't a plain number — this
+        // survey's own "Floor" field ("G", "G+2", ...) is a string, not a
+        // number readAttr could parse.
+        const readRawAttr = (attrs: Record<string, unknown>, key: string): string | null => {
+          const k = Object.keys(attrs).find((a) => a.toLowerCase() === key.toLowerCase());
+          if (!k) return null;
+          const v = attrs[k];
+          return v === null || v === undefined || v === "" ? null : String(v);
+        };
+        // This survey records storeys as "G" (ground only, 1 storey) or
+        // "G+N" (ground + N upper storeys, N+1 total) under a "Floor"
+        // field — a real surveyed storey count under a different naming
+        // convention than the plain numeric "floors" attribute elsewhere.
+        const parseFloorLevelString = (raw: string | null): number | null => {
+          if (!raw) return null;
+          const m = raw.trim().match(/^G(?:\+(\d+))?$/i);
+          if (!m) return null;
+          return m[1] ? parseInt(m[1], 10) + 1 : 1;
+        };
+
+        // Powerlines focus: real 3D clearance, computed directly from THIS
+        // scene's own geometry — not the backend's 2D-only anomaly. A
+        // building's real height and a conductor's real height (nearest
+        // real pole, same convention the wire itself is drawn at) combine
+        // into a genuine 3D gap, so a short building automatically reads as
+        // safely clear (the vertical gap dominates) with no separate
+        // height-gate rule needed — the 3D geometry itself proves it.
+        const clearancePolePositions: { x: number; z: number; topY: number }[] = [];
+        if (detectionMode3D === "powerlines") {
+          for (const f of features) {
+            if (f.geometry.type !== "Point") continue;
+            const cls = classMap[f.properties.category ?? ""];
+            if (cls !== "Illumination_Asset" && cls !== "Utility_Pole") continue;
+            if ((f.properties.category ?? "").toLowerCase().includes("solar")) continue; // off-grid, no line runs through one
+            const [lon, lat] = f.geometry.coordinates;
+            const [x, z] = projector.toLocal(lon, lat);
+            const poleH = readAttr(f.properties.attributes ?? {}, "height") ?? readAttr(f.properties.attributes ?? {}, "pole_height") ?? 7;
+            clearancePolePositions.push({ x, z, topY: elevAt(lon, lat) + poleH });
+          }
+        }
+        const conductorHeightNear = (x: number, z: number): number => {
+          let best = Infinity, bestY = elevAt(0, 0) + 7;
+          for (const p of clearancePolePositions) {
+            const d = (p.x - x) * (p.x - x) + (p.z - z) * (p.z - z);
+            if (d < best) { best = d; bestY = p.topY; }
+          }
+          return bestY;
+        };
+        // Closest approach between two 2D segments (local x/z) — checks the
+        // 4 endpoint-vs-opposite-segment cases, which is what real building-
+        // edge vs line-segment geometry actually needs (short, straight
+        // pieces at this survey scale); doesn't special-case true crossings
+        // as an exact 0, but that's fine here — this only ever feeds a
+        // red/yellow/green color tier, not a certified measurement.
+        const closestApproach2D = (
+          a1x: number, a1z: number, a2x: number, a2z: number,
+          b1x: number, b1z: number, b2x: number, b2z: number
+        ): { dist: number; x: number; z: number } => {
+          const onSeg = (px: number, pz: number, ax: number, az: number, bx: number, bz: number) => {
+            const vx = bx - ax, vz = bz - az;
+            const len2 = vx * vx + vz * vz;
+            const t = len2 > 0 ? Math.max(0, Math.min(1, ((px - ax) * vx + (pz - az) * vz) / len2)) : 0;
+            return { x: ax + vx * t, z: az + vz * t };
+          };
+          const cases: [{ x: number; z: number }, number, number][] = [
+            [onSeg(a1x, a1z, b1x, b1z, b2x, b2z), a1x, a1z],
+            [onSeg(a2x, a2z, b1x, b1z, b2x, b2z), a2x, a2z],
+            [onSeg(b1x, b1z, a1x, a1z, a2x, a2z), b1x, b1z],
+            [onSeg(b2x, b2z, a1x, a1z, a2x, a2z), b2x, b2z],
+          ];
+          let best = Infinity, bx = 0, bz = 0;
+          for (const [pt, fromX, fromZ] of cases) {
+            const d = Math.hypot(pt.x - fromX, pt.z - fromZ);
+            if (d < best) { best = d; bx = (pt.x + fromX) / 2; bz = (pt.z + fromZ) / 2; }
+          }
+          return { dist: best, x: bx, z: bz };
+        };
+        // Real (non-buried) power lines only — Water Line/Electric Line
+        // share the same canonical class but aren't overhead conductors.
+        const realPowerLines =
+          detectionMode3D === "powerlines"
+            ? features.filter((f) => {
+                if (classMap[f.properties.category ?? ""] !== "Power_Line") return false;
+                const raw = (f.properties.category ?? "").toLowerCase();
+                return !raw.includes("water") && !raw.includes("electric");
+              })
+            : [];
 
         for (const b of buildings) {
           // Drain encroachment finding for THIS building, if any. In the
@@ -1450,7 +1550,6 @@ export function Map3DViewer({ features, classMap, anomalies, datasets, activeDat
           // in a sea of ordinary buildings.
           const drainAnomaly = detectionMode3D === "drains" ? drainAnomalyByBuildingId.get(b.properties.id) : undefined;
           if (detectionMode3D === "drains" && !drainAnomaly) continue;
-
           const geom = b.geometry;
           // Collect EVERY footprint polygon (MultiPolygon can have several
           // parts — using only coordinates[0][0] previously dropped the rest
@@ -1464,14 +1563,85 @@ export function Map3DViewer({ features, classMap, anomalies, datasets, activeDat
               : [];
           const attrs = b.properties.attributes ?? {};
           const h = heights[b.properties.id];
-          // Prefer real surveyed height: floors × storey height, or an explicit
-          // height attribute; else fall back to DSM−DTM sampling.
-          const floors = readAttr(attrs, "floors") ?? readAttr(attrs, "no_of_floors") ?? readAttr(attrs, "num_floors");
+          // This survey records storeys as "G" / "G+2" (ground, or ground +
+          // N upper storeys) under a "Floor" field — not a plain number, so
+          // the generic readAttr can't parse it directly.
+          const rawFloor = readRawAttr(attrs, "floor");
+          const floorStringCount = parseFloorLevelString(rawFloor);
+          // "Top_E"/"Top_Level": a real surveyed absolute TOP elevation
+          // (same metres-above-sea-level datum as the DTM) — real height is
+          // that minus the real ground elevation at this exact footprint,
+          // the most accurate height source when present (more precise
+          // than an assumed 3.2 m/storey estimate).
+          const topAbsElev = readAttr(attrs, "top_e") ?? readAttr(attrs, "top_level");
+          let topDerivedHeight: number | null = null;
+          if (topAbsElev !== null && rings.length > 0 && rings[0].length > 0) {
+            const [firstLon, firstLat] = rings[0][0];
+            topDerivedHeight = topAbsElev - (elevAt(firstLon, firstLat) + baseElevation);
+            if (!(topDerivedHeight > 0.5)) topDerivedHeight = null; // implausible/negative — a bad Top_E read, not a real height
+          }
+          // Prefer real surveyed height, most accurate source first: Top_E-
+          // derived, then floors × storey height (numeric or "G+N" string),
+          // then an explicit height attribute; else fall back to DSM−DTM
+          // sampling.
+          const floors =
+            readAttr(attrs, "floors") ?? readAttr(attrs, "no_of_floors") ?? readAttr(attrs, "num_floors") ?? floorStringCount;
           const attrHeight = readAttr(attrs, "height") ?? readAttr(attrs, "building_height") ?? readAttr(attrs, "elevation");
-          const heightM =
-            attrHeight ?? (floors ? floors * 3.2 : h?.height_m ?? DEFAULT_BUILDING_HEIGHT_M);
-          const estimated = !(attrHeight || floors) && h ? h.estimated : !(attrHeight || floors);
-          const bColor = sceneColor(b.properties.category);
+          const realHeight = topDerivedHeight ?? (floors ? floors * 3.2 : null) ?? attrHeight;
+          const heightM = realHeight ?? h?.height_m ?? DEFAULT_BUILDING_HEIGHT_M;
+          const estimated = realHeight === null && h ? h.estimated : realHeight === null;
+
+          // Powerlines focus: a genuine 3D clearance to the nearest real
+          // overhead conductor, computed directly from THIS scene's own
+          // geometry (this building's real footprint + real height, vs.
+          // the nearest real pole's real conductor height at the closest
+          // approach point) — not the backend's 2D-only anomaly. A short
+          // building automatically lands in "green" because the vertical
+          // gap alone clears it; no separate height-gate rule is needed.
+          let powerlineTier: "red" | "yellow" | "green" | null = null;
+          let powerlineDist3D: number | null = null;
+          if (detectionMode3D === "powerlines" && rings.length > 0 && rings[0].length > 0) {
+            const [firstLon, firstLat] = rings[0][0];
+            const roofY = elevAt(firstLon, firstLat) + heightM;
+            let best = Infinity;
+            for (const pl of realPowerLines) {
+              const plGeom = pl.geometry;
+              const plLines: [number, number][][] =
+                plGeom.type === "LineString" ? [plGeom.coordinates as [number, number][]] :
+                plGeom.type === "MultiLineString" ? (plGeom.coordinates as [number, number][][]) : [];
+              for (const line of plLines) {
+                for (let i = 0; i < line.length - 1; i++) {
+                  const [ax, az] = projector.toLocal(line[i][0], line[i][1]);
+                  const [bx, bz] = projector.toLocal(line[i + 1][0], line[i + 1][1]);
+                  for (const ring of rings) {
+                    for (let j = 0; j < ring.length - 1; j++) {
+                      const [cx, cz] = projector.toLocal(ring[j][0], ring[j][1]);
+                      const [dx, dz] = projector.toLocal(ring[j + 1][0], ring[j + 1][1]);
+                      const approach = closestApproach2D(ax, az, bx, bz, cx, cz, dx, dz);
+                      const wireY = conductorHeightNear(approach.x, approach.z);
+                      const verticalGap = Math.max(0, wireY - roofY);
+                      const dist3D = verticalGap > 0 ? Math.hypot(approach.dist, verticalGap) : approach.dist;
+                      if (dist3D < best) best = dist3D;
+                    }
+                  }
+                }
+              }
+            }
+            if (best <= 0.5) powerlineTier = "red";
+            else if (best <= 1.0) powerlineTier = "yellow";
+            else if (best <= 3.0) powerlineTier = "green";
+            if (powerlineTier) powerlineDist3D = best;
+          }
+          // A powerline-flagged building is tinted by its own real tier —
+          // RED (<=0.5m, critical), YELLOW (<=1.0m, marginal), or GREEN
+          // (real clearance, confirmed OK) — same colors the 2D map fills
+          // it with in this focus. Previously the 3D view only drew a
+          // floating clearance line/label and left the building in its
+          // ordinary category color, so the finding never read as an
+          // obvious "danger" (or "confirmed safe") at a glance like 2D.
+          const bColor = powerlineTier
+            ? `#${ANOMALY_COLOR[powerlineTier].toString(16).padStart(6, "0")}`
+            : sceneColor(b.properties.category);
           // The flagged drain's own geometry, looked up once per building —
           // used below to find exactly where it crosses THIS building's
           // footprint, so only that real crossing point gets marked red/
@@ -1499,6 +1669,9 @@ export function Map3DViewer({ features, classMap, anomalies, datasets, activeDat
                   ...detail.attributes,
                   "Height (m)": `${heightM.toFixed(1)}${estimated ? " (estimated)" : ""}`,
                   ...(drainAnomaly ? { "Drain encroachment": `${drainAnomaly.color} — drain runs through this building` } : {}),
+                  ...(powerlineTier
+                    ? { "Powerline proximity": `${powerlineTier} — ${powerlineDist3D?.toFixed(2)}m real 3D clearance to nearest conductor` }
+                    : {}),
                 },
               };
               gfor(b).add(mesh);
@@ -1523,6 +1696,7 @@ export function Map3DViewer({ features, classMap, anomalies, datasets, activeDat
                   }
                 }
               }
+
             }
           }
         }
@@ -2178,7 +2352,6 @@ export function Map3DViewer({ features, classMap, anomalies, datasets, activeDat
         for (const pl of powerLines) {
           const raw = (pl.properties.category ?? "").toLowerCase();
           const isWater = raw.includes("water");
-          const isElectric = !isWater && raw.includes("electric");
           // This feature's OWN raw category color ("Water Line" / "Electric
           // Line" / "Power Line" are different raw categories sharing one
           // canonical class) — matches the 2D Layers panel exactly.
@@ -2195,18 +2368,14 @@ export function Map3DViewer({ features, classMap, anomalies, datasets, activeDat
             if (isWater) {
               // Buried water main: translucent pipe following the terrain.
               buildBuriedLine(pl, line, 2.5, 0.55, lineColor, 0.85, "waterline");
-            } else if (isElectric) {
-              // Buried electric service cable — underground wiring, not an
-              // overhead line.
-              buildBuriedLine(pl, line, 2.0, 0.3, lineColor, 1, "electricline");
             } else {
-              // Power line: a real OVERHEAD 3-phase conductor hanging from
-              // whatever real grid poles are actually there (light, power,
-              // or combo — solar poles are excluded from polePositions,
-              // they're off-grid). The poles are a separately-surveyed layer
-              // that lies ON the line but not on its vertices, so we INSERT
-              // a pole-top vertex wherever a grid pole sits on a segment —
-              // the conductor then visibly lands on every real support
+              // Power line (includes Electric Line): a real OVERHEAD 3-phase
+              // conductor hanging from whatever real grid poles are actually there
+              // (light, power, or combo — solar poles are excluded from
+              // polePositions, they're off-grid). The poles are a separately-
+              // surveyed layer that lies ON the line but not on its vertices, so
+              // we INSERT a pole-top vertex wherever a grid pole sits on a
+              // segment — the conductor then visibly lands on every real support
               // instead of floating past them at a flat height.
               const POLE_SNAP_TOL = 4; // metres from the line to count as a support
               const vlocal = line.map(([lon, lat]) => {
@@ -2283,11 +2452,13 @@ export function Map3DViewer({ features, classMap, anomalies, datasets, activeDat
               const mat = new THREE.MeshStandardMaterial({ color: lineColor, roughness: 0.5, metalness: 0.4 });
               const [firstLon, firstLat] = line[0];
               const wireDetail = featureDetail(pl, "powerline", lineColor, firstLon, firstLat);
-              // Matches the real spacing of the 3 ceramic insulators mounted
-              // on every power pole's crossarm (see buildPoleMarker) — so
-              // each of the 3 conductors visibly lands on its own insulator
-              // instead of floating past at a slightly different spacing.
-              for (const off of [-0.75, 0, 0.75]) {
+              // Real surveyed conductor count where recorded ("Ways": 1, 2,
+              // or 3) — falls back to the standard 3-phase spacing
+              // otherwise. The 3-wire case still matches the real spacing
+              // of the 3 ceramic insulators on every power pole's crossarm
+              // (see buildPoleMarker).
+              const waysCount = readAttr(pl.properties.attributes ?? {}, "ways");
+              for (const off of wireOffsetsForWays(waysCount)) {
                 const cpts = pts.map((p, i) => {
                   const prev = pts[Math.max(0, i - 1)];
                   const next = pts[Math.min(pts.length - 1, i + 1)];
@@ -2315,7 +2486,55 @@ export function Map3DViewer({ features, classMap, anomalies, datasets, activeDat
                 mesh.userData = wireDetail;
                 gfor(pl).add(mesh);
                 clickable.push(mesh);
-              }
+}
+        }
+      }
+    }
+
+        // Danger buffer zone around powerlines (1m radius) — only visible
+        // in Powerlines AI detection mode. Shows a semi-transparent
+        // tube around each overhead conductor so users can see the
+        // 1m safety clearance envelope.
+        if (detectionMode3D === "powerlines") {
+          const POWERLINE_BUFFER_M = 1.0;
+          for (const pl of powerLines) {
+            const raw = (pl.properties.category ?? "").toLowerCase();
+            // Only show buffer for overhead power lines, not buried water/electric
+            if (raw.includes("water") || raw.includes("electric")) continue;
+            const geom = pl.geometry;
+            const lines: [number, number][][] =
+              geom.type === "LineString"
+                ? [geom.coordinates]
+                : geom.type === "MultiLineString"
+                  ? (geom.coordinates as [number, number][][])
+                  : [];
+            for (const line of lines) {
+              if (line.length < 2) continue;
+              // Densify for smooth buffer tube
+              const dense = densifyLine(line, projector, 2);
+              const pts = dense.map(([lon, lat]) => {
+                const [x, z] = projector.toLocal(lon, lat);
+                return new THREE.Vector3(x, elevAt(lon, lat) + 8, z);
+              });
+              if (pts.length < 2) continue;
+              const curve = new THREE.CatmullRomCurve3(pts);
+              const geo = new THREE.TubeGeometry(
+                curve,
+                Math.max(4, pts.length * 2),
+                POWERLINE_BUFFER_M,
+                12,
+                false
+              );
+              const mat = new THREE.MeshStandardMaterial({
+                color: 0xef4444,
+                transparent: true,
+                opacity: 0.12,
+                side: THREE.DoubleSide,
+                depthWrite: false,
+              });
+              const mesh = new THREE.Mesh(geo, mat);
+              mesh.renderOrder = -1; // render behind other objects
+              gfor(pl).add(mesh);
             }
           }
         }
@@ -2778,7 +2997,7 @@ export function Map3DViewer({ features, classMap, anomalies, datasets, activeDat
           </button>
         </div>
         <div className="manhole-3d-overlay__colormode" role="radiogroup" aria-label="AI detection focus">
-          {(["poles", "drains", "manholes"] as const).map((mode) => (
+          {(["poles", "drains", "manholes", "roads", "powerlines"] as const).map((mode) => (
             <button
               key={mode}
               type="button"

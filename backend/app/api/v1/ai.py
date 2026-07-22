@@ -1081,6 +1081,12 @@ def _anomaly_fact_sheet(row: SpatialAnomaly) -> str:
         ]
         if m.get("primary_issue"):
             lines.append(f"Classified issue: {m.get('primary_issue')} (severity hint: {m.get('severity_hint') or 'unknown'}).")
+    elif row.anomaly_type.value == "powerline_proximity":
+        lines += [
+            f"Building is {m.get('nearest_powerline_distance_m')} m from the nearest power line — below the {m.get('danger_threshold_m')} m electrical safety clearance.",
+            "This building is flagged as DANGEROUS (RED) due to proximity to overhead/underground power lines.",
+            f"Power line(s) involved: {m.get('powerline_categories')}",
+        ]
 
     return "\n".join(lines)
 
@@ -1128,6 +1134,7 @@ async def run_audit(body: AuditRunRequest, db: AsyncSession = Depends(get_db)) -
         drain_encroachment=summary.drain_encroachment,
         manhole_status=summary.manhole_status,
         road_width_narrowing=summary.road_width_narrowing,
+        powerline_proximity=summary.powerline_proximity,
     )
 
 

@@ -14,6 +14,7 @@ const ISSUE_LABEL: Record<SpatialAnomaly["anomaly_type"], string> = {
   drain_encroachment: "Drain issue",
   manhole_status: "Manhole issue",
   road_width_narrowing: "Road width",
+  powerline_proximity: "Powerline issue",
 };
 
 function issueDetail(issue: SpatialAnomaly): string {
@@ -30,6 +31,9 @@ function issueDetail(issue: SpatialAnomaly): string {
     return facts.drain_crosses_building
       ? `Drain crosses building footprint (${facts.crossing_ratio_pct ?? "?"}% span)`
       : "Drain partially clips a building footprint";
+  }
+  if (issue.anomaly_type === "powerline_proximity") {
+    return `Building ${facts.nearest_powerline_distance_m ?? "?"}m from power line (threshold: ${facts.danger_threshold_m ?? "?"}m)`;
   }
   return typeof facts.basis === "string" ? facts.basis : "Manhole condition needs review";
 }

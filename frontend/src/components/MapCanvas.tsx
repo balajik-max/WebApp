@@ -2568,13 +2568,18 @@ const DEFAULT_FILL_OPACITY = 0.35;
  * encroached building is highlighted red/yellow, everything else defaults
  * to green ("confirmed OK"), matching a real choropleth rather than pins. */
 function buildBuildingColorExpression(
-  buildingColor: Record<string, "red" | "yellow" | "blue">
+  buildingColor: Record<string, "red" | "yellow" | "green" | "blue">
 ): maplibregl.ExpressionSpecification | string {
   const entries = Object.entries(buildingColor);
   if (entries.length === 0) return BUILDING_DEFAULT_COLOR;
   const pairs: (string | maplibregl.ExpressionSpecification)[] = [];
   for (const [id, color] of entries) {
-    pairs.push(id, color === "blue" ? POINT_ISSUE_RESOLVED_COLOR : color === "red" ? BUILDING_RED_COLOR : BUILDING_YELLOW_COLOR);
+    const hex =
+      color === "blue" ? POINT_ISSUE_RESOLVED_COLOR :
+      color === "red" ? BUILDING_RED_COLOR :
+      color === "green" ? BUILDING_DEFAULT_COLOR :
+      BUILDING_YELLOW_COLOR;
+    pairs.push(id, hex);
   }
   return ["match", ["get", "id"], ...pairs, BUILDING_DEFAULT_COLOR] as unknown as maplibregl.ExpressionSpecification;
 }
@@ -2593,6 +2598,7 @@ const ANOMALY_TYPE_LABEL: Record<SpatialAnomaly["anomaly_type"], string> = {
   drain_encroachment: "Drain Encroachment",
   manhole_status: "Manhole Status",
   road_width_narrowing: "Road Width Narrowing",
+  powerline_proximity: "Powerline Proximity",
 };
 
 /** One-line, numbers-first summary for the hover tooltip's AI Detected
@@ -2631,6 +2637,13 @@ function summarizeAnomalyForTooltip(a: SpatialAnomaly): { color: AnomalyDisplayC
   };
 }
 
+// Compound key for anomalyByFeatureIdRef — a plain feature-id key would
+// collapse a building's drain_encroachment AND powerline_proximity findings
+// (say) into a single slot, so whichever was written last silently wins.
+function anomalyLookupKey(anomalyType: string, featureId: string): string {
+  return `${anomalyType}:${featureId}`;
+}
+
 function primaryFeatureIdForAnomaly(anomaly: SpatialAnomaly): string | null {
   return (
     (anomaly.anomaly_metadata.this_feature_id as string | undefined) ??
@@ -2645,7 +2658,14 @@ function aiVerificationContextForAnomaly(
   anomaly: SpatialAnomaly | undefined,
   mode: DetectionMode,
 ): AiVerificationContext | null {
-  if (!anomaly || !mode || mode === "roads" || (anomaly.color !== "red" && anomaly.color !== "yellow")) return null;
+  // The backend AE/AEE remediation workflow's DetectionMode is currently
+  // Literal["poles", "drains", "manholes"] (backend/app/schemas/point_
+  // verification.py) — "roads" was already excluded here for the same
+  // reason, but "powerlines" was missed. Without this, clicking a
+  // powerline-flagged building opened the verification panel, which called
+  // a workflow endpoint the backend guaranteed-rejects with a 422 for
+  // detection_mode=powerlines, every single time.
+  if (!anomaly || !mode || mode === "roads" || mode === "powerlines" || (anomaly.color !== "red" && anomaly.color !== "yellow")) return null;
   if (anomaly.anomaly_type !== DETECTION_MODE_ANOMALY_TYPE[mode]) return null;
   return {
     anomalyId: anomaly.id,
@@ -2965,6 +2985,9 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
   // dataset(s), plus which one (if any) is open in the AI Alert card.
   const [anomalies, setAnomalies] = useState<SpatialAnomaly[]>([]);
   const [selectedAnomalyId, setSelectedAnomalyId] = useState<string | null>(null);
+  // Which exact combination of active dataset ids the spatial audit has
+  // actually completed for — see the invalidation effect below.
+  const auditedDatasetKeyRef = useRef<string>("");
 
   // AI Manhole Recommendation Engine — computed fresh per click/plan-run
   // (not pre-persisted like the spatial audit engine above), so its own
@@ -3021,7 +3044,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
   // this off until the user turns it on.
   const [aiOverlayEnabled, setAiOverlayEnabled] = useState(false);
   const aiOverlayEnabledRef = useRef(false);
-  const buildingColorMapRef = useRef<Record<string, "red" | "yellow" | "blue">>({});
+  const buildingColorMapRef = useRef<Record<string, "red" | "yellow" | "green" | "blue">>({});
   // feature id -> its own anomaly, for the hover tooltip's "AI Detected"
   // badge — populated whenever anomalies changes, read via ref from the
   // hover handler (registered once at map load).
@@ -5066,8 +5089,15 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
       map.setPaintProperty(LAYER_LINES, "line-width", 2.5);
       map.setPaintProperty(LAYER_LINES, "line-opacity", 1);
     }
-    const drainsAiActive = aiOverlayEnabled && detectionMode === "drains";
-    if (map.getLayer(LAYER_POLY_FILL) && !drainsAiActive) {
+    // Buildings are recolored red/yellow by their own real finding in BOTH
+    // Drains and Powerlines mode (see the buildingColors effect above) —
+    // this predates the Powerlines mode and only ever excluded "drains"
+    // here, so whenever THIS effect re-ran (any visualization-mode/opacity/
+    // etc change) it silently overwrote Powerlines' red fill back to the
+    // plain category color, even though the AI badge/tooltip (built from a
+    // separate lookup) kept showing the correct finding the whole time.
+    const buildingAiFillActive = aiOverlayEnabled && (detectionMode === "drains" || detectionMode === "powerlines");
+    if (map.getLayer(LAYER_POLY_FILL) && !buildingAiFillActive) {
       map.setPaintProperty(LAYER_POLY_FILL, "fill-color", baseColor);
       map.setPaintProperty(LAYER_POLY_FILL, "fill-opacity", DEFAULT_FILL_OPACITY);
     }
@@ -5740,13 +5770,23 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
   // pole; drain/manhole rows are keyed by their metadata id for the same
   // reason (feature_ids[0] happens to already match those two, but reading
   // the explicit metadata field is the correct contract, not a coincidence).
+  //
+  // Keyed by BOTH anomaly_type and feature id, not feature id alone — a
+  // building can genuinely have more than one kind of finding (e.g. both a
+  // drain_encroachment AND a powerline_proximity), and a plain feature-id
+  // key meant whichever anomaly happened to be inserted last silently won,
+  // so hovering a building flagged for Powerlines could show a stale
+  // "Drain Encroachment" badge left over from a completely different
+  // finding on the same building. Read sites must look up with the SAME
+  // compound key (see anomalyLookupKey) using the currently active mode's
+  // own anomaly type, never just the feature id.
   useEffect(() => {
     const byFeature: Record<string, SpatialAnomaly> = {};
     const byId: Record<string, SpatialAnomaly> = {};
     for (const anomaly of anomalies) {
       byId[anomaly.id] = anomaly;
       const primaryId = primaryFeatureIdForAnomaly(anomaly);
-      if (primaryId) byFeature[primaryId] = anomaly;
+      if (primaryId) byFeature[anomalyLookupKey(anomaly.anomaly_type, primaryId)] = anomaly;
     }
     anomalyByFeatureIdRef.current = byFeature;
     anomalyByIdRef.current = byId;
@@ -5810,14 +5850,28 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     const map = mapRef.current;
     if (!mapReady || !map) return;
 
-    const buildingColors: Record<string, "red" | "yellow" | "blue"> = {};
+    const buildingColors: Record<string, "red" | "yellow" | "green" | "blue"> = {};
     const buildingAnomalyIds: Record<string, string> = {};
-    for (const a of anomalies) {
-      if (a.anomaly_type !== "drain_encroachment") continue;
-      const buildingId = a.feature_ids[0];
-      if (buildingId) {
-        buildingColors[buildingId] = a.status === "resolved" ? "blue" : a.color === "red" ? "red" : "yellow";
-        buildingAnomalyIds[buildingId] = a.id;
+    // Restricted to the CURRENTLY ACTIVE mode's own anomaly type — a
+    // building can genuinely carry both a drain_encroachment AND a
+    // powerline_proximity finding at once, and this map holds only one
+    // color/id per building, so without this filter whichever anomaly type
+    // happened to be inserted last would silently win regardless of which
+    // mode is actually showing (recoloring a building red for Drains using
+    // a stale Powerlines finding, or vice versa, and — for
+    // buildingAnomalyIds — opening the wrong finding's AI Alert card on
+    // click).
+    const buildingAnomalyType =
+      detectionMode === "drains" || detectionMode === "powerlines" ? DETECTION_MODE_ANOMALY_TYPE[detectionMode] : null;
+    if (buildingAnomalyType) {
+      for (const a of anomalies) {
+        if (a.anomaly_type !== buildingAnomalyType) continue;
+        const buildingId = a.feature_ids[0];
+        if (buildingId) {
+          buildingColors[buildingId] =
+            a.status === "resolved" ? "blue" : a.color === "red" ? "red" : a.color === "green" ? "green" : "yellow";
+          buildingAnomalyIds[buildingId] = a.id;
+        }
       }
     }
     buildingColorMapRef.current = buildingColors;
@@ -5828,12 +5882,12 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
       map.setPaintProperty(
         LAYER_POLY_FILL,
         "fill-color",
-        aiOn && detectionMode === "drains" ? buildBuildingColorExpression(buildingColors) : colorByCategoryExpr()
+        aiOn && (detectionMode === "drains" || detectionMode === "powerlines") ? buildBuildingColorExpression(buildingColors) : colorByCategoryExpr()
       );
       map.setPaintProperty(
         LAYER_POLY_FILL,
         "fill-opacity",
-        aiOn && detectionMode === "drains" ? DRAINS_MODE_FILL_OPACITY : DEFAULT_FILL_OPACITY
+        aiOn && (detectionMode === "drains" || detectionMode === "powerlines") ? DRAINS_MODE_FILL_OPACITY : DEFAULT_FILL_OPACITY
       );
     }
     if (map.getLayer(LAYER_ANOMALIES)) {
@@ -5842,11 +5896,10 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
       // mode the point layer shows nothing; in other modes it shows that
       // mode's type (never road_width_narrowing). With no mode but the overlay
       // on (e.g. after "Run Spatial Audit") it shows every type except
-      // road_width_narrowing. Drains mode suppresses points entirely (it
-      // communicates through polygon fill), and Manholes mode suppresses them
-      // too — the manhole heatmap overlay replaces the individual dots there.
+      // road_width_narrowing. Drains and Powerlines modes suppress points
+      // entirely (they communicate through polygon fill).
       const anomalyType =
-        aiOn && detectionMode !== null && detectionMode !== "drains" && detectionMode !== "roads" && detectionMode !== "manholes"
+        aiOn && detectionMode !== null && detectionMode !== "drains" && detectionMode !== "roads" && detectionMode !== "manholes" && detectionMode !== "powerlines"
           ? DETECTION_MODE_ANOMALY_TYPE[detectionMode]
           : null;
       let pointFilter: maplibregl.FilterSpecification;
@@ -5855,7 +5908,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
       } else if (aiOn && detectionMode === null) {
         pointFilter = ["!=", ["get", "anomaly_type"], "road_width_narrowing"];
       } else {
-        // roads or drains mode, or overlay off => no dots
+        // roads or drains or powerlines mode, or overlay off => no dots
         pointFilter = ["==", ["get", "anomaly_type"], "__none__"];
       }
       map.setFilter(LAYER_ANOMALIES, pointFilter);
@@ -5930,7 +5983,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
   }, [detectionMode, datasets]);
 
   const toggleDetectionMode = useCallback((mode: Exclude<DetectionMode, null>) => {
-    if (mode === "roads" && !spatialAuditExecutedRef.current) {
+    if ((mode === "roads" || mode === "powerlines") && !spatialAuditExecutedRef.current) {
       setSpatialAuditRequested(true);
     }
     roadInspectionAbortRef.current?.abort();
@@ -6560,6 +6613,25 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     map.getCanvas().style.cursor = quickAnalysisTool === "select" ? "crosshair" : "";
   }, [mapReady, measureActive, quickAnalysisTool]);
 
+  // spatialAuditExecutedRef is a single "has ANY audit run this session"
+  // flag owned by WorkspaceLayout (persists across dataset switches, by
+  // design, so re-entering an AI Detection mode on the SAME dataset never
+  // re-runs the audit needlessly). But nothing was invalidating it when the
+  // active dataset selection actually changed to a genuinely different
+  // combination — so selecting a different GDB dataset, or loading a brand
+  // new one, silently reused whichever dataset's audit ran FIRST this
+  // session (or ran no audit at all), leaving AI Detection with stale or
+  // empty findings for the new data. This effect is the fix: whenever the
+  // active dataset combination changes to one the audit hasn't actually
+  // completed for yet, it un-sticks the flag so the run effect below fires
+  // again for THIS selection.
+  const activeDatasetKey = [...activeDatasetIds].sort().join(",");
+  useEffect(() => {
+    if (activeDatasetKey !== auditedDatasetKeyRef.current) {
+      spatialAuditExecutedRef.current = false;
+    }
+  }, [activeDatasetKey, spatialAuditExecutedRef]);
+
   // Fires once per fresh app load, on the first AI Detection icon click —
   // see WorkspaceLayout for why the guard lives outside this component.
   // `spatialAuditRequested` is set synchronously on that click; this
@@ -6568,18 +6640,19 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
   // isn't wasted and doesn't need a second click to take effect.
   const hasActiveDatasets = activeDatasetIds.length > 0;
   useEffect(() => {
-    console.log("[SpatialAudit] effect fired:", { spatialAuditRequested, executed: spatialAuditExecutedRef.current, hasActiveDatasets, datasetCount: activeDatasetIds.length });
     if (!spatialAuditRequested || spatialAuditExecutedRef.current) return;
     if (!hasActiveDatasets) return;
-    console.log("[SpatialAudit] starting audit for datasets:", activeDatasetIds);
     spatialAuditExecutedRef.current = true;
     onSpatialAuditStatusChange("running");
     void runAudit(activeDatasetIds).then((ok) => {
-      console.log("[SpatialAudit] audit completed:", { ok });
-      if (!ok) spatialAuditExecutedRef.current = false;
+      if (!ok) {
+        spatialAuditExecutedRef.current = false;
+      } else {
+        auditedDatasetKeyRef.current = activeDatasetKey;
+      }
       onSpatialAuditStatusChange(ok ? "success" : "error");
     });
-  }, [hasActiveDatasets, activeDatasetIds, runAudit, onSpatialAuditStatusChange, spatialAuditRequested, spatialAuditExecutedRef]);
+  }, [hasActiveDatasets, activeDatasetIds, activeDatasetKey, runAudit, onSpatialAuditStatusChange, spatialAuditRequested, spatialAuditExecutedRef]);
 
   const runManholeFeatureRecommend = useCallback(async (datasetId: string, featureId: string) => {
     setManholeFeatureOpen(true);
@@ -8039,12 +8112,20 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
         }
         const activeMode = detectionModeRef.current;
         const selectedAnomaly = aiOverlayEnabledRef.current && activeMode
-          ? anomalyByFeatureIdRef.current[selected.properties.id]
+          ? anomalyByFeatureIdRef.current[anomalyLookupKey(DETECTION_MODE_ANOMALY_TYPE[activeMode], selected.properties.id)]
           : undefined;
         const verificationContext = aiOverlayEnabledRef.current
           ? aiVerificationContextForAnomaly(selectedAnomaly, activeMode)
           : null;
-        if (aiOverlayEnabledRef.current && activeMode === "drains") {
+        if (aiOverlayEnabledRef.current && (activeMode === "drains" || activeMode === "powerlines")) {
+          // Same "click a recolored building -> open its AI Alert card" as
+          // Drains — buildingAnomalyIdMapRef is already scoped to the
+          // active mode's own anomaly type (see the buildingColors effect),
+          // so this correctly opens the powerline_proximity finding here,
+          // not a stale drain one. verificationContext stays null for
+          // Powerlines (the AE remediation workflow doesn't support it yet
+          // — see aiVerificationContextForAnomaly), so onFeatureSelect just
+          // isn't called with one; the Alert card itself doesn't need it.
           const anomalyId = buildingAnomalyIdMapRef.current[selected.properties.id];
           if (anomalyId) {
             setSelectedAnomalyId(anomalyId);
@@ -8114,8 +8195,9 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
         const aiStatus: "redundant" | "needed" | undefined =
           (aiHit?.properties?.ai_status as "redundant" | "needed" | undefined)
           ?? aiStatusRef.current.get(decoded.properties.id);
-        const anomalyForFeature = aiOverlayEnabledRef.current
-          ? anomalyByFeatureIdRef.current[decoded.properties.id]
+        const hoverMode = detectionModeRef.current;
+        const anomalyForFeature = aiOverlayEnabledRef.current && hoverMode
+          ? anomalyByFeatureIdRef.current[anomalyLookupKey(DETECTION_MODE_ANOMALY_TYPE[hoverMode], decoded.properties.id)]
           : undefined;
         const aiSummary = anomalyForFeature ? summarizeAnomalyForTooltip(anomalyForFeature) : undefined;
         setHover({
@@ -10876,7 +10958,7 @@ function MapControls({
                 <small>Drag</small>
                 <button type="button" onClick={() => setShowDetectionList(false)} aria-label="Close AI Detection">×</button>
               </div>
-              {(["poles", "drains", "manholes", "roads"] as const).map((mode) => (
+              {(["poles", "drains", "manholes", "roads", "powerlines"] as const).map((mode) => (
                 <button
                   type="button"
                   key={mode}
