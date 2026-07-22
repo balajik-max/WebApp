@@ -1806,7 +1806,15 @@ export function Map3DViewer({ features, classMap, anomalies, datasets, activeDat
           // grid power line has no real reason to run through one; treating
           // them as a support was wrong and made lines snap onto poles they
           // have no real connection to.
-          if (kind !== "solar-pole") polePositions.push({ x, z, topY: ground + poleH });
+          // The snap height is the real attachment point, not the bare mast
+          // tip: a power/combo pole's conductors land on its ceramic
+          // insulators (mounted on the crossarm at poleH-0.18, see below),
+          // while a plain light pole has no crossarm at all, so its
+          // approximate attachment sits a bit below the very top instead.
+          const isWoodPoleKind = kind === "power-pole" || kind === "power-light-pole";
+          if (kind !== "solar-pole") {
+            polePositions.push({ x, z, topY: ground + poleH - (isWoodPoleKind ? 0.18 : 0.3) });
+          }
           const g = new THREE.Group();
           // A power pole with a light fixture is still fundamentally a power
           // pole (wooden, carries a crossarm) — not a steel streetlight mast.
@@ -2213,19 +2221,73 @@ export function Map3DViewer({ features, classMap, anomalies, datasets, activeDat
                 out.push(vlocal[i]);
                 if (i < vlocal.length - 1) {
                   const a = vlocal[i], b = vlocal[i + 1];
+                  // Every real pole near this segment, in true walking order
+                  // along it (by t) — without sorting, a long segment with
+                  // several real poles on it would insert them in whatever
+                  // arbitrary order they appear in polePositions, zig-zagging
+                  // the conductor back and forth instead of running straight
+                  // down the row of poles.
+                  //
+                  // The inserted point's x/z stays exactly on the surveyed
+                  // line's own path (interpolated along a->b at t) — NEVER
+                  // snapped sideways onto the pole's own x/z. The pole only
+                  // supplies the height here. This is deliberate: this line's
+                  // horizontal path is how "is this power line actually close
+                  // to that building" gets judged, so it must always be the
+                  // real digitized 2D footprint, not nudged toward whichever
+                  // pole happens to be nearby (a separate survey layer whose
+                  // own position can be off by a few metres on its own).
+                  const hits: { t: number; x: number; z: number; y: number }[] = [];
                   for (const p of polePositions) {
                     const c = segClosest(p, a, b);
                     if (c.t > 0.02 && c.t < 0.98 && c.dist <= POLE_SNAP_TOL) {
-                      out.push({ x: p.x, z: p.z, y: p.topY });
+                      hits.push({
+                        t: c.t,
+                        x: a.x + (b.x - a.x) * c.t,
+                        z: a.z + (b.z - a.z) * c.t,
+                        y: p.topY,
+                      });
                     }
                   }
+                  hits.sort((h1, h2) => h1.t - h2.t);
+                  for (const h of hits) out.push({ x: h.x, z: h.z, y: h.y });
                 }
               }
-              const pts = out.map((o) => new THREE.Vector3(o.x, o.y, o.z));
+              // Real overhead conductors sag between supports under their own
+              // weight (a catenary) instead of running dead level/straight —
+              // approximated with a parabolic droop scaled to each span's own
+              // real horizontal length, so a long gap between poles visibly
+              // sags more than a short one, same as a real distribution line.
+              const SAG_RATIO = 0.035; // ~3.5% of span length
+              const MIN_SAG_M = 0.12;
+              const MAX_SAG_M = 1.8;
+              const pts: THREE.Vector3[] = [];
+              for (let i = 0; i < out.length; i++) {
+                const a = out[i];
+                pts.push(new THREE.Vector3(a.x, a.y, a.z));
+                if (i === out.length - 1) continue;
+                const b = out[i + 1];
+                const spanLen = Math.hypot(b.x - a.x, b.z - a.z);
+                const sag = Math.min(MAX_SAG_M, Math.max(MIN_SAG_M, spanLen * SAG_RATIO));
+                const steps = Math.max(3, Math.min(12, Math.round(spanLen / 4)));
+                for (let s = 1; s < steps; s++) {
+                  const t = s / steps;
+                  const droop = 4 * sag * t * (1 - t); // parabola, peaks at midspan
+                  pts.push(new THREE.Vector3(
+                    a.x + (b.x - a.x) * t,
+                    a.y + (b.y - a.y) * t - droop,
+                    a.z + (b.z - a.z) * t
+                  ));
+                }
+              }
               const mat = new THREE.MeshStandardMaterial({ color: lineColor, roughness: 0.5, metalness: 0.4 });
               const [firstLon, firstLat] = line[0];
               const wireDetail = featureDetail(pl, "powerline", lineColor, firstLon, firstLat);
-              for (const off of [-0.55, 0, 0.55]) {
+              // Matches the real spacing of the 3 ceramic insulators mounted
+              // on every power pole's crossarm (see buildPoleMarker) — so
+              // each of the 3 conductors visibly lands on its own insulator
+              // instead of floating past at a slightly different spacing.
+              for (const off of [-0.75, 0, 0.75]) {
                 const cpts = pts.map((p, i) => {
                   const prev = pts[Math.max(0, i - 1)];
                   const next = pts[Math.min(pts.length - 1, i + 1)];
@@ -2234,10 +2296,18 @@ export function Map3DViewer({ features, classMap, anomalies, datasets, activeDat
                   const perp = new THREE.Vector3(-t.z, 0, t.x).normalize().multiplyScalar(off);
                   return new THREE.Vector3(p.x + perp.x, p.y, p.z + perp.z);
                 });
+                // cpts is already densely sampled (sag subdivision above), so
+                // the tube only needs roughly one segment per input point,
+                // not a further 3x multiplier — that alone kept this smooth
+                // pre-sag when points were sparse (just the support corners).
+                // A real overhead conductor is only a few centimetres thick —
+                // 0.16 m radius (32 cm across) read as a thick pipe, nothing
+                // like a real wire. 0.035 m radius (7 cm across) is still
+                // visible at normal viewing distance but reads as a cable.
                 const geo = new THREE.TubeGeometry(
                   new THREE.CatmullRomCurve3(cpts),
-                  Math.max(2, cpts.length * 3),
-                  0.16,
+                  Math.max(2, Math.min(400, cpts.length)),
+                  0.035,
                   6,
                   false
                 );
@@ -2566,6 +2636,19 @@ export function Map3DViewer({ features, classMap, anomalies, datasets, activeDat
           controls.dispose();
         });
 
+        // Apply the current layer-visibility selection to the freshly built
+        // groups. THREE.Group defaults to visible=true when created, and the
+        // separate live-toggle effect below only fires when `visible`/
+        // `showHeatmap` themselves change — a rebuild triggered by
+        // colorMode/detectionMode3D alone (e.g. picking a focus, which also
+        // narrows `visible` in the same click) would otherwise briefly (and
+        // then permanently, since nothing else would ever re-apply it) show
+        // every layer until some later toggle happened to fire that effect.
+        Object.entries(groupRefs.current).forEach(([k, g]) => {
+          if (!g) return;
+          g.visible = k === "heatmap" ? showHeatmap : visible[k] !== false;
+        });
+
         setLoading(false);
       } catch (e) {
         if (!disposed) {
@@ -2600,31 +2683,25 @@ export function Map3DViewer({ features, classMap, anomalies, datasets, activeDat
   // rebuild. Terrain + buildings are the "surface" that the Underground view
   // fades to a translucent shell so the network reads as the subject.
   //
-  // While an AI Detection focus is active, this ALSO narrows the visible
-  // groups down to that mode's target classes (+ terrain) — exactly like
-  // the 2D Map Canvas's own category filter — layered on top of the user's
-  // own manual per-category toggles, which are preserved for when the mode
-  // is cleared again.
+  // Selecting an AI Detection focus sets the DEFAULT selection down to that
+  // mode's target classes (see the focus button's onClick below) — but from
+  // then on, `visible` is the single source of truth for every group, same
+  // as with no focus active. This mirrors the 2D Map Canvas: picking a focus
+  // narrows what's shown by default, but the user is always free to tick any
+  // OTHER layer back on in the panel too, instead of it staying force-hidden
+  // for as long as the focus is active.
   useEffect(() => {
-    const allowed = detectionMode3D ? DETECTION_MODE_TARGET_CLASSES[detectionMode3D] : null;
     Object.entries(groupRefs.current).forEach(([k, g]) => {
       if (!g) return;
       // The heatmap group is governed only by showHeatmap, never by the
-      // detection-mode filter (which would otherwise hide it as a non-target).
+      // per-category toggles.
       if (k === "heatmap") {
         g.visible = showHeatmap;
         return;
       }
-      const manuallyOn = visible[k] !== false;
-      if (!allowed || k === "terrain") {
-        g.visible = manuallyOn;
-        return;
-      }
-      const category = k.startsWith("cat:") ? k.slice(4) : null;
-      const cls = category ? classMap[category] : undefined;
-      g.visible = manuallyOn && !!cls && allowed.includes(cls);
+      g.visible = visible[k] !== false;
     });
-  }, [visible, detectionMode3D, classMap]);
+  }, [visible, showHeatmap]);
 
   // Underground view: fade the surface (terrain + buildings) to a translucent
   // shell and re-frame the camera down onto the pipe network, so the manholes
@@ -2658,14 +2735,13 @@ export function Map3DViewer({ features, classMap, anomalies, datasets, activeDat
     }
   }, [underground]);
 
+  // Every category is always LISTED here (a focus only changes each one's
+  // default checked state, set via setVisible above) — so the panel always
+  // has a checkbox the user can click to bring any other layer back on
+  // alongside the active focus, same as the 2D Map Canvas's Layers panel.
   const displayedLayers = (() => {
-    let list = categoryList;
-    if (detectionMode3D) {
-      const allowed = DETECTION_MODE_TARGET_CLASSES[detectionMode3D];
-      list = list.filter((c) => allowed.includes(classMap[c.category]));
-    }
     const q = layerQuery.trim().toLowerCase();
-    return q ? list.filter((c) => c.category.toLowerCase().includes(q)) : list;
+    return q ? categoryList.filter((c) => c.category.toLowerCase().includes(q)) : categoryList;
   })();
 
   return (
@@ -2716,6 +2792,21 @@ export function Map3DViewer({ features, classMap, anomalies, datasets, activeDat
                 // Manholes on shows it, leaving Manholes (for poles/drains or
                 // off) hides it so it never lingers on other modes.
                 setShowHeatmap(next === "manholes");
+                // Picking a focus narrows the DEFAULT layer selection down to
+                // that mode's target classes (exactly like the 2D Map
+                // Canvas) — but from then on the per-layer checkboxes are
+                // free to turn ANY other class back on too, since the
+                // visibility effect above just honors `visible` directly.
+                // Clearing the focus (next === null) hands every category
+                // back to visible, same as the 2D panel's manual checklist.
+                setVisible((v) => {
+                  const nextVisible: Record<string, boolean> = { ...v, terrain: true };
+                  const allowed = next ? DETECTION_MODE_TARGET_CLASSES[next] : null;
+                  for (const c of categoryList) {
+                    nextVisible[`cat:${c.category}`] = allowed ? allowed.includes(classMap[c.category]) : true;
+                  }
+                  return nextVisible;
+                });
               }}
               title={`Focus the 3D view on ${DETECTION_MODE_LABEL[mode]} and show that audit finding on the geometry itself`}
             >
