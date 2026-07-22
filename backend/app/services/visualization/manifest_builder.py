@@ -24,6 +24,7 @@ from app.schemas.visualization import (
     VisualizationLayerManifest,
     VisualizationManifest,
 )
+from app.services.visualization.layer_classifier import classify_layer
 
 
 _LAYER_KEY_SQL = """
@@ -228,36 +229,22 @@ def _recommended_modes(
     return modes
 
 
-# Fixed display order for the three geometry-based groups. The UI always
-# renders them in this sequence regardless of how the layers were loaded.
+# Preserve the colleague build's hierarchical attribute tree while adding
+# Layer Review metadata. This remains the source for the existing map styling UI.
 _GEOMETRY_GROUP_ORDER = ("Points", "Lines", "Polygon")
 
 
 def _geometry_label_for_layer(layer: VisualizationLayerManifest) -> str | None:
-    """Map a manifest layer to its geometry group label, or ``None`` to skip.
-
-    Honours the same Point/MultiPoint → Points, LineString/MultiLineString →
-    Lines, Polygon/MultiPolygon → Polygon mapping the renderer uses, and
-    ignores unknown/mixed (``generic``) geometries.
-    """
-    renderer = layer.recommended_renderer
-    if renderer == "point":
+    if layer.recommended_renderer == "point":
         return "Points"
-    if renderer == "line":
+    if layer.recommended_renderer == "line":
         return "Lines"
-    if renderer == "polygon":
+    if layer.recommended_renderer == "polygon":
         return "Polygon"
     return None
 
 
 def _clean_source_name(name: str) -> str:
-    """Derive a friendly data-source name from a raw dataset filename.
-
-    Strips the upload artifacts the client/backend add (``.gdb-<timestamp>-…``,
-    file extensions) so group labels read naturally, e.g.
-    ``Davangere Ghandinagar Ward.gdb-20260708T103425Z-3-001.zip`` →
-    ``Davangere Ghandinagar Ward``. Never hardcodes a name — always derived.
-    """
     cleaned = re.sub(r"\.(gdb|zip|shp|geojson|json|gpkg|kml)$", "", name, flags=re.IGNORECASE)
     cleaned = re.sub(r"-[0-9]{8}T[0-9]{6}Z(?:-[0-9]+)+$", "", cleaned)
     cleaned = re.sub(r"\.gdb$", "", cleaned, flags=re.IGNORECASE)
@@ -268,49 +255,24 @@ def build_field_group_tree(
     layers: list[VisualizationLayerManifest],
     source_name: str,
 ) -> VisualizationFieldGroupTree | None:
-    """Build the hierarchical attribute tree: geometry → layer → fields.
-
-    Every layer is placed under its geometry group (Points / Lines /
-    Polygon) and contributes its own ``VisualizationLayerGroup`` containing its
-    attributes *verbatim* — fields are never merged or flattened across layers,
-    so each attribute stays inside its original layer exactly as it exists in
-    the source GDB. Geometry groups with no matching layers are omitted, and
-    the surviving groups keep the fixed ``Points → Lines → Polygon`` order.
-    Returns ``None`` when no usable layers exist, so the UI falls back to the
-    flat attribute list.
-    """
-    source_name = _clean_source_name(source_name)
     bucketed: dict[str, list[VisualizationLayerGroup]] = {
         label: [] for label in _GEOMETRY_GROUP_ORDER
     }
-
     for layer in layers:
         label = _geometry_label_for_layer(layer)
-        if label is None:
+        if label is None or not layer.fields:
             continue
-        # Preserve the original field order from the source layer.
         bucketed[label].append(
-            VisualizationLayerGroup(
-                name=layer.display_name or layer.layer_key,
-                fields=list(layer.fields),
-            )
+            VisualizationLayerGroup(name=layer.display_name or layer.layer_key, fields=list(layer.fields))
         )
-
-    geometry_groups: list[VisualizationGeometryGroup] = []
-    for label in _GEOMETRY_GROUP_ORDER:
-        layer_groups = bucketed[label]
-        if not layer_groups:
-            continue
-        geometry_groups.append(
-            VisualizationGeometryGroup(name=label, layers=layer_groups)
-        )
-
-    if not geometry_groups:
+    groups = [
+        VisualizationGeometryGroup(name=label, layers=bucketed[label])
+        for label in _GEOMETRY_GROUP_ORDER
+        if bucketed[label]
+    ]
+    if not groups:
         return None
-    return VisualizationFieldGroupTree(
-        datasource=source_name,
-        geometry_groups=geometry_groups,
-    )
+    return VisualizationFieldGroupTree(datasource=_clean_source_name(source_name), geometry_groups=groups)
 
 
 async def build_visualization_manifest(
@@ -364,6 +326,16 @@ async def build_visualization_manifest(
     layers: list[VisualizationLayerManifest] = []
     has_gdb_layers = False
     total_features = 0
+    metadata = dataset.dataset_metadata or {}
+    raw_review_config = metadata.get("layer_review")
+    review_config = raw_review_config if isinstance(raw_review_config, dict) else {}
+    raw_source_layers = metadata.get("source_layers")
+    source_layers = raw_source_layers if isinstance(raw_source_layers, list) else []
+    source_layer_by_name = {
+        str(item.get("source_name")): item
+        for item in source_layers
+        if isinstance(item, dict) and item.get("source_name")
+    }
 
     for row in layer_rows:
         layer_key = str(row["layer_key"])
@@ -386,11 +358,62 @@ async def build_visualization_manifest(
         if not fields:
             warnings.append("No user-facing attributes were found for this layer.")
 
+        source_layer_info = source_layer_by_name.get(layer_key, {})
+        raw_source_fields = source_layer_info.get("fields")
+        source_field_names = (
+            [str(value) for value in raw_source_fields]
+            if isinstance(raw_source_fields, list) and raw_source_fields
+            else [field.name for field in fields]
+        )
+        automatic = classify_layer(
+            layer_key,
+            geometry_types,
+            source_field_names,
+        )
+        raw_override = review_config.get(layer_key)
+        override = raw_override if isinstance(raw_override, dict) else {}
+        confirmed = bool(override.get("confirmed", False))
+        override_type = str(override.get("dashboard_type") or "")
+
+        # Older dashboard builds could classify canonical generic feature
+        # classes such as Line as roads after all GDB columns were unioned.
+        # Do not keep that stale confirmed value when the corrected canonical
+        # classifier now has an unambiguous result.
+        canonical_generic = automatic.dashboard_type in {
+            "generic_point",
+            "generic_line",
+            "generic_polygon",
+        }
+        stale_domain_override = canonical_generic and override_type in {
+            "roads",
+            "drainage",
+            "manholes",
+            "buildings",
+        }
+        if stale_domain_override:
+            confirmed = False
+            override_type = ""
+            warnings.append(
+                "A stale domain classification from an earlier dashboard build was corrected using the original source feature class."
+            )
+
+        dashboard_type = override_type or automatic.dashboard_type
+        display_name = str(override.get("display_name") or _display_name(layer_key))
+        included = bool(override.get("included", True))
+        confidence = 1.0 if confirmed else automatic.confidence
+        review_status = (
+            "confirmed"
+            if confirmed
+            else "needs_review"
+            if automatic.confidence < 0.65
+            else "auto"
+        )
+
         layers.append(
             VisualizationLayerManifest(
                 layer_key=layer_key,
                 source_layer_name=layer_key,
-                display_name=_display_name(layer_key),
+                display_name=display_name,
                 geometry_types=geometry_types,
                 feature_count=feature_count,
                 bounds=_bounds_from_row(row),
@@ -402,15 +425,89 @@ async def build_visualization_manifest(
                     fields=fields,
                 ),
                 warnings=warnings,
+                dashboard_type=dashboard_type,
+                classification_confidence=confidence,
+                classification_reasons=(
+                    ["Confirmed by a user in Layer Review"]
+                    if confirmed
+                    else automatic.reasons
+                ),
+                review_status=review_status,
+                included=included,
+                ingestion_status=str(source_layer_info.get("status") or "ready"),
+                source_feature_count=int(source_layer_info.get("feature_count") or feature_count),
+                ingestion_warning=(
+                    str(source_layer_info.get("warning"))
+                    if source_layer_info.get("warning")
+                    else None
+                ),
             )
         )
 
-    metadata = dataset.dataset_metadata or {}
+    persisted_layer_keys = {layer.layer_key for layer in layers}
+    for source_layer in source_layers:
+        if not isinstance(source_layer, dict):
+            continue
+        layer_key = str(source_layer.get("source_name") or "").strip()
+        if not layer_key or layer_key in persisted_layer_keys:
+            continue
+        geometry_type = str(source_layer.get("geometry_type") or "Unknown")
+        geometry_types = [geometry_type]
+        raw_fields = source_layer.get("fields")
+        source_field_names = [str(value) for value in raw_fields] if isinstance(raw_fields, list) else []
+        fields = [VisualizationFieldProfile(name=name) for name in source_field_names]
+        automatic = classify_layer(layer_key, geometry_types, source_field_names)
+        raw_override = review_config.get(layer_key)
+        override = raw_override if isinstance(raw_override, dict) else {}
+        confirmed = bool(override.get("confirmed", False))
+        source_status = str(source_layer.get("status") or "unreadable")
+        source_warning = source_layer.get("warning")
+        warnings = [
+            "This source layer has no persisted features, so map and chart output is unavailable."
+        ]
+        if source_warning:
+            warnings.append(str(source_warning))
+        layers.append(
+            VisualizationLayerManifest(
+                layer_key=layer_key,
+                source_layer_name=layer_key,
+                display_name=str(override.get("display_name") or _display_name(layer_key)),
+                geometry_types=geometry_types,
+                feature_count=0,
+                bounds=None,
+                fields=fields,
+                recommended_renderer=_renderer_for(geometry_types),
+                recommended_modes=["default"],
+                warnings=warnings,
+                dashboard_type=str(override.get("dashboard_type") or automatic.dashboard_type),
+                classification_confidence=1.0 if confirmed else automatic.confidence,
+                classification_reasons=(
+                    ["Confirmed by a user in Layer Review"] if confirmed else automatic.reasons
+                ),
+                review_status=(
+                    "confirmed"
+                    if confirmed
+                    else "needs_review"
+                    if automatic.confidence < 0.65
+                    else "auto"
+                ),
+                included=bool(override.get("included", True)),
+                ingestion_status=source_status,
+                source_feature_count=int(source_layer.get("feature_count") or 0),
+                ingestion_warning=str(source_warning) if source_warning else None,
+            )
+        )
+
     file_type = getattr(dataset.file_type, "value", str(dataset.file_type))
     source_format = "gdb" if has_gdb_layers else str(
         metadata.get("source_format") or metadata.get("format") or file_type
     )
-    raw_source_crs = metadata.get("source_crs") or metadata.get("crs")
+    ingestion_metadata = metadata.get("ingestion") if isinstance(metadata.get("ingestion"), dict) else {}
+    raw_source_crs = (
+        metadata.get("source_crs")
+        or metadata.get("crs")
+        or ingestion_metadata.get("source_crs")
+    )
     source_crs = str(raw_source_crs) if raw_source_crs is not None else None
 
     manifest_warnings: list[str] = []

@@ -101,7 +101,7 @@ export function DataSourceSelector({
                   d.status === "ready"
                   && Boolean(d.dataset_metadata?.raster_overlay)
                   && !isGeoTiffDataset(d)
-                  && d.file_type !== "lidar";
+                  && (d.file_type !== "lidar" && d.file_type !== "las");
                 // Vector/GDB datasets keep the coordinate-search branch's
                 // layer styling control.
                 const hasLayerControls = layerDatasetIds.includes(d.id);

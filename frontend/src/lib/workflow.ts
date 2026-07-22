@@ -159,8 +159,8 @@ export interface SourceCrsResponse {
   message: string;
 }
 
-export function assignSourceCrs(id: string, crs: string) {
-  return apiPost<SourceCrsResponse>(`/api/v1/datasets/${id}/source-crs`, { crs });
+export function assignSourceCrs(datasetId: string, crs: string) {
+  return apiPost<SourceCrsResponse>(`/api/v1/datasets/${datasetId}/source-crs`, { crs });
 }
 
 export interface WardOption {
@@ -193,6 +193,7 @@ export type VisualizationFieldType =
   | "array"
   | "mixed"
   | "unknown";
+export type LayerReviewStatus = "auto" | "needs_review" | "confirmed";
 
 export interface VisualizationFieldProfile {
   name: string;
@@ -202,24 +203,14 @@ export interface VisualizationFieldProfile {
   unique_count: number | null;
 }
 
-export interface VisualizationFieldProfile {
-  name: string;
-  detected_type: VisualizationFieldType;
-  populated_count: number;
-  missing_count: number;
-  unique_count: number | null;
-}
-
-// Hierarchical attribute tree: datasource → geometryGroups → layers → fields.
-// Fields always stay on their original source layer; they are never merged or
-// flattened into a single list.
+// Hierarchical attribute tree preserved for the existing map styling controls.
 export interface VisualizationLayerGroupNode {
   name: string;
   fields: VisualizationFieldProfile[];
 }
 
 export interface VisualizationGeometryGroupNode {
-  name: string; // "Points" | "Lines" | "Polygon"
+  name: string;
   layers: VisualizationLayerGroupNode[];
 }
 
@@ -239,6 +230,14 @@ export interface VisualizationLayerManifest {
   recommended_renderer: VisualizationRenderer;
   recommended_modes: string[];
   warnings: string[];
+  dashboard_type: string;
+  classification_confidence: number;
+  classification_reasons: string[];
+  review_status: LayerReviewStatus;
+  included: boolean;
+  ingestion_status: string;
+  source_feature_count: number | null;
+  ingestion_warning: string | null;
 }
 
 export interface VisualizationManifest {
@@ -250,16 +249,128 @@ export interface VisualizationManifest {
   bounds: [number, number, number, number] | null;
   total_features: number;
   layers: VisualizationLayerManifest[];
-  // Hierarchical attribute tree (geometry → layer → fields) generated from the
-  // data source's layers. Present and non-empty → the UI renders a 3-level
-  // tree; absent/empty → the flat attribute list is used as a fallback.
   field_groups?: VisualizationFieldGroupTree | null;
   warnings: string[];
+}
+
+export interface LayerReviewUpdate {
+  display_name?: string | null;
+  dashboard_type?: string | null;
+  included?: boolean | null;
+  confirmed?: boolean;
+}
+
+export interface DashboardValueCount {
+  label: string;
+  count: number;
+}
+
+export interface DashboardNumericSummary {
+  field: string;
+  count: number;
+  minimum: number | null;
+  maximum: number | null;
+  average: number | null;
+}
+
+export interface DashboardLayerSummary {
+  layer_key: string;
+  display_name: string;
+  dashboard_type: string;
+  geometry_types: string[];
+  feature_count: number;
+  completeness_percentage: number;
+  issue_count: number;
+  category_breakdown: DashboardValueCount[];
+  status_field: string | null;
+  status_breakdown: DashboardValueCount[];
+  numeric_summaries: DashboardNumericSummary[];
+  fields: VisualizationFieldProfile[];
+  warnings: string[];
+}
+
+export interface UniversalDashboard {
+  dataset_id: string;
+  dataset_name: string;
+  total_features: number;
+  included_layers: number;
+  point_features: number;
+  line_features: number;
+  polygon_features: number;
+  issue_count: number;
+  missing_values: number;
+  profiled_values: number;
+  geometry_breakdown: DashboardValueCount[];
+  dashboard_types: DashboardValueCount[];
+  layers: DashboardLayerSummary[];
+  warnings: string[];
+}
+
+export interface DashboardRecord {
+  id: string;
+  category: string;
+  label: string | null;
+  severity: number;
+  geometry_type: string;
+  longitude: number | null;
+  latitude: number | null;
+  attributes: Record<string, unknown>;
+}
+
+export interface DashboardRecordResponse {
+  dataset_id: string;
+  dataset_name: string;
+  total: number;
+  limit: number;
+  truncated: boolean;
+  records: DashboardRecord[];
 }
 
 export function fetchVisualizationManifest(datasetId: string, signal?: AbortSignal) {
   return apiGet<VisualizationManifest>(
     `/api/v1/visualization/datasets/${datasetId}/manifest`,
+    signal
+  );
+}
+
+export function fetchDashboardTypes(signal?: AbortSignal) {
+  return apiGet<Record<string, string>>("/api/v1/visualization/dashboard-types", signal);
+}
+
+export function updateVisualizationLayerReview(
+  datasetId: string,
+  layerKey: string,
+  payload: LayerReviewUpdate,
+  signal?: AbortSignal
+) {
+  return apiPatch<VisualizationManifest>(
+    `/api/v1/visualization/datasets/${datasetId}/layers/${encodeURIComponent(layerKey)}`,
+    payload,
+    signal
+  );
+}
+
+export function fetchUniversalDashboard(datasetId: string, signal?: AbortSignal) {
+  return apiGet<UniversalDashboard>(
+    `/api/v1/visualization/datasets/${datasetId}/dashboard`,
+    signal
+  );
+}
+
+export function fetchDashboardRecords(
+  datasetId: string,
+  signal?: AbortSignal,
+  limit = 50000
+) {
+  return apiGet<DashboardRecordResponse>(
+    `/api/v1/visualization/datasets/${datasetId}/records?limit=${limit}`,
+    signal
+  );
+}
+
+export function downloadUniversalDashboardExcel(datasetId: string, signal?: AbortSignal) {
+  return apiDownload(
+    `/api/v1/visualization/datasets/${datasetId}/export/excel`,
     signal
   );
 }
@@ -306,6 +417,9 @@ export interface AnalyticsFeaturePage {
   rows: AnalyticsFeatureRow[];
 }
 
+const analyticsFeaturesCache = new Map<string, Promise<FeatureCollectionResponse>>();
+const drainEncroachmentCache = new Map<string, Promise<DrainEncroachmentReport>>();
+
 function analyticsScopeParams(
   datasetIds: string[],
   categories: string[],
@@ -324,9 +438,6 @@ function analyticsScopeParams(
   }
   return params;
 }
-
-const analyticsFeaturesCache = new Map<string, Promise<FeatureCollectionResponse>>();
-const drainEncroachmentCache = new Map<string, Promise<DrainEncroachmentReport>>();
 
 export function fetchAnalyticsFeatures(
   datasetIds: string[],
@@ -359,7 +470,6 @@ export function fetchAnalyticsFeatures(
   if (analyticsFeaturesCache.has(cacheKey)) {
     return analyticsFeaturesCache.get(cacheKey)!;
   }
-
   const promise = apiGet<FeatureCollectionResponse>(`/api/v1/features?${params.toString()}`, signal).catch((err) => {
     analyticsFeaturesCache.delete(cacheKey);
     throw err;

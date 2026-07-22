@@ -7,12 +7,8 @@ import { MapCanvas, type AiVerificationContext } from "../components/MapCanvas";
 import { ReportGenerator } from "../components/WardReportPanel";
 import { AiAssistant } from "../components/AiAssistant";
 import { PointVerificationPanel } from "../components/PointVerificationPanel";
-import { RemediationUpdates } from "../components/RemediationUpdates";
 import { useOutletContext, useSearchParams } from "react-router-dom";
 import type { AiHighlight, FeatureFilter, UrbanFeature } from "../lib/types";
-import type {
-  RemediationUpdateItem,
-} from "../lib/pointVerifications";
 import type { DatasetRow } from "../lib/workflow";
 import { useIsMobile } from "../lib/useIsMobile";
 
@@ -23,8 +19,6 @@ type SpatialAuditStatus = "idle" | "running" | "success" | "error";
 // `.command-center` under the 768px breakpoint). Widened from the previous
 // 340px value to 357px so geometry-group and datasource names have more room
 // before truncating.
-// Width of the icon rail (.sidebar-rail) that sits to the left of the
-// resizable panel in the map page's 3-column grid — see .map-page--dual.
 const SIDEBAR_RAIL_WIDTH = 48;
 const DEFAULT_SIDEBAR_WIDTH = 357;
 const MIN_SIDEBAR_WIDTH = 280;
@@ -162,6 +156,7 @@ export function MapView() {
 
   const [searchParams, setSearchParams] = useSearchParams();
   const locateFeatureId = searchParams.get("locateFeature") ?? undefined;
+  const workflowVerificationId = searchParams.get("workflowVerification");
 
   const handleSelect = useCallback(
     (
@@ -181,17 +176,6 @@ export function MapView() {
     next.delete("locateFeature");
     setSearchParams(next, { replace: true });
   }, [searchParams, setSearchParams]);
-
-
-  const handleRemediationUpdateLocate = useCallback(
-    (item: RemediationUpdateItem) => {
-      if (!item.feature_id) return;
-      const next = new URLSearchParams(searchParams);
-      next.set("locateFeature", item.feature_id);
-      setSearchParams(next, { replace: true });
-    },
-    [searchParams, setSearchParams],
-  );
 
   return (
     <div
@@ -242,6 +226,7 @@ export function MapView() {
       )}
 
       {!quickAnalysisActive && <ReportGenerator datasets={selectedDatasets} />}
+
       {!quickAnalysisActive && (
         <AiAssistant
           filter={filter}
@@ -253,7 +238,14 @@ export function MapView() {
       <PointVerificationPanel
         feature={verificationTarget?.feature ?? null}
         aiVerification={verificationTarget?.ai ?? null}
-        onClose={() => setVerificationTarget(null)}
+        verificationId={workflowVerificationId}
+        onClose={() => {
+          setVerificationTarget(null);
+          const next = new URLSearchParams(searchParams);
+          next.delete("workflowVerification");
+          next.delete("workflowNotification");
+          setSearchParams(next, { replace: true });
+        }}
         onUpdated={(updated) => {
           setSelected(updated);
           setVerificationTarget((current) =>
@@ -266,11 +258,6 @@ export function MapView() {
         }
       />
 
-
-      <RemediationUpdates
-        refreshToken={pointVerificationRefresh}
-        onLocate={handleRemediationUpdateLocate}
-      />
     </div>
   );
 }

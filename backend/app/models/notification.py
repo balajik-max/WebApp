@@ -19,6 +19,10 @@ class NotificationSource(str, enum.Enum):
     REVIEW_STATUS_CHANGED = "review_status_changed"
     SURVEY_REQUESTED = "survey_requested"
     REMEDIATION_SUBMITTED = "remediation_submitted"
+    REMEDIATION_AEE_APPROVED = "remediation_aee_approved"
+    REMEDIATION_RETURNED = "remediation_returned"
+    REMEDIATION_COMMISSIONER_ACCEPTED = "remediation_commissioner_accepted"
+    # Legacy values retained so historical notification rows still decode.
     REMEDIATION_APPROVED = "remediation_approved"
     REMEDIATION_REJECTED = "remediation_rejected"
 

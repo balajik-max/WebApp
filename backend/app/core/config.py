@@ -102,6 +102,10 @@ class Settings(BaseSettings):
     ae_password: str = Field(validation_alias="AE_PASSWORD")
     ae_name: str = Field(default="Assistant Engineer", validation_alias="AE_NAME")
 
+    mla_email: str = Field(default="mla@davangere.gov.in", validation_alias="MLA_EMAIL")
+    mla_password: str = Field(default="Mla@12345", validation_alias="MLA_PASSWORD")
+    mla_name: str = Field(default="Member of Legislative Assembly", validation_alias="MLA_NAME")
+
 
 @lru_cache
 def get_settings() -> Settings:

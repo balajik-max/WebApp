@@ -12,6 +12,12 @@ import uuid
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.services.road_compat import (
+    ROAD_CENTERLINE_CATEGORY_KEYS,
+    ROAD_CENTERLINE_CLASS,
+    road_class_predicate,
+)
+
 
 ROAD_SIDE_CORRIDOR_M = 15.0
 
@@ -49,9 +55,12 @@ async def build_road_inspection(
                 "ST_Length(geom::geography) AS length_m "
                 "FROM features "
                 "WHERE id = :road_id "
-                "  AND attributes->>'_canonical_class' = 'Road_Centerline'"
+                f"  AND {road_class_predicate('features', ROAD_CENTERLINE_CLASS, 'road_centerline_categories')}"
             ),
-            {"road_id": road_id},
+            {
+                "road_id": road_id,
+                "road_centerline_categories": list(ROAD_CENTERLINE_CATEGORY_KEYS),
+            },
         )
     ).mappings().one_or_none()
     if road is None:
@@ -74,7 +83,7 @@ async def build_road_inspection(
                 "    SELECT c.id "
                 "    FROM features c "
                 "    WHERE c.dataset_id = f.dataset_id "
-                "      AND c.attributes->>'_canonical_class' = 'Road_Centerline' "
+                f"      AND {road_class_predicate('c', ROAD_CENTERLINE_CLASS, 'road_centerline_categories')} "
                 "    ORDER BY ST_Distance(f.geom::geography, c.geom::geography), c.id "
                 "    LIMIT 1 "
                 "  ) nearest_road "
@@ -104,7 +113,11 @@ async def build_road_inspection(
                 "  LIMIT 1 "
                 ") status ON true"
             ),
-            {"road_id": road_id, "corridor_m": ROAD_SIDE_CORRIDOR_M},
+            {
+                "road_id": road_id,
+                "corridor_m": ROAD_SIDE_CORRIDOR_M,
+                "road_centerline_categories": list(ROAD_CENTERLINE_CATEGORY_KEYS),
+            },
         )
     ).mappings().all()
     assets = {"poles": 0, "drains": 0, "manholes": 0}
@@ -143,7 +156,7 @@ async def build_road_inspection(
                 "  CROSS JOIN LATERAL ( "
                 "    SELECT c.id FROM features c "
                 "    WHERE c.dataset_id = f.dataset_id "
-                "      AND c.attributes->>'_canonical_class' = 'Road_Centerline' "
+                f"      AND {road_class_predicate('c', ROAD_CENTERLINE_CLASS, 'road_centerline_categories')} "
                 "    ORDER BY ST_Distance(f.geom::geography, c.geom::geography), c.id LIMIT 1 "
                 "  ) nearest_road "
                 "  WHERE f.attributes->>'_canonical_class' = 'Drainage_Asset' "
@@ -164,7 +177,11 @@ async def build_road_inspection(
                 "  ) "
                 "ORDER BY building.id, CASE a.color WHEN 'red' THEN 0 ELSE 1 END, a.created_at DESC"
             ),
-            {"road_id": road_id, "corridor_m": ROAD_SIDE_CORRIDOR_M},
+            {
+                "road_id": road_id,
+                "corridor_m": ROAD_SIDE_CORRIDOR_M,
+                "road_centerline_categories": list(ROAD_CENTERLINE_CATEGORY_KEYS),
+            },
         )
     ).mappings().all()
     for row in building_rows:
@@ -193,7 +210,7 @@ async def build_road_inspection(
                 "    SELECT c.id "
                 "    FROM features c "
                 "    WHERE c.dataset_id = f.dataset_id "
-                "      AND c.attributes->>'_canonical_class' = 'Road_Centerline' "
+                f"      AND {road_class_predicate('c', ROAD_CENTERLINE_CLASS, 'road_centerline_categories')} "
                 "    ORDER BY ST_Distance(f.geom::geography, c.geom::geography), c.id "
                 "    LIMIT 1 "
                 "  ) nearest_road "
@@ -220,7 +237,11 @@ async def build_road_inspection(
                 "ORDER BY CASE a.color WHEN 'red' THEN 0 ELSE 1 END, "
                 "         a.severity_score DESC, a.created_at DESC"
             ),
-            {"road_id": road_id, "corridor_m": ROAD_SIDE_CORRIDOR_M},
+            {
+                "road_id": road_id,
+                "corridor_m": ROAD_SIDE_CORRIDOR_M,
+                "road_centerline_categories": list(ROAD_CENTERLINE_CATEGORY_KEYS),
+            },
         )
     ).mappings().all()
 

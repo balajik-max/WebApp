@@ -241,38 +241,6 @@ class ManholeReadinessReport(BaseModel):
     generated_at: datetime
 
 
-class DrainEncroachmentBuildingOut(BaseModel):
-    building_id: uuid.UUID
-    drain_ids: list[uuid.UUID]
-    classification: Literal["major_crossing", "partial_clip"]
-    crossing_length_m: float
-    crossing_ratio_pct: float
-    geometry: dict[str, Any]
-    crossing_geometry: dict[str, Any]
-
-
-class DrainEncroachmentDrainOut(BaseModel):
-    drain_id: uuid.UUID
-    fid: str | None
-    affected_buildings: int
-    crossing_length_m: float
-
-
-class DrainEncroachmentReport(BaseModel):
-    total_drains: int
-    affected_drains: int
-    clear_drains: int
-    affected_buildings: int
-    major_crossings: int
-    partial_clips: int
-    intersection_pairs: int
-    crossing_length_m: float
-    buildings: list[DrainEncroachmentBuildingOut]
-    drains: list[DrainEncroachmentDrainOut]
-    methodology: str
-    generated_at: datetime
-
-
 # ---------- Ward water demand ----------------------------------------------
 class WardCensusInfo(BaseModel):
     ward_no: int | None
@@ -343,3 +311,36 @@ class NotificationOut(BaseModel):
     actor_id: uuid.UUID | None = None
     read_at: datetime | None = None
     created_at: datetime
+
+
+# ---------- Quick Analysis: drain encroachment -----------------------------
+class DrainEncroachmentBuildingOut(BaseModel):
+    building_id: uuid.UUID
+    drain_ids: list[uuid.UUID]
+    classification: Literal["major_crossing", "partial_clip"]
+    crossing_length_m: float
+    crossing_ratio_pct: float
+    geometry: dict[str, Any]
+    crossing_geometry: dict[str, Any]
+
+
+class DrainEncroachmentDrainOut(BaseModel):
+    drain_id: uuid.UUID
+    fid: str | None
+    affected_buildings: int
+    crossing_length_m: float
+
+
+class DrainEncroachmentReport(BaseModel):
+    total_drains: int
+    affected_drains: int
+    clear_drains: int
+    affected_buildings: int
+    major_crossings: int
+    partial_clips: int
+    intersection_pairs: int
+    crossing_length_m: float
+    buildings: list[DrainEncroachmentBuildingOut]
+    drains: list[DrainEncroachmentDrainOut]
+    methodology: str
+    generated_at: datetime

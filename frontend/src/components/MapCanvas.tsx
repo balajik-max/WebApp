@@ -1,4 +1,4 @@
-﻿import { useEffect, useLayoutEffect, useRef, useState, useCallback, useImperativeHandle, useMemo, forwardRef, type MutableRefObject } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, useCallback, useImperativeHandle, useMemo, forwardRef, type MutableRefObject } from "react";
 import { createPortal } from "react-dom";
 import maplibregl, { Map as MLMap, MapMouseEvent, MapLayerMouseEvent, GeoJSONSource } from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
@@ -50,6 +50,12 @@ import { Map3DViewer } from "./Map3DViewer";
 import { GroupedFieldList } from "./GroupedFieldList";
 import { aiManholeRecommend, type AiAnswer } from "../lib/ai";
 import { useLanguage } from "../context/LanguageContext";
+import {
+  ROAD_CENTERLINE_RAW_CATEGORIES,
+  ROAD_SURFACE_RAW_CATEGORIES,
+  isRoadCenterlineFeature,
+  isRoadSurfaceFeature,
+} from "../lib/roadCompatibility";
 
 // .obj datasets are persisted with file_type "other" (the enum has no
 // dedicated OBJ value), so detect them from the stored filename instead.
@@ -64,7 +70,7 @@ function isObjDataset(d: DatasetRow): boolean {
 
 function isVectorVisualizationDataset(d: DatasetRow): boolean {
   if (d.status !== "ready" || isObjDataset(d)) return false;
-  if (d.file_type === "geotiff" || d.file_type === "lidar" || d.file_type === "image") return false;
+  if (d.file_type === "geotiff" || (d.file_type === "lidar" || d.file_type === "las") || d.file_type === "image") return false;
   if (d.dataset_metadata?.raster_overlay || d.dataset_metadata?.model_3d) return false;
   return true;
 }
@@ -82,7 +88,11 @@ function sourceCrsFromDatasetMetadata(dataset: DatasetRow): string | null {
 
 export interface AiVerificationContext {
   anomalyId: string;
-  detectionMode: Exclude<DetectionMode, null>;
+  // Road findings belong to Quick Analysis/Road Inspection. The existing
+  // AE -> AEE -> Commissioner remediation API currently supports poles,
+  // drains, and manholes only, so keep the workflow context deliberately
+  // narrower than the general map detection mode.
+  detectionMode: Exclude<DetectionMode, null | "roads">;
   anomalyType: SpatialAnomaly["anomaly_type"];
   aiColor: "red" | "yellow";
   severityScore: number;
@@ -241,7 +251,7 @@ export function isGeoTiffDataset(dataset: Pick<DatasetRow, "file_type">): boolea
 // Model (highest return per grid cell) by construction. DSM/DTM must
 // always render in Enhanced mode and expose no per-dataset display settings.
 export function isElevationRasterDataset(dataset: Pick<DatasetRow, "file_type" | "name">): boolean {
-  if (dataset.file_type === "lidar") return true;
+  if ((dataset.file_type === "lidar" || dataset.file_type === "las")) return true;
   if (dataset.file_type !== "geotiff") return false;
   // Match "dsm"/"dtm" as a distinct token in the name (case-insensitive),
   // allowing the usual separators used in dataset names — e.g.
@@ -889,6 +899,34 @@ function withCanonicalVisibility(
     "in", ["coalesce", ["get", "category"], "uncategorized"], ["literal", Array.from(extraCategories)],
   ];
   return ["all", base, ["any", canonicalMatch, extraMatch]] as unknown as maplibregl.FilterSpecification;
+}
+
+
+function withRoadCompatibilityVisibility(
+  base: maplibregl.FilterSpecification,
+  includeSurfaces: boolean,
+  extraCategories: Set<string> = new Set()
+): maplibregl.FilterSpecification {
+  const canonicalClasses = includeSurfaces
+    ? ["Road_Centerline", "Road_Surface"]
+    : ["Road_Centerline"];
+  const rawCategories = includeSurfaces
+    ? [...ROAD_CENTERLINE_RAW_CATEGORIES, ...ROAD_SURFACE_RAW_CATEGORIES]
+    : [...ROAD_CENTERLINE_RAW_CATEGORIES];
+  const canonicalMatch: maplibregl.ExpressionSpecification = [
+    "in", ["coalesce", ["get", "canonical_class"], "Unclassified"], ["literal", canonicalClasses],
+  ];
+  const rawCategoryMatch: maplibregl.ExpressionSpecification = [
+    "in", ["downcase", ["coalesce", ["get", "category"], ""]], ["literal", rawCategories],
+  ];
+  const roadMatch: maplibregl.ExpressionSpecification = ["any", canonicalMatch, rawCategoryMatch];
+  if (extraCategories.size === 0) {
+    return ["all", base, roadMatch] as unknown as maplibregl.FilterSpecification;
+  }
+  const extraMatch: maplibregl.ExpressionSpecification = [
+    "in", ["coalesce", ["get", "category"], "uncategorized"], ["literal", Array.from(extraCategories)],
+  ];
+  return ["all", base, ["any", roadMatch, extraMatch]] as unknown as maplibregl.FilterSpecification;
 }
 
 // Separate GeoJSON source + layers for AI highlight overlays so they sit
@@ -2607,7 +2645,7 @@ function aiVerificationContextForAnomaly(
   anomaly: SpatialAnomaly | undefined,
   mode: DetectionMode,
 ): AiVerificationContext | null {
-  if (!anomaly || !mode || (anomaly.color !== "red" && anomaly.color !== "yellow")) return null;
+  if (!anomaly || !mode || mode === "roads" || (anomaly.color !== "red" && anomaly.color !== "yellow")) return null;
   if (anomaly.anomaly_type !== DETECTION_MODE_ANOMALY_TYPE[mode]) return null;
   return {
     anomalyId: anomaly.id,
@@ -4792,10 +4830,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     }
 
     if (quickAnalysisCardId === "road-width") {
-      const roadFilter: maplibregl.FilterSpecification = [
-        "all", LINE_BASE_FILTER,
-        ["in", ["coalesce", ["get", "canonical_class"], ""], ["literal", ["Road_Centerline", "Road_Surface"]]],
-      ];
+      const roadFilter = withRoadCompatibilityVisibility(LINE_BASE_FILTER, true);
       if (map.getLayer(LAYER_LINES)) map.setFilter(LAYER_LINES, roadFilter);
       if (map.getLayer(LAYER_LINES_CADASTRAL)) map.setFilter(LAYER_LINES_CADASTRAL, roadFilter);
       if (map.getLayer(LAYER_POINTS)) map.setFilter(LAYER_POINTS, hideAll);
@@ -5197,7 +5232,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     const map = mapRef.current;
     if (!map || !map.isStyleLoaded()) return;
     const overlay = dataset.dataset_metadata?.raster_overlay;
-    if ((dataset.file_type !== "geotiff" && dataset.file_type !== "lidar") || !overlay) return;
+    if ((dataset.file_type !== "geotiff" && (dataset.file_type !== "lidar" && dataset.file_type !== "las")) || !overlay) return;
 
     const sourceId = rasterSourceId(dataset.id);
     const layerId = rasterLayerId(dataset.id);
@@ -5402,6 +5437,40 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
         return [lon, lat] as [number, number];
       });
   };
+
+  // Road-width findings carry their affected carriageway stretch as WKT in
+  // anomaly_metadata. The road line source existed previously but was never
+  // populated, so Road AI Detection and Quick Analysis had nothing to draw
+  // even when the backend produced valid narrowing findings.
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!mapReady || !map) return;
+    const source = map.getSource(ANOMALY_ROAD_LINE_SOURCE) as GeoJSONSource | undefined;
+    if (!source) return;
+    const features = anomalies
+      .filter((anomaly) => anomaly.anomaly_type === "road_width_narrowing")
+      .map((anomaly) => {
+        const coordinates = wktLineCoords(
+          typeof anomaly.anomaly_metadata?.affected_line_wkt === "string"
+            ? anomaly.anomaly_metadata.affected_line_wkt
+            : undefined,
+        );
+        if (!coordinates || coordinates.length < 2) return null;
+        return {
+          type: "Feature" as const,
+          id: anomaly.id,
+          geometry: { type: "LineString" as const, coordinates },
+          properties: {
+            id: anomaly.id,
+            color: anomaly.color,
+            anomaly_type: anomaly.anomaly_type,
+            status: anomaly.status,
+          },
+        };
+      })
+      .filter((feature): feature is NonNullable<typeof feature> => feature !== null);
+    source.setData({ type: "FeatureCollection", features });
+  }, [mapReady, anomalies]);
 
   // Keep the clicked road visible as the report card is read, even though
   // Road Inspection intentionally hides all non-road map categories.
@@ -5659,23 +5728,28 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
       setHiddenCategories(new Set());
       return;
     }
+    const roadMode = roadInspectionActive || detectionMode === "roads";
     const allowed = roadInspectionActive
       ? ["Road_Centerline"]
       : DETECTION_MODE_TARGET_CLASSES[detectionMode!];
-    if (map.getLayer(LAYER_POLY_FILL)) map.setFilter(LAYER_POLY_FILL, withCanonicalVisibility(POLY_BASE_FILTER, allowed, extraVisibleCategories));
-    if (map.getLayer(LAYER_POLY_OUTLINE)) map.setFilter(LAYER_POLY_OUTLINE, withCanonicalVisibility(POLY_BASE_FILTER, allowed, extraVisibleCategories));
-    if (map.getLayer(LAYER_POLY_FILL_CADASTRAL)) map.setFilter(LAYER_POLY_FILL_CADASTRAL, withCanonicalVisibility(POLY_BASE_FILTER, allowed, extraVisibleCategories));
-    if (map.getLayer(LAYER_POLY_OUTLINE_CADASTRAL)) map.setFilter(LAYER_POLY_OUTLINE_CADASTRAL, withCanonicalVisibility(POLY_BASE_FILTER, allowed, extraVisibleCategories));
-    if (map.getLayer(LAYER_LINES)) map.setFilter(LAYER_LINES, withCanonicalVisibility(LINE_BASE_FILTER, allowed, extraVisibleCategories));
-    if (map.getLayer(LAYER_LINES_CADASTRAL)) map.setFilter(LAYER_LINES_CADASTRAL, withCanonicalVisibility(LINE_BASE_FILTER, allowed, extraVisibleCategories));
-    if (map.getLayer(REFERENCE_SURVEY_ROAD_LABELS)) map.setFilter(REFERENCE_SURVEY_ROAD_LABELS, withCanonicalVisibility([
-      "all",
-      LINE_BASE_FILTER,
-      ["==", ["coalesce", ["get", "canonical_class"], ""], "Road_Centerline"],
-    ] as unknown as maplibregl.FilterSpecification, allowed, extraVisibleCategories));
-    if (map.getLayer(LAYER_POINTS)) map.setFilter(LAYER_POINTS, withCanonicalVisibility(POINT_BASE_FILTER, allowed, extraVisibleCategories));
-    if (map.getLayer(LAYER_POINTS_CADASTRAL_HIT)) map.setFilter(LAYER_POINTS_CADASTRAL_HIT, withCanonicalVisibility(CADASTRAL_POINT_HIT_FILTER, allowed, extraVisibleCategories));
-    if (map.getLayer(LAYER_POINTS_CADASTRAL)) map.setFilter(LAYER_POINTS_CADASTRAL, withCanonicalVisibility(CADASTRAL_POINT_HIT_FILTER, allowed, extraVisibleCategories));
+    const focusedFilter = (base: maplibregl.FilterSpecification) => roadMode
+      ? withRoadCompatibilityVisibility(base, !roadInspectionActive, extraVisibleCategories)
+      : withCanonicalVisibility(base, allowed, extraVisibleCategories);
+    if (map.getLayer(LAYER_POLY_FILL)) map.setFilter(LAYER_POLY_FILL, focusedFilter(POLY_BASE_FILTER));
+    if (map.getLayer(LAYER_POLY_OUTLINE)) map.setFilter(LAYER_POLY_OUTLINE, focusedFilter(POLY_BASE_FILTER));
+    if (map.getLayer(LAYER_POLY_FILL_CADASTRAL)) map.setFilter(LAYER_POLY_FILL_CADASTRAL, focusedFilter(POLY_BASE_FILTER));
+    if (map.getLayer(LAYER_POLY_OUTLINE_CADASTRAL)) map.setFilter(LAYER_POLY_OUTLINE_CADASTRAL, focusedFilter(POLY_BASE_FILTER));
+    if (map.getLayer(LAYER_LINES)) map.setFilter(LAYER_LINES, focusedFilter(LINE_BASE_FILTER));
+    if (map.getLayer(LAYER_LINES_CADASTRAL)) map.setFilter(LAYER_LINES_CADASTRAL, focusedFilter(LINE_BASE_FILTER));
+    if (map.getLayer(REFERENCE_SURVEY_ROAD_LABELS)) {
+      map.setFilter(
+        REFERENCE_SURVEY_ROAD_LABELS,
+        withRoadCompatibilityVisibility(LINE_BASE_FILTER, false, extraVisibleCategories),
+      );
+    }
+    if (map.getLayer(LAYER_POINTS)) map.setFilter(LAYER_POINTS, focusedFilter(POINT_BASE_FILTER));
+    if (map.getLayer(LAYER_POINTS_CADASTRAL_HIT)) map.setFilter(LAYER_POINTS_CADASTRAL_HIT, focusedFilter(CADASTRAL_POINT_HIT_FILTER));
+    if (map.getLayer(LAYER_POINTS_CADASTRAL)) map.setFilter(LAYER_POINTS_CADASTRAL, focusedFilter(CADASTRAL_POINT_HIT_FILTER));
     // LAYER_PHOTOS is intentionally left as-is so geotagged evidence stays visible.
   }, [mapReady, detectionMode, roadInspectionActive, extraVisibleCategories, quickAnalysisCardId]);
 
@@ -5811,6 +5885,9 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
   }, [detectionMode, datasets]);
 
   const toggleDetectionMode = useCallback((mode: Exclude<DetectionMode, null>) => {
+    if (mode === "roads" && !spatialAuditExecutedRef.current) {
+      setSpatialAuditRequested(true);
+    }
     roadInspectionAbortRef.current?.abort();
     roadInspectionActiveRef.current = false;
     setRoadInspectionActive(false);
@@ -5823,7 +5900,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     // the category first, plain colors, then the user explicitly turns AI
     // on as a separate step.
     setAiOverlayEnabled(false);
-  }, []);
+  }, [setSpatialAuditRequested, spatialAuditExecutedRef]);
 
   const closeRoadInspection = useCallback(() => {
     roadInspectionAbortRef.current?.abort();
@@ -5838,6 +5915,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
       const next = !current;
       roadInspectionActiveRef.current = next;
       if (next) {
+        if (!spatialAuditExecutedRef.current) setSpatialAuditRequested(true);
         setDetectionMode(null);
         setAiOverlayEnabled(false);
         setExtraVisibleCategories(new Set());
@@ -5845,7 +5923,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
       if (!next) closeRoadInspection();
       return next;
     });
-  }, [closeRoadInspection]);
+  }, [closeRoadInspection, setSpatialAuditRequested, spatialAuditExecutedRef]);
 
   const openRoadInspection = useCallback((road: UrbanFeature) => {
     if (!road.properties.dataset_id) return;
@@ -5936,6 +6014,9 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     }
     const config = QUICK_ANALYSIS_MAP_CONFIG[cardId];
     if (!config) return;
+    if (cardId === "road-width" && !spatialAuditExecutedRef.current) {
+      setSpatialAuditRequested(true);
+    }
     // Save the ordinary map state once, before the dashboard takes over the
     // canvas. Closing the dashboard restores exactly that state.
     if (!quickAnalysisPreviousMapRef.current) {
@@ -5950,7 +6031,16 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     quickAnalysisFitKeyRef.current = "";
     quickAnalysisActiveRef.current = true;
     setQuickAnalysisCardId(cardId);
-  }, [aiOverlayEnabled, basemap, closeMeasureSafely, closeQuickAnalysis, detectionMode, quickAnalysisCardId]);
+  }, [
+    aiOverlayEnabled,
+    basemap,
+    closeMeasureSafely,
+    closeQuickAnalysis,
+    detectionMode,
+    quickAnalysisCardId,
+    setSpatialAuditRequested,
+    spatialAuditExecutedRef,
+  ]);
 
   const activateQuickAnalysisSelect = useCallback(() => {
     if (measureActiveRef.current) closeMeasureSafely();
@@ -6112,6 +6202,12 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     } else if (quickAnalysisCardId === "manhole-detail") {
       quickAnalysisFeatures.forEach((feature) => {
         if (feature.properties.canonical_class === "Access_Point") selectable.add(feature.properties.id);
+      });
+    } else if (quickAnalysisCardId === "road-width") {
+      quickAnalysisFeatures.forEach((feature) => {
+        if (isRoadCenterlineFeature(feature) || isRoadSurfaceFeature(feature)) {
+          selectable.add(feature.properties.id);
+        }
       });
     } else if (quickAnalysisCardId === "utility-tracker") {
       quickAnalysisFeatures.forEach((feature) => {
@@ -6435,6 +6531,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     onSpatialAuditStatusChange("running");
     void runAudit(activeDatasetIds).then((ok) => {
       console.log("[SpatialAudit] audit completed:", { ok });
+      if (!ok) spatialAuditExecutedRef.current = false;
       onSpatialAuditStatusChange(ok ? "success" : "error");
     });
   }, [hasActiveDatasets, activeDatasetIds, runAudit, onSpatialAuditStatusChange, spatialAuditRequested, spatialAuditExecutedRef]);
@@ -7325,11 +7422,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
         type: "symbol",
         source: FEATURE_SOURCE,
         minzoom: 17,
-        filter: [
-          "all",
-          LINE_BASE_FILTER,
-          ["==", ["coalesce", ["get", "canonical_class"], ""], "Road_Centerline"],
-        ],
+        filter: withRoadCompatibilityVisibility(LINE_BASE_FILTER, false),
         layout: {
           visibility: "none",
           "symbol-placement": "line-center",
@@ -7895,7 +7988,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
           return;
         }
         if (roadInspectionActiveRef.current) {
-          if (selected.properties.canonical_class === "Road_Centerline") void openRoadInspection(selected);
+          if (isRoadCenterlineFeature(selected)) void openRoadInspection(selected);
           else onFeatureSelect(selected);
           return;
         }
@@ -8790,7 +8883,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
   const activeElevationDataset = useMemo(() => {
     for (const id of activeDatasetIds) {
       const dataset = datasets.find(
-        (candidate) => candidate.id === id && (candidate.file_type === "geotiff" || candidate.file_type === "lidar")
+        (candidate) => candidate.id === id && (candidate.file_type === "geotiff" || (candidate.file_type === "lidar" || candidate.file_type === "las"))
       );
       if (dataset) return dataset;
     }

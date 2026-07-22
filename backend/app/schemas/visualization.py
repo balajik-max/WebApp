@@ -1,4 +1,4 @@
-"""Pydantic contracts for the universal visualization manifest."""
+"""Pydantic contracts for universal visualization, layer review, and dashboards."""
 from __future__ import annotations
 
 import uuid
@@ -17,14 +17,7 @@ VisualizationFieldType = Literal[
     "mixed",
     "unknown",
 ]
-
-
-class VisualizationFieldProfile(BaseModel):
-    name: str
-    detected_type: VisualizationFieldType = "unknown"
-    populated_count: int = 0
-    missing_count: int = 0
-    unique_count: int | None = None
+LayerReviewStatus = Literal["auto", "needs_review", "confirmed"]
 
 
 class VisualizationFieldProfile(BaseModel):
@@ -36,33 +29,21 @@ class VisualizationFieldProfile(BaseModel):
 
 
 class VisualizationLayerGroup(BaseModel):
-    """A single source layer (feature class) and the attributes it owns.
-
-    Fields are kept verbatim on their original layer — they are never merged or
-    flattened into a single list — so the hierarchy Geometry → Layer →
-    Attributes is preserved exactly as it exists in the source data.
-    """
+    """One source layer and the attributes that belong to it."""
 
     name: str
     fields: list[VisualizationFieldProfile] = Field(default_factory=list)
 
 
 class VisualizationGeometryGroup(BaseModel):
-    """Attributes of one geometry type, bucketed by their source layer."""
+    """Source layers grouped under Points, Lines, or Polygon."""
 
-    name: str  # "Points" | "Lines" | "Polygon"
+    name: str
     layers: list[VisualizationLayerGroup] = Field(default_factory=list)
 
 
 class VisualizationFieldGroupTree(BaseModel):
-    """Hierarchical attribute tree for a data source.
-
-    Structure: ``datasource → geometryGroups → layers → fields``. This is the
-    single source of truth for the attribute-selection UI; the flat
-    ``VisualizationLayerManifest.fields`` lists are retained unchanged for
-    other consumers (styling, AI detection, mapping) but are NOT rendered as a
-    flat list by the attribute-selection workflow.
-    """
+    """Hierarchy used by the existing attribute-selection UI."""
 
     datasource: str
     geometry_groups: list[VisualizationGeometryGroup] = Field(default_factory=list)
@@ -80,6 +61,17 @@ class VisualizationLayerManifest(BaseModel):
     recommended_modes: list[str] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
 
+    # Additive Layer Review metadata. Existing map/attribute consumers can
+    # ignore these fields without changing their behavior.
+    dashboard_type: str = "generic"
+    classification_confidence: float = 0.0
+    classification_reasons: list[str] = Field(default_factory=list)
+    review_status: LayerReviewStatus = "auto"
+    included: bool = True
+    ingestion_status: str = "ready"
+    source_feature_count: int | None = None
+    ingestion_warning: str | None = None
+
 
 class VisualizationManifest(BaseModel):
     dataset_id: uuid.UUID
@@ -90,9 +82,58 @@ class VisualizationManifest(BaseModel):
     bounds: list[float] | None = None
     total_features: int = 0
     layers: list[VisualizationLayerManifest] = Field(default_factory=list)
-    # Hierarchical attribute tree generated from the data source's layers
-    # (geometry type → source layer → fields). When present and non-empty the
-    # UI renders a 3-level tree; ``None``/empty means no tree is available and
-    # the flat ``fields`` list is used as a fallback.
     field_groups: VisualizationFieldGroupTree | None = None
+    warnings: list[str] = Field(default_factory=list)
+
+
+class LayerReviewUpdate(BaseModel):
+    display_name: str | None = Field(default=None, max_length=160)
+    dashboard_type: str | None = Field(default=None, max_length=64)
+    included: bool | None = None
+    confirmed: bool = True
+
+
+class DashboardValueCount(BaseModel):
+    label: str
+    count: int
+
+
+class DashboardNumericSummary(BaseModel):
+    field: str
+    count: int = 0
+    minimum: float | None = None
+    maximum: float | None = None
+    average: float | None = None
+
+
+class DashboardLayerSummary(BaseModel):
+    layer_key: str
+    display_name: str
+    dashboard_type: str
+    geometry_types: list[str] = Field(default_factory=list)
+    feature_count: int = 0
+    completeness_percentage: float = 100.0
+    issue_count: int = 0
+    category_breakdown: list[DashboardValueCount] = Field(default_factory=list)
+    status_field: str | None = None
+    status_breakdown: list[DashboardValueCount] = Field(default_factory=list)
+    numeric_summaries: list[DashboardNumericSummary] = Field(default_factory=list)
+    fields: list[VisualizationFieldProfile] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+
+
+class UniversalDashboard(BaseModel):
+    dataset_id: uuid.UUID
+    dataset_name: str
+    total_features: int = 0
+    included_layers: int = 0
+    point_features: int = 0
+    line_features: int = 0
+    polygon_features: int = 0
+    issue_count: int = 0
+    missing_values: int = 0
+    profiled_values: int = 0
+    geometry_breakdown: list[DashboardValueCount] = Field(default_factory=list)
+    dashboard_types: list[DashboardValueCount] = Field(default_factory=list)
+    layers: list[DashboardLayerSummary] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)

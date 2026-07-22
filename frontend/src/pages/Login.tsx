@@ -221,6 +221,10 @@ export function LoginPage() {
                 <span className="auth-demo-badge auth-demo-badge--ae">AE</span>
                 ae@davangere.gov.in
               </button>
+              <button type="button" onClick={() => { setEmail("mla@davangere.gov.in"); setPassword("Mla@12345"); }}>
+                <span className="auth-demo-badge auth-demo-badge--mla">MLA</span>
+                mla@davangere.gov.in
+              </button>
             </div>
           </div>
 

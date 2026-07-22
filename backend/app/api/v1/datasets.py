@@ -705,7 +705,7 @@ async def assign_source_crs(
         raise HTTPException(status_code=404, detail="Dataset not found")
     
     # Only LiDAR datasets can have CRS assigned
-    if row.file_type != DatasetFileType.LIDAR:
+    if row.file_type not in {DatasetFileType.LIDAR, DatasetFileType.LAS}:
         raise HTTPException(status_code=400, detail="CRS assignment is only supported for LiDAR/LAS/LAZ datasets")
     
     # Validate the CRS with pyproj

@@ -34,6 +34,13 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.spatial_anomaly import AnomalyColor, AnomalyType, SpatialAnomaly
+from app.services.road_compat import (
+    ROAD_CENTERLINE_CATEGORY_KEYS,
+    ROAD_CENTERLINE_CLASS,
+    ROAD_SURFACE_CATEGORY_KEYS,
+    ROAD_SURFACE_CLASS,
+    road_class_predicate,
+)
 
 # How far apart along a centerline consecutive width samples are taken.
 SAMPLE_INTERVAL_M = 5.0
@@ -83,7 +90,7 @@ async def _fetch_stations(dataset_id: uuid.UUID, db: AsyncSession) -> list[_Stat
                 "  SELECT f.id AS line_id, (ST_Dump(f.geom)).geom AS geom "
                 "  FROM features f "
                 "  WHERE f.dataset_id = :dataset_id "
-                "    AND f.attributes->>'_canonical_class' = 'Road_Centerline' "
+                f"    AND {road_class_predicate('f', ROAD_CENTERLINE_CLASS, 'road_centerline_categories')} "
                 "), sized AS ( "
                 "  SELECT line_id, geom, "
                 "         ST_Length(geom::geography) AS len_m, "
@@ -120,7 +127,7 @@ async def _fetch_stations(dataset_id: uuid.UUID, db: AsyncSession) -> list[_Stat
                 "         ST_ClosestPoint(ST_Intersection(s.geom, r.left_ray), r.pt) AS hit "
                 "  FROM features s "
                 "  WHERE s.dataset_id = :dataset_id "
-                "    AND s.attributes->>'_canonical_class' = 'Road_Surface' "
+                f"    AND {road_class_predicate('s', ROAD_SURFACE_CLASS, 'road_surface_categories')} "
                 "    AND ST_DWithin(s.geom::geography, r.pt::geography, :probe_m) "
                 "    AND ST_Intersects(s.geom, r.left_ray) "
                 "  ORDER BY ST_Distance(r.pt::geography, ST_Intersection(s.geom, r.left_ray)::geography) "
@@ -131,7 +138,7 @@ async def _fetch_stations(dataset_id: uuid.UUID, db: AsyncSession) -> list[_Stat
                 "         ST_ClosestPoint(ST_Intersection(s.geom, r.right_ray), r.pt) AS hit "
                 "  FROM features s "
                 "  WHERE s.dataset_id = :dataset_id "
-                "    AND s.attributes->>'_canonical_class' = 'Road_Surface' "
+                f"    AND {road_class_predicate('s', ROAD_SURFACE_CLASS, 'road_surface_categories')} "
                 "    AND ST_DWithin(s.geom::geography, r.pt::geography, :probe_m) "
                 "    AND ST_Intersects(s.geom, r.right_ray) "
                 "  ORDER BY ST_Distance(r.pt::geography, ST_Intersection(s.geom, r.right_ray)::geography) "
@@ -139,7 +146,13 @@ async def _fetch_stations(dataset_id: uuid.UUID, db: AsyncSession) -> list[_Stat
                 ") re ON true "
                 "ORDER BY r.line_id, r.station_index"
             ),
-            {"dataset_id": str(dataset_id), "interval_m": SAMPLE_INTERVAL_M, "probe_m": PROBE_LENGTH_M},
+            {
+                "dataset_id": str(dataset_id),
+                "interval_m": SAMPLE_INTERVAL_M,
+                "probe_m": PROBE_LENGTH_M,
+                "road_centerline_categories": list(ROAD_CENTERLINE_CATEGORY_KEYS),
+                "road_surface_categories": list(ROAD_SURFACE_CATEGORY_KEYS),
+            },
         )
     ).mappings().all()
 

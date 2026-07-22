@@ -47,6 +47,18 @@ async def get_current_user(
     user = result.scalar_one_or_none()
     if user is None:
         raise HTTPException(status_code=401, detail="User not found")
+    if not user.is_active:
+        raise HTTPException(status_code=403, detail="Account is inactive")
+
+    # MLA can inspect all map, layer, analytics, and workflow data but cannot
+    # mutate application state. This global guard prevents accidental writes
+    # even if a future endpoint forgets a role-specific dependency.
+    if (
+        user.role == UserRole.MLA
+        and request.method not in {"GET", "HEAD", "OPTIONS"}
+        and request.url.path != "/api/auth/logout"
+    ):
+        raise HTTPException(status_code=403, detail="MLA access is strictly read-only")
     return user
 
 
@@ -61,8 +73,22 @@ def require_roles(*allowed: UserRole):
     return _guard
 
 
+# Existing colleague guards are intentionally preserved.
 require_admin = require_roles(UserRole.ADMIN)
 require_architect = require_roles(UserRole.ARCHITECT)
+
+# New operational remediation guards.
+require_commissioner = require_roles(UserRole.COMMISSIONER)
+require_ae = require_roles(UserRole.AE)
+require_aee = require_roles(UserRole.AEE)
+require_operational = require_roles(UserRole.COMMISSIONER, UserRole.AEE, UserRole.AE)
+
+# All authenticated roles remain able to use existing read endpoints.
 require_any = require_roles(
-    UserRole.COMMISSIONER, UserRole.AEE, UserRole.AE, UserRole.ADMIN, UserRole.ARCHITECT
+    UserRole.COMMISSIONER,
+    UserRole.AEE,
+    UserRole.AE,
+    UserRole.MLA,
+    UserRole.ADMIN,
+    UserRole.ARCHITECT,
 )
