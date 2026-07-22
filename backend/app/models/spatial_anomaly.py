@@ -28,6 +28,7 @@ class AnomalyType(str, enum.Enum):
     DRAIN_ENCROACHMENT = "drain_encroachment"
     MANHOLE_STATUS = "manhole_status"
     ROAD_WIDTH_NARROWING = "road_width_narrowing"
+    POWERLINE_PROXIMITY = "powerline_proximity"
 
 
 class AnomalyColor(str, enum.Enum):

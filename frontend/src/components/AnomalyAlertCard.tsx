@@ -19,6 +19,7 @@ const TYPE_LABEL: Record<SpatialAnomaly["anomaly_type"], string> = {
   drain_encroachment: "Drain Encroachment",
   manhole_status: "Manhole Status",
   road_width_narrowing: "Road Width Narrowing",
+  powerline_proximity: "Powerline Proximity",
 };
 
 const COLOR_LABEL: Record<SpatialAnomaly["color"], string> = {

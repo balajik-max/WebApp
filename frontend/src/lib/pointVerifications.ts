@@ -7,8 +7,8 @@ export type WorkflowStatus =
   | "RETURNED_BY_AEE"
   | "AEE_APPROVED"
   | "COMMISSIONER_ACCEPTED";
-export type AiDetectionMode = "poles" | "drains" | "manholes";
-export type AiAnomalyType = "pole_redundancy" | "drain_encroachment" | "manhole_status";
+export type AiDetectionMode = "poles" | "drains" | "manholes" | "powerlines";
+export type AiAnomalyType = "pole_redundancy" | "drain_encroachment" | "manhole_status" | "powerline_proximity";
 export type AiIssueColor = "red" | "yellow";
 export type AeeCategory = "GOOD" | "MODERATE" | "BAD";
 
