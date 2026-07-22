@@ -2993,6 +2993,11 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
   // (or on its own, showing real terrain/buildings/manholes with no plan
   // run yet) so it never shows a fact the 2D view didn't already show.
   const [show3DPlan, setShow3DPlan] = useState(false);
+  // Live "3D Buildings" preview — real building footprints extruded (+ pole
+  // markers) directly on the 2D map at their true lat/lon, using the same
+  // real-mercator draping technique as the OBJ layer below. A lighter,
+  // always-on-the-map alternative to opening the full Map3DViewer modal.
+  const [show3DBuildings, setShow3DBuildings] = useState(false);
 
   // Which AI Detection focus mode is active (null = normal full view).
   // Refs mirror the state so the per-fetch applyFeatureCollection callback
@@ -5331,6 +5336,46 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
   const clearAllObj3DLayers = useCallback(() => {
     for (const id of Array.from(obj3dLayersRef.current)) removeObj3DLayer(id);
   }, [removeObj3DLayer]);
+
+  // Live "3D Buildings" preview toggle — extrudes the currently loaded
+  // buildings (+ pole markers) directly on the 2D map at their true lat/lon,
+  // via Gis3DPreviewLayer (same real-mercator draping technique as
+  // Obj3DMapLayer above). Rebuilt whenever the loaded features/classMap
+  // change while the toggle is on, torn down entirely when it's off.
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!mapReady || !map) return;
+    const layerId = "gis-3d-buildings-preview";
+    if (map.getLayer(layerId)) map.removeLayer(layerId);
+    if (!show3DBuildings || loadedFeatures.length === 0) return;
+    let cancelled = false;
+    (async () => {
+      const { Gis3DPreviewLayer } = await import("./Gis3DPreviewLayer");
+      if (cancelled) return;
+      const currentMap = mapRef.current;
+      if (!currentMap || currentMap.getLayer(layerId)) return;
+      try {
+        // Toggling a dataset on/off can tear down and rebuild the base
+        // vector layers (LAYER_POLY_FILL included) around the same time
+        // this effect re-runs from its own loadedFeatures change — addLayer
+        // THROWS if the requested beforeId doesn't exist at that exact
+        // moment, which (uncaught, inside this async block) silently killed
+        // the 3D preview for good until the toggle button was clicked again.
+        // Falling back to "add on top" when that layer is momentarily
+        // missing keeps this layer's own on/off state independent of that
+        // unrelated race.
+        const beforeId = currentMap.getLayer(LAYER_POLY_FILL) ? LAYER_POLY_FILL : undefined;
+        currentMap.addLayer(new Gis3DPreviewLayer(layerId, loadedFeatures, classMap), beforeId);
+      } catch (e) {
+        console.error("Could not add 3D buildings preview layer:", e);
+      }
+    })();
+    return () => {
+      cancelled = true;
+      const m = mapRef.current;
+      if (m?.getLayer(layerId)) m.removeLayer(layerId);
+    };
+  }, [show3DBuildings, mapReady, loadedFeatures, classMap]);
 
   const applyRasterDisplaySettings = useCallback((datasetId: string, nextSettings: RasterDisplaySettings) => {
     const map = mapRef.current;
@@ -9209,6 +9254,21 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
               <path d="M12 3.5l7.5 4.2v8.6L12 20.5l-7.5-4.2V7.7L12 3.5z" />
               <path d="M12 12v8.5M12 12l7.5-4.3M12 12L4.5 7.7" />
+            </svg>
+          </button>
+          <button
+            type="button"
+            className={`map-side-btn${show3DBuildings ? " is-active" : ""}`}
+            onClick={() => setShow3DBuildings((v) => !v)}
+            title={t("map.view.3dBuildings")}
+            aria-label={t("map.view.3dBuildings")}
+            aria-pressed={show3DBuildings}
+            data-testid="topbar-3d-buildings-toggle"
+          >
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <path d="M5 20V9l4-3 4 3v11" />
+              <path d="M13 20V6l4-2.5L21 6v14" />
+              <path d="M3 20h18" />
             </svg>
           </button>
         </div>}

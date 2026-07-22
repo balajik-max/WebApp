@@ -316,6 +316,7 @@ export const STRINGS: Dict = {
   "map.tools.annotations": { en: "Location and map tools", kn: "ಸ್ಥಳ ಮತ್ತು ನಕ್ಷೆ ಸಾಧನಗಳು" },
   "map.view.selectDataset": { en: "Select a dataset from the Command Center to view it on the map", kn: "ಅದನ್ನು ನಕ್ಷೆಯ ಮೇಲೆ ವೀಕ್ಷಿಸಲು ಕಮಾಂಡ್ ಸೆಂಟರ್‌ನಿಂದ ಡೇಟಾಸೆಟ್ ಆಯ್ಕೆಮಾಡಿ" },
   "map.view.3dViewer": { en: "Open 3D Viewer", kn: "3D ವೀಕ್ಷಕವನ್ನು ತೆರೆಯಿರಿ" },
+  "map.view.3dBuildings": { en: "Toggle 3D buildings on the map", kn: "ನಕ್ಷೆಯಲ್ಲಿ 3D ಕಟ್ಟಡಗಳನ್ನು ಟಾಗಲ್ ಮಾಡಿ" },
   "map.view.3dViewerTitle": { en: "3D Viewer", kn: "3D ವೀಕ್ಷಕ" },
   "map.placemarkHint": { en: "Click the map to place a pin · right-click or Esc to cancel", kn: "ಪಿನ್ ಇರಿಸಲು ನಕ್ಷೆಯ ಮೇಲೆ ಕ್ಲಿಕ್ ಮಾಡಿ · ರದ್ದುಮಾಡಲು ಬಲ-ಕ್ಲಿಕ್ ಅಥವಾ Esc" },
   "map.streetPickHint": { en: "Click a road location to open the nearest 360° Street View", kn: "ಹತ್ತಿರದ 360° ಸ್ಟ್ರೀಟ್ ವ್ಯೂ ಅನ್ನು ತೆರೆಯಲು ರಸ್ತೆ ಸ್ಥಳದ ಮೇಲೆ ಕ್ಲಿಕ್ ಮಾಡಿ" },
