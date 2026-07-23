@@ -665,9 +665,9 @@ export function WorkspaceLayout() {
                 <path d="M4 6h16M4 12h16M4 18h16" />
               </svg>
             </button>
-            <div className="workspace__search">
-              <FidSearch datasetIds={mapSelectedDatasetIds} />
-            </div>
+            {
+          /* Mobile-only (see .workspace__menu-btn in mobile.css) — desktop
+             keeps the Data Sources sidebar permanently visible. */}
           </>
         )}
 
@@ -679,6 +679,11 @@ export function WorkspaceLayout() {
           >
             <span>{t("nav.grievance")}</span>
           </NavLink>
+          {showSearch && (
+            <div className="workspace__search">
+              <FidSearch datasetIds={mapSelectedDatasetIds} />
+            </div>
+          )}
           <button
             type="button"
             className="lang-toggle"

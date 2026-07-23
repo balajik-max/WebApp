@@ -16,6 +16,7 @@ import {
   submitFieldRemediation,
   uploadRemediationEvidence,
   type AeeCategory,
+  type AiDetectionMode,
   type PointVerificationRecord,
   type WorkflowHistoryItem,
   type WorkflowStatus,
@@ -55,6 +56,8 @@ const FINDING_LABEL: Record<string, string> = {
   drain_encroachment: "Drain Encroachment",
   manhole_status: "Manhole Status",
   road_width_narrowing: "Road Width Narrowing",
+  pothole_status: "Pothole Condition",
+  standing_water_status: "Standing Water",
 };
 
 function displayDate(value: string | null | undefined): string {
@@ -240,7 +243,7 @@ export function OperationalPointVerificationPanel({
 
   const readyRecord = record as PointVerificationRecord;
   const readyFeature = activeFeature as UrbanFeature;
-  const readyRequest = activeRequest as { anomalyId: string; detectionMode: "poles" | "drains" | "manholes" };
+  const readyRequest = activeRequest as { anomalyId: string; detectionMode: AiDetectionMode };
 
   const activeAiType = verificationId ? readyRecord.ai_anomaly_type : aiVerification?.anomalyType;
   const activeAiColor = verificationId ? readyRecord.ai_color : aiVerification?.aiColor;

@@ -97,10 +97,24 @@ export function ExecutiveDashboard({ data, totalFeatures, includedLayers }: Exec
           helper="Public and community landmarks"
         />
         <KpiCard
+          icon="●"
+          label="Potholes"
+          value={dashboard.potholes}
+          helper="Mapped road-surface defect polygons"
+          tone={dashboard.potholes > 0 ? "warning" : "default"}
+        />
+        <KpiCard
+          icon="≈"
+          label="Standing water"
+          value={dashboard.standingWaterLocations}
+          helper="Mapped waterlogging and ponding locations"
+          tone={dashboard.standingWaterLocations > 0 ? "danger" : "default"}
+        />
+        <KpiCard
           icon="!"
           label="Items needing attention"
           value={dashboard.issuesNeedingAttention}
-          helper="Road, manhole and drain issues identified"
+          helper="Road, drain, manhole, pothole and standing-water items"
           tone="danger"
         />
       </section>

@@ -539,6 +539,7 @@ export function DrainageDashboard({ data }: DrainageDashboardProps) {
                     <th>Pipe diameter</th>
                     <th>Pipe type</th>
                     <th>Image</th>
+                    <th>Map</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -567,6 +568,35 @@ export function DrainageDashboard({ data }: DrainageDashboardProps) {
                       <td>{record.pipeDiameter}</td>
                       <td>{record.pipeType}</td>
                       <td>{record.image}</td>
+                      <td>{record.mapHref ? <a className="dashboard-map-link" href={record.mapHref}>View on map</a> : "—"}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </section>
+
+          <section className="dashboard-section-heading">
+            <div>
+              <span>Drain network register</span>
+              <h2>Mapped drain segments</h2>
+            </div>
+            <p>Open any surveyed drain line at its exact mapped extent.</p>
+          </section>
+
+          <section className="road-table-panel">
+            <div className="road-table-scroller">
+              <table className="road-table drainage-table">
+                <thead>
+                  <tr><th>Segment</th><th>Drain type</th><th>Length</th><th>Map</th></tr>
+                </thead>
+                <tbody>
+                  {dashboard.networkRecords.map((record) => (
+                    <tr key={record.id}>
+                      <td><strong>FID {record.id}</strong></td>
+                      <td>{record.type}</td>
+                      <td>{record.length.toFixed(2)} m</td>
+                      <td>{record.mapHref ? <a className="dashboard-map-link" href={record.mapHref}>View on map</a> : "—"}</td>
                     </tr>
                   ))}
                 </tbody>

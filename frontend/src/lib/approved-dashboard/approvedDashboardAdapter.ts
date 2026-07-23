@@ -27,6 +27,17 @@ const FIELD_ALIASES: Record<string, string[]> = {
   Length_M: ["length m", "length meter", "length metres", "length meters", "length"],
   SHAPE_Length: ["shape length", "shape len", "length m", "length"],
   SHAPE_Area: ["shape area", "area sqm", "area sq m", "area", "area m2"],
+  Area_sqm: ["area sqm", "area sq m", "area m2", "shape area", "area"],
+  Elevation: ["elevation", "elevation m", "rl", "reduced level", "z level"],
+  Volume_m3: ["volume m3", "volume cubic m", "volume cubic meter", "cubic meter", "cubic metre", "volume"],
+  Depth_m: ["depth m", "average depth m", "avg depth m", "pothole depth m", "water depth m"],
+  Depth_cm: ["depth cm", "average depth cm", "avg depth cm", "pothole depth cm", "water depth cm"],
+  Start_X: ["start x", "start easting", "start longitude", "start lon"],
+  Start_Y: ["start y", "start northing", "start latitude", "start lat"],
+  Start_Z: ["start z", "start elevation", "start level"],
+  End_X: ["end x", "end easting", "end longitude", "end lon"],
+  End_Y: ["end y", "end northing", "end latitude", "end lat"],
+  End_Z: ["end z", "end elevation", "end level"],
   Condition: ["condition", "asset condition", "status", "asset status", "working status", "health", "health status", "inspection status"],
   Top_Level: ["top level", "cover level", "rim level", "ground level"],
   Bottom_Level: ["bottom level", "invert level", "bed level"],
@@ -103,10 +114,10 @@ function geometryFamily(geometryType: string): "point" | "line" | "polygon" | "o
 }
 
 /**
- * These are the eight original feature classes used by the approved dashboard.
- * They must never be reinterpreted by a broad classifier. In particular, the
- * source feature class named "Line" contains utility/physical linework, not
- * road-centreline survey rows.
+ * These are the original approved feature classes plus the explicitly reviewed
+ * pothole and standing-water extensions. They must never be reinterpreted by a
+ * broad classifier. In particular, the source feature class named "Line"
+ * contains utility/physical linework, not road-centreline survey rows.
  */
 function canonicalDestination(record: DashboardRecord): GisLayerName | null {
   const source = normalize(sourceLayer(record));
@@ -124,6 +135,15 @@ function canonicalDestination(record: DashboardRecord): GisLayerName | null {
     "drain level": "Drain_Levels",
     landmark: "Landmark",
     landmarks: "Landmark",
+    "standing water": "Standing_Water",
+    "water stagnation": "Standing_Water",
+    waterlogging: "Standing_Water",
+    pothole: "Pothole",
+    potholes: "Pothole",
+    pathhole: "Pothole",
+    pathholes: "Pothole",
+    "pothole top": "Pothole_Top",
+    "pathhole top": "Pothole_Top",
   };
   return canonical[source] ?? null;
 }
@@ -182,6 +202,9 @@ function destinationLayer(
     return family === "line" ? "SWD" : "Drain_Levels";
   }
   if (dashboardType === "landmarks") return "Landmark";
+  if (dashboardType === "standing_water") return "Standing_Water";
+  if (dashboardType === "potholes") return "Pothole";
+  if (dashboardType === "pothole_reference") return "Pothole_Top";
   if (dashboardType === "buildings" || dashboardType === "parcels" || dashboardType === "boundaries") return "Polygon";
   if (dashboardType === "streetlights" || dashboardType === "solid_waste" || dashboardType === "vegetation") {
     return family === "line" ? "Line" : family === "polygon" ? "Polygon" : "Point";
@@ -253,6 +276,9 @@ function buildRow(
   if (mapLink) row["Map Link (click)"] = mapLink;
 
   row.__dashboard_type = layer?.dashboard_type ?? "generic";
+  row.__feature_id = record.id;
+  row.__longitude = record.longitude;
+  row.__latitude = record.latitude;
   row.__source_layer = sourceLayer(record);
   row.__severity = record.severity;
 

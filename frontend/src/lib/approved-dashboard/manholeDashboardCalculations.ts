@@ -1,4 +1,5 @@
 import type { GisRow } from "./gisTypes";
+import { featureIdFromRow, featureMapHref } from "./mapLinks";
 
 export type ManholeConditionGroup =
   | "Good"
@@ -8,6 +9,8 @@ export type ManholeConditionGroup =
 
 export type ManholeRecord = {
   id: string;
+  featureId: string | null;
+  mapHref: string | null;
   roadName: string;
   condition: string;
   conditionGroup: ManholeConditionGroup;
@@ -159,6 +162,8 @@ export function prepareManholeRecords(rows: GisRow[]): ManholeRecord[] {
 
     return {
       id: text(row.GDB_FID, `manhole-${index + 1}`),
+      featureId: featureIdFromRow(row),
+      mapHref: featureMapHref(row),
       roadName: text(row.Road_Name, `Unnamed location ${index + 1}`),
       condition,
       conditionGroup: groupManholeCondition(condition),

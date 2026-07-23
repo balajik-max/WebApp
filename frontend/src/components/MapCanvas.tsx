@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState, useCallback, useImperativeHandle, useMemo, forwardRef, type MutableRefObject } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, useCallback, useImperativeHandle, useMemo, forwardRef, type CSSProperties, type MutableRefObject } from "react";
 import { createPortal } from "react-dom";
 import maplibregl, { Map as MLMap, MapMouseEvent, MapLayerMouseEvent, GeoJSONSource } from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
@@ -36,6 +36,7 @@ import { DataSourceSelector } from "./DataSourceSelector";
 import { SupportingFilesImport } from "./WardReportPanel";
 import { AnomalyAlertCard } from "./AnomalyAlertCard";
 import { RoadInspectionCard } from "./RoadInspectionCard";
+import { UrbanPlanningSolutionPanel } from "./UrbanPlanningSolutionPanel";
 import { QuickAnalysisPanel } from "./QuickAnalysisPanel";
 import { QuickAnalysisMapDashboard, type ManholeConnectionDetail, type QuickAnalysisTool } from "./QuickAnalysisMapDashboard";
 import { PlacemarkEditor } from "./map/PlacemarkEditor";
@@ -93,10 +94,9 @@ function sourceCrsFromDatasetMetadata(dataset: DatasetRow): string | null {
 
 export interface AiVerificationContext {
   anomalyId: string;
-  // Road findings belong to Quick Analysis/Road Inspection. The existing
-  // AE -> AEE -> Commissioner remediation API currently supports poles,
-  // drains, and manholes only, so keep the workflow context deliberately
-  // narrower than the general map detection mode.
+  // Road findings belong to Quick Analysis/Road Inspection. The shared
+  // AE -> AEE -> Commissioner remediation API supports every other focused
+  // detection family, including surveyed potholes and standing water.
   detectionMode: Exclude<DetectionMode, null | "roads">;
   anomalyType: SpatialAnomaly["anomaly_type"];
   aiColor: "red" | "yellow";
@@ -123,8 +123,10 @@ interface Props {
   /** AI-produced highlight overrides — redundant poles show red,
    * needed poles show green. Empty array clears the overlay. */
   aiHighlights?: AiHighlight[];
-  /** Feature requested from an attribute-table row on another route. */
+  /** Feature requested from a dashboard or attribute-table row on another route. */
   focusFeatureId?: string;
+  /** When true, temporarily hides other operational layers while a dashboard feature is being viewed. */
+  isolateFocusFeature?: boolean;
   /** Clears the one-shot route request after the feature has been handled. */
   onFocusHandled?: () => void;
   sidebarCollapsed?: boolean;
@@ -615,6 +617,8 @@ const LAYER_LINES_CADASTRAL = "urban-features-lines-cadastral";
 const LAYER_POLY_FILL = "urban-features-poly-fill";
 const LAYER_POLY_FILL_CADASTRAL = "urban-features-poly-fill-cadastral";
 const LAYER_POLY_OUTLINE = "urban-features-poly-outline";
+const LAYER_SURFACE_GLOW = "urban-features-surface-glow";
+const LAYER_SURFACE_BORDER = "urban-features-surface-border";
 const LAYER_POLY_OUTLINE_CADASTRAL = "urban-features-poly-outline-cadastral";
 const LAYER_PHOTOS = "urban-features-photos";
 const PHOTO_ICON_ID = "site-photo-icon";
@@ -681,6 +685,22 @@ const TABLE_FOCUS_FILL = "attribute-table-focus-fill";
 const TABLE_FOCUS_LINE = "attribute-table-focus-line";
 const TABLE_FOCUS_POINT = "attribute-table-focus-point";
 const TABLE_FOCUS_DURATION_MS = 8000;
+
+const TABLE_FOCUS_LAYER_IDS = [TABLE_FOCUS_FILL, TABLE_FOCUS_LINE, TABLE_FOCUS_POINT] as const;
+interface FeatureIsolationSnapshot {
+  activeDatasetIds: string[];
+  expandedDatasetId: string | null;
+  filter: FeatureFilter;
+  hiddenCategories: string[];
+  show3DBuildings: boolean;
+  camera: {
+    center: [number, number];
+    zoom: number;
+    bearing: number;
+    pitch: number;
+  };
+  layerVisibility: Record<string, "visible" | "none">;
+}
 
 // Road Inspection keeps its selected centerline visibly distinct while the
 // user reviews the server-side road report.
@@ -956,6 +976,30 @@ function withCanonicalVisibility(
   return ["all", base, ["any", canonicalMatch, extraMatch]] as unknown as maplibregl.FilterSpecification;
 }
 
+function withSurfaceIssueVisibility(
+  base: maplibregl.FilterSpecification,
+  mode: "potholes" | "standing_water",
+  extraCategories: Set<string> = new Set(),
+): maplibregl.FilterSpecification {
+  const canonicalClass = mode === "potholes" ? "Pothole" : "Standing_Water";
+  const rawNames = mode === "potholes"
+    ? ["pothole", "potholes", "pathhole", "pathholes"]
+    : ["standing_water", "standing water", "standing-water", "water stagnation", "waterlogging"];
+  const canonicalMatch = [
+    "==", ["coalesce", ["get", "canonical_class"], ""], canonicalClass,
+  ] as unknown as maplibregl.ExpressionSpecification;
+  const categoryMatch = [
+    "in", ["downcase", ["coalesce", ["get", "category"], ""]], ["literal", rawNames],
+  ] as unknown as maplibregl.ExpressionSpecification;
+  const matches: maplibregl.ExpressionSpecification[] = [canonicalMatch, categoryMatch];
+  if (extraCategories.size > 0) {
+    matches.push([
+      "in", ["coalesce", ["get", "category"], "uncategorized"], ["literal", Array.from(extraCategories)],
+    ] as unknown as maplibregl.ExpressionSpecification);
+  }
+  return ["all", base, ["any", ...matches]] as unknown as maplibregl.FilterSpecification;
+}
+
 
 function withRoadCompatibilityVisibility(
   base: maplibregl.FilterSpecification,
@@ -1085,6 +1129,36 @@ const MEASURE_POINTS_SOURCE = "measure-points";
 const MEASURE_LINE_SOURCE = "measure-line";
 const MEASURE_FILL_SOURCE = "measure-fill";
 const MEASURE_RADIUS_LINE_SOURCE = "measure-radius-line";
+
+const FOCUS_ISOLATION_SOURCE_IDS = new Set([
+  FEATURE_SOURCE,
+  PLACEMARK_SOURCE,
+  PLACEMARK_FOCUS_SOURCE,
+  ROAD_INSPECTION_SOURCE,
+  ROAD_INSPECTION_ASSETS_SOURCE,
+  ROAD_INSPECTION_WIDTH_SOURCE,
+  VIZ_SELECTED_SOURCE,
+  AI_HIGHLIGHT_SOURCE,
+  QUICK_ANALYSIS_MARKER_SOURCE,
+  QUICK_ANALYSIS_DRAIN_SOURCE,
+  QUICK_ANALYSIS_MANHOLE_SOURCE,
+  QUICK_ANALYSIS_ENCROACHMENT_SOURCE,
+  QUICK_ANALYSIS_MANHOLE_CONNECTION_SOURCE,
+  QUICK_ANALYSIS_MANHOLE_UNCONNECTED_SOURCE,
+  QUICK_ANALYSIS_POWER_LINE_SOURCE,
+  QUICK_ANALYSIS_WATER_LINE_SOURCE,
+  QUICK_ANALYSIS_TELECOM_LINE_SOURCE,
+  ANOMALY_SOURCE,
+  ANOMALY_ROAD_LINE_SOURCE,
+  MANHOLE_ROUTES_SOURCE,
+  MANHOLE_POINTS_SOURCE,
+  MANHOLE_UNCONNECTED_SOURCE,
+  MANHOLE_HEATMAP_SOURCE,
+  MEASURE_POINTS_SOURCE,
+  MEASURE_LINE_SOURCE,
+  MEASURE_FILL_SOURCE,
+  MEASURE_RADIUS_LINE_SOURCE,
+]);
 const LAYER_MEASURE_FILL = "measure-fill-layer";
 const LAYER_MEASURE_LINE = "measure-line-layer";
 const LAYER_MEASURE_RADIUS_LINE = "measure-radius-line-layer";
@@ -2641,21 +2715,32 @@ const DEFAULT_FILL_OPACITY = 0.35;
  * finding rather than shown as a separate point marker — a fully/partly
  * encroached building is highlighted red/yellow, everything else defaults
  * to green ("confirmed OK"), matching a real choropleth rather than pins. */
+type SeverityGeometryColor = "red" | "yellow" | "green" | "blue";
+
+function buildAnomalyFeatureColorExpression(
+  featureColor: Record<string, SeverityGeometryColor>,
+  fallback: maplibregl.ExpressionSpecification | string,
+): maplibregl.ExpressionSpecification | string {
+  const entries = Object.entries(featureColor);
+  if (entries.length === 0) return fallback;
+  const pairs: (string | maplibregl.ExpressionSpecification)[] = [];
+  for (const [id, color] of entries) {
+    const paintColor = color === "blue"
+      ? POINT_ISSUE_RESOLVED_COLOR
+      : color === "red"
+        ? BUILDING_RED_COLOR
+        : color === "yellow"
+          ? BUILDING_YELLOW_COLOR
+          : BUILDING_DEFAULT_COLOR;
+    pairs.push(id, paintColor);
+  }
+  return ["match", ["get", "id"], ...pairs, fallback] as unknown as maplibregl.ExpressionSpecification;
+}
+
 function buildBuildingColorExpression(
   buildingColor: Record<string, "red" | "yellow" | "green" | "blue">
 ): maplibregl.ExpressionSpecification | string {
-  const entries = Object.entries(buildingColor);
-  if (entries.length === 0) return BUILDING_DEFAULT_COLOR;
-  const pairs: (string | maplibregl.ExpressionSpecification)[] = [];
-  for (const [id, color] of entries) {
-    const hex =
-      color === "blue" ? POINT_ISSUE_RESOLVED_COLOR :
-      color === "red" ? BUILDING_RED_COLOR :
-      color === "green" ? BUILDING_DEFAULT_COLOR :
-      BUILDING_YELLOW_COLOR;
-    pairs.push(id, hex);
-  }
-  return ["match", ["get", "id"], ...pairs, BUILDING_DEFAULT_COLOR] as unknown as maplibregl.ExpressionSpecification;
+  return buildAnomalyFeatureColorExpression(buildingColor, BUILDING_DEFAULT_COLOR);
 }
 
 type AnomalyDisplayColor = SpatialAnomaly["color"] | "blue";
@@ -2673,6 +2758,8 @@ const ANOMALY_TYPE_LABEL: Record<SpatialAnomaly["anomaly_type"], string> = {
   manhole_status: "Manhole Status",
   road_width_narrowing: "Road Width Narrowing",
   powerline_proximity: "Powerline Proximity",
+  pothole_status: "Pothole Condition",
+  standing_water_status: "Standing Water",
 };
 
 /** One-line, numbers-first summary for the hover tooltip's AI Detected
@@ -2705,6 +2792,22 @@ function summarizeAnomalyForTooltip(a: SpatialAnomaly): { color: AnomalyDisplayC
     const red = m.red_threshold_m ?? m.danger_threshold_m ?? "?";
     const yellow = m.yellow_threshold_m ?? "?";
     metric = `${basis}${distance}m from nearest power line (red <= ${red}m, yellow <= ${yellow}m)`;
+  } else if (a.anomaly_type === "pothole_status") {
+    const area = m.area_sqm === null || m.area_sqm === undefined ? "area unavailable" : `${m.area_sqm}m²`;
+    const depth = m.depth_cm === null || m.depth_cm === undefined ? "depth unavailable" : `${m.depth_cm}cm deep`;
+    const volume = m.estimated_repair_volume_m3 === null || m.estimated_repair_volume_m3 === undefined
+      ? "volume unavailable"
+      : `${m.estimated_repair_volume_m3}m³ repair volume`;
+    metric = `${m.severity_label ?? "Mapped"} · ${area} · ${depth} · ${volume}`;
+  } else if (a.anomaly_type === "standing_water_status") {
+    const area = m.area_sqm === null || m.area_sqm === undefined ? "area unavailable" : `${m.area_sqm}m² affected`;
+    const road = m.intersects_road ? "on road" : m.nearest_road_distance_m !== null && m.nearest_road_distance_m !== undefined
+      ? `${m.nearest_road_distance_m}m from road`
+      : "road proximity unavailable";
+    const drain = m.intersects_drain ? "intersects drain" : m.nearest_drain_distance_m !== null && m.nearest_drain_distance_m !== undefined
+      ? `${m.nearest_drain_distance_m}m from drain`
+      : "drain proximity unavailable";
+    metric = `${m.severity_label ?? "Mapped"} · ${area} · ${road} · ${drain}`;
   }
   const resolved = a.status === "resolved";
   return {
@@ -2729,6 +2832,8 @@ function primaryFeatureIdForAnomaly(anomaly: SpatialAnomaly): string | null {
     (anomaly.anomaly_metadata.this_feature_id as string | undefined) ??
     (anomaly.anomaly_metadata.building_id as string | undefined) ??
     (anomaly.anomaly_metadata.manhole_id as string | undefined) ??
+    (anomaly.anomaly_metadata.pothole_id as string | undefined) ??
+    (anomaly.anomaly_metadata.standing_water_id as string | undefined) ??
     anomaly.feature_ids[0] ??
     null
   );
@@ -2903,6 +3008,225 @@ function formatMetricDistance(value: number | null): string {
   return `${Math.round(value)} m`;
 }
 
+type SurfaceIssueAnomalyType = "pothole_status" | "standing_water_status";
+
+function isSurfaceIssueAnomaly(anomaly: SpatialAnomaly | null | undefined): anomaly is SpatialAnomaly & { anomaly_type: SurfaceIssueAnomalyType } {
+  return anomaly?.anomaly_type === "pothole_status" || anomaly?.anomaly_type === "standing_water_status";
+}
+
+function readSurfaceMetadata(
+  metadata: Record<string, unknown>,
+  keys: string[],
+): unknown {
+  for (const key of keys) {
+    const value = metadata[key];
+    if (value !== null && value !== undefined && value !== "") return value;
+  }
+  return null;
+}
+
+function formatSurfaceValue(value: unknown, suffix = ""): string {
+  if (value === null || value === undefined || value === "") return "—";
+  if (typeof value === "boolean") return value ? "Yes" : "No";
+  if (typeof value === "number") {
+    if (!Number.isFinite(value)) return "—";
+    const rounded = Math.abs(value) >= 100 ? value.toFixed(0) : value.toFixed(2).replace(/\.00$/, "").replace(/(\.\d)0$/, "$1");
+    return `${rounded}${suffix}`;
+  }
+  return `${String(value)}${suffix}`;
+}
+
+function surfaceIssueRecommendation(anomaly: SpatialAnomaly & { anomaly_type: SurfaceIssueAnomalyType }): {
+  title: string;
+  badge: string;
+  badgeColor: string;
+  condition: string;
+  implications: string;
+  action: string;
+  rows: Array<[string, string]>;
+} {
+  const metadata = anomaly.anomaly_metadata as Record<string, unknown>;
+  const resolved = anomaly.status === "resolved";
+  const severity = String(readSurfaceMetadata(metadata, ["severity_label", "severity", "condition_label"]) ?? anomaly.color).toUpperCase();
+  const badgeColor = resolved
+    ? POINT_ISSUE_RESOLVED_COLOR
+    : anomaly.color === "red"
+      ? BUILDING_RED_COLOR
+      : anomaly.color === "yellow"
+        ? BUILDING_YELLOW_COLOR
+        : BUILDING_DEFAULT_COLOR;
+  const workflowStatus = resolved ? "Resolved / final approval" : anomaly.status.replace(/_/g, " ");
+  const priority = String(readSurfaceMetadata(metadata, ["priority", "repair_priority", "urgency"]) ?? (anomaly.color === "red" ? "High" : anomaly.color === "yellow" ? "Medium" : "Low"));
+
+  if (anomaly.anomaly_type === "pothole_status") {
+    const area = readSurfaceMetadata(metadata, ["area_sqm", "area_m2", "affected_area_m2"]);
+    const depth = readSurfaceMetadata(metadata, ["depth_cm", "max_depth_cm", "average_depth_cm"]);
+    const length = readSurfaceMetadata(metadata, ["length_m", "pothole_length_m"]);
+    const width = readSurfaceMetadata(metadata, ["width_m", "pothole_width_m"]);
+    const volume = readSurfaceMetadata(metadata, ["estimated_repair_volume_m3", "repair_volume_m3", "volume_m3"]);
+    const onRoad = readSurfaceMetadata(metadata, ["intersects_road", "on_road"]);
+    const roadDistance = readSurfaceMetadata(metadata, ["nearest_road_distance_m", "road_distance_m"]);
+    const suppliedAction = readSurfaceMetadata(metadata, ["recommended_action", "recommendation", "repair_method"]);
+    const action = suppliedAction
+      ? String(suppliedAction)
+      : anomaly.color === "red"
+        ? "Barricade the damaged spot, cut back to sound pavement, remove failed material, repair any weak base, then place and compact a hot-mix asphalt patch. Inspect the surrounding carriageway for connected cracking or settlement."
+        : anomaly.color === "yellow"
+          ? "Clean and square the pothole edges, remove loose material, apply tack coat, place a localized hot-mix patch and compact it flush with the road surface. Reinspect after rainfall."
+          : "Seal minor edge deterioration, monitor growth and include the location in the next preventive-maintenance cycle.";
+    const condition = `The mapped pothole is classified as ${severity}${resolved ? " and is recorded as resolved" : ""}. Its surveyed geometry remains at the original GDB location.`;
+    const implications = anomaly.color === "red"
+      ? "The defect can cause sudden vehicle impact, loss of control, tyre or suspension damage and accelerated pavement failure, especially during rain or low visibility."
+      : anomaly.color === "yellow"
+        ? "The defect can worsen under traffic and rainfall, create a safety hazard for two-wheelers and expand into surrounding pavement if patching is delayed."
+        : "The current defect is comparatively minor, but continued traffic and water ingress can enlarge it without preventive treatment.";
+    return {
+      title: "AI Pothole Recommendation",
+      badge: resolved ? "RESOLVED" : `${severity} CONDITION`,
+      badgeColor,
+      condition,
+      implications,
+      action,
+      rows: [
+        ["Pothole", String(readSurfaceMetadata(metadata, ["pothole_id", "feature_id"]) ?? anomaly.feature_ids[0] ?? anomaly.id)],
+        ["Area", formatSurfaceValue(area, " m²")],
+        ["Length", formatSurfaceValue(length, " m")],
+        ["Width", formatSurfaceValue(width, " m")],
+        ["Depth", formatSurfaceValue(depth, " cm")],
+        ["Repair volume", formatSurfaceValue(volume, " m³")],
+        ["On road", formatSurfaceValue(onRoad)],
+        ["Road distance", formatSurfaceValue(roadDistance, " m")],
+        ["Priority", priority],
+        ["Workflow", workflowStatus],
+        ["Longitude", anomaly.lon.toFixed(6)],
+        ["Latitude", anomaly.lat.toFixed(6)],
+      ],
+    };
+  }
+
+  const area = readSurfaceMetadata(metadata, ["area_sqm", "area_m2", "affected_area_m2"]);
+  const depth = readSurfaceMetadata(metadata, ["depth_cm", "water_depth_cm", "average_depth_cm", "max_depth_cm"]);
+  const onRoad = readSurfaceMetadata(metadata, ["intersects_road", "on_road"]);
+  const roadDistance = readSurfaceMetadata(metadata, ["nearest_road_distance_m", "road_distance_m"]);
+  const intersectsDrain = readSurfaceMetadata(metadata, ["intersects_drain", "on_drain"]);
+  const drainDistance = readSurfaceMetadata(metadata, ["nearest_drain_distance_m", "drain_distance_m"]);
+  const likelyCause = readSurfaceMetadata(metadata, ["likely_cause", "cause", "probable_cause"]);
+  const suppliedAction = readSurfaceMetadata(metadata, ["recommended_action", "recommendation", "remedial_action"]);
+  const action = suppliedAction
+    ? String(suppliedAction)
+    : intersectsDrain === true || (typeof drainDistance === "number" && drainDistance <= 5)
+      ? "Inspect and clean the nearest inlet or drain, remove silt and solid waste, verify downstream flow, then correct any local road depression so runoff reaches the drainage system."
+      : onRoad === true
+        ? "Pump out standing water where necessary, survey the road levels and crossfall, repair the depressed pavement and provide a positive drainage path to the nearest suitable inlet."
+        : "Remove the accumulated water, inspect the local ground and drainage path, clear obstructions and regrade the affected surface to prevent recurrence.";
+  const condition = `The mapped standing-water area is classified as ${severity}${resolved ? " and is recorded as resolved" : ""}. The recommendation uses the persisted audit finding at its surveyed GDB location.`;
+  const implications = anomaly.color === "red"
+    ? "Persistent water can hide pavement defects, increase skidding and pedestrian risk, accelerate pavement deterioration and create sanitation or mosquito-breeding concerns."
+    : anomaly.color === "yellow"
+      ? "The accumulation can disrupt movement, weaken the pavement edge and become a larger waterlogging problem during heavier rainfall."
+      : "The accumulation is currently limited, but repeated ponding indicates that local drainage or surface levels should be monitored.";
+  return {
+    title: "AI Standing Water Recommendation",
+    badge: resolved ? "RESOLVED" : `${severity} CONDITION`,
+    badgeColor,
+    condition,
+    implications,
+    action,
+    rows: [
+      ["Standing water", String(readSurfaceMetadata(metadata, ["standing_water_id", "feature_id"]) ?? anomaly.feature_ids[0] ?? anomaly.id)],
+      ["Affected area", formatSurfaceValue(area, " m²")],
+      ["Water depth", formatSurfaceValue(depth, " cm")],
+      ["On road", formatSurfaceValue(onRoad)],
+      ["Road distance", formatSurfaceValue(roadDistance, " m")],
+      ["Intersects drain", formatSurfaceValue(intersectsDrain)],
+      ["Drain distance", formatSurfaceValue(drainDistance, " m")],
+      ["Likely cause", formatSurfaceValue(likelyCause)],
+      ["Priority", priority],
+      ["Workflow", workflowStatus],
+      ["Longitude", anomaly.lon.toFixed(6)],
+      ["Latitude", anomaly.lat.toFixed(6)],
+    ],
+  };
+}
+
+const SURFACE_CARD_STYLE: CSSProperties = {
+  position: "absolute",
+  top: 16,
+  right: 16,
+  zIndex: 35,
+  width: "min(370px, calc(100% - 32px))",
+  maxHeight: "calc(100% - 32px)",
+  overflowY: "auto",
+  borderRadius: 18,
+  border: "1px solid rgba(148, 163, 184, 0.22)",
+  background: "linear-gradient(180deg, rgba(27, 38, 55, 0.98), rgba(20, 30, 45, 0.98))",
+  boxShadow: "0 18px 55px rgba(2, 6, 23, 0.46)",
+  color: "#e5edf7",
+  backdropFilter: "blur(14px)",
+};
+
+function SurfaceIssueRecommendCard({
+  anomaly,
+  onClose,
+  onView3D,
+}: {
+  anomaly: SpatialAnomaly & { anomaly_type: SurfaceIssueAnomalyType };
+  onClose: () => void;
+  onView3D: () => void;
+}) {
+  const recommendation = surfaceIssueRecommendation(anomaly);
+  const metadata = anomaly.anomaly_metadata as Record<string, unknown>;
+  const surfaceFeatureId = String(
+    readSurfaceMetadata(
+      metadata,
+      anomaly.anomaly_type === "pothole_status"
+        ? ["pothole_id", "this_feature_id", "feature_id"]
+        : ["standing_water_id", "this_feature_id", "feature_id"],
+    ) ?? anomaly.feature_ids[0] ?? "",
+  ) || null;
+  const surfaceLabel = anomaly.anomaly_type === "pothole_status" ? "Pothole" : "Standing Water";
+  const surfacePlaceholder = anomaly.anomaly_type === "pothole_status"
+    ? "Describe your proposed pothole repair, pavement treatment, material, quantity, drainage, and traffic-safety plan…"
+    : "Describe your proposed standing-water solution, including drain cleaning, inlet work, regrading, pumping, or pavement-level correction…";
+  return (
+    <section style={SURFACE_CARD_STYLE} data-testid={`surface-recommend-${anomaly.anomaly_type}`} aria-label={recommendation.title}>
+      <header style={{ padding: "16px 18px 13px", borderBottom: "1px solid rgba(148,163,184,.14)", position: "relative" }}>
+        <div style={{ display: "inline-flex", alignItems: "center", borderRadius: 999, padding: "4px 9px", marginBottom: 10, color: recommendation.badgeColor, background: `${recommendation.badgeColor}1f`, border: `1px solid ${recommendation.badgeColor}55`, fontSize: 10, fontWeight: 800, letterSpacing: ".11em" }}>
+          {recommendation.badge}
+        </div>
+        <h2 style={{ margin: 0, paddingRight: 36, fontSize: 16, lineHeight: 1.35, color: "#f8fafc" }}>{recommendation.title}</h2>
+        <button type="button" onClick={onClose} aria-label="Close recommendation" style={{ position: "absolute", top: 13, right: 13, width: 30, height: 30, borderRadius: 9, border: "1px solid rgba(148,163,184,.18)", background: "rgba(15,23,42,.35)", color: "#cbd5e1", cursor: "pointer", fontSize: 18, lineHeight: 1 }}>
+          ×
+        </button>
+      </header>
+      <div style={{ padding: "16px 18px 18px" }}>
+        <h3 style={{ margin: "0 0 12px", fontSize: 15, color: "#aebed2" }}>Finding Note</h3>
+        <div style={{ display: "grid", gap: 12, fontSize: 13, lineHeight: 1.52, color: "#aebed2" }}>
+          <p style={{ margin: 0 }}><strong style={{ color: "#d8e2ef" }}>Condition:</strong> {recommendation.condition}</p>
+          <p style={{ margin: 0 }}><strong style={{ color: "#d8e2ef" }}>Practical implications:</strong> {recommendation.implications}</p>
+          <p style={{ margin: 0 }}><strong style={{ color: "#d8e2ef" }}>Recommended action:</strong> {recommendation.action}</p>
+        </div>
+        <button type="button" onClick={onView3D} style={{ width: "100%", marginTop: 18, padding: "10px 12px", borderRadius: 9, border: "1px solid rgba(59,130,246,.25)", background: "rgba(30,64,175,.12)", color: "#bfd7ff", fontWeight: 700, cursor: "pointer" }}>
+          View affected feature in 3D
+        </button>
+        <UrbanPlanningSolutionPanel
+          featureId={surfaceFeatureId}
+          contextLabel={surfaceLabel}
+          placeholder={surfacePlaceholder}
+        />
+        <div style={{ marginTop: 14, borderRadius: 11, border: "1px solid rgba(148,163,184,.13)", background: "rgba(15,23,42,.18)", padding: "11px 12px" }}>
+          {recommendation.rows.map(([label, value]) => (
+            <div key={label} style={{ display: "grid", gridTemplateColumns: "118px minmax(0, 1fr)", gap: 10, padding: "4px 0", fontSize: 12 }}>
+              <span style={{ color: "#71839a" }}>{label}</span>
+              <strong style={{ color: "#e2e8f0", textAlign: "right", overflowWrap: "anywhere" }}>{value}</strong>
+            </div>
+          ))}
+        </div>
+      </div>
+    </section>
+  );
+}
+
 export interface ViewportStatus { loading: boolean; count: number; truncated: boolean; error: string | null; bbox: [number, number, number, number] | null; }
 export interface LegendEntry { category: string; color: string; count: number; }
 interface HoverInfo {
@@ -2949,6 +3273,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     onBasemapChange,
     aiHighlights,
     focusFeatureId,
+    isolateFocusFeature = false,
     onFocusHandled,
     sidebarCollapsed = false,
     onToggleSidebar,
@@ -3137,7 +3462,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
   // always-on-the-map alternative to opening the full Map3DViewer modal.
   const [show3DBuildings, setShow3DBuildings] = useState(false);
 
-  // Which AI Detection focus mode is active (null = normal full view).
+  // Which AI Detection asset family is active (null = normal full view).
   // Refs mirror the state so the per-fetch applyFeatureCollection callback
   // (a stable useCallback, not re-created on every mode change) always reads
   // the CURRENT mode/building colors without needing to be in its deps.
@@ -3160,6 +3485,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
   const [aiOverlayEnabled, setAiOverlayEnabled] = useState(false);
   const aiOverlayEnabledRef = useRef(false);
   const buildingColorMapRef = useRef<Record<string, "red" | "yellow" | "green" | "blue">>({});
+  const surfaceIssueColorMapRef = useRef<Record<string, SeverityGeometryColor>>({});
   // feature id -> its own anomaly, for the hover tooltip's "AI Detected"
   // badge — populated whenever anomalies changes, read via ref from the
   // hover handler (registered once at map load).
@@ -3229,12 +3555,26 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
   const streetPickModeRef = useRef(false);
   const streetPickConsumedRef = useRef(false);
   const [pendingFocusFeatureId, setPendingFocusFeatureId] = useState<string | null>(focusFeatureId ?? null);
+  const [pendingFocusIsolation, setPendingFocusIsolation] = useState(Boolean(focusFeatureId && isolateFocusFeature));
+  const [featureIsolationActive, setFeatureIsolationActive] = useState(false);
+  const featureIsolationSnapshotRef = useRef<FeatureIsolationSnapshot | null>(null);
+  const activeDatasetIdsRef = useRef(activeDatasetIds);
+  const expandedDatasetIdRef = useRef(expandedDatasetId);
+  const hiddenCategoriesRef = useRef(hiddenCategories);
+  const show3DBuildingsRef = useRef(show3DBuildings);
   const focusAbortRef = useRef<AbortController | null>(null);
   const focusClearTimerRef = useRef<number | null>(null);
 
+  useEffect(() => { activeDatasetIdsRef.current = activeDatasetIds; }, [activeDatasetIds]);
+  useEffect(() => { expandedDatasetIdRef.current = expandedDatasetId; }, [expandedDatasetId]);
+  useEffect(() => { hiddenCategoriesRef.current = hiddenCategories; }, [hiddenCategories]);
+  useEffect(() => { show3DBuildingsRef.current = show3DBuildings; }, [show3DBuildings]);
+
   useEffect(() => {
-    if (focusFeatureId) setPendingFocusFeatureId(focusFeatureId);
-  }, [focusFeatureId]);
+    if (!focusFeatureId) return;
+    setPendingFocusFeatureId(focusFeatureId);
+    setPendingFocusIsolation(isolateFocusFeature);
+  }, [focusFeatureId, isolateFocusFeature]);
 
   // Look Around mode takes over map dragging to change bearing/pitch, which
   // would conflict with every other pointer-driven tool (street-view pick,
@@ -4903,9 +5243,12 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
       map.setPaintProperty(
         LAYER_POLY_FILL,
         "fill-color",
-        detectionModeRef.current === "drains"
+        (detectionModeRef.current === "drains" || detectionModeRef.current === "powerlines")
           ? buildBuildingColorExpression(buildingColorMapRef.current)
-          : colorExpr
+          : (detectionModeRef.current === "potholes" || detectionModeRef.current === "standing_water")
+              && aiOverlayEnabledRef.current
+            ? buildAnomalyFeatureColorExpression(surfaceIssueColorMapRef.current, BUILDING_DEFAULT_COLOR)
+            : colorExpr
       );
     }
 
@@ -6034,12 +6377,15 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
       return;
     }
     const roadMode = roadInspectionActive || detectionMode === "roads";
+    const surfaceMode = detectionMode === "potholes" || detectionMode === "standing_water";
     const allowed = roadInspectionActive
       ? ["Road_Centerline"]
       : DETECTION_MODE_TARGET_CLASSES[detectionMode!];
     const focusedFilter = (base: maplibregl.FilterSpecification) => roadMode
       ? withRoadCompatibilityVisibility(base, !roadInspectionActive, extraVisibleCategories)
-      : withCanonicalVisibility(base, allowed, extraVisibleCategories);
+      : surfaceMode
+        ? withSurfaceIssueVisibility(base, detectionMode as "potholes" | "standing_water", extraVisibleCategories)
+        : withCanonicalVisibility(base, allowed, extraVisibleCategories);
     if (map.getLayer(LAYER_POLY_FILL)) map.setFilter(LAYER_POLY_FILL, focusedFilter(POLY_BASE_FILTER));
     if (map.getLayer(LAYER_POLY_OUTLINE)) map.setFilter(LAYER_POLY_OUTLINE, focusedFilter(POLY_BASE_FILTER));
     if (map.getLayer(LAYER_POLY_FILL_CADASTRAL)) map.setFilter(LAYER_POLY_FILL_CADASTRAL, focusedFilter(POLY_BASE_FILTER));
@@ -6055,6 +6401,11 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     if (map.getLayer(LAYER_POINTS)) map.setFilter(LAYER_POINTS, focusedFilter(POINT_BASE_FILTER));
     if (map.getLayer(LAYER_POINTS_CADASTRAL_HIT)) map.setFilter(LAYER_POINTS_CADASTRAL_HIT, focusedFilter(CADASTRAL_POINT_HIT_FILTER));
     if (map.getLayer(LAYER_POINTS_CADASTRAL)) map.setFilter(LAYER_POINTS_CADASTRAL, focusedFilter(CADASTRAL_POINT_HIT_FILTER));
+    const surfaceFilter = surfaceMode
+      ? withSurfaceIssueVisibility(POLY_BASE_FILTER, detectionMode as "potholes" | "standing_water", extraVisibleCategories)
+      : (["==", ["get", "id"], "__none__"] as unknown as maplibregl.FilterSpecification);
+    if (map.getLayer(LAYER_SURFACE_GLOW)) map.setFilter(LAYER_SURFACE_GLOW, surfaceFilter);
+    if (map.getLayer(LAYER_SURFACE_BORDER)) map.setFilter(LAYER_SURFACE_BORDER, surfaceFilter);
     // LAYER_PHOTOS is intentionally left as-is so geotagged evidence stays visible.
   }, [analysisWorkspaceActive, mapReady, detectionMode, roadInspectionActive, extraVisibleCategories]);
 
@@ -6072,43 +6423,95 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
 
     const buildingColors: Record<string, "red" | "yellow" | "green" | "blue"> = {};
     const buildingAnomalyIds: Record<string, string> = {};
-    // Restricted to the CURRENTLY ACTIVE mode's own anomaly type — a
-    // building can genuinely carry both a drain_encroachment AND a
-    // powerline_proximity finding at once, and this map holds only one
-    // color/id per building, so without this filter whichever anomaly type
-    // happened to be inserted last would silently win regardless of which
-    // mode is actually showing (recoloring a building red for Drains using
-    // a stale Powerlines finding, or vice versa, and — for
-    // buildingAnomalyIds — opening the wrong finding's AI Alert card on
-    // click).
+    // A building can carry both a drain-encroachment and a powerline-
+    // proximity finding. Populate the building color map only from the
+    // currently active building-based mode so one finding family never
+    // overwrites the other. Surface issues are tracked independently by
+    // their exact feature id.
     const buildingAnomalyType =
-      detectionMode === "drains" || detectionMode === "powerlines" ? DETECTION_MODE_ANOMALY_TYPE[detectionMode] : null;
-    if (buildingAnomalyType) {
-      for (const a of anomalies) {
-        if (a.anomaly_type !== buildingAnomalyType) continue;
+      detectionMode === "drains" || detectionMode === "powerlines"
+        ? DETECTION_MODE_ANOMALY_TYPE[detectionMode]
+        : null;
+    const surfaceIssueColors: Record<string, SeverityGeometryColor> = {};
+    const surfaceSeverityRank: Record<SeverityGeometryColor, number> = {
+      green: 1,
+      yellow: 2,
+      red: 3,
+      blue: 4,
+    };
+    for (const a of anomalies) {
+      if (buildingAnomalyType && a.anomaly_type === buildingAnomalyType) {
         const buildingId = a.feature_ids[0];
         if (buildingId) {
           buildingColors[buildingId] =
-            a.status === "resolved" ? "blue" : a.color === "red" ? "red" : a.color === "green" ? "green" : "yellow";
+            a.status === "resolved"
+              ? "blue"
+              : a.color === "red"
+                ? "red"
+                : a.color === "green"
+                  ? "green"
+                  : "yellow";
           buildingAnomalyIds[buildingId] = a.id;
+        }
+      }
+
+      const featureId = primaryFeatureIdForAnomaly(a);
+      if (featureId && (a.anomaly_type === "pothole_status" || a.anomaly_type === "standing_water_status")) {
+        const displayColor: SeverityGeometryColor = a.status === "resolved"
+          ? "blue"
+          : a.color === "red"
+            ? "red"
+            : a.color === "yellow"
+              ? "yellow"
+              : "green";
+        const current = surfaceIssueColors[featureId];
+        if (!current || surfaceSeverityRank[displayColor] > surfaceSeverityRank[current]) {
+          surfaceIssueColors[featureId] = displayColor;
         }
       }
     }
     buildingColorMapRef.current = buildingColors;
     buildingAnomalyIdMapRef.current = buildingAnomalyIds;
+    surfaceIssueColorMapRef.current = surfaceIssueColors;
 
-    const aiOn = !roadInspectionActive && aiOverlayEnabled && detectionMode !== null;
+    const surfaceMode = detectionMode === "potholes" || detectionMode === "standing_water";
+    const aiOn = !roadInspectionActive && detectionMode !== null && aiOverlayEnabled;
+    const surfaceColorExpression = buildAnomalyFeatureColorExpression(surfaceIssueColors, BUILDING_DEFAULT_COLOR);
     if (map.getLayer(LAYER_POLY_FILL)) {
       map.setPaintProperty(
         LAYER_POLY_FILL,
         "fill-color",
-        aiOn && (detectionMode === "drains" || detectionMode === "powerlines") ? buildBuildingColorExpression(buildingColors) : colorByCategoryExpr()
+        aiOn && (detectionMode === "drains" || detectionMode === "powerlines")
+          ? buildBuildingColorExpression(buildingColors)
+          : aiOn && surfaceMode
+            ? surfaceColorExpression
+            : colorByCategoryExpr()
       );
       map.setPaintProperty(
         LAYER_POLY_FILL,
         "fill-opacity",
-        aiOn && (detectionMode === "drains" || detectionMode === "powerlines") ? DRAINS_MODE_FILL_OPACITY : DEFAULT_FILL_OPACITY
+        aiOn && (detectionMode === "drains" || detectionMode === "powerlines")
+          ? DRAINS_MODE_FILL_OPACITY
+          : aiOn && surfaceMode
+            ? 0.62
+            : DEFAULT_FILL_OPACITY
       );
+    }
+    const surfaceVisibilityFilter = surfaceMode && detectionMode
+      ? withSurfaceIssueVisibility(POLY_BASE_FILTER, detectionMode as "potholes" | "standing_water", extraVisibleCategories)
+      : (["==", ["get", "id"], "__none__"] as unknown as maplibregl.FilterSpecification);
+    if (map.getLayer(LAYER_SURFACE_GLOW)) {
+      map.setFilter(LAYER_SURFACE_GLOW, surfaceVisibilityFilter);
+      map.setPaintProperty(LAYER_SURFACE_GLOW, "line-color", surfaceColorExpression);
+      map.setPaintProperty(LAYER_SURFACE_GLOW, "line-width", ["interpolate", ["linear"], ["zoom"], 12, 10, 18, 18]);
+      map.setPaintProperty(LAYER_SURFACE_GLOW, "line-blur", ["interpolate", ["linear"], ["zoom"], 12, 7, 18, 12]);
+      map.setPaintProperty(LAYER_SURFACE_GLOW, "line-opacity", aiOn && surfaceMode ? 0.88 : 0);
+    }
+    if (map.getLayer(LAYER_SURFACE_BORDER)) {
+      map.setFilter(LAYER_SURFACE_BORDER, surfaceVisibilityFilter);
+      map.setPaintProperty(LAYER_SURFACE_BORDER, "line-color", surfaceColorExpression);
+      map.setPaintProperty(LAYER_SURFACE_BORDER, "line-width", ["interpolate", ["linear"], ["zoom"], 12, 2, 18, 4]);
+      map.setPaintProperty(LAYER_SURFACE_BORDER, "line-opacity", aiOn && surfaceMode ? 1 : 0);
     }
     if (map.getLayer(LAYER_ANOMALIES)) {
       // Each detection mode isolates its own finding type as dots. Road-width
@@ -6119,7 +6522,14 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
       // road_width_narrowing. Drains and Powerlines modes suppress points
       // entirely (they communicate through polygon fill).
       const anomalyType =
-        aiOn && detectionMode !== null && detectionMode !== "drains" && detectionMode !== "roads" && detectionMode !== "manholes" && detectionMode !== "powerlines"
+        aiOn
+        && detectionMode !== null
+        && detectionMode !== "drains"
+        && detectionMode !== "roads"
+        && detectionMode !== "manholes"
+        && detectionMode !== "powerlines"
+        && detectionMode !== "potholes"
+        && detectionMode !== "standing_water"
           ? DETECTION_MODE_ANOMALY_TYPE[detectionMode]
           : null;
       let pointFilter: maplibregl.FilterSpecification;
@@ -6213,12 +6623,14 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     setRoadInspectionReport(null);
     setRoadInspectionError(null);
     setRoadInspectionLoading(false);
-    setDetectionMode((current) => (current === mode ? null : mode));
-    // Every fresh mode selection starts with the AI overlay off — isolate
-    // the category first, plain colors, then the user explicitly turns AI
-    // on as a separate step.
+    const nextMode = detectionMode === mode ? null : mode;
+    setDetectionMode(nextMode);
+    // Every AI Detection family, including Potholes and Standing Water,
+    // starts with its severity overlay OFF. The selected GDB asset family stays
+    // visible, and the shared ON/OFF control enables or disables only the
+    // red/yellow/green severity fill, border and outer glow.
     setAiOverlayEnabled(false);
-  }, [setSpatialAuditRequested, spatialAuditExecutedRef]);
+  }, [detectionMode, setSpatialAuditRequested, spatialAuditExecutedRef]);
 
   const closeRoadInspection = useCallback(() => {
     roadInspectionAbortRef.current?.abort();
@@ -6265,7 +6677,28 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
   }, []);
 
   const toggleAiOverlay = useCallback(() => {
-    setAiOverlayEnabled((v) => !v);
+    const activeMode = detectionModeRef.current;
+    const overlayIsOn = aiOverlayEnabledRef.current;
+
+    // For Potholes and Standing Water, switching the AI overlay OFF exits
+    // the focused detection view completely. This hands the map back to the
+    // normal GDB visualization so every category in the active dataset is
+    // visible again, instead of leaving only the selected surface class on
+    // screen with its severity styling removed. Other detection families
+    // retain their existing ON/OFF behaviour.
+    if (overlayIsOn && (activeMode === "potholes" || activeMode === "standing_water")) {
+      aiOverlayEnabledRef.current = false;
+      detectionModeRef.current = null;
+      setAiOverlayEnabled(false);
+      setDetectionMode(null);
+      setExtraVisibleCategories(new Set());
+      setHiddenCategories(new Set());
+      return;
+    }
+
+    const next = !overlayIsOn;
+    aiOverlayEnabledRef.current = next;
+    setAiOverlayEnabled(next);
   }, []);
 
   // Marks "the user asked for the one-time Spatial Audit" — synchronous, so
@@ -6302,13 +6735,19 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     if (failures.length > 0) {
       console.error("Spatial Audit failed", failures);
     }
+    // The surface-issue audit also backfills authoritative canonical classes
+    // for older datasets that were ingested before Pothole and Standing_Water
+    // existed in the taxonomy. Refresh the current map snapshot so those new
+    // classes are available immediately without requiring a browser reload.
+    scheduleFetch();
+
     // Auto-turn on the AI overlay so the freshly-computed audit findings are
     // visible on the map immediately, without the user having to also toggle
-    // "AI Detection" on. With no detection mode active this shows ALL audit
-    // anomaly types (including the new road_width_narrowing), not one mode.
+    // "AI Detection" on. With no detection mode active this shows every audit
+    // anomaly type, including potholes and standing water.
     setAiOverlayEnabled(true);
     return failures.length === 0;
-  }, []);
+  }, [scheduleFetch]);
 
   const closeQuickAnalysis = useCallback(() => {
     if (measureActiveRef.current) closeMeasureSafely();
@@ -7006,6 +7445,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
   }, [quickAnalysisManholeNetwork]);
 
   const selectedAnomaly = anomalies.find((a) => a.id === selectedAnomalyId) ?? null;
+  const selectedSurfaceRecommendation = isSurfaceIssueAnomaly(selectedAnomaly) ? selectedAnomaly : null;
 
   const handleAnomalyStatusChange = useCallback(async (anomalyId: string, next: AnomalyStatus) => {
     const updated = await updateAnomalyStatus(anomalyId, next);
@@ -7017,12 +7457,199 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     setSelectedAnomalyId((current) => (current === anomalyId ? null : current));
   }, []);
 
-  // Resolve a one-shot attribute-table request to the authoritative feature,
-  // make its dataset/category visible, then focus and identify the geometry.
+  const cloneFeatureFilter = useCallback((value: FeatureFilter): FeatureFilter => ({
+    ...value,
+    datasetIds: value.datasetIds ? [...value.datasetIds] : undefined,
+    categories: value.categories ? [...value.categories] : undefined,
+  }), []);
+
+  const applyFeatureIsolationVisibility = useCallback((snapshot: FeatureIsolationSnapshot, raiseFocusLayers = false) => {
+    const map = mapRef.current;
+    if (!map || !map.isStyleLoaded()) return;
+
+    const layers = map.getStyle().layers ?? [];
+    for (const layer of layers) {
+      if (TABLE_FOCUS_LAYER_IDS.includes(layer.id as typeof TABLE_FOCUS_LAYER_IDS[number])) continue;
+      const source = "source" in layer && typeof layer.source === "string" ? layer.source : null;
+      const shouldHide = Boolean(
+        (source && FOCUS_ISOLATION_SOURCE_IDS.has(source))
+        || layer.id.startsWith("obj-3d-layer-")
+        || layer.id === "gis-3d-buildings-preview"
+      );
+      if (!shouldHide || !map.getLayer(layer.id)) continue;
+
+      const visibility = map.getLayoutProperty(layer.id, "visibility");
+      // Restore only layers that this View on Map action temporarily hid.
+      // Anything the user had already hidden remains hidden afterward.
+      if (visibility === "none") continue;
+      if (!(layer.id in snapshot.layerVisibility)) snapshot.layerVisibility[layer.id] = "visible";
+      try { map.setLayoutProperty(layer.id, "visibility", "none"); } catch { /* custom layers may not expose layout */ }
+    }
+
+    for (const layerId of TABLE_FOCUS_LAYER_IDS) {
+      if (!map.getLayer(layerId)) continue;
+      try {
+        map.setLayoutProperty(layerId, "visibility", "visible");
+        if (raiseFocusLayers) map.moveLayer(layerId);
+      } catch { /* layer may be rebuilding during a style event */ }
+    }
+  }, []);
+
+  const beginFeatureIsolation = useCallback(() => {
+    const map = mapRef.current;
+    if (!map) return;
+
+    let snapshot = featureIsolationSnapshotRef.current;
+    if (!snapshot) {
+      const center = map.getCenter();
+      snapshot = {
+        activeDatasetIds: [...activeDatasetIdsRef.current],
+        expandedDatasetId: expandedDatasetIdRef.current,
+        filter: cloneFeatureFilter(filterRef.current),
+        hiddenCategories: Array.from(hiddenCategoriesRef.current),
+        show3DBuildings: show3DBuildingsRef.current,
+        camera: {
+          center: [center.lng, center.lat],
+          zoom: map.getZoom(),
+          bearing: map.getBearing(),
+          pitch: map.getPitch(),
+        },
+        layerVisibility: {},
+      };
+      featureIsolationSnapshotRef.current = snapshot;
+    }
+
+    setFeatureIsolationActive(true);
+    if (show3DBuildingsRef.current) setShow3DBuildings(false);
+    applyFeatureIsolationVisibility(snapshot, true);
+  }, [applyFeatureIsolationVisibility, cloneFeatureFilter]);
+
+  const exitFeatureIsolation = useCallback(() => {
+    const map = mapRef.current;
+    const snapshot = featureIsolationSnapshotRef.current;
+    if (!snapshot) {
+      setFeatureIsolationActive(false);
+      return;
+    }
+
+    if (focusClearTimerRef.current !== null) {
+      window.clearTimeout(focusClearTimerRef.current);
+      focusClearTimerRef.current = null;
+    }
+    const focusSource = map?.getSource(TABLE_FOCUS_SOURCE) as GeoJSONSource | undefined;
+    focusSource?.setData({ type: "FeatureCollection", features: [] });
+    // Clear the active snapshot before restoring layer visibility so an
+    // already-queued MapLibre idle/style event cannot hide the layers again.
+    featureIsolationSnapshotRef.current = null;
+
+    if (map) {
+      for (const [layerId, visibility] of Object.entries(snapshot.layerVisibility)) {
+        if (!map.getLayer(layerId)) continue;
+        try { map.setLayoutProperty(layerId, "visibility", visibility); } catch { /* custom layer already removed */ }
+      }
+    }
+
+    setActiveDatasetIds([...snapshot.activeDatasetIds]);
+    activeDatasetIdsRef.current = [...snapshot.activeDatasetIds];
+    setExpandedDatasetId(snapshot.expandedDatasetId);
+    expandedDatasetIdRef.current = snapshot.expandedDatasetId;
+    const restoredHidden = new Set(snapshot.hiddenCategories);
+    setHiddenCategories(restoredHidden);
+    hiddenCategoriesRef.current = restoredHidden;
+    filterRef.current = cloneFeatureFilter(snapshot.filter);
+    onActiveDatasetsChange?.(datasets.filter((dataset) => snapshot.activeDatasetIds.includes(dataset.id)));
+    if (snapshot.show3DBuildings) setShow3DBuildings(true);
+    scheduleFetch();
+
+    map?.easeTo({
+      center: snapshot.camera.center,
+      zoom: snapshot.camera.zoom,
+      bearing: snapshot.camera.bearing,
+      pitch: snapshot.camera.pitch,
+      duration: 700,
+    });
+
+    setHover(null);
+    onFeatureSelect(null);
+    setFeatureIsolationActive(false);
+    setPendingFocusIsolation(false);
+  }, [cloneFeatureFilter, datasets, onActiveDatasetsChange, onFeatureSelect, scheduleFetch]);
+
+  useEffect(() => {
+    if (!featureIsolationActive) return;
+    const map = mapRef.current;
+    const snapshot = featureIsolationSnapshotRef.current;
+    if (!map || !snapshot) return;
+    const reapply = () => {
+      if (featureIsolationSnapshotRef.current !== snapshot) return;
+      applyFeatureIsolationVisibility(snapshot);
+    };
+    map.on("styledata", reapply);
+    map.on("idle", reapply);
+    reapply();
+    return () => {
+      map.off("styledata", reapply);
+      map.off("idle", reapply);
+    };
+  }, [applyFeatureIsolationVisibility, featureIsolationActive]);
+
+  useEffect(() => {
+    if (!featureIsolationActive) return;
+    const handleEscape = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      const target = event.target as HTMLElement | null;
+      if (target?.closest("input, textarea, select, [contenteditable='true']")) return;
+      exitFeatureIsolation();
+    };
+    window.addEventListener("keydown", handleEscape);
+    return () => window.removeEventListener("keydown", handleEscape);
+  }, [exitFeatureIsolation, featureIsolationActive]);
+
+  // View on Map isolation is dismissed with one ordinary left-click on the
+  // map background. Clicking the highlighted focus geometry itself keeps
+  // the isolated view active and opens its details again. The listener exists
+  // only while isolation is active, leaving all normal map interactions
+  // unchanged everywhere else.
+  useEffect(() => {
+    if (!featureIsolationActive) return;
+    const map = mapRef.current;
+    if (!map) return;
+
+    const handleIsolationMapClick = (event: MapMouseEvent) => {
+      if (!featureIsolationSnapshotRef.current) return;
+      if (
+        placemarkModeRef.current
+        || streetPickModeRef.current
+        || streetPickConsumedRef.current
+        || aiAnomalyClickConsumedRef.current
+        || isMeasureInputActive()
+      ) return;
+
+      const focusLayers = TABLE_FOCUS_LAYER_IDS.filter((layerId) => Boolean(map.getLayer(layerId)));
+      if (focusLayers.length > 0) {
+        const focusHits = map.queryRenderedFeatures(event.point, { layers: [...focusLayers] });
+        if (focusHits.length > 0) {
+          onFeatureSelect(decodeFeature(focusHits[0]));
+          return;
+        }
+      }
+
+      exitFeatureIsolation();
+    };
+
+    map.on("click", handleIsolationMapClick);
+    return () => {
+      map.off("click", handleIsolationMapClick);
+    };
+  }, [exitFeatureIsolation, featureIsolationActive, isMeasureInputActive, onFeatureSelect]);
+
+  // Resolve a one-shot dashboard/attribute-table request to the authoritative
+  // feature, make its dataset/category visible, then focus and identify the geometry.
   useEffect(() => {
     if (!pendingFocusFeatureId || !mapReady || datasets.length === 0) return;
     const map = mapRef.current;
     if (!map) return;
+    const shouldIsolate = pendingFocusIsolation;
 
     focusAbortRef.current?.abort();
     if (focusClearTimerRef.current !== null) {
@@ -7037,6 +7664,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
         if (controller.signal.aborted) return;
         const source = map.getSource(TABLE_FOCUS_SOURCE) as GeoJSONSource | undefined;
         source?.setData({ type: "FeatureCollection", features: [feature] });
+        if (shouldIsolate) beginFeatureIsolation();
 
         const dataset = datasets.find((row) => row.id === feature.properties.dataset_id);
         if (dataset) {
@@ -7074,12 +7702,14 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
               latitude: pointCoordinates?.latitude ?? target.anchor.lat,
               attributes,
             });
-            focusClearTimerRef.current = window.setTimeout(() => {
-              const focusSource = map.getSource(TABLE_FOCUS_SOURCE) as GeoJSONSource | undefined;
-              focusSource?.setData({ type: "FeatureCollection", features: [] });
-              setHover(null);
-              focusClearTimerRef.current = null;
-            }, TABLE_FOCUS_DURATION_MS);
+            if (!shouldIsolate) {
+              focusClearTimerRef.current = window.setTimeout(() => {
+                const focusSource = map.getSource(TABLE_FOCUS_SOURCE) as GeoJSONSource | undefined;
+                focusSource?.setData({ type: "FeatureCollection", features: [] });
+                setHover(null);
+                focusClearTimerRef.current = null;
+              }, TABLE_FOCUS_DURATION_MS);
+            }
           };
           map.once("moveend", showTooltip);
           if (target.isPoint) {
@@ -7091,17 +7721,19 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
 
         setFlyError(null);
         setPendingFocusFeatureId(null);
+        setPendingFocusIsolation(false);
         onFocusHandled?.();
       })
       .catch((error: Error) => {
         if (error.name === "AbortError") return;
         setFlyError(`Could not locate feature: ${error.message}`);
         setPendingFocusFeatureId(null);
+        setPendingFocusIsolation(false);
         onFocusHandled?.();
       });
 
     return () => controller.abort();
-  }, [datasets, mapReady, onActiveDatasetsChange, onFeatureSelect, onFocusHandled, pendingFocusFeatureId, scheduleFetch]);
+  }, [beginFeatureIsolation, datasets, mapReady, onActiveDatasetsChange, onFeatureSelect, onFocusHandled, pendingFocusFeatureId, pendingFocusIsolation, scheduleFetch]);
 
   // Selecting a dataset toggles it in/out of the active set rather than
   // replacing it — so a raster orthophoto and its companion GDB vector
@@ -7340,6 +7972,29 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
       map.addSource(FEATURE_SOURCE, { type: "geojson", data: EMPTY_FC as unknown as GeoJSON.FeatureCollection, promoteId: "id" });
       map.addLayer({ id: LAYER_POLY_FILL, type: "fill", source: FEATURE_SOURCE, filter: POLY_BASE_FILTER, paint: { "fill-color": ["interpolate", ["linear"], ["coalesce", ["get", "severity"], 0], 0, "#3aa1ff", 0.5, "#f5c542", 1, "#ff5a3d"], "fill-opacity": 0.35 } });
       map.addLayer({ id: LAYER_POLY_OUTLINE, type: "line", source: FEATURE_SOURCE, filter: POLY_BASE_FILTER, paint: { "line-color": "#0b1013", "line-width": 1 } });
+      map.addLayer({
+        id: LAYER_SURFACE_GLOW,
+        type: "line",
+        source: FEATURE_SOURCE,
+        filter: ["==", ["get", "id"], "__none__"],
+        paint: {
+          "line-color": BUILDING_DEFAULT_COLOR,
+          "line-width": 12,
+          "line-blur": 8,
+          "line-opacity": 0,
+        },
+      });
+      map.addLayer({
+        id: LAYER_SURFACE_BORDER,
+        type: "line",
+        source: FEATURE_SOURCE,
+        filter: ["==", ["get", "id"], "__none__"],
+        paint: {
+          "line-color": BUILDING_DEFAULT_COLOR,
+          "line-width": 2.5,
+          "line-opacity": 0,
+        },
+      });
       map.addLayer({ id: LAYER_LINES, type: "line", source: FEATURE_SOURCE, filter: LINE_BASE_FILTER, paint: { "line-color": ["interpolate", ["linear"], ["coalesce", ["get", "severity"], 0], 0, "#3aa1ff", 0.5, "#f5c542", 1, "#ff5a3d"], "line-width": 2.5 } });
       map.addLayer({
         id: LAYER_POLY_FILL_CADASTRAL,
@@ -8194,6 +8849,11 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
         const primaryFeatureId = anomaly ? primaryFeatureIdForAnomaly(anomaly) : null;
 
         setSelectedAnomalyId(id);
+        if (activeMode === "potholes" || activeMode === "standing_water") {
+          // A surface recommendation and the network recommendation are both
+          // right-side cards; keep only the clicked surface finding open.
+          setManholeRecommendOpen(false);
+        }
         if (!context || !primaryFeatureId) return;
 
         aiAnomalyClickConsumedRef.current = true;
@@ -8472,6 +9132,20 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
             if (verificationContext) onFeatureSelect(selected, verificationContext);
             return;
           }
+        }
+        if (
+          aiOverlayEnabledRef.current &&
+          (activeMode === "potholes" || activeMode === "standing_water") &&
+          selectedAnomaly &&
+          (
+            (activeMode === "potholes" && selectedAnomaly.anomaly_type === "pothole_status") ||
+            (activeMode === "standing_water" && selectedAnomaly.anomaly_type === "standing_water_status")
+          )
+        ) {
+          setManholeRecommendOpen(false);
+          setSelectedAnomalyId(selectedAnomaly.id);
+          onFeatureSelect(selected, verificationContext);
+          return;
         }
         if (
           aiOverlayEnabledRef.current &&
@@ -9561,12 +10235,19 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
           onToggleMeasure={toggleMeasureActive}
         />}
         {layersWorkspaceActive && <HoverTooltip hover={hover} />}
-        {layersWorkspaceActive && selectedAnomaly && (
+        {layersWorkspaceActive && selectedAnomaly && !selectedSurfaceRecommendation && (
           <AnomalyAlertCard
             anomaly={selectedAnomaly}
             onClose={() => setSelectedAnomalyId(null)}
             onStatusChange={handleAnomalyStatusChange}
             onStale={handleAnomalyStale}
+          />
+        )}
+        {layersWorkspaceActive && selectedSurfaceRecommendation && (
+          <SurfaceIssueRecommendCard
+            anomaly={selectedSurfaceRecommendation}
+            onClose={() => setSelectedAnomalyId(null)}
+            onView3D={() => setShow3DPlan(true)}
           />
         )}
         {layersWorkspaceActive && roadInspectionRoad && (
@@ -11291,7 +11972,7 @@ function MapControls({
                 <small>Drag</small>
                 <button type="button" onClick={() => setShowDetectionList(false)} aria-label="Close AI Detection">×</button>
               </div>
-              {(["poles", "drains", "manholes", "roads", "powerlines"] as const).map((mode) => (
+              {(["poles", "drains", "manholes", "roads", "powerlines", "potholes", "standing_water"] as const).map((mode) => (
                 <button
                   type="button"
                   key={mode}
@@ -11342,19 +12023,19 @@ function MapControls({
                 AI Detection : {roadInspectionActive ? "Road Inspection" : detectionMode ? DETECTION_MODE_LABEL[detectionMode] : ""}
               </span>
               {detectionMode && (
-              <button
-                type="button"
-                className={`ai-overlay-toggle${aiOverlayEnabled ? " ai-overlay-toggle--on" : ""}`}
-                onClick={onToggleAiOverlay}
-                data-testid="ai-overlay-toggle"
-                title={aiOverlayEnabled ? "Turn off the AI red/yellow/green overlay" : "Turn on the AI red/yellow/green overlay"}
-              >
-                <span className="ai-overlay-toggle__track">
-                  <span className="ai-overlay-toggle__knob" />
-                </span>
-                <span className="map-controls__btn-label">{aiOverlayEnabled ? "ON" : "OFF"}</span>
-              </button>
-              )}
+                  <button
+                    type="button"
+                    className={`ai-overlay-toggle${aiOverlayEnabled ? " ai-overlay-toggle--on" : ""}`}
+                    onClick={onToggleAiOverlay}
+                    data-testid="ai-overlay-toggle"
+                    title={aiOverlayEnabled ? "Turn off the AI red/yellow/green overlay" : "Turn on the AI red/yellow/green overlay"}
+                  >
+                    <span className="ai-overlay-toggle__track">
+                      <span className="ai-overlay-toggle__knob" />
+                    </span>
+                    <span className="map-controls__btn-label">{aiOverlayEnabled ? "ON" : "OFF"}</span>
+                  </button>
+                )}
             </div>
           )}
         </div>

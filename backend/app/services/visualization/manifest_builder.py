@@ -163,7 +163,18 @@ def _clean_geometry_type(value: Any) -> str:
 
 def _display_name(value: str) -> str:
     cleaned = re.sub(r"[_\s]+", " ", value).strip()
-    return cleaned or "Uncategorized"
+    normalized = cleaned.casefold()
+    friendly_names = {
+        "pathhole": "Potholes",
+        "pathholes": "Potholes",
+        "pothole": "Potholes",
+        "potholes": "Potholes",
+        "pathhole top": "Pothole Top Surface",
+        "pothole top": "Pothole Top Surface",
+        "standing water": "Standing Water",
+        "water stagnation": "Standing Water",
+    }
+    return friendly_names.get(normalized, cleaned or "Uncategorized")
 
 
 def _bounds_from_row(row: Any) -> list[float] | None:

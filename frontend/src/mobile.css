@@ -140,7 +140,20 @@
   }
 
   .workspace__topbar--search-mode .workspace__right {
+    flex: 1;
+    min-width: 0;
     margin-left: 0;
+    gap: 2px;
+  }
+
+  .workspace__topbar--search-mode .workspace__right > .tabs__single,
+  .workspace__topbar--search-mode .workspace__right > .lang-toggle,
+  .workspace__topbar--search-mode .workspace__right > .notif {
+    display: none;
+  }
+
+  .workspace__topbar--search-mode .workspace__right .workspace__search {
+    order: -1;
   }
 
   .workspace__topbar--search-mode .user-avatar {

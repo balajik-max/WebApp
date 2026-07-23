@@ -80,6 +80,11 @@ from app.models.spatial_anomaly import AnomalyColor, AnomalyStatus, AnomalyType,
 from app.services.manhole_recommend import classify_manhole_issue, is_bad_condition, is_good_condition, parse_level_m
 from app.services.road_compat import backfill_road_classification
 from app.services.road_width import detect_road_width_narrowing
+from app.services.surface_issue_audit import (
+    backfill_surface_issue_classes,
+    detect_pothole_status,
+    detect_standing_water_status,
+)
 
 # Per-class DBSCAN epsilon (meters). Only Illumination_Asset is clustered in
 # Phase 1; other classes can get their own entry here later without touching
@@ -147,6 +152,8 @@ class AuditSummary:
     manhole_status: dict[str, int] = field(default_factory=dict)
     road_width_narrowing: dict[str, int] = field(default_factory=dict)
     powerline_proximity: dict[str, int] = field(default_factory=dict)
+    pothole_status: dict[str, int] = field(default_factory=dict)
+    standing_water_status: dict[str, int] = field(default_factory=dict)
 
 
 def _primary_feature_id(anomaly: SpatialAnomaly) -> str | None:
@@ -155,6 +162,8 @@ def _primary_feature_id(anomaly: SpatialAnomaly) -> str | None:
         metadata.get("this_feature_id")
         or metadata.get("building_id")
         or metadata.get("manhole_id")
+        or metadata.get("pothole_id")
+        or metadata.get("standing_water_id")
         or (anomaly.feature_ids[0] if anomaly.feature_ids else None)
     )
     return str(value) if value is not None else None
@@ -755,6 +764,7 @@ async def run_spatial_audit(dataset_id: uuid.UUID, db: AsyncSession) -> AuditSum
     # idempotent and deterministic, and lets old persistent volumes participate
     # in Road AI Detection without requiring a dataset re-upload.
     await backfill_road_classification(db)
+    await backfill_surface_issue_classes(dataset_id, db)
 
     # Preserve every finding already attached to any remediation workflow
     # across AI re-runs on the SAME dataset. The earlier implementation only
@@ -790,6 +800,8 @@ async def run_spatial_audit(dataset_id: uuid.UUID, db: AsyncSession) -> AuditSum
     await _detect_manhole_status(dataset_id, ward, db)
     await detect_road_width_narrowing(dataset_id, ward, db)
     await _detect_powerline_proximity(dataset_id, ward, db)
+    await detect_pothole_status(dataset_id, ward, db)
+    await detect_standing_water_status(dataset_id, ward, db)
     await db.flush()
 
     if protected_keys:
@@ -825,6 +837,8 @@ async def run_spatial_audit(dataset_id: uuid.UUID, db: AsyncSession) -> AuditSum
         AnomalyType.MANHOLE_STATUS: _empty_counts(),
         AnomalyType.ROAD_WIDTH_NARROWING: _empty_counts(),
         AnomalyType.POWERLINE_PROXIMITY: _empty_counts(),
+        AnomalyType.POTHOLE_STATUS: _empty_counts(),
+        AnomalyType.STANDING_WATER_STATUS: _empty_counts(),
     }
     for row in visible:
         counts[row.anomaly_type][row.color.value] += 1
@@ -836,4 +850,6 @@ async def run_spatial_audit(dataset_id: uuid.UUID, db: AsyncSession) -> AuditSum
         manhole_status=counts[AnomalyType.MANHOLE_STATUS],
         road_width_narrowing=counts[AnomalyType.ROAD_WIDTH_NARROWING],
         powerline_proximity=counts[AnomalyType.POWERLINE_PROXIMITY],
+        pothole_status=counts[AnomalyType.POTHOLE_STATUS],
+        standing_water_status=counts[AnomalyType.STANDING_WATER_STATUS],
     )

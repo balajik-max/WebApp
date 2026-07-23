@@ -13,7 +13,9 @@ import { DrainageDashboard } from "./DrainageDashboard";
 import { ExecutiveDashboard } from "./ExecutiveDashboard";
 import { ManholeDashboard } from "./ManholeDashboard";
 import { ProblemsDashboard } from "./ProblemsDashboard";
+import { PotholeDashboard } from "./PotholeDashboard";
 import { RoadDashboard } from "./RoadDashboard";
+import { StandingWaterDashboard } from "./StandingWaterDashboard";
 import { UtilitiesDashboard } from "./UtilitiesDashboard";
 import "./approvedDashboard.css";
 
@@ -42,6 +44,8 @@ export function ApprovedUniversalDashboard({
       executive: true,
       roads: workbookData.Road_Centerline.length > 0,
       drainage: workbookData.SWD.length > 0 || workbookData.Drain_Levels.length > 0,
+      potholes: workbookData.Pothole.length > 0,
+      standingWater: workbookData.Standing_Water.length > 0,
       manholes: workbookData.Manhole.length > 0,
       utilities:
         workbookData.Point.length > 0 ||
@@ -74,6 +78,10 @@ export function ApprovedUniversalDashboard({
     content = <RoadDashboard data={workbookData} />;
   } else if (activeSection === "drainage") {
     content = <DrainageDashboard data={workbookData} />;
+  } else if (activeSection === "potholes") {
+    content = <PotholeDashboard data={workbookData} />;
+  } else if (activeSection === "standingWater") {
+    content = <StandingWaterDashboard data={workbookData} />;
   } else if (activeSection === "manholes") {
     content = <ManholeDashboard data={workbookData} />;
   } else if (activeSection === "utilities") {

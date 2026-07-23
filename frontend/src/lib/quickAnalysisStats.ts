@@ -29,6 +29,8 @@ const ANOMALY_TYPE_LABEL: Record<AnomalyType, string> = {
   manhole_status: "Manhole condition",
   road_width_narrowing: "Road narrowing",
   powerline_proximity: "Powerline proximity",
+  pothole_status: "Pothole condition",
+  standing_water_status: "Standing water",
 };
 
 function normalizeCategory(value: string | null | undefined): string {
@@ -363,7 +365,7 @@ export function computeDashboardData(cardId: string, ctx: QuickAnalysisContext):
       };
     }
     case "priority-zones": {
-      const types: AnomalyType[] = ["drain_encroachment", "pole_redundancy", "manhole_status", "road_width_narrowing"];
+      const types: AnomalyType[] = ["drain_encroachment", "pole_redundancy", "manhole_status", "road_width_narrowing", "pothole_status", "standing_water_status"];
       const redByType = types.map((t) => ({ type: t, red: colorCounts(anomaliesByType(anomalies, t)).red }));
       const totalRed = redByType.reduce((sum, t) => sum + t.red, 0);
       const worst = [...redByType].sort((a, b) => b.red - a.red)[0];

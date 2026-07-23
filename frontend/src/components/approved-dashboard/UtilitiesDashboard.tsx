@@ -456,6 +456,36 @@ export function UtilitiesDashboard({ data }: UtilitiesDashboardProps) {
               </table>
             </div>
           </section>
+
+          <section className="dashboard-section-heading">
+            <div>
+              <span>Asset register</span>
+              <h2>Individual mapped utilities</h2>
+            </div>
+            <p>Each row opens the exact surveyed point, line or polygon on the map.</p>
+          </section>
+
+          <section className="road-table-panel">
+            <div className="road-table-scroller surface-table-scroller">
+              <table className="road-table utility-category-table">
+                <thead>
+                  <tr><th>Asset</th><th>Group</th><th>Category</th><th>Length</th><th>Area</th><th>Map</th></tr>
+                </thead>
+                <tbody>
+                  {dashboard.records.map((record) => (
+                    <tr key={`${record.group}-${record.id}`}>
+                      <td><strong>{record.name}</strong><small>FID {record.id}</small></td>
+                      <td><span className={groupClass(record.group)}>{record.group}</span></td>
+                      <td>{record.category}</td>
+                      <td>{formatLength(record.lengthMetres)}</td>
+                      <td>{formatArea(record.areaSquareMetres)}</td>
+                      <td>{record.mapHref ? <a className="dashboard-map-link" href={record.mapHref}>View on map</a> : "—"}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </section>
         </>
       )}
     </div>

@@ -5,12 +5,14 @@ import { useLanguage } from "../context/LanguageContext";
 import {
   fetchAeTasks,
   fetchAeeActivity,
+  type AiDetectionMode,
   type WorkflowDashboardItem,
   type WorkflowStatus,
 } from "../lib/pointVerifications";
 
 type DashboardKind = "tasks" | "activity";
 type DashboardFilter = "all" | "action" | "waiting" | "completed";
+type DetectionModeFilter = "all" | AiDetectionMode;
 
 interface WorkflowDashboardProps {
   kind: DashboardKind;
@@ -24,6 +26,24 @@ const STATUS_META: Record<WorkflowStatus, { key: string; tone: string }> = {
   AEE_APPROVED: { key: "workflow.status.aeeApproved", tone: "approved" },
   COMMISSIONER_ACCEPTED: { key: "workflow.status.accepted", tone: "complete" },
 };
+
+const DETECTION_MODE_LABEL: Record<AiDetectionMode, string> = {
+  poles: "Poles",
+  drains: "Drains",
+  manholes: "Manholes",
+  powerlines: "Powerlines",
+  potholes: "Potholes",
+  standing_water: "Standing Water",
+};
+
+const DETECTION_MODE_OPTIONS: AiDetectionMode[] = [
+  "poles",
+  "drains",
+  "manholes",
+  "powerlines",
+  "potholes",
+  "standing_water",
+];
 
 function formatDate(value: string | null): string {
   if (!value) return "—";
@@ -93,6 +113,7 @@ export function WorkflowDashboard({ kind }: WorkflowDashboardProps) {
   const { t } = useLanguage();
   const [items, setItems] = useState<WorkflowDashboardItem[]>([]);
   const [filter, setFilter] = useState<DashboardFilter>("all");
+  const [modeFilter, setModeFilter] = useState<DetectionModeFilter>("all");
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -140,16 +161,18 @@ export function WorkflowDashboard({ kind }: WorkflowDashboardProps) {
   }), [items, kind]);
 
   const visibleItems = useMemo(() => items.filter((item) => {
+    if (modeFilter !== "all" && item.detection_mode !== modeFilter) return false;
     if (filter === "all") return true;
     if (filter === "action") return isActionRequired(kind, item.workflow_status);
     if (filter === "waiting") return isWaiting(kind, item.workflow_status);
     return item.workflow_status === "COMMISSIONER_ACCEPTED";
-  }), [items, filter, kind]);
+  }), [items, filter, kind, modeFilter]);
 
   const openWorkflow = (item: WorkflowDashboardItem) => {
     const query = new URLSearchParams({
       workflowVerification: item.verification_id,
       locateFeature: item.feature_id,
+      focusMode: "isolate",
     });
     navigate(`/map?${query.toString()}`);
   };
@@ -199,6 +222,20 @@ export function WorkflowDashboard({ kind }: WorkflowDashboardProps) {
         </button>
       </section>
 
+      <section className="workflow-dashboard__mode-filter" aria-label="Filter by detection type">
+        <label htmlFor={`${kind}-detection-mode-filter`}>Detection type</label>
+        <select
+          id={`${kind}-detection-mode-filter`}
+          value={modeFilter}
+          onChange={(event) => setModeFilter(event.target.value as DetectionModeFilter)}
+        >
+          <option value="all">All detection types</option>
+          {DETECTION_MODE_OPTIONS.map((mode) => (
+            <option key={mode} value={mode}>{DETECTION_MODE_LABEL[mode]}</option>
+          ))}
+        </select>
+      </section>
+
       {error && (
         <div className="workflow-dashboard__error" role="alert">
           <span>{error}</span>
@@ -227,7 +264,7 @@ export function WorkflowDashboard({ kind }: WorkflowDashboardProps) {
 
                 <div className="workflow-card__heading">
                   <div>
-                    <span className="workflow-card__mode">{item.detection_mode ?? "AI issue"}</span>
+                    <span className="workflow-card__mode">{item.detection_mode ? DETECTION_MODE_LABEL[item.detection_mode] : "AI issue"}</span>
                     <h2>{item.label || item.asset_type || "GIS feature"}</h2>
                     <p>{item.dataset_name}</p>
                   </div>

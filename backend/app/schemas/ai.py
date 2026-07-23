@@ -148,6 +148,8 @@ class AuditRunResponse(BaseModel):
     manhole_status: dict[str, int]
     road_width_narrowing: dict[str, int]
     powerline_proximity: dict[str, int]
+    pothole_status: dict[str, int]
+    standing_water_status: dict[str, int]
 
 
 class SpatialAnomalyOut(BaseModel):

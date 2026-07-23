@@ -2,7 +2,15 @@
  * one anomaly type, instead of showing every layer/finding at once. Shared
  * between MapCanvas (2D) and Map3DViewer (3D) so both use the exact same
  * category/anomaly-type mapping. */
-export type DetectionMode = "poles" | "drains" | "manholes" | "roads" | "powerlines" | null;
+export type DetectionMode =
+  | "poles"
+  | "drains"
+  | "manholes"
+  | "roads"
+  | "powerlines"
+  | "potholes"
+  | "standing_water"
+  | null;
 
 export const DETECTION_MODE_TARGET_CLASSES: Record<Exclude<DetectionMode, null>, string[]> = {
   poles: ["Illumination_Asset"],
@@ -17,6 +25,8 @@ export const DETECTION_MODE_TARGET_CLASSES: Record<Exclude<DetectionMode, null>,
   // finding, and roads are deliberately left OUT (pure clutter for this
   // focus, easy to confuse with the power line itself at a glance).
   powerlines: ["Power_Line", "Building", "Illumination_Asset", "Utility_Pole"],
+  potholes: ["Pothole"],
+  standing_water: ["Standing_Water"],
 };
 
 export const DETECTION_MODE_ANOMALY_TYPE: Record<Exclude<DetectionMode, null>, string> = {
@@ -25,6 +35,8 @@ export const DETECTION_MODE_ANOMALY_TYPE: Record<Exclude<DetectionMode, null>, s
   manholes: "manhole_status",
   roads: "road_width_narrowing",
   powerlines: "powerline_proximity",
+  potholes: "pothole_status",
+  standing_water: "standing_water_status",
 };
 
 export const DETECTION_MODE_LABEL: Record<Exclude<DetectionMode, null>, string> = {
@@ -33,4 +45,6 @@ export const DETECTION_MODE_LABEL: Record<Exclude<DetectionMode, null>, string> 
   manholes: "Manholes",
   roads: "Roads",
   powerlines: "Powerlines",
+  potholes: "Potholes",
+  standing_water: "Standing Water",
 };
