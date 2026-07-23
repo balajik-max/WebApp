@@ -16,7 +16,7 @@ import { NotificationBell, type NotificationItem } from "./NotificationBell";
 import type { FeatureFilter } from "../lib/types";
 import { searchFeatureFids, type FidSearchResult } from "../lib/features";
 import type { DatasetRow } from "../lib/workflow";
-import type { Basemap } from "./MapCanvas";
+import type { Basemap, RasterDisplaySettings } from "./MapCanvas";
 import type { MapState } from "../pages/MapView";
 import {
   fetchRemediationUpdates,
@@ -526,6 +526,11 @@ export function WorkspaceLayout() {
 
   const [selectedDatasets, setSelectedDatasets] = useState<DatasetRow[]>([]);
   const selectedDatasetIds = useMemo(() => selectedDatasets.map((dataset) => dataset.id), [selectedDatasets]);
+  // Per-TIFF visual adjustments must survive MapCanvas unmounts just like
+  // the selected dataset ids. They remain in memory until the user changes
+  // or resets them (a full application reload still starts from defaults).
+  const [rasterSettingsById, setRasterSettingsById] =
+    useState<Record<string, RasterDisplaySettings>>({});
 
   // Which basemap style (street/satellite/off) the user last chose — owned
   // here for the same reason as selectedDatasets above: MapCanvas unmounts
@@ -584,6 +589,8 @@ export function WorkspaceLayout() {
       filter: EMPTY_FILTER,
       selectedDatasets,
       setSelectedDatasets,
+      rasterSettingsById,
+      setRasterSettingsById,
       basemap,
       setBasemap,
       commandCenterMobileOpen,
@@ -596,7 +603,7 @@ export function WorkspaceLayout() {
       mapState,
       setMapState,
     }),
-    [selectedDatasets, basemap, commandCenterMobileOpen, spatialAuditStatus, spatialAuditRequested,
+    [selectedDatasets, rasterSettingsById, basemap, commandCenterMobileOpen, spatialAuditStatus, spatialAuditRequested,
      mapState]
   );
 
