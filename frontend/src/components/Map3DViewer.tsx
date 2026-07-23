@@ -2997,7 +2997,7 @@ export function Map3DViewer({ features, classMap, anomalies, datasets, activeDat
           </button>
         </div>
         <div className="manhole-3d-overlay__colormode" role="radiogroup" aria-label="AI detection focus">
-          {(["poles", "drains", "manholes", "roads", "powerlines"] as const).map((mode) => (
+          {(["poles", "drains", "manholes", "powerlines"] as const).map((mode) => (
             <button
               key={mode}
               type="button"

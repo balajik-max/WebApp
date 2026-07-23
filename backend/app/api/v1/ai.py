@@ -98,9 +98,10 @@ async def _extract_file_text(file: UploadFile) -> str:
 
 def _build_feature_context(feature: Feature | None) -> str:
     if feature is None:
-        return "MANHOLE: Feature not found in database."
+        return "FEATURE: Feature not found in database."
+    label = (feature.category or "FEATURE").upper()
     lines = [
-        "=== MANHOLE SURVEY DATA ===",
+        f"=== {label} SURVEY DATA ===",
         f"Feature ID: {feature.id}",
         f"Label: {feature.label or 'N/A'}",
         f"Category: {feature.category or 'N/A'}",
@@ -135,18 +136,21 @@ def _build_feature_context(feature: Feature | None) -> str:
 
 
 def _build_anomaly_context(anomaly: SpatialAnomaly) -> str:
+    """Uses the same curated, per-type fact sheet the /explain endpoint
+    hands the LLM (issue/basis/connectivity/clearance facts, not a raw
+    metadata dict dump) — the solution-suitability check needs to reason
+    against the actual identified issue, not guess it from opaque keys."""
     lines = [
         "=== AI ANOMALY FINDING ===",
         f"Type: {anomaly.anomaly_type.value}",
         f"Color: {anomaly.color.value}",
         f"Severity Score: {anomaly.severity_score:.1f}/100",
         f"Status: {anomaly.status.value}",
+        "",
+        _anomaly_fact_sheet(anomaly),
     ]
-    meta = anomaly.anomaly_metadata or {}
-    for k, v in meta.items():
-        lines.append(f"  {k}: {v}")
     if anomaly.explanation_text:
-        lines.append(f"AI Explanation: {anomaly.explanation_text}")
+        lines.append(f"\nAI Explanation already generated for this finding: {anomaly.explanation_text}")
     return "\n".join(lines)
 
 
@@ -209,31 +213,83 @@ async def urban_planning_solution(
         f"{user_section}"
     )
 
-    user_prompt = (
-        "You are a senior urban infrastructure engineer evaluating a proposed solution "
-        "for a specific manhole. Below you have:\n"
-        "1. The MANHOLE SURVEY DATA (real attributes from the GIS database)\n"
-        "2. The AI ANOMALY FINDING (automated audit result for this manhole)\n"
-        "3. The USER'S PROPOSED SOLUTION (what the user suggests doing)\n\n"
-        "Generate a structured evaluation with these sections:\n\n"
-        "`## Current Manhole Condition` — Summarize this manhole's real surveyed condition, "
-        "bottom level, gradient, pipe details, and any AI anomaly finding. Cite specific "
-        "attribute values from the survey data.\n\n"
-        "`## Summary of Proposed Solution` — Restate what the user is proposing.\n\n"
-        "`## Suitability Assessment` — Evaluate whether the proposed solution is appropriate "
-        "for THIS specific manhole's condition. Consider:\n"
-        "  - Does the solution address the actual surveyed issues?\n"
-        "  - Is the approach suitable for the manhole's bottom level and gradient?\n"
-        "  - Are the proposed materials/pipe sizes appropriate for the existing setup?\n"
-        "  - Are there any gaps or mismatches between the solution and the real condition?\n\n"
-        "`## Verdict` — Clearly state whether the solution is: **Suitable**, **Partially Suitable** "
-        "(with modifications needed), or **Not Suitable** for this manhole. Give a brief reason.\n\n"
-        "`## Recommendations` — Concrete suggestions to improve or adjust the solution based "
-        "on the manhole's actual surveyed attributes.\n\n"
-        "CRITICAL: Base your entire response ONLY on the data provided below. Never invent "
-        "attribute values. If specific data is missing, state that clearly.\n\n"
-        f"CONTEXT:\n{context}"
-    )
+    anomaly_type = anomaly.anomaly_type.value if anomaly else None
+    subject = "manhole" if anomaly_type in (None, "manhole_status") else "feature"
+    if anomaly_type == "powerline_proximity":
+        user_prompt = (
+            "You are a senior electrical-safety and urban infrastructure engineer "
+            "evaluating a proposed solution for a building flagged too close to a "
+            "power line. Below you have:\n"
+            "1. The BUILDING SURVEY DATA (real attributes from the GIS database)\n"
+            "2. The AI ANOMALY FINDING (automated clearance-distance audit result)\n"
+            "3. The USER'S PROPOSED SOLUTION (what the user suggests doing)\n\n"
+            "Generate a structured evaluation with these sections:\n\n"
+            "`## Current Clearance Finding` — Summarize the real surveyed distance to "
+            "the nearest power line, the clearance thresholds, and the conductor "
+            "height. Cite specific figures from the finding.\n\n"
+            "`## Summary of Proposed Solution` — Restate what the user is proposing.\n\n"
+            "`## Suitability Assessment` — Evaluate whether the proposed solution actually "
+            "restores electrical safety clearance. Consider:\n"
+            "  - Does it address the real hazard (an under-clearance bare/uninsulated "
+            "conductor near an occupied structure), not just move the problem?\n"
+            "  - Is it something a building owner can do (e.g. insulating exposed "
+            "metal fixtures, keeping the roof/terrace unused near the line), or does it "
+            "require the electricity board (raising/rerouting the line, replacing bare "
+            "conductor with insulated cable)?\n"
+            "  - A proposal to relocate or demolish the building is almost never the "
+            "right answer for a clearance issue and should be marked Not Suitable "
+            "unless the user's own text shows the line genuinely cannot be modified.\n"
+            "  - Insulated/PVC or XLPE-covered conductor, or increasing the physical "
+            "clearance from the line side, is the standard fix — judge the proposal "
+            "against that standard.\n\n"
+            "`## Verdict` — Clearly state whether the solution is: **Suitable**, **Partially Suitable** "
+            "(with modifications needed), or **Not Suitable**. Give a brief reason.\n\n"
+            "`## Recommendations` — Concrete, standard electrical-safety suggestions to improve "
+            "or correct the proposal, grounded only in the data provided.\n\n"
+            "CRITICAL: Base your entire response ONLY on the data provided below. Never invent "
+            "attribute values. If specific data is missing, state that clearly. Do NOT default "
+            "to 'Suitable' as a courtesy — you are a safety reviewer, not a cheerleader. Before "
+            "writing the Verdict, check the proposal against the 'Issue:'/'Required:' facts in "
+            "the AI ANOMALY FINDING above line by line: if the proposal does not restore the "
+            "specific clearance/insulation problem stated there, or only treats a symptom "
+            "(e.g. it modifies the building instead of the line, or ignores the actual "
+            "clearance distance given), the Verdict MUST be Partially Suitable or Not Suitable "
+            "and you must say exactly what part of the real issue is left unaddressed. Only "
+            "mark Suitable if the proposal genuinely fixes the exact clearance problem in FACTS.\n\n"
+            f"CONTEXT:\n{context}"
+        )
+    else:
+        user_prompt = (
+            f"You are a senior urban infrastructure engineer evaluating a proposed solution "
+            f"for a specific {subject}. Below you have:\n"
+            f"1. The SURVEY DATA (real attributes from the GIS database)\n"
+            f"2. The AI ANOMALY FINDING (automated audit result for this {subject})\n"
+            "3. The USER'S PROPOSED SOLUTION (what the user suggests doing)\n\n"
+            "Generate a structured evaluation with these sections:\n\n"
+            f"`## Current Condition` — Summarize this {subject}'s real surveyed condition and "
+            "any AI anomaly finding. Cite specific attribute values from the survey data.\n\n"
+            "`## Summary of Proposed Solution` — Restate what the user is proposing.\n\n"
+            f"`## Suitability Assessment` — Evaluate whether the proposed solution is appropriate "
+            f"for THIS specific {subject}'s condition. Consider:\n"
+            "  - Does the solution address the actual surveyed issues?\n"
+            "  - Are the proposed materials/approach appropriate for the existing setup?\n"
+            "  - Are there any gaps or mismatches between the solution and the real condition?\n\n"
+            f"`## Verdict` — Clearly state whether the solution is: **Suitable**, **Partially Suitable** "
+            f"(with modifications needed), or **Not Suitable** for this {subject}. Give a brief reason.\n\n"
+            "`## Recommendations` — Concrete suggestions to improve or adjust the solution based "
+            "on the actual surveyed attributes.\n\n"
+            "CRITICAL: Base your entire response ONLY on the data provided below. Never invent "
+            "attribute values. If specific data is missing, state that clearly. Do NOT default "
+            "to 'Suitable' as a courtesy — you are a technical reviewer, not a cheerleader. Before "
+            "writing the Verdict, check the proposal against the specific issue named in the "
+            "AI ANOMALY FINDING above (its 'Issue:'/'Required:' lines if present, otherwise its "
+            "stated finding) point by point: if the proposal does not address that exact "
+            f"problem, or only treats a symptom instead of the real cause described for this {subject}, "
+            "the Verdict MUST be Partially Suitable or Not Suitable, and you must state exactly "
+            "what part of the real issue is left unaddressed. Only mark Suitable if the proposal "
+            "genuinely resolves the specific problem in FACTS.\n\n"
+            f"CONTEXT:\n{context}"
+        )
 
     reply = await run_grounded_completion(context=context, user_prompt=user_prompt, num_predict=1024, num_ctx=4096)
 
@@ -1082,10 +1138,19 @@ def _anomaly_fact_sheet(row: SpatialAnomaly) -> str:
         if m.get("primary_issue"):
             lines.append(f"Classified issue: {m.get('primary_issue')} (severity hint: {m.get('severity_hint') or 'unknown'}).")
     elif row.anomaly_type.value == "powerline_proximity":
+        tier_label = {
+            "red": "CRITICAL — inside the danger clearance band",
+            "yellow": "MARGINAL — closer than the safe-clearance threshold but not yet critical",
+            "green": "CONFIRMED OK — real clearance from the nearest power line",
+        }.get(row.color.value, "unclassified")
         lines += [
-            f"Building is {m.get('nearest_powerline_distance_m')} m from the nearest power line — below the {m.get('danger_threshold_m')} m electrical safety clearance.",
-            "This building is flagged as DANGEROUS (RED) due to proximity to overhead/underground power lines.",
-            f"Power line(s) involved: {m.get('powerline_categories')}",
+            f"Basis for this finding (the actual real evidence used, verified not estimated): {m.get('basis')}",
+            f"Building is {m.get('nearest_powerline_distance_m')} m from the nearest power line.",
+            f"Clearance thresholds — critical: <= {m.get('red_threshold_m')} m, marginal: <= {m.get('yellow_threshold_m')} m, danger clearance: {m.get('danger_threshold_m')} m.",
+            f"Classification: {tier_label}.",
+            f"Building height (surveyed): {m.get('building_height_m') if m.get('building_height_m') is not None else 'not recorded'} m.",
+            f"Nearest power line conductor height: {m.get('nearest_pole_height_m')} m (from the nearest real pole; default assumed if no pole survey point was found nearby).",
+            f"Power line category/categories involved: {m.get('powerline_categories')}",
         ]
 
     return "\n".join(lines)
@@ -1264,6 +1329,69 @@ def _manhole_status_explain_prompt(row: SpatialAnomaly, crib: str) -> str:
     )
 
 
+def _powerline_proximity_explain_prompt(row: SpatialAnomaly, crib: str) -> str:
+    """powerline_proximity gets its own structured prompt (Issue / Required /
+    How to fix), same shape as manhole_status — otherwise the generic
+    drain/pole prompt's "one recommendation" framing tends to default to
+    the most drastic-sounding fix (demolish/relocate the building) instead
+    of the actual standard electrical-safety remedy, which is almost always
+    insulating or rerouting the LINE, not moving the structure. Each color
+    gets guidance matched to what kind of answer is actually correct."""
+    color = row.color.value
+    if color == "red":
+        guidance = (
+            "This building has a CONFIRMED critical clearance violation from a power "
+            "line. Answer in exactly three labeled parts on their own lines: 'Issue:' "
+            "(the exact clearance figures from FACTS — distance, threshold, conductor "
+            "height), 'Required:' (what the electricity board / line owner must do to "
+            "make this safe), and 'How to fix:' (the concrete field remedy). The "
+            "correct standard remedy for a bare overhead conductor too close to a "
+            "structure is, in order of preference: (1) the electricity board raises "
+            "or reroutes the line to restore clearance, (2) the exposed conductor "
+            "section is replaced with insulated/covered cable (e.g. XLPE-insulated "
+            "aerial bunched cable) so incidental contact is not a shock hazard, or "
+            "(3) if it is a low-voltage service line, it is re-run through rigid "
+            "PVC/HDPE conduit. Relocating or demolishing the building is NOT the "
+            "standard remedy and must NOT be recommended unless FACTS explicitly "
+            "shows the clearance cannot be restored by any line-side fix — do not "
+            "suggest it by default. Also state plainly that nobody should touch the "
+            "structure's roof/terrace or any metal fixture near the line until the "
+            "line owner has insulated or restored clearance."
+        )
+    elif color == "yellow":
+        guidance = (
+            "This building shows a MARGINAL clearance from a power line, not a "
+            "confirmed violation. Answer in exactly three labeled parts on their own "
+            "lines: 'Issue:' (state exactly what makes this marginal, quoting the "
+            "real distance/threshold figures from FACTS), 'Required:' (a field "
+            "verification of the actual conductor height and clearance, since the "
+            "surveyed pole height may be a default estimate), and 'How to fix:' (the "
+            "preventive step — request the electricity board confirm clearance, and "
+            "advise against any new construction, scaffolding, or antenna/rooftop "
+            "work on this building that would reduce the clearance further). Do not "
+            "recommend relocating the building for a marginal finding."
+        )
+    else:
+        guidance = (
+            "This building shows NO clearance problem — it is a real, confirmed safe "
+            "distance from the nearest power line. Answer in exactly three labeled "
+            "parts on their own lines: 'Issue:' (state plainly that no clearance "
+            "issue was found, citing the real distance and threshold from FACTS), "
+            "'Required:' (say 'No action required' unless FACTS itself shows a real "
+            "caveat), and 'How to fix:' (state that no remedy is needed; only advise "
+            "that any future rooftop addition on this building should not encroach "
+            "on the existing clearance)."
+        )
+    return (
+        "You are a senior electrical-safety and municipal infrastructure auditor "
+        "writing a finding note for a civil engineer who will act on it. Using ONLY "
+        "the FACTS below, and never a number or detail not present in FACTS, write "
+        "the note. Never mention that you were given 'facts' or metadata — just "
+        "report the finding. " + guidance + "\n\n"
+        f"FACTS:\n{crib}"
+    )
+
+
 @router.post(
     "/audit/anomalies/{anomaly_id}/explain",
     response_model=AnomalyExplainResponse,
@@ -1291,6 +1419,8 @@ async def explain_anomaly(anomaly_id: uuid.UUID, db: AsyncSession = Depends(get_
         if pipe_facts:
             crib = f"{crib}\n{pipe_facts}"
         prompt = _manhole_status_explain_prompt(row, crib)
+    elif row.anomaly_type.value == "powerline_proximity":
+        prompt = _powerline_proximity_explain_prompt(row, crib)
     else:
         prompt = (
             "You are a senior municipal infrastructure auditor writing a finding "
