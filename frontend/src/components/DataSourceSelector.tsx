@@ -93,14 +93,11 @@ export function DataSourceSelector({
               datasets.map((d) => {
                 const isActive = activeDatasetIds.includes(d.id);
                 const selectable = d.status === "ready";
-                // TIFF/GeoTIFF rasters (including DSM/DTM) and LiDAR-derived
-                // DSM previews are locked to a fixed render mode and expose
-                // no display settings. RGB is used for ordinary GeoTIFFs,
-                // Enhanced for DSM/DTM and every LiDAR upload.
+                // GeoTIFFs retain their fixed correct colour mode but expose
+                // live texture, brightness, and clarity adjustments.
                 const hasRasterControls =
                   d.status === "ready"
                   && Boolean(d.dataset_metadata?.raster_overlay)
-                  && !isGeoTiffDataset(d)
                   && (d.file_type !== "lidar" && d.file_type !== "las");
                 // Vector/GDB datasets keep the coordinate-search branch's
                 // layer styling control.
@@ -181,20 +178,56 @@ export function DataSourceSelector({
                               {t("datasources.reset")}
                             </button>
                         </div>
-                        <div className="dataset-card__settings-group">
-                          <div className="dataset-card__settings-label">{t("datasources.colorType")}</div>
-                          <div className="dataset-card__mode-row">
-                            {COLOR_MODE_OPTIONS.map((option) => (
-                              <button
-                                key={option.value}
-                                type="button"
-                                className={`dataset-card__mode-btn${rasterSettings.colorMode === option.value ? " dataset-card__mode-btn--active" : ""}`}
-                                onClick={() => onChangeRasterSettings(d.id, { colorMode: option.value })}
-                              >
-                                {option.label}
-                              </button>
-                            ))}
+                        {!isGeoTiffDataset(d) && (
+                          <div className="dataset-card__settings-group">
+                            <div className="dataset-card__settings-label">{t("datasources.colorType")}</div>
+                            <div className="dataset-card__mode-row">
+                              {COLOR_MODE_OPTIONS.map((option) => (
+                                <button
+                                  key={option.value}
+                                  type="button"
+                                  className={`dataset-card__mode-btn${rasterSettings.colorMode === option.value ? " dataset-card__mode-btn--active" : ""}`}
+                                  onClick={() => onChangeRasterSettings(d.id, { colorMode: option.value })}
+                                >
+                                  {option.label}
+                                </button>
+                              ))}
+                            </div>
                           </div>
+                        )}
+                        <div className="dataset-card__settings-group">
+                          <div className="dataset-card__slider-head">
+                            <span className="dataset-card__settings-label">{t("datasources.texture")}</span>
+                            <span className="dataset-card__slider-value">
+                              {rasterSettings.texture.toFixed(2)}
+                            </span>
+                          </div>
+                          <input
+                            className="dataset-card__slider"
+                            type="range"
+                            min="0"
+                            max="2"
+                            step="0.05"
+                            value={rasterSettings.texture}
+                            onChange={(event) => onChangeRasterSettings(d.id, { texture: Number(event.target.value) })}
+                          />
+                        </div>
+                        <div className="dataset-card__settings-group">
+                          <div className="dataset-card__slider-head">
+                            <span className="dataset-card__settings-label">{t("datasources.brightness")}</span>
+                            <span className="dataset-card__slider-value">
+                              {rasterSettings.brightness > 0 ? "+" : ""}{rasterSettings.brightness.toFixed(2)}
+                            </span>
+                          </div>
+                          <input
+                            className="dataset-card__slider"
+                            type="range"
+                            min="-1"
+                            max="1"
+                            step="0.05"
+                            value={rasterSettings.brightness}
+                            onChange={(event) => onChangeRasterSettings(d.id, { brightness: Number(event.target.value) })}
+                          />
                         </div>
                         <div className="dataset-card__settings-group">
                           <div className="dataset-card__slider-head">

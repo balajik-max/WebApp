@@ -201,11 +201,15 @@ export type RasterColorMode = "rgb" | "grayscale" | "enhanced";
 export interface RasterDisplaySettings {
   colorMode: RasterColorMode;
   clarity: number;
+  texture: number;
+  brightness: number;
 }
 
 export const DEFAULT_RASTER_SETTINGS: RasterDisplaySettings = {
   colorMode: "grayscale",
   clarity: 0,
+  texture: 1,
+  brightness: 0,
 };
 
 export const COLOR_MODE_OPTIONS: Array<{ value: RasterColorMode; label: string }> = [
@@ -223,6 +227,14 @@ function rasterPreviewUrl(datasetId: string, settings: RasterDisplaySettings): s
   return `${API_BASE}/api/v1/datasets/${datasetId}/raster-preview.png?${params.toString()}`;
 }
 
+function rasterTileUrl(datasetId: string, settings: RasterDisplaySettings): string {
+  const params = new URLSearchParams({
+    mode: previewModeForSettings(settings),
+    render: "relief-v2",
+  });
+  return `${API_BASE}/api/v1/datasets/${datasetId}/raster-tiles/{z}/{x}/{y}.png?${params.toString()}`;
+}
+
 function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value));
 }
@@ -231,6 +243,8 @@ export function resolveRasterSettings(settings?: Partial<RasterDisplaySettings>)
   return {
     colorMode: settings?.colorMode ?? DEFAULT_RASTER_SETTINGS.colorMode,
     clarity: clamp(settings?.clarity ?? DEFAULT_RASTER_SETTINGS.clarity, 0, 2),
+    texture: clamp(settings?.texture ?? DEFAULT_RASTER_SETTINGS.texture, 0, 2),
+    brightness: clamp(settings?.brightness ?? DEFAULT_RASTER_SETTINGS.brightness, -1, 1),
   };
 }
 
@@ -288,14 +302,19 @@ function rasterPaintForSettings(settings: RasterDisplaySettings): Record<string,
   // We apply only mild contrast boost from Edge Clarity, and keep
   // brightness untouched so we don't wash out or crush the image.
   const clarityContrast = normalized.clarity * 0.35;
-  const saturation = normalized.colorMode === "grayscale" ? -1 : 0;
+  const textureOffset = normalized.texture - 1;
+  const saturation = normalized.colorMode === "grayscale"
+    ? -1
+    : clamp(textureOffset * 0.45, -1, 1);
+  const contrast = clarityContrast + textureOffset * 0.18;
+  const brightnessLift = normalized.brightness * 0.4;
 
   return {
     "raster-opacity": 0.9,
     "raster-saturation": saturation,
-    "raster-contrast": clamp(clarityContrast, -1, 1),
-    "raster-brightness-min": 0,
-    "raster-brightness-max": 1,
+    "raster-contrast": clamp(contrast, -1, 1),
+    "raster-brightness-min": Math.max(0, brightnessLift),
+    "raster-brightness-max": Math.min(1, 1 + brightnessLift),
   };
 }
 
@@ -328,12 +347,12 @@ const BASE_STYLE: maplibregl.StyleSpecification = {
         "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
       ],
       tileSize: 256,
-      // ArcGIS advertises higher global LODs, but at Davangere levels 20+
-      // return its grey "Map data not yet available" placeholder. Declaring
-      // the last real local level makes MapLibre overzoom level 19 instead of
-      // requesting those placeholders, so satellite mode remains continuous
-      // through the application's zoom-24 inspection range.
-      maxzoom: 19,
+      // ArcGIS advertises higher global LODs, but Davangere starts returning
+      // its grey "Map data not yet available" placeholder at level 19.
+      // Stop requests at the last reliable local level (18); MapLibre then
+      // overzooms those real tiles through the app's zoom-24 inspection range
+      // instead of ever requesting the provider's placeholder tiles.
+      maxzoom: 18,
       attribution: "Esri, Maxar, Earthstar Geographics",
     },
     ...(HAS_EXTERNAL_CADASTRAL_TILES ? {
@@ -5267,16 +5286,36 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
 
     const [west, south, east, north] = overlay.bounds;
     const rasterSettings = effectiveRasterSettings(dataset, rasterSettingsRef.current[dataset.id]);
-    const url = rasterPreviewUrl(dataset.id, rasterSettings);
-    map.addSource(sourceId, {
-      type: "image",
-      url,
-      // MapLibre image sources take corners clockwise from top-left.
-      coordinates: [[west, north], [east, north], [east, south], [west, south]],
-    });
+    if (dataset.file_type === "geotiff") {
+      // GeoTIFFs are sampled from the original source at every zoom. The
+      // small ingestion preview remains only for non-TIFF derived rasters.
+      map.addSource(sourceId, {
+        type: "raster",
+        tiles: [rasterTileUrl(dataset.id, rasterSettings)],
+        tileSize: 512,
+        minzoom: 0,
+        maxzoom: 24,
+        bounds: [west, south, east, north],
+      });
+    } else {
+      map.addSource(sourceId, {
+        type: "image",
+        url: rasterPreviewUrl(dataset.id, rasterSettings),
+        // MapLibre image sources take corners clockwise from top-left.
+        coordinates: [[west, north], [east, north], [east, south], [west, south]],
+      });
+    }
     // Insert below the vector feature layers so pins/lines stay visible
     // on top of the raster imagery.
-    map.addLayer({ id: layerId, type: "raster", source: sourceId, paint: rasterPaintForSettings(rasterSettings) }, LAYER_POLY_FILL);
+    map.addLayer({
+      id: layerId,
+      type: "raster",
+      source: sourceId,
+      paint: {
+        ...rasterPaintForSettings(rasterSettings),
+        "raster-resampling": rasterResamplingForSettings(rasterSettings),
+      },
+    }, LAYER_POLY_FILL);
     rasterLayersRef.current.add(dataset.id);
   }, []);
 
