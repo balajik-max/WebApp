@@ -60,6 +60,17 @@ function readNumericAttr(attrs: Record<string, unknown>, keys: string[]): number
   return null;
 }
 
+// Real surveyed conductor count ("Ways" attribute: 1, 2, or 3) — some
+// overhead runs are a single service wire, some a two-wire span, and only
+// the real 3-phase distribution lines carry all three. Falls back to the
+// standard 3-phase spacing when the attribute is absent or unrecognised —
+// same convention as the full Map3DViewer modal.
+function wireOffsetsForWays(ways: number | null): number[] {
+  if (ways === 1) return [0];
+  if (ways === 2) return [-0.4, 0.4];
+  return [-0.75, 0, 0.75];
+}
+
 // Four real pole types share ONE canonical class (Illumination_Asset) — the
 // raw survey category text is the only place the real distinction still
 // lives ("Light Pole", "Solar Light", "Power Pole", "Power Pole With
@@ -461,7 +472,8 @@ export class Gis3DPreviewLayer implements CustomLayerInterface {
       }
       if (pts.length < 2) continue;
 
-      for (const off of [-0.75, 0, 0.75]) {
+      const waysCount = readNumericAttr(f.properties.attributes, ["ways"]);
+      for (const off of wireOffsetsForWays(waysCount)) {
         const cpts = pts.map((p, i) => {
           const prev = pts[Math.max(0, i - 1)];
           const next = pts[Math.min(pts.length - 1, i + 1)];

@@ -9,6 +9,13 @@ interface Props {
   onView3D?: () => void;
 }
 
+interface BodyProps {
+  answer: AiAnswer | null;
+  loading: boolean;
+  error: string | null;
+  onView3D?: () => void;
+}
+
 const PROBLEM_LABEL: Record<string, string> = {
   blocked: "Blocked",
   bad_condition: "Bad Condition",
@@ -51,13 +58,9 @@ function toGeoJSON(answer: AiAnswer): string {
   return JSON.stringify({ type: "FeatureCollection", features }, null, 2);
 }
 
-/** Same visual language as AnomalyAlertCard (reuses its CSS classes) ΓÇö this
- * is the manhole-recommend engine's counterpart: instead of narrating an
- * already-detected SpatialAnomaly, it narrates a manhole-recommend AiAnswer
- * (real facts + a road-routed pipe route + pipe spec), computed fresh on
- * click rather than pre-persisted by a background audit run. */
-export function ManholeRecommendCard({ answer, loading, error, onClose, onView3D }: Props) {
-  const problemType = (answer?.debug?.problem_type as string | undefined) ?? null;
+/** The narration + pipe-route facts rendered inside ManholeRecommendCard's
+ * body — split out only so the markup isn't nested another nine levels. */
+export function ManholeAnswerBody({ answer, loading, error, onView3D }: BodyProps) {
   const dbg = (answer?.debug ?? {}) as Record<string, unknown>;
   const isArea = "bad" in dbg || "disconnected" in dbg || "gaps" in dbg;
 
@@ -73,6 +76,116 @@ export function ManholeRecommendCard({ answer, loading, error, onClose, onView3D
   };
 
   return (
+    <>
+      {loading && <div className="anomaly-card__loading">Analyzing manhole and drain network…</div>}
+      {error && <div className="anomaly-card__error">{error}</div>}
+      {answer && (
+        <>
+          {isArea && (
+            <div className="anomaly-card__summary">
+              <span><b>{(dbg.bad as number) ?? 0}</b> need rehab</span>
+              <span><b>{(dbg.disconnected as number) ?? 0}</b> disconnected</span>
+              <span><b>{(dbg.gaps as number) ?? 0}</b> coverage gaps</span>
+              <span><b>{answer.routes.length}</b> pipe routes</span>
+            </div>
+          )}
+          <p className="anomaly-card__explanation">
+            <ReactMarkdown>{answer.answer_markdown}</ReactMarkdown>
+          </p>
+          {answer.routes.length > 0 && (
+            <>
+              <button type="button" className="anomaly-card__export" onClick={handleExport}>
+                Export {answer.routes.length} routes + {(answer.needed_locations ?? []).length} points (GeoJSON)
+              </button>
+              {onView3D && (
+                <button type="button" className="anomaly-card__export" onClick={onView3D}>
+                  View subsurface in 3D
+                </button>
+              )}
+              <div className="anomaly-card__facts">
+                {answer.routes.map((route, idx) => {
+                  const start = route.coordinates[0];
+                  const end = route.coordinates[route.coordinates.length - 1];
+                  return (
+                    <div key={idx} className="anomaly-card__route">
+                      <div className="anomaly-card__fact">
+                        <span className="anomaly-card__fact-key">manhole</span>
+                        <span className="anomaly-card__fact-value">{route.from_id}</span>
+                      </div>
+                      <div className="anomaly-card__fact">
+                        <span className="anomaly-card__fact-key">from</span>
+                        <span className="anomaly-card__fact-value">{fmtCoord(start[0], start[1])}</span>
+                      </div>
+                      <div className="anomaly-card__fact">
+                        <span className="anomaly-card__fact-key">to</span>
+                        <span className="anomaly-card__fact-value">{fmtCoord(end[0], end[1])}</span>
+                      </div>
+                      <div className="anomaly-card__fact">
+                        <span className="anomaly-card__fact-key">material</span>
+                        <span className="anomaly-card__fact-value">{route.pipe_spec.material}</span>
+                      </div>
+                      <div className="anomaly-card__fact">
+                        <span className="anomaly-card__fact-key">diameter mm</span>
+                        <span className="anomaly-card__fact-value">{route.pipe_spec.diameter_mm}</span>
+                      </div>
+                      {route.pipe_spec.from_rl !== null && (
+                        <div className="anomaly-card__fact">
+                          <span className="anomaly-card__fact-key">from rl</span>
+                          <span className="anomaly-card__fact-value">{route.pipe_spec.from_rl}</span>
+                        </div>
+                      )}
+                      {route.pipe_spec.to_rl !== null && (
+                        <div className="anomaly-card__fact">
+                          <span className="anomaly-card__fact-key">to rl</span>
+                          <span className="anomaly-card__fact-value">{route.pipe_spec.to_rl}</span>
+                        </div>
+                      )}
+                      {route.pipe_spec.slope !== null && (
+                        <div className="anomaly-card__fact">
+                          <span className="anomaly-card__fact-key">slope</span>
+                          <span className="anomaly-card__fact-value">{route.pipe_spec.slope}</span>
+                        </div>
+                      )}
+                      {route.elevation_source && (
+                        <div className="anomaly-card__fact">
+                          <span className="anomaly-card__fact-key">elevation source</span>
+                          <span className="anomaly-card__fact-value">{route.elevation_source}</span>
+                        </div>
+                      )}
+                      {route.flow_confirmed !== null && route.flow_confirmed !== undefined && (
+                        <div className="anomaly-card__fact">
+                          <span className="anomaly-card__fact-key">flow direction</span>
+                          <span className="anomaly-card__fact-value">
+                            {route.flow_confirmed ? "confirmed (real elevation)" : "not confirmed — no elevation evidence"}
+                          </span>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </>
+          )}
+          {!answer.grounded && (
+            <div className="anomaly-card__error">Not enough surveyed data to answer.</div>
+          )}
+        </>
+      )}
+    </>
+  );
+}
+
+/** Same visual language as AnomalyAlertCard (reuses its CSS classes) — this
+ * is the manhole-recommend engine's counterpart for the "Full Drainage
+ * Network" (network-mode) summary: instead of narrating an already-detected
+ * SpatialAnomaly, it narrates a manhole-recommend AiAnswer (real facts + a
+ * road-routed pipe route + pipe spec), computed fresh on click rather than
+ * pre-persisted by a background audit run. Individual manhole clicks now
+ * open AnomalyAlertCard instead, same as Poles/Drains/Roads/Powerlines. */
+export function ManholeRecommendCard({ answer, loading, error, onClose, onView3D }: Props) {
+  const problemType = (answer?.debug?.problem_type as string | undefined) ?? null;
+
+  return (
     <aside className="anomaly-card" data-testid="manhole-recommend-card">
       <header className="anomaly-card__head">
         <div>
@@ -83,104 +196,11 @@ export function ManholeRecommendCard({ answer, loading, error, onClose, onView3D
           )}
           <h3 className="anomaly-card__title">AI Manhole Recommendation</h3>
         </div>
-        <button type="button" className="anomaly-card__close" onClick={onClose} aria-label="Close">├ù</button>
+        <button type="button" className="anomaly-card__close" onClick={onClose} aria-label="Close">×</button>
       </header>
 
       <div className="anomaly-card__body">
-        {loading && <div className="anomaly-card__loading">Analyzing manhole and drain networkΓÇª</div>}
-        {error && <div className="anomaly-card__error">{error}</div>}
-        {answer && (
-          <>
-            {isArea && (
-              <div className="anomaly-card__summary">
-                <span><b>{(dbg.bad as number) ?? 0}</b> need rehab</span>
-                <span><b>{(dbg.disconnected as number) ?? 0}</b> disconnected</span>
-                <span><b>{(dbg.gaps as number) ?? 0}</b> coverage gaps</span>
-                <span><b>{answer.routes.length}</b> pipe routes</span>
-              </div>
-            )}
-            <p className="anomaly-card__explanation">
-              <ReactMarkdown>{answer.answer_markdown}</ReactMarkdown>
-            </p>
-            {answer.routes.length > 0 && (
-              <>
-                <button type="button" className="anomaly-card__export" onClick={handleExport}>
-                  Export {answer.routes.length} routes + {(answer.needed_locations ?? []).length} points (GeoJSON)
-                </button>
-                {onView3D && (
-                  <button type="button" className="anomaly-card__export" onClick={onView3D}>
-                    View subsurface in 3D
-                  </button>
-                )}
-                <div className="anomaly-card__facts">
-                  {answer.routes.map((route, idx) => {
-                    const start = route.coordinates[0];
-                    const end = route.coordinates[route.coordinates.length - 1];
-                    return (
-                      <div key={idx} className="anomaly-card__route">
-                        <div className="anomaly-card__fact">
-                          <span className="anomaly-card__fact-key">manhole</span>
-                          <span className="anomaly-card__fact-value">{route.from_id}</span>
-                        </div>
-                        <div className="anomaly-card__fact">
-                          <span className="anomaly-card__fact-key">from</span>
-                          <span className="anomaly-card__fact-value">{fmtCoord(start[0], start[1])}</span>
-                        </div>
-                        <div className="anomaly-card__fact">
-                          <span className="anomaly-card__fact-key">to</span>
-                          <span className="anomaly-card__fact-value">{fmtCoord(end[0], end[1])}</span>
-                        </div>
-                        <div className="anomaly-card__fact">
-                          <span className="anomaly-card__fact-key">material</span>
-                          <span className="anomaly-card__fact-value">{route.pipe_spec.material}</span>
-                        </div>
-                        <div className="anomaly-card__fact">
-                          <span className="anomaly-card__fact-key">diameter mm</span>
-                          <span className="anomaly-card__fact-value">{route.pipe_spec.diameter_mm}</span>
-                        </div>
-                        {route.pipe_spec.from_rl !== null && (
-                          <div className="anomaly-card__fact">
-                            <span className="anomaly-card__fact-key">from rl</span>
-                            <span className="anomaly-card__fact-value">{route.pipe_spec.from_rl}</span>
-                          </div>
-                        )}
-                        {route.pipe_spec.to_rl !== null && (
-                          <div className="anomaly-card__fact">
-                            <span className="anomaly-card__fact-key">to rl</span>
-                            <span className="anomaly-card__fact-value">{route.pipe_spec.to_rl}</span>
-                          </div>
-                        )}
-                        {route.pipe_spec.slope !== null && (
-                          <div className="anomaly-card__fact">
-                            <span className="anomaly-card__fact-key">slope</span>
-                            <span className="anomaly-card__fact-value">{route.pipe_spec.slope}</span>
-                          </div>
-                        )}
-                        {route.elevation_source && (
-                          <div className="anomaly-card__fact">
-                            <span className="anomaly-card__fact-key">elevation source</span>
-                            <span className="anomaly-card__fact-value">{route.elevation_source}</span>
-                          </div>
-                        )}
-                        {route.flow_confirmed !== null && route.flow_confirmed !== undefined && (
-                          <div className="anomaly-card__fact">
-                            <span className="anomaly-card__fact-key">flow direction</span>
-                            <span className="anomaly-card__fact-value">
-                              {route.flow_confirmed ? "confirmed (real elevation)" : "not confirmed ΓÇö no elevation evidence"}
-                            </span>
-                          </div>
-                        )}
-                      </div>
-                    );
-                  })}
-                </div>
-              </>
-            )}
-            {!answer.grounded && (
-              <div className="anomaly-card__error">Not enough surveyed data to answer.</div>
-            )}
-          </>
-        )}
+        <ManholeAnswerBody answer={answer} loading={loading} error={error} onView3D={onView3D} />
       </div>
     </aside>
   );

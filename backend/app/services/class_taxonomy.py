@@ -70,7 +70,7 @@ CLASS_SYNONYMS: dict[str, set[str]] = {
         "drain", "drain closed", "closed drain", "drain open", "open drain",
         "storm water drain", "swd", "culvert", "silt trap", "drainage",
     },
-    "Power_Line": {"power line", "electric line", "overhead line"},
+    "Power_Line": {"power line", "powerline", "poweline", "electric line", "overhead line"},
     "Utility_Pole": {"utility pole", "transformer pole", "cc camera pole"},
     "Road_Centerline": {
         "road centerline", "centerline", "center line", "carriageway centerline",

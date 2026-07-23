@@ -908,7 +908,7 @@ export const createSurveyRequest = (body: {
 }) => apiPost<SurveyRequestRow>("/api/v1/survey-requests", body);
 
 // ---------------------- AI spatial audit engine ----------------------------
-export type AnomalyType = "pole_redundancy" | "drain_encroachment" | "manhole_status" | "road_width_narrowing";
+export type AnomalyType = "pole_redundancy" | "drain_encroachment" | "manhole_status" | "road_width_narrowing" | "powerline_proximity";
 export type AnomalyColor = "red" | "yellow" | "green";
 export type AnomalyStatus = "open" | "reviewing" | "resolved" | "dismissed";
 
@@ -919,6 +919,7 @@ export interface AuditRunResult {
   drain_encroachment: Record<string, number>;
   manhole_status: Record<string, number>;
   road_width_narrowing: Record<string, number>;
+  powerline_proximity: Record<string, number>;
 }
 
 export interface SpatialAnomaly {

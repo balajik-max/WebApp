@@ -9779,6 +9779,7 @@ body.is-resizing-sidebar {
 .manhole-3d-overlay__colormode {
   flex: 0 0 auto;
   display: flex;
+  flex-wrap: wrap;
   gap: 4px;
   padding: 3px;
   background: var(--surface-2);
@@ -9786,7 +9787,8 @@ body.is-resizing-sidebar {
   border-radius: var(--radius-md);
 }
 .manhole-3d-overlay__colormode-btn {
-  flex: 1;
+  flex: 1 1 auto;
+  min-width: 0;
   border: none;
   background: transparent;
   color: var(--ink-mute);
@@ -9795,6 +9797,7 @@ body.is-resizing-sidebar {
   padding: 7px 8px;
   border-radius: var(--radius-sm);
   cursor: pointer;
+  white-space: nowrap;
   transition: background var(--transition-fast), color var(--transition-fast);
 }
 .manhole-3d-overlay__colormode-btn:hover { color: var(--ink); }
