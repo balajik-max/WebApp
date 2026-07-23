@@ -8925,12 +8925,12 @@ body.is-resizing-sidebar {
 }
 /* â”€â”€ AI SPATIAL AUDIT â€” ANOMALY ALERT CARD â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 .anomaly-card {
-  position: absolute;
+  position: fixed;
   top: 16px;
   right: 16px;
   z-index: 30;
   width: 320px;
-  max-height: calc(100% - 32px);
+  max-height: calc(100vh - 32px);
   display: flex;
   flex-direction: column;
   background: var(--glass-strong);
@@ -8948,6 +8948,46 @@ body.is-resizing-sidebar {
   gap: 12px;
   padding: 14px 14px 10px;
   border-bottom: 1px solid var(--edge);
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+}
+
+.anomaly-card__head:active {
+  cursor: grabbing;
+}
+
+/* Drag-to-resize handles — invisible hit targets along the right edge,
+   bottom edge, and bottom-right corner. The card only ever grows from its
+   own top-left, so these are the only edges that make sense to drag. */
+.anomaly-card__resize {
+  position: absolute;
+  touch-action: none;
+  z-index: 1;
+}
+
+.anomaly-card__resize--right {
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 8px;
+  cursor: ew-resize;
+}
+
+.anomaly-card__resize--bottom {
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 8px;
+  cursor: ns-resize;
+}
+
+.anomaly-card__resize--corner {
+  right: 0;
+  bottom: 0;
+  width: 16px;
+  height: 16px;
+  cursor: nwse-resize;
 }
 
 .anomaly-card__badge {

@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState, useCallback, useImperativeHandle, useMemo, forwardRef, type CSSProperties, type MutableRefObject } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, useCallback, useImperativeHandle, useMemo, forwardRef, type MutableRefObject } from "react";
 import { createPortal } from "react-dom";
 import maplibregl, { Map as MLMap, MapMouseEvent, MapLayerMouseEvent, GeoJSONSource } from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
@@ -36,7 +36,6 @@ import { DataSourceSelector } from "./DataSourceSelector";
 import { SupportingFilesImport } from "./WardReportPanel";
 import { AnomalyAlertCard } from "./AnomalyAlertCard";
 import { RoadInspectionCard } from "./RoadInspectionCard";
-import { UrbanPlanningSolutionPanel } from "./UrbanPlanningSolutionPanel";
 import { QuickAnalysisPanel } from "./QuickAnalysisPanel";
 import { QuickAnalysisMapDashboard, type ManholeConnectionDetail, type QuickAnalysisTool } from "./QuickAnalysisMapDashboard";
 import { PlacemarkEditor } from "./map/PlacemarkEditor";
@@ -3006,225 +3005,6 @@ function formatMetricDistance(value: number | null): string {
   if (value === null || !Number.isFinite(value)) return "—";
   if (value >= 1000) return `${(value / 1000).toFixed(value >= 10000 ? 0 : 2)} km`;
   return `${Math.round(value)} m`;
-}
-
-type SurfaceIssueAnomalyType = "pothole_status" | "standing_water_status";
-
-function isSurfaceIssueAnomaly(anomaly: SpatialAnomaly | null | undefined): anomaly is SpatialAnomaly & { anomaly_type: SurfaceIssueAnomalyType } {
-  return anomaly?.anomaly_type === "pothole_status" || anomaly?.anomaly_type === "standing_water_status";
-}
-
-function readSurfaceMetadata(
-  metadata: Record<string, unknown>,
-  keys: string[],
-): unknown {
-  for (const key of keys) {
-    const value = metadata[key];
-    if (value !== null && value !== undefined && value !== "") return value;
-  }
-  return null;
-}
-
-function formatSurfaceValue(value: unknown, suffix = ""): string {
-  if (value === null || value === undefined || value === "") return "—";
-  if (typeof value === "boolean") return value ? "Yes" : "No";
-  if (typeof value === "number") {
-    if (!Number.isFinite(value)) return "—";
-    const rounded = Math.abs(value) >= 100 ? value.toFixed(0) : value.toFixed(2).replace(/\.00$/, "").replace(/(\.\d)0$/, "$1");
-    return `${rounded}${suffix}`;
-  }
-  return `${String(value)}${suffix}`;
-}
-
-function surfaceIssueRecommendation(anomaly: SpatialAnomaly & { anomaly_type: SurfaceIssueAnomalyType }): {
-  title: string;
-  badge: string;
-  badgeColor: string;
-  condition: string;
-  implications: string;
-  action: string;
-  rows: Array<[string, string]>;
-} {
-  const metadata = anomaly.anomaly_metadata as Record<string, unknown>;
-  const resolved = anomaly.status === "resolved";
-  const severity = String(readSurfaceMetadata(metadata, ["severity_label", "severity", "condition_label"]) ?? anomaly.color).toUpperCase();
-  const badgeColor = resolved
-    ? POINT_ISSUE_RESOLVED_COLOR
-    : anomaly.color === "red"
-      ? BUILDING_RED_COLOR
-      : anomaly.color === "yellow"
-        ? BUILDING_YELLOW_COLOR
-        : BUILDING_DEFAULT_COLOR;
-  const workflowStatus = resolved ? "Resolved / final approval" : anomaly.status.replace(/_/g, " ");
-  const priority = String(readSurfaceMetadata(metadata, ["priority", "repair_priority", "urgency"]) ?? (anomaly.color === "red" ? "High" : anomaly.color === "yellow" ? "Medium" : "Low"));
-
-  if (anomaly.anomaly_type === "pothole_status") {
-    const area = readSurfaceMetadata(metadata, ["area_sqm", "area_m2", "affected_area_m2"]);
-    const depth = readSurfaceMetadata(metadata, ["depth_cm", "max_depth_cm", "average_depth_cm"]);
-    const length = readSurfaceMetadata(metadata, ["length_m", "pothole_length_m"]);
-    const width = readSurfaceMetadata(metadata, ["width_m", "pothole_width_m"]);
-    const volume = readSurfaceMetadata(metadata, ["estimated_repair_volume_m3", "repair_volume_m3", "volume_m3"]);
-    const onRoad = readSurfaceMetadata(metadata, ["intersects_road", "on_road"]);
-    const roadDistance = readSurfaceMetadata(metadata, ["nearest_road_distance_m", "road_distance_m"]);
-    const suppliedAction = readSurfaceMetadata(metadata, ["recommended_action", "recommendation", "repair_method"]);
-    const action = suppliedAction
-      ? String(suppliedAction)
-      : anomaly.color === "red"
-        ? "Barricade the damaged spot, cut back to sound pavement, remove failed material, repair any weak base, then place and compact a hot-mix asphalt patch. Inspect the surrounding carriageway for connected cracking or settlement."
-        : anomaly.color === "yellow"
-          ? "Clean and square the pothole edges, remove loose material, apply tack coat, place a localized hot-mix patch and compact it flush with the road surface. Reinspect after rainfall."
-          : "Seal minor edge deterioration, monitor growth and include the location in the next preventive-maintenance cycle.";
-    const condition = `The mapped pothole is classified as ${severity}${resolved ? " and is recorded as resolved" : ""}. Its surveyed geometry remains at the original GDB location.`;
-    const implications = anomaly.color === "red"
-      ? "The defect can cause sudden vehicle impact, loss of control, tyre or suspension damage and accelerated pavement failure, especially during rain or low visibility."
-      : anomaly.color === "yellow"
-        ? "The defect can worsen under traffic and rainfall, create a safety hazard for two-wheelers and expand into surrounding pavement if patching is delayed."
-        : "The current defect is comparatively minor, but continued traffic and water ingress can enlarge it without preventive treatment.";
-    return {
-      title: "AI Pothole Recommendation",
-      badge: resolved ? "RESOLVED" : `${severity} CONDITION`,
-      badgeColor,
-      condition,
-      implications,
-      action,
-      rows: [
-        ["Pothole", String(readSurfaceMetadata(metadata, ["pothole_id", "feature_id"]) ?? anomaly.feature_ids[0] ?? anomaly.id)],
-        ["Area", formatSurfaceValue(area, " m²")],
-        ["Length", formatSurfaceValue(length, " m")],
-        ["Width", formatSurfaceValue(width, " m")],
-        ["Depth", formatSurfaceValue(depth, " cm")],
-        ["Repair volume", formatSurfaceValue(volume, " m³")],
-        ["On road", formatSurfaceValue(onRoad)],
-        ["Road distance", formatSurfaceValue(roadDistance, " m")],
-        ["Priority", priority],
-        ["Workflow", workflowStatus],
-        ["Longitude", anomaly.lon.toFixed(6)],
-        ["Latitude", anomaly.lat.toFixed(6)],
-      ],
-    };
-  }
-
-  const area = readSurfaceMetadata(metadata, ["area_sqm", "area_m2", "affected_area_m2"]);
-  const depth = readSurfaceMetadata(metadata, ["depth_cm", "water_depth_cm", "average_depth_cm", "max_depth_cm"]);
-  const onRoad = readSurfaceMetadata(metadata, ["intersects_road", "on_road"]);
-  const roadDistance = readSurfaceMetadata(metadata, ["nearest_road_distance_m", "road_distance_m"]);
-  const intersectsDrain = readSurfaceMetadata(metadata, ["intersects_drain", "on_drain"]);
-  const drainDistance = readSurfaceMetadata(metadata, ["nearest_drain_distance_m", "drain_distance_m"]);
-  const likelyCause = readSurfaceMetadata(metadata, ["likely_cause", "cause", "probable_cause"]);
-  const suppliedAction = readSurfaceMetadata(metadata, ["recommended_action", "recommendation", "remedial_action"]);
-  const action = suppliedAction
-    ? String(suppliedAction)
-    : intersectsDrain === true || (typeof drainDistance === "number" && drainDistance <= 5)
-      ? "Inspect and clean the nearest inlet or drain, remove silt and solid waste, verify downstream flow, then correct any local road depression so runoff reaches the drainage system."
-      : onRoad === true
-        ? "Pump out standing water where necessary, survey the road levels and crossfall, repair the depressed pavement and provide a positive drainage path to the nearest suitable inlet."
-        : "Remove the accumulated water, inspect the local ground and drainage path, clear obstructions and regrade the affected surface to prevent recurrence.";
-  const condition = `The mapped standing-water area is classified as ${severity}${resolved ? " and is recorded as resolved" : ""}. The recommendation uses the persisted audit finding at its surveyed GDB location.`;
-  const implications = anomaly.color === "red"
-    ? "Persistent water can hide pavement defects, increase skidding and pedestrian risk, accelerate pavement deterioration and create sanitation or mosquito-breeding concerns."
-    : anomaly.color === "yellow"
-      ? "The accumulation can disrupt movement, weaken the pavement edge and become a larger waterlogging problem during heavier rainfall."
-      : "The accumulation is currently limited, but repeated ponding indicates that local drainage or surface levels should be monitored.";
-  return {
-    title: "AI Standing Water Recommendation",
-    badge: resolved ? "RESOLVED" : `${severity} CONDITION`,
-    badgeColor,
-    condition,
-    implications,
-    action,
-    rows: [
-      ["Standing water", String(readSurfaceMetadata(metadata, ["standing_water_id", "feature_id"]) ?? anomaly.feature_ids[0] ?? anomaly.id)],
-      ["Affected area", formatSurfaceValue(area, " m²")],
-      ["Water depth", formatSurfaceValue(depth, " cm")],
-      ["On road", formatSurfaceValue(onRoad)],
-      ["Road distance", formatSurfaceValue(roadDistance, " m")],
-      ["Intersects drain", formatSurfaceValue(intersectsDrain)],
-      ["Drain distance", formatSurfaceValue(drainDistance, " m")],
-      ["Likely cause", formatSurfaceValue(likelyCause)],
-      ["Priority", priority],
-      ["Workflow", workflowStatus],
-      ["Longitude", anomaly.lon.toFixed(6)],
-      ["Latitude", anomaly.lat.toFixed(6)],
-    ],
-  };
-}
-
-const SURFACE_CARD_STYLE: CSSProperties = {
-  position: "absolute",
-  top: 16,
-  right: 16,
-  zIndex: 35,
-  width: "min(370px, calc(100% - 32px))",
-  maxHeight: "calc(100% - 32px)",
-  overflowY: "auto",
-  borderRadius: 18,
-  border: "1px solid rgba(148, 163, 184, 0.22)",
-  background: "linear-gradient(180deg, rgba(27, 38, 55, 0.98), rgba(20, 30, 45, 0.98))",
-  boxShadow: "0 18px 55px rgba(2, 6, 23, 0.46)",
-  color: "#e5edf7",
-  backdropFilter: "blur(14px)",
-};
-
-function SurfaceIssueRecommendCard({
-  anomaly,
-  onClose,
-  onView3D,
-}: {
-  anomaly: SpatialAnomaly & { anomaly_type: SurfaceIssueAnomalyType };
-  onClose: () => void;
-  onView3D: () => void;
-}) {
-  const recommendation = surfaceIssueRecommendation(anomaly);
-  const metadata = anomaly.anomaly_metadata as Record<string, unknown>;
-  const surfaceFeatureId = String(
-    readSurfaceMetadata(
-      metadata,
-      anomaly.anomaly_type === "pothole_status"
-        ? ["pothole_id", "this_feature_id", "feature_id"]
-        : ["standing_water_id", "this_feature_id", "feature_id"],
-    ) ?? anomaly.feature_ids[0] ?? "",
-  ) || null;
-  const surfaceLabel = anomaly.anomaly_type === "pothole_status" ? "Pothole" : "Standing Water";
-  const surfacePlaceholder = anomaly.anomaly_type === "pothole_status"
-    ? "Describe your proposed pothole repair, pavement treatment, material, quantity, drainage, and traffic-safety plan…"
-    : "Describe your proposed standing-water solution, including drain cleaning, inlet work, regrading, pumping, or pavement-level correction…";
-  return (
-    <section style={SURFACE_CARD_STYLE} data-testid={`surface-recommend-${anomaly.anomaly_type}`} aria-label={recommendation.title}>
-      <header style={{ padding: "16px 18px 13px", borderBottom: "1px solid rgba(148,163,184,.14)", position: "relative" }}>
-        <div style={{ display: "inline-flex", alignItems: "center", borderRadius: 999, padding: "4px 9px", marginBottom: 10, color: recommendation.badgeColor, background: `${recommendation.badgeColor}1f`, border: `1px solid ${recommendation.badgeColor}55`, fontSize: 10, fontWeight: 800, letterSpacing: ".11em" }}>
-          {recommendation.badge}
-        </div>
-        <h2 style={{ margin: 0, paddingRight: 36, fontSize: 16, lineHeight: 1.35, color: "#f8fafc" }}>{recommendation.title}</h2>
-        <button type="button" onClick={onClose} aria-label="Close recommendation" style={{ position: "absolute", top: 13, right: 13, width: 30, height: 30, borderRadius: 9, border: "1px solid rgba(148,163,184,.18)", background: "rgba(15,23,42,.35)", color: "#cbd5e1", cursor: "pointer", fontSize: 18, lineHeight: 1 }}>
-          ×
-        </button>
-      </header>
-      <div style={{ padding: "16px 18px 18px" }}>
-        <h3 style={{ margin: "0 0 12px", fontSize: 15, color: "#aebed2" }}>Finding Note</h3>
-        <div style={{ display: "grid", gap: 12, fontSize: 13, lineHeight: 1.52, color: "#aebed2" }}>
-          <p style={{ margin: 0 }}><strong style={{ color: "#d8e2ef" }}>Condition:</strong> {recommendation.condition}</p>
-          <p style={{ margin: 0 }}><strong style={{ color: "#d8e2ef" }}>Practical implications:</strong> {recommendation.implications}</p>
-          <p style={{ margin: 0 }}><strong style={{ color: "#d8e2ef" }}>Recommended action:</strong> {recommendation.action}</p>
-        </div>
-        <button type="button" onClick={onView3D} style={{ width: "100%", marginTop: 18, padding: "10px 12px", borderRadius: 9, border: "1px solid rgba(59,130,246,.25)", background: "rgba(30,64,175,.12)", color: "#bfd7ff", fontWeight: 700, cursor: "pointer" }}>
-          View affected feature in 3D
-        </button>
-        <UrbanPlanningSolutionPanel
-          featureId={surfaceFeatureId}
-          contextLabel={surfaceLabel}
-          placeholder={surfacePlaceholder}
-        />
-        <div style={{ marginTop: 14, borderRadius: 11, border: "1px solid rgba(148,163,184,.13)", background: "rgba(15,23,42,.18)", padding: "11px 12px" }}>
-          {recommendation.rows.map(([label, value]) => (
-            <div key={label} style={{ display: "grid", gridTemplateColumns: "118px minmax(0, 1fr)", gap: 10, padding: "4px 0", fontSize: 12 }}>
-              <span style={{ color: "#71839a" }}>{label}</span>
-              <strong style={{ color: "#e2e8f0", textAlign: "right", overflowWrap: "anywhere" }}>{value}</strong>
-            </div>
-          ))}
-        </div>
-      </div>
-    </section>
-  );
 }
 
 export interface ViewportStatus { loading: boolean; count: number; truncated: boolean; error: string | null; bbox: [number, number, number, number] | null; }
@@ -7445,7 +7225,6 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
   }, [quickAnalysisManholeNetwork]);
 
   const selectedAnomaly = anomalies.find((a) => a.id === selectedAnomalyId) ?? null;
-  const selectedSurfaceRecommendation = isSurfaceIssueAnomaly(selectedAnomaly) ? selectedAnomaly : null;
 
   const handleAnomalyStatusChange = useCallback(async (anomalyId: string, next: AnomalyStatus) => {
     const updated = await updateAnomalyStatus(anomalyId, next);
@@ -10235,19 +10014,12 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
           onToggleMeasure={toggleMeasureActive}
         />}
         {layersWorkspaceActive && <HoverTooltip hover={hover} />}
-        {layersWorkspaceActive && selectedAnomaly && !selectedSurfaceRecommendation && (
+        {layersWorkspaceActive && selectedAnomaly && (
           <AnomalyAlertCard
             anomaly={selectedAnomaly}
             onClose={() => setSelectedAnomalyId(null)}
             onStatusChange={handleAnomalyStatusChange}
             onStale={handleAnomalyStale}
-          />
-        )}
-        {layersWorkspaceActive && selectedSurfaceRecommendation && (
-          <SurfaceIssueRecommendCard
-            anomaly={selectedSurfaceRecommendation}
-            onClose={() => setSelectedAnomalyId(null)}
-            onView3D={() => setShow3DPlan(true)}
           />
         )}
         {layersWorkspaceActive && roadInspectionRoad && (
