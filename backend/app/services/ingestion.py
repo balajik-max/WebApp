@@ -24,6 +24,7 @@ from app.models import (
     DatasetStatus,
 )
 from app.services.readers import DatasetReader, GISReader, ImageReader, ObjReader, get_reader_for
+from app.services.spatial_audit import run_spatial_audit
 from app.services.storage import download_to_file
 
 log = logging.getLogger("davangere.ingestion")
@@ -171,6 +172,24 @@ async def ingest_dataset(*, dataset_id: uuid.UUID, storage_key: str, filename: s
                 "dataset_metadata": result.dataset_metadata,
             },
         )
+
+        # Run the spatial audit (pole redundancy, drain encroachment,
+        # manhole status, road width narrowing, powerline proximity, plus
+        # any newer surface-issue detectors) the moment a GIS dataset is
+        # ready, so AI Detection findings already exist the first time
+        # anyone opens this dataset — no more requiring a user to click the
+        # AI icon before anomalies are computed. Only GIS data has the
+        # surveyed geometry classes the audit needs; image (site photos)
+        # and OBJ (3D model) uploads have nothing for it to find, so skip
+        # them rather than paying for a no-op audit run.
+        if isinstance(reader, GISReader):
+            try:
+                async with SessionLocal() as session:
+                    await run_spatial_audit(dataset_id, session)
+            except Exception:  # noqa: BLE001 — an audit failure must never
+                # undo the READY status just written above; the dataset's
+                # features are real and usable even if AI Detection isn't.
+                log.exception("Automatic spatial audit failed for dataset %s", dataset_id)
     except Exception as exc:  # noqa: BLE001 — last-resort guard, see docstring
         log.exception("Unhandled error in ingest_dataset for %s", dataset_id)
         try:
