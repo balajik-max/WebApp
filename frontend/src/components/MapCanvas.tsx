@@ -111,6 +111,10 @@ interface Props {
    * being unmounted/remounted on tab navigation) — seeds the initial
    * selection and is re-applied once the map and dataset list are ready. */
   initialActiveDatasets?: DatasetRow[];
+  /** Per-dataset TIFF display adjustments persisted above this route so
+   * texture, brightness, and clarity survive MapCanvas remounts. */
+  initialRasterSettings?: Record<string, RasterDisplaySettings>;
+  onRasterSettingsChange?: (settings: Record<string, RasterDisplaySettings>) => void;
   /** AI-produced highlight overrides — redundant poles show red,
    * needed poles show green. Empty array clears the overlay. */
   aiHighlights?: AiHighlight[];
@@ -2046,35 +2050,45 @@ function cadastralPointIconExpression(): maplibregl.ExpressionSpecification {
 
 function cadastralPointIconSizeExpression(): maplibregl.ExpressionSpecification {
   const categoryExpr: maplibregl.ExpressionSpecification = ["downcase", ["coalesce", ["get", "category"], ""]];
+  const categoryScale: maplibregl.ExpressionSpecification = [
+    "match",
+    categoryExpr,
+    "manhole", 0.9,
+    "inlet", 0.9,
+    "gully", 0.9,
+    "power pole", 0.95,
+    "power pole with light", 0.95,
+    "light pole", 0.95,
+    "solar light", 0.95,
+    "high mast", 1.02,
+    "road sign", 1.02,
+    "road sign single pole", 1.02,
+    "road sign double pole", 1.02,
+    "transformer", 1.08,
+    "temple", 1.08,
+    "landmark", 1.08,
+    1,
+  ];
   return [
-    "*",
-    [
-      "interpolate", ["linear"], ["zoom"],
-      11, 0.72,
-      14, 1.02,
-      17, 1.38,
-      20, 1.8,
-    ],
-    [
-      "match",
-      categoryExpr,
-      "manhole", 0.9,
-      "inlet", 0.9,
-      "gully", 0.9,
-      "power pole", 0.95,
-      "power pole with light", 0.95,
-      "light pole", 0.95,
-      "solar light", 0.95,
-      "high mast", 1.02,
-      "road sign", 1.02,
-      "road sign single pole", 1.02,
-      "road sign double pole", 1.02,
-      "transformer", 1.08,
-      "temple", 1.08,
-      "landmark", 1.08,
-      1,
-    ],
+    "interpolate", ["linear"], ["zoom"],
+    11, ["*", 0.72, categoryScale],
+    14, ["*", 1.02, categoryScale],
+    17, ["*", 1.38, categoryScale],
+    20, ["*", 1.8, categoryScale],
   ] as unknown as maplibregl.ExpressionSpecification;
+}
+
+function selectedZoomExpression(
+  stops: Array<[zoom: number, normal: number, selected: number]>
+): maplibregl.ExpressionSpecification {
+  const expression: unknown[] = ["interpolate", ["linear"], ["zoom"]];
+  for (const [zoom, normal, selected] of stops) {
+    expression.push(
+      zoom,
+      ["case", ["==", ["get", "selected"], true], selected, normal],
+    );
+  }
+  return expression as maplibregl.ExpressionSpecification;
 }
 
 function cadastralPointHitRadiusExpression(): maplibregl.ExpressionSpecification {
@@ -2905,6 +2919,8 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     onFeatureSelect,
     onActiveDatasetsChange,
     initialActiveDatasets,
+    initialRasterSettings,
+    onRasterSettingsChange,
     initialBasemap,
     onBasemapChange,
     aiHighlights,
@@ -3010,7 +3026,8 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
   // plotted as flat 2D circles in the feature source below.
   const objDatasetIdsRef = useRef<Set<string>>(new Set());
   const [expandedDatasetId, setExpandedDatasetId] = useState<string | null>(null);
-  const [rasterSettingsById, setRasterSettingsById] = useState<Record<string, RasterDisplaySettings>>({});
+  const [rasterSettingsById, setRasterSettingsById] =
+    useState<Record<string, RasterDisplaySettings>>(() => initialRasterSettings ?? {});
 
   // Universal visualization UI. Manifests are fetched only for active vector
   // datasets; raster, image, and OBJ datasets keep their existing renderers.
@@ -3106,7 +3123,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
   // needs to know whether a clicked feature is an Access_Point (manhole)
   // to trigger the manhole-recommend card.
   const classMapRef = useRef<Record<string, string>>({});
-  const rasterSettingsRef = useRef<Record<string, RasterDisplaySettings>>({});
+  const rasterSettingsRef = useRef<Record<string, RasterDisplaySettings>>(initialRasterSettings ?? {});
   const [flyError, setFlyError] = useState<string | null>(null);
   const [mapReady, setMapReady] = useState(false);
   const [attributeTable, setAttributeTable] = useState<LayerAttributeTableState | null>(null);
@@ -4973,10 +4990,10 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
         "line-width",
         isDrainAnalysis
           ? [
-            "case",
-            ["==", ["get", "id"], activeFeatureId],
-            ["interpolate", ["linear"], ["zoom"], 12, 5, 16, 7, 20, 10],
-            ["interpolate", ["linear"], ["zoom"], 12, 2.5, 16, 4, 20, 6],
+            "interpolate", ["linear"], ["zoom"],
+            12, ["case", ["==", ["get", "id"], activeFeatureId], 5, 2.5],
+            16, ["case", ["==", ["get", "id"], activeFeatureId], 7, 4],
+            20, ["case", ["==", ["get", "id"], activeFeatureId], 10, 6],
           ]
           : cadastralLineWidthExpression()
       );
@@ -4999,10 +5016,10 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
         "circle-radius",
         isManholeDetail
           ? [
-              "case",
-              ["==", ["get", "id"], selectedManholeId],
-              ["interpolate", ["linear"], ["zoom"], 12, 12, 16, 16, 20, 21],
-              0,
+              "interpolate", ["linear"], ["zoom"],
+              12, ["case", ["==", ["get", "id"], selectedManholeId], 12, 0],
+              16, ["case", ["==", ["get", "id"], selectedManholeId], 16, 0],
+              20, ["case", ["==", ["get", "id"], selectedManholeId], 21, 0],
             ]
           : cadastralPointHitRadiusExpression()
       );
@@ -5308,7 +5325,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     debounceRef.current = window.setTimeout(() => { debounceRef.current = null; void runFetch(); }, 250);
   }, [runFetch]);
 
-  const addRasterOverlay = useCallback((dataset: DatasetRow) => {
+  const addRasterOverlay = useCallback((dataset: DatasetRow, replace = false) => {
     const map = mapRef.current;
     if (!map || !map.isStyleLoaded()) return;
     const overlay = dataset.dataset_metadata?.raster_overlay;
@@ -5316,6 +5333,10 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
 
     const sourceId = rasterSourceId(dataset.id);
     const layerId = rasterLayerId(dataset.id);
+    if (!replace && map.getLayer(layerId) && map.getSource(sourceId)) {
+      rasterLayersRef.current.add(dataset.id);
+      return;
+    }
     if (map.getLayer(layerId)) map.removeLayer(layerId);
     if (map.getSource(sourceId)) map.removeSource(sourceId);
 
@@ -5342,6 +5363,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     }
     // Insert below the vector feature layers so pins/lines stay visible
     // on top of the raster imagery.
+    const beforeId = map.getLayer(LAYER_POLY_FILL) ? LAYER_POLY_FILL : undefined;
     map.addLayer({
       id: layerId,
       type: "raster",
@@ -5350,7 +5372,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
         ...rasterPaintForSettings(rasterSettings),
         "raster-resampling": rasterResamplingForSettings(rasterSettings),
       },
-    }, LAYER_POLY_FILL);
+    }, beforeId);
     rasterLayersRef.current.add(dataset.id);
   }, []);
 
@@ -5499,14 +5521,15 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     const previousSettings = resolveRasterSettings(rasterSettingsRef.current[datasetId]);
     rasterSettingsRef.current = { ...rasterSettingsRef.current, [datasetId]: nextSettings };
     setRasterSettingsById(rasterSettingsRef.current);
+    onRasterSettingsChange?.(rasterSettingsRef.current);
     if (
       previousSettings.colorMode !== nextSettings.colorMode &&
       rasterLayersRef.current.has(datasetId)
     ) {
-      if (dataset) addRasterOverlay(dataset);
+      if (dataset) addRasterOverlay(dataset, true);
     }
     applyRasterDisplaySettings(datasetId, nextSettings);
-  }, [addRasterOverlay, applyRasterDisplaySettings, datasets]);
+  }, [addRasterOverlay, applyRasterDisplaySettings, datasets, onRasterSettingsChange]);
 
   // Restores a dataset selection that was persisted by the parent (e.g.
   // the user picked a dataset, switched to the Datasets/Analytics tab,
@@ -5520,16 +5543,30 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
   // UI claims is selected.
   useEffect(() => {
     if (!mapReady) return;
-    const activeIds = new Set(activeDatasetIds);
-    for (const id of Array.from(rasterLayersRef.current)) {
-      if (!activeIds.has(id)) removeRasterOverlay(id);
+    const retryTimers: number[] = [];
+    const reconcile = () => {
+      const map = mapRef.current;
+      if (!map?.isStyleLoaded()) return;
+      const activeIds = new Set(activeDatasetIds);
+      for (const id of Array.from(rasterLayersRef.current)) {
+        if (!activeIds.has(id)) removeRasterOverlay(id);
+      }
+      if (activeDatasetIds.length === 0) return;
+      const matched = datasets.filter((d) => activeIds.has(d.id));
+      if (matched.length === 0) return;
+      for (const d of matched) addRasterOverlay(d);
+      filterRef.current = { datasetIds: activeDatasetIds };
+      scheduleFetch();
+    };
+    reconcile();
+    // Route changes construct a fresh MapLibre instance. Its React-ready
+    // flag can become true just before all style work settles, especially on
+    // slower machines. Retry across that small window so persisted TIFF
+    // selections restore without requiring a checkbox toggle.
+    for (const delay of [80, 250, 750]) {
+      retryTimers.push(window.setTimeout(reconcile, delay));
     }
-    if (activeDatasetIds.length === 0) return;
-    const matched = datasets.filter((d) => activeIds.has(d.id));
-    if (matched.length === 0) return;
-    for (const d of matched) addRasterOverlay(d);
-    filterRef.current = { datasetIds: activeDatasetIds };
-    scheduleFetch();
+    return () => retryTimers.forEach((timer) => window.clearTimeout(timer));
     // Only re-run when the map/datasets actually become ready or the
     // persisted id list itself changes — not on every addRasterOverlay
     // identity change, which would fight with toggleDataset's own call.
@@ -7188,12 +7225,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
         },
         paint: {
           "line-color": "#ef4444",
-          "line-width": [
-            "case",
-            ["==", ["get", "selected"], true],
-            ["interpolate", ["linear"], ["zoom"], 12, 12, 16, 20, 20, 28],
-            ["interpolate", ["linear"], ["zoom"], 12, 7, 16, 12, 20, 18],
-          ],
+          "line-width": selectedZoomExpression([[12, 7, 12], [16, 12, 20], [20, 18, 28]]),
           "line-opacity": [
             "case",
             ["==", ["get", "selected"], true], 0.42,
@@ -7212,12 +7244,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
         },
         paint: {
           "line-color": ["case", ["==", ["get", "selected"], true], "#be123c", "#e11d48"],
-          "line-width": [
-            "case",
-            ["==", ["get", "selected"], true],
-            ["interpolate", ["linear"], ["zoom"], 12, 3.5, 16, 5, 20, 7],
-            ["interpolate", ["linear"], ["zoom"], 12, 2, 16, 3.25, 20, 5],
-          ],
+          "line-width": selectedZoomExpression([[12, 2, 3.5], [16, 3.25, 5], [20, 5, 7]]),
           "line-opacity": [
             "case",
             ["==", ["get", "selected"], true], 1,
@@ -7236,12 +7263,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
         type: "circle",
         source: QUICK_ANALYSIS_MANHOLE_SOURCE,
         paint: {
-          "circle-radius": [
-            "case",
-            ["==", ["get", "selected"], true],
-            ["interpolate", ["linear"], ["zoom"], 12, 13, 16, 18, 20, 24],
-            ["interpolate", ["linear"], ["zoom"], 12, 8, 16, 12, 20, 16],
-          ],
+          "circle-radius": selectedZoomExpression([[12, 8, 13], [16, 12, 18], [20, 16, 24]]),
           "circle-color": "#06b6d4",
           "circle-opacity": [
             "case",
@@ -7257,12 +7279,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
         type: "circle",
         source: QUICK_ANALYSIS_MANHOLE_SOURCE,
         paint: {
-          "circle-radius": [
-            "case",
-            ["==", ["get", "selected"], true],
-            ["interpolate", ["linear"], ["zoom"], 12, 7, 16, 10, 20, 13],
-            ["interpolate", ["linear"], ["zoom"], 12, 4, 16, 6, 20, 8],
-          ],
+          "circle-radius": selectedZoomExpression([[12, 4, 7], [16, 6, 10], [20, 8, 13]]),
           "circle-color": "#083344",
           "circle-opacity": ["case", ["==", ["get", "dimmed"], true], 0.35, 0.98],
           "circle-stroke-color": "#22d3ee",
@@ -7367,11 +7384,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
             "line-color": color,
             // Same weight curve as the drain path line (LAYER_QUICK_ANALYSIS_
             // DRAIN_LINE) — thin by default, only thickens on selection.
-            "line-width": [
-              "case", ["==", ["get", "selected"], true],
-              ["interpolate", ["linear"], ["zoom"], 12, 3.5, 16, 5, 20, 7],
-              ["interpolate", ["linear"], ["zoom"], 12, 2, 16, 3.25, 20, 5],
-            ],
+            "line-width": selectedZoomExpression([[12, 2, 3.5], [16, 3.25, 5], [20, 5, 7]]),
             "line-opacity": [
               "case", ["==", ["get", "selected"], true], 1,
               ["==", ["get", "dimmed"], true], 0.18,
@@ -7509,12 +7522,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
         type: "circle",
         source: QUICK_ANALYSIS_MARKER_SOURCE,
         paint: {
-          "circle-radius": [
-            "case",
-            ["==", ["get", "selected"], true],
-            ["interpolate", ["linear"], ["zoom"], 12, 11, 16, 17, 20, 22],
-            ["interpolate", ["linear"], ["zoom"], 12, 8, 16, 13, 20, 18],
-          ],
+          "circle-radius": selectedZoomExpression([[12, 8, 11], [16, 13, 17], [20, 18, 22]]),
           "circle-color": "#ef4444",
           "circle-opacity": ["case", ["==", ["get", "selected"], true], 0.34, 0],
           "circle-stroke-color": "#dc2626",
