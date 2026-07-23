@@ -11,6 +11,7 @@ import { useOutletContext, useSearchParams } from "react-router-dom";
 import type { AiHighlight, FeatureFilter, UrbanFeature } from "../lib/types";
 import type { DatasetRow } from "../lib/workflow";
 import { useIsMobile } from "../lib/useIsMobile";
+import type { QuickAnalysisViewState } from "../lib/quickAnalysisViewState";
 
 type SpatialAuditStatus = "idle" | "running" | "success" | "error";
 
@@ -40,8 +41,12 @@ interface LayoutCtx {
   filter: FeatureFilter;
   selectedDatasets: DatasetRow[];
   setSelectedDatasets: (rows: DatasetRow[]) => void;
+  mapSelectedDatasets: DatasetRow[];
+  setMapSelectedDatasets: (rows: DatasetRow[]) => void;
   commandCenterMobileOpen: boolean;
   setCommandCenterMobileOpen: (open: boolean) => void;
+  quickAnalysisViewState: QuickAnalysisViewState;
+  setQuickAnalysisViewState: (state: QuickAnalysisViewState) => void;
   spatialAuditRequested: boolean;
   setSpatialAuditRequested: (v: boolean) => void;
   spatialAuditExecutedRef: MutableRefObject<boolean>;
@@ -52,10 +57,13 @@ interface LayoutCtx {
 export function MapView() {
   const {
     filter,
-    selectedDatasets,
     setSelectedDatasets,
+    mapSelectedDatasets,
+    setMapSelectedDatasets,
     commandCenterMobileOpen,
     setCommandCenterMobileOpen,
+    quickAnalysisViewState,
+    setQuickAnalysisViewState,
     spatialAuditRequested,
     setSpatialAuditRequested,
     spatialAuditExecutedRef,
@@ -69,7 +77,9 @@ export function MapView() {
   } | null>(null);
   const [aiHighlights, setAiHighlights] = useState<AiHighlight[]>([]);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
-  const [quickAnalysisActive, setQuickAnalysisActive] = useState(false);
+  const [quickAnalysisActive, setQuickAnalysisActive] = useState(
+    quickAnalysisViewState.sidebarPanel === "analysis"
+  );
   const [pointVerificationRefresh, setPointVerificationRefresh] = useState(0);
 
   const isMobile = useIsMobile();
@@ -177,6 +187,11 @@ export function MapView() {
     setSearchParams(next, { replace: true });
   }, [searchParams, setSearchParams]);
 
+  const handleActiveDatasetsChange = useCallback((rows: DatasetRow[]) => {
+    setMapSelectedDatasets(rows);
+    setSelectedDatasets(rows);
+  }, [setMapSelectedDatasets, setSelectedDatasets]);
+
   return (
     <div
       className={`map-page map-page--dual${sidebarCollapsed ? " map-page--sidebar-collapsed" : ""}`}
@@ -186,14 +201,16 @@ export function MapView() {
       <MapCanvas
         filter={filter}
         onFeatureSelect={handleSelect}
-        initialActiveDatasets={selectedDatasets}
-        onActiveDatasetsChange={setSelectedDatasets}
+        initialActiveDatasets={mapSelectedDatasets}
+        onActiveDatasetsChange={handleActiveDatasetsChange}
         aiHighlights={aiHighlights}
         focusFeatureId={locateFeatureId}
         onFocusHandled={handleFeatureLocated}
         sidebarCollapsed={sidebarCollapsed}
         onToggleSidebar={() => setSidebarCollapsed((current) => !current)}
         onQuickAnalysisActiveChange={setQuickAnalysisActive}
+        quickAnalysisViewState={quickAnalysisViewState}
+        onQuickAnalysisViewStateChange={setQuickAnalysisViewState}
         refreshToken={pointVerificationRefresh}
         commandCenterMobileOpen={commandCenterMobileOpen}
         onCommandCenterMobileOpenChange={setCommandCenterMobileOpen}
@@ -225,7 +242,7 @@ export function MapView() {
         />
       )}
 
-      {!quickAnalysisActive && <ReportGenerator datasets={selectedDatasets} />}
+      {!quickAnalysisActive && <ReportGenerator datasets={mapSelectedDatasets} />}
 
       {!quickAnalysisActive && (
         <AiAssistant

@@ -17,6 +17,10 @@ import type { FeatureFilter } from "../lib/types";
 import { searchFeatureFids, type FidSearchResult } from "../lib/features";
 import type { DatasetRow } from "../lib/workflow";
 import {
+  DEFAULT_QUICK_ANALYSIS_VIEW_STATE,
+  type QuickAnalysisViewState,
+} from "../lib/quickAnalysisViewState";
+import {
   fetchRemediationUpdates,
   markRemediationUpdateRead,
   type RemediationUpdateItem,
@@ -522,7 +526,14 @@ export function WorkspaceLayout() {
   }, [navigate]);
 
   const [selectedDatasets, setSelectedDatasets] = useState<DatasetRow[]>([]);
-  const selectedDatasetIds = useMemo(() => selectedDatasets.map((dataset) => dataset.id), [selectedDatasets]);
+  const [mapSelectedDatasets, setMapSelectedDatasets] = useState<DatasetRow[]>([]);
+  const mapSelectedDatasetIds = useMemo(
+    () => mapSelectedDatasets.map((dataset) => dataset.id),
+    [mapSelectedDatasets]
+  );
+  const [quickAnalysisViewState, setQuickAnalysisViewState] = useState<QuickAnalysisViewState>(
+    DEFAULT_QUICK_ANALYSIS_VIEW_STATE
+  );
 
   // Spatial Audit must run exactly once per fresh app load, triggered by the
   // first AI Detection icon click — never again on subsequent clicks, and
@@ -567,15 +578,26 @@ export function WorkspaceLayout() {
       filter: EMPTY_FILTER,
       selectedDatasets,
       setSelectedDatasets,
+      mapSelectedDatasets,
+      setMapSelectedDatasets,
       commandCenterMobileOpen,
       setCommandCenterMobileOpen,
+      quickAnalysisViewState,
+      setQuickAnalysisViewState,
       spatialAuditRequested,
       setSpatialAuditRequested,
       spatialAuditExecutedRef,
       spatialAuditStatus,
       setSpatialAuditStatus,
     }),
-    [selectedDatasets, commandCenterMobileOpen, spatialAuditStatus, spatialAuditRequested]
+    [
+      commandCenterMobileOpen,
+      mapSelectedDatasets,
+      quickAnalysisViewState,
+      selectedDatasets,
+      spatialAuditRequested,
+      spatialAuditStatus,
+    ]
   );
 
   return (
@@ -621,7 +643,7 @@ export function WorkspaceLayout() {
               </svg>
             </button>
             <div className="workspace__search">
-              <FidSearch datasetIds={selectedDatasetIds} />
+              <FidSearch datasetIds={mapSelectedDatasetIds} />
             </div>
           </>
         )}
