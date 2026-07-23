@@ -193,6 +193,8 @@ export const STRINGS: Dict = {
   "datasources.reset": { en: "Reset", kn: "ಮರುಹೊಂದಿಸಿ" },
   "datasources.colorType": { en: "Color Type", kn: "ಬಣ್ಣದ ಪ್ರಕಾರ" },
   "datasources.edgeClarity": { en: "Edge Clarity", kn: "ಅಂಚಿನ ಸ್ಪಷ್ಟತೆ" },
+  "datasources.texture": { en: "Texture Detail", kn: "ವಿನ್ಯಾಸದ ವಿವರ" },
+  "datasources.brightness": { en: "Brightness", kn: "ಪ್ರಕಾಶಮಾನತೆ" },
   "map.filters": { en: "Filters", kn: "ಫಿಲ್ಟರ್‌ಗಳು" },
   "map.zoomIn": { en: "Zoom in", kn: "ಹೆಚ್ಚಿಸಿ" },
   "map.zoomOut": { en: "Zoom out", kn: "ಕಡಿಮೆ ಮಾಡಿ" },

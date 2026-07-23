@@ -53,6 +53,7 @@ from app.services.attribute_table import (
     resolve_feature_fid,
 )
 from app.services.ingestion import ingest_dataset
+from app.services.raster_tiles import render_raster_tile
 from app.services.readers import get_reader_for
 from app.services.storage import delete_object, delete_objects_with_prefix, ensure_bucket, upload_stream
 
@@ -474,6 +475,45 @@ async def get_raster_preview(
 
     png_bytes = _render_preview_variant(png_bytes, mode=mode)
     return Response(content=png_bytes, media_type="image/png")
+
+
+@router.get(
+    "/{dataset_id}/raster-tiles/{z}/{x}/{y}.png",
+    dependencies=[Depends(require_any)],
+)
+async def get_raster_tile(
+    dataset_id: uuid.UUID,
+    z: int,
+    x: int,
+    y: int,
+    mode: Literal["rgb", "grayscale", "enhanced"] = Query("rgb"),
+    db: AsyncSession = Depends(get_db),
+) -> Response:
+    """Render a zoom-aware tile from the original GeoTIFF.
+
+    Unlike the ingestion preview, this retains source detail as the user
+    zooms in. Source files are cached locally per worker and GDAL reads only
+    the pixels needed for the requested 512px tile.
+    """
+    row = (await db.execute(select(Dataset).where(Dataset.id == dataset_id))).scalar_one_or_none()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+    if row.file_type != DatasetFileType.GEOTIFF or not row.storage_key:
+        raise HTTPException(status_code=400, detail="Full-resolution tiles require a source GeoTIFF")
+
+    try:
+        png_bytes = await render_raster_tile(row.storage_key, z, x, y, mode)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001
+        log.exception("Failed to render raster tile dataset=%s z=%d x=%d y=%d", dataset_id, z, x, y)
+        raise HTTPException(status_code=500, detail="Unable to render source raster tile") from exc
+
+    return Response(
+        content=png_bytes,
+        media_type="image/png",
+        headers={"Cache-Control": "private, max-age=3600"},
+    )
 
 
 @router.get(
