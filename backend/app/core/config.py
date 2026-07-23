@@ -38,6 +38,14 @@ class Settings(BaseSettings):
     log_level: str = Field(default="INFO", validation_alias="LOG_LEVEL")
     frontend_url: str = Field(validation_alias="FRONTEND_URL")
 
+    @property
+    def allowed_origins(self) -> list[str]:
+        """FRONTEND_URL as a comma-separated list — lets one deployment
+        accept requests from more than one real origin at once (e.g. the
+        local edge proxy AND a Cloudflare Tunnel hostname simultaneously)
+        without code changes, just an .env edit."""
+        return [o.strip().rstrip("/") for o in self.frontend_url.split(",") if o.strip()]
+
     # --- Rate limiting ---------------------------------------------------
     rate_limit_max: int = Field(default=10, validation_alias="RATE_LIMIT_MAX")
     rate_limit_window_seconds: int = Field(default=60, validation_alias="RATE_LIMIT_WINDOW_SECONDS")

@@ -106,7 +106,7 @@ class SecurityMiddleware(BaseHTTPMiddleware):
                 elif request.url.path.startswith("/api/"):
                     pass
             else:
-                allowed = [settings.frontend_url.rstrip("/")]
+                allowed = settings.allowed_origins
                 valid = False
                 for source in (origin, referer):
                     if not source:
