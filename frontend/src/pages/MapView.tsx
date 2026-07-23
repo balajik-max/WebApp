@@ -3,7 +3,7 @@ import {
   type MutableRefObject, type CSSProperties,
   type PointerEvent as ReactPointerEvent, type KeyboardEvent as ReactKeyboardEvent,
 } from "react";
-import { MapCanvas, type AiVerificationContext } from "../components/MapCanvas";
+import { MapCanvas, type AiVerificationContext, type Basemap } from "../components/MapCanvas";
 import { ReportGenerator } from "../components/WardReportPanel";
 import { AiAssistant } from "../components/AiAssistant";
 import { PointVerificationPanel } from "../components/PointVerificationPanel";
@@ -40,6 +40,8 @@ interface LayoutCtx {
   filter: FeatureFilter;
   selectedDatasets: DatasetRow[];
   setSelectedDatasets: (rows: DatasetRow[]) => void;
+  basemap: Basemap;
+  setBasemap: (basemap: Basemap) => void;
   commandCenterMobileOpen: boolean;
   setCommandCenterMobileOpen: (open: boolean) => void;
   spatialAuditRequested: boolean;
@@ -54,6 +56,8 @@ export function MapView() {
     filter,
     selectedDatasets,
     setSelectedDatasets,
+    basemap,
+    setBasemap,
     commandCenterMobileOpen,
     setCommandCenterMobileOpen,
     spatialAuditRequested,
@@ -188,6 +192,8 @@ export function MapView() {
         onFeatureSelect={handleSelect}
         initialActiveDatasets={selectedDatasets}
         onActiveDatasetsChange={setSelectedDatasets}
+        initialBasemap={basemap}
+        onBasemapChange={setBasemap}
         aiHighlights={aiHighlights}
         focusFeatureId={locateFeatureId}
         onFocusHandled={handleFeatureLocated}

@@ -125,6 +125,18 @@ interface Props {
   /** Refetch point-verification state after an Admin or Architect update. */
   refreshToken?: number;
 
+  /** Basemap style (street/satellite/off) persisted by the parent —
+   * same rationale and pattern as initialActiveDatasets/onActiveDatasetsChange
+   * above: this component unmounts on every tab switch, so the style the
+   * user picked was silently resetting back to "street" every time they
+   * left the Map tab and came back. Seeds the initial style; onBasemapChange
+   * fires only for the user's own street/satellite/off picker choice, never
+   * for Quick Analysis's transient "cadastral" preset, so a Quick Analysis
+   * session left running across a tab switch can't leave the restored map
+   * stuck showing the cadastral tint with no dashboard to explain it. */
+  initialBasemap?: Basemap;
+  onBasemapChange?: (basemap: Basemap) => void;
+
   /** Whether the mobile Data Sources drawer is open — lifted up to
    * WorkspaceLayout so the topbar's menu button can open it. Ignored on
    * desktop, where the sidebar is always visible. */
@@ -549,7 +561,7 @@ const BASE_STYLE: maplibregl.StyleSpecification = {
   ],
 };
 
-type Basemap = "cadastral" | "street" | "satellite" | "off";
+export type Basemap = "cadastral" | "street" | "satellite" | "off";
 
 const FEATURE_SOURCE = "urban-features";
 const LAYER_POINTS = "urban-features-points";
@@ -2863,6 +2875,8 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     onFeatureSelect,
     onActiveDatasetsChange,
     initialActiveDatasets,
+    initialBasemap,
+    onBasemapChange,
     aiHighlights,
     focusFeatureId,
     onFocusHandled,
@@ -2940,8 +2954,8 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
   // starts empty every time a mode is entered/left, so nothing extra shows
   // until the user explicitly asks for it.
   const [extraVisibleCategories, setExtraVisibleCategories] = useState<Set<string>>(new Set());
-  const [basemap, setBasemap] = useState<Basemap>("street");
-  const basemapRef = useRef<Basemap>("street");
+  const [basemap, setBasemap] = useState<Basemap>(initialBasemap ?? "street");
+  const basemapRef = useRef<Basemap>(initialBasemap ?? "street");
   const preCadastralHiddenCategoriesRef = useRef<Set<string> | null>(null);
   const cadastralPresetActiveRef = useRef(false);
   const [hover, setHover] = useState<HoverInfo | null>(null);
@@ -3906,7 +3920,12 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     if (!map) return;
     setBasemap(next);
     applyBasemapVisibility(map, next);
-  }, [applyBasemapVisibility]);
+    // "cadastral" is Quick Analysis's own transient preset — the picker UI
+    // never offers it (only street/satellite/off) — so only persist those
+    // explicit user choices upward. Otherwise closing the tab mid-Quick-
+    // Analysis would persist "cadastral" as if the user had chosen it.
+    if (next !== "cadastral") onBasemapChange?.(next);
+  }, [applyBasemapVisibility, onBasemapChange]);
 
   useEffect(() => {
     const map = mapRef.current;
