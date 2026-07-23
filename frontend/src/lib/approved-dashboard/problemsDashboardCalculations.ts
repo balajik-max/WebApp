@@ -1,4 +1,5 @@
 import type { GisRow, GisWorkbookData } from "./gisTypes";
+import { calculatePotholeDashboard, calculateStandingWaterDashboard } from "./surfaceIssueDashboardCalculations";
 
 export type ProblemRecordGroup = "Known issue" | "Data gap";
 export type ProblemPriority = "Critical" | "High" | "Survey follow-up";
@@ -6,6 +7,8 @@ export type ProblemAssetType =
   | "Road"
   | "Manhole"
   | "Drain observation"
+  | "Pothole"
+  | "Standing water"
   | "Utility points";
 
 export type ProblemRecord = {
@@ -165,6 +168,43 @@ function prepareKnownIssueRecords(data: GisWorkbookData): ProblemRecord[] {
       affectedCount: 1,
       mapLink: mapLink(row),
       source: row,
+    });
+  }
+
+  const potholes = calculatePotholeDashboard(data.Pothole, data.Pothole_Top);
+  for (const pothole of potholes.records) {
+    const depthText = pothole.depthCm === null ? "depth not available" : `${pothole.depthCm.toFixed(2)} cm deep`;
+    const areaText = pothole.areaSqm === null ? "area not available" : `${pothole.areaSqm.toFixed(2)} m²`;
+    records.push({
+      id: pothole.id,
+      group: "Known issue",
+      priority: pothole.depthCm !== null && pothole.depthCm > 10 ? "Critical" : "High",
+      assetType: "Pothole",
+      location: `Pothole FID ${pothole.sourceFid}`,
+      issue: `A mapped pothole is ${depthText} with an affected area of ${areaText}.`,
+      recommendation:
+        "Inspect the road surface, confirm the repair boundary and depth, remove loose material and complete a suitable pavement repair.",
+      affectedCount: 1,
+      mapLink: pothole.mapHref,
+      source: pothole.source,
+    });
+  }
+
+  const standingWater = calculateStandingWaterDashboard(data.Standing_Water);
+  for (const location of standingWater.records) {
+    const areaText = location.areaSqm === null ? "area not available" : `${location.areaSqm.toFixed(2)} m²`;
+    records.push({
+      id: location.id,
+      group: "Known issue",
+      priority: location.areaSqm !== null && location.areaSqm > 15 ? "Critical" : "High",
+      assetType: "Standing water",
+      location: `Standing-water FID ${location.sourceFid}`,
+      issue: `Standing water is mapped across ${areaText}.`,
+      recommendation:
+        "Inspect road levels, inlets and nearby drain connectivity, identify the cause of ponding and record depth and duration during field verification.",
+      affectedCount: 1,
+      mapLink: location.mapHref,
+      source: location.source,
     });
   }
 

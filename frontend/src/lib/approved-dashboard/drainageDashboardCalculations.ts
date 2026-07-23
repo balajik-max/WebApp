@@ -1,4 +1,5 @@
 import type { GisRow } from "./gisTypes";
+import { featureIdFromRow, featureMapHref } from "./mapLinks";
 
 export type DrainConditionGroup =
   | "Good"
@@ -8,6 +9,8 @@ export type DrainConditionGroup =
 
 export type DrainNetworkRecord = {
   id: string;
+  featureId: string | null;
+  mapHref: string | null;
   type: string;
   length: number;
   source: GisRow;
@@ -15,6 +18,8 @@ export type DrainNetworkRecord = {
 
 export type DrainObservationRecord = {
   id: string;
+  featureId: string | null;
+  mapHref: string | null;
   roadName: string;
   condition: string;
   conditionGroup: DrainConditionGroup;
@@ -198,6 +203,8 @@ function completeness(
 export function prepareDrainNetworkRecords(rows: GisRow[]): DrainNetworkRecord[] {
   return rows.map((row, index) => ({
     id: text(row.GDB_FID, `drain-segment-${index + 1}`),
+    featureId: featureIdFromRow(row),
+    mapHref: featureMapHref(row),
     type: networkType(row.LAYER),
     length: numberValue(row.SHAPE_Length),
     source: row,
@@ -212,6 +219,8 @@ export function prepareDrainObservationRecords(
 
     return {
       id: text(row.GDB_FID, `drain-observation-${index + 1}`),
+      featureId: featureIdFromRow(row),
+      mapHref: featureMapHref(row),
       roadName: text(row.Road_Name, `Unnamed location ${index + 1}`),
       condition,
       conditionGroup: groupDrainCondition(condition),

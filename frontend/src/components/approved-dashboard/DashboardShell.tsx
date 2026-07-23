@@ -24,6 +24,8 @@ const DASHBOARD_TABS: DashboardTab[] = [
   { id: "executive", label: "Executive overview" },
   { id: "roads", label: "Roads" },
   { id: "drainage", label: "Drainage" },
+  { id: "potholes", label: "Potholes" },
+  { id: "standingWater", label: "Standing water" },
   { id: "manholes", label: "Manholes" },
   { id: "utilities", label: "Utilities" },
   { id: "problems", label: "Problems & gaps" },
@@ -50,8 +52,8 @@ export function DashboardShell({
           </p>
           <h1>Urban Infrastructure Dashboard</h1>
           <p className="dashboard-subtitle">
-            A clear summary of surveyed roads, buildings, drains, manholes and
-            public utility assets.
+            A clear summary of surveyed roads, buildings, drains, manholes, potholes,
+            standing water and public utility assets.
           </p>
         </div>
 

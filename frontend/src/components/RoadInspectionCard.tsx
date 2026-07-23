@@ -1,4 +1,5 @@
 import type { RoadInspection, SpatialAnomaly } from "../lib/workflow";
+import { UrbanPlanningSolutionPanel } from "./UrbanPlanningSolutionPanel";
 
 interface Props {
   roadLabel: string | null;
@@ -15,6 +16,8 @@ const ISSUE_LABEL: Record<SpatialAnomaly["anomaly_type"], string> = {
   manhole_status: "Manhole issue",
   road_width_narrowing: "Road width",
   powerline_proximity: "Powerline issue",
+  pothole_status: "Pothole issue",
+  standing_water_status: "Standing-water issue",
 };
 
 function issueDetail(issue: SpatialAnomaly): string {
@@ -34,6 +37,12 @@ function issueDetail(issue: SpatialAnomaly): string {
   }
   if (issue.anomaly_type === "powerline_proximity") {
     return `Building ${facts.nearest_powerline_distance_m ?? "?"}m from power line (threshold: ${facts.danger_threshold_m ?? "?"}m)`;
+  }
+  if (issue.anomaly_type === "pothole_status") {
+    return `${facts.area_sqm ?? "?"} m² · ${facts.depth_cm ?? "depth unavailable"}${facts.depth_cm === null || facts.depth_cm === undefined ? "" : " cm deep"}`;
+  }
+  if (issue.anomaly_type === "standing_water_status") {
+    return `${facts.area_sqm ?? "?"} m² affected · ${facts.intersects_road ? "on road" : "near road"}`;
   }
   return typeof facts.basis === "string" ? facts.basis : "Manhole condition needs review";
 }
@@ -89,6 +98,11 @@ export function RoadInspectionCard({ roadLabel, report, loading, error, onClose,
                 ))}
               </div>
             )}
+            <UrbanPlanningSolutionPanel
+              featureId={report.road_id}
+              contextLabel="Road Inspection"
+              placeholder="Describe your proposed road repair, resurfacing, drainage, safety, or traffic-management solution…"
+            />
           </>
         )}
       </div>

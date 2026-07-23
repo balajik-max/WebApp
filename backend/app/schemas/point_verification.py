@@ -9,8 +9,14 @@ from pydantic import BaseModel, Field, model_validator
 
 from app.models.point_verification import RemediationWorkflowStatus
 
-DetectionMode = Literal["poles", "drains", "manholes"]
-AiAnomalyType = Literal["pole_redundancy", "drain_encroachment", "manhole_status"]
+DetectionMode = Literal["poles", "drains", "manholes", "potholes", "standing_water"]
+AiAnomalyType = Literal[
+    "pole_redundancy",
+    "drain_encroachment",
+    "manhole_status",
+    "pothole_status",
+    "standing_water_status",
+]
 AiIssueColor = Literal["red", "yellow"]
 AeeCategory = Literal["GOOD", "MODERATE", "BAD"]
 

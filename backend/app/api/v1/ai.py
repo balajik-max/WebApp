@@ -154,6 +154,46 @@ def _build_anomaly_context(anomaly: SpatialAnomaly) -> str:
     return "\n".join(lines)
 
 
+def _build_road_inspection_context(report: dict) -> str:
+    """Render one real road-inspection report as deterministic context.
+
+    All values come from build_road_inspection; the LLM only evaluates the
+    user's proposal against these persisted survey and audit facts.
+    """
+    assets = report.get("assets") or {}
+    issues = report.get("issues") or []
+    lines = [
+        "=== ROAD INSPECTION DATA ===",
+        f"Road ID: {report.get('road_id')}",
+        f"Road label: {report.get('road_label') or 'not recorded'}",
+        f"Road category: {report.get('road_category') or 'not recorded'}",
+        f"Surveyed centerline length: {report.get('road_length_m')} m",
+        f"Roadside audit corridor: {report.get('roadside_corridor_m')} m",
+        f"Assigned roadside assets: poles={assets.get('poles', 0)}, drains={assets.get('drains', 0)}, manholes={assets.get('manholes', 0)}",
+        f"Unresolved red/yellow findings: {len(issues)}",
+    ]
+    if not issues:
+        lines.append("No unresolved red or yellow audit finding is currently assigned to this road.")
+        return "\n".join(lines)
+
+    for index, issue in enumerate(issues, start=1):
+        metadata = issue.get("anomaly_metadata") or {}
+        lines.extend([
+            "",
+            f"--- Road finding {index} ---",
+            f"Type: {issue.get('anomaly_type')}",
+            f"Color: {issue.get('color')}",
+            f"Severity score: {issue.get('severity_score')}/100",
+            f"Status: {issue.get('status')}",
+            f"Longitude: {issue.get('lon')}",
+            f"Latitude: {issue.get('lat')}",
+        ])
+        for key, value in metadata.items():
+            if value is not None and str(value).strip():
+                lines.append(f"  {key}: {value}")
+    return "\n".join(lines)
+
+
 @router.post(
     "/urban-planning-solution",
     response_model=AiAnswer,
@@ -199,23 +239,99 @@ async def urban_planning_solution(
     feature = (await db.execute(select(Feature).where(Feature.id == feature_id))).scalar_one_or_none()
     anomaly = (
         await db.execute(
-            select(SpatialAnomaly).where(SpatialAnomaly.feature_ids.any(feature_id))
+            select(SpatialAnomaly)
+            .where(SpatialAnomaly.feature_ids.any(feature_id))
+            .order_by(SpatialAnomaly.created_at.desc())
+            .limit(1)
         )
     ).scalar_one_or_none()
+    road_report = await build_road_inspection(feature_id, db)
 
     feature_section = _build_feature_context(feature)
     anomaly_section = _build_anomaly_context(anomaly) if anomaly else "ANOMALY: No active anomaly finding for this feature."
+    road_section = _build_road_inspection_context(road_report) if road_report else "ROAD INSPECTION: The selected feature is not a surveyed road centerline."
     user_section = f"## User's Proposed Solution\n{combined}"
 
     context = (
         f"{feature_section}\n\n"
         f"{anomaly_section}\n\n"
+        f"{road_section}\n\n"
         f"{user_section}"
     )
 
     anomaly_type = anomaly.anomaly_type.value if anomaly else None
     subject = "manhole" if anomaly_type in (None, "manhole_status") else "feature"
-    if anomaly_type == "powerline_proximity":
+
+    if road_report is not None:
+        user_prompt = (
+            "You are a senior municipal road, pavement, drainage, and traffic-safety engineer "
+            "evaluating a proposed solution for one surveyed road inspection. Below you have:\n"
+            "1. The ROAD SURVEY DATA from the selected centerline\n"
+            "2. The ROAD INSPECTION DATA, including real unresolved findings and roadside assets\n"
+            "3. The USER'S PROPOSED SOLUTION\n\n"
+            "Generate a structured evaluation using exactly these sections:\n\n"
+            "`## Current Road Inspection` — Summarize the surveyed road length, roadside assets, "
+            "and every unresolved finding. Cite only values present in the context.\n\n"
+            "`## Summary of Proposed Solution` — Restate the user's proposal accurately.\n\n"
+            "`## Suitability Assessment` — Check whether the proposal addresses the actual road "
+            "findings. Consider pavement distress, road-width narrowing, potholes, standing water, "
+            "drainage influence, base failure, surface treatment, material and layer thickness, "
+            "estimated quantity when supplied, traffic diversion, pedestrian/two-wheeler safety, "
+            "construction sequencing, and post-repair inspection. Do not require an item when the "
+            "inspection data gives no evidence for it.\n\n"
+            "`## Verdict` — State **Suitable**, **Partially Suitable**, or **Not Suitable**, with a "
+            "brief technical reason.\n\n"
+            "`## Recommendations` — Give concrete corrections or additions grounded only in the "
+            "road inspection facts. Separate immediate safety controls from permanent repair.\n\n"
+            "CRITICAL: Never invent a road width, layer thickness, quantity, material, defect, or "
+            "location. If a required design input is missing, identify it as a field verification "
+            "or engineering-design requirement. Do not mark the proposal Suitable unless it resolves "
+            "the actual findings listed in ROAD INSPECTION DATA.\n\n"
+            f"CONTEXT:\n{context}"
+        )
+    elif anomaly_type == "pothole_status":
+        user_prompt = (
+            "You are a senior pavement-maintenance and municipal road-safety engineer evaluating "
+            "a proposed solution for one mapped pothole. Below you have the real survey attributes, "
+            "the persisted pothole audit finding, and the user's proposal.\n\n"
+            "Generate a structured evaluation using exactly these sections:\n\n"
+            "`## Current Pothole Condition` — Cite the mapped area, depth, estimated repair volume, "
+            "severity, road relationship, and any stated basis that actually appear in the context.\n\n"
+            "`## Summary of Proposed Solution` — Restate the proposal.\n\n"
+            "`## Suitability Assessment` — Evaluate whether the proposed treatment matches the real "
+            "severity and likely repair depth. Check edge cutting, removal of loose/failed material, "
+            "base repair where needed, tack coat, patch material, layer placement and compaction, "
+            "surface level, drainage/water ingress, traffic control, quantity adequacy, and post-rain "
+            "inspection. Distinguish a superficial patch from full-depth repair when the facts justify it.\n\n"
+            "`## Verdict` — State **Suitable**, **Partially Suitable**, or **Not Suitable**, with a reason.\n\n"
+            "`## Recommendations` — Give exact improvements grounded in the available facts.\n\n"
+            "CRITICAL: Never invent dimensions, depth, volume, pavement composition, material, or "
+            "traffic condition. Missing design inputs must be stated as missing. Mark Suitable only "
+            "when the proposal addresses the actual mapped pothole condition, not merely its visible surface.\n\n"
+            f"CONTEXT:\n{context}"
+        )
+    elif anomaly_type == "standing_water_status":
+        user_prompt = (
+            "You are a senior urban-drainage, road-level, and public-safety engineer evaluating a "
+            "proposed solution for one mapped standing-water area. Below you have the real survey "
+            "attributes, persisted audit finding, and user's proposal.\n\n"
+            "Generate a structured evaluation using exactly these sections:\n\n"
+            "`## Current Standing-Water Condition` — Cite the mapped area, recorded depth when available, "
+            "road intersection/distance, drain intersection/distance, severity, and stated cause/basis.\n\n"
+            "`## Summary of Proposed Solution` — Restate the proposal.\n\n"
+            "`## Suitability Assessment` — Determine whether the proposal addresses the root cause rather "
+            "than only removing water temporarily. Check drain/inlet cleaning, downstream flow, blockage, "
+            "road depression, crossfall, regrading, inlet provision, outfall availability, pavement repair, "
+            "temporary pumping, recurrence risk, pedestrian/traffic safety, and maintenance access.\n\n"
+            "`## Verdict` — State **Suitable**, **Partially Suitable**, or **Not Suitable**, with a reason.\n\n"
+            "`## Recommendations` — Separate immediate dewatering/safety measures from the permanent "
+            "drainage or level-correction work.\n\n"
+            "CRITICAL: Never invent water depth, drain capacity, invert level, road level, rainfall, or outfall. "
+            "If those inputs are absent, require field verification. Pumping alone is temporary unless the "
+            "proposal also resolves the evidenced drainage or surface-level cause.\n\n"
+            f"CONTEXT:\n{context}"
+        )
+    elif anomaly_type == "powerline_proximity":
         user_prompt = (
             "You are a senior electrical-safety and urban infrastructure engineer "
             "evaluating a proposed solution for a building flagged too close to a "
@@ -1152,6 +1268,20 @@ def _anomaly_fact_sheet(row: SpatialAnomaly) -> str:
             f"Nearest power line conductor height: {m.get('nearest_pole_height_m')} m (from the nearest real pole; default assumed if no pole survey point was found nearby).",
             f"Power line category/categories involved: {m.get('powerline_categories')}",
         ]
+    elif row.anomaly_type.value == "pothole_status":
+        lines += [
+            f"Mapped pothole area: {m.get('area_sqm') if m.get('area_sqm') is not None else 'not recorded'} m².",
+            f"Measured/calculated depth: {m.get('depth_cm') if m.get('depth_cm') is not None else 'not available'} cm.",
+            f"Estimated repair volume: {m.get('estimated_repair_volume_m3') if m.get('estimated_repair_volume_m3') is not None else 'not available'} m³.",
+            f"Severity basis: {', '.join(m.get('reasons') or []) or 'mapped pothole evidence'}.",
+        ]
+    elif row.anomaly_type.value == "standing_water_status":
+        lines += [
+            f"Mapped standing-water area: {m.get('area_sqm') if m.get('area_sqm') is not None else 'not recorded'} m².",
+            f"Road intersection: {bool(m.get('intersects_road'))}; nearest road distance: {m.get('nearest_road_distance_m')} m.",
+            f"Drain intersection: {bool(m.get('intersects_drain'))}; nearest drain distance: {m.get('nearest_drain_distance_m')} m.",
+            f"Severity basis: {', '.join(m.get('reasons') or []) or 'mapped standing-water evidence'}.",
+        ]
 
     return "\n".join(lines)
 
@@ -1178,7 +1308,7 @@ def _anomaly_out(row: SpatialAnomaly, lon: float, lat: float) -> SpatialAnomalyO
     "/audit",
     response_model=AuditRunResponse,
     dependencies=[Depends(require_any)],
-    summary="Run the spatial audit engine (pole redundancy, drain encroachment, manhole status, road width narrowing) for a dataset",
+    summary="Run the spatial audit engine for poles, drains, manholes, roads, potholes, and standing water",
 )
 async def run_audit(body: AuditRunRequest, db: AsyncSession = Depends(get_db)) -> AuditRunResponse:
     try:
@@ -1200,6 +1330,8 @@ async def run_audit(body: AuditRunRequest, db: AsyncSession = Depends(get_db)) -
         manhole_status=summary.manhole_status,
         road_width_narrowing=summary.road_width_narrowing,
         powerline_proximity=summary.powerline_proximity,
+        pothole_status=summary.pothole_status,
+        standing_water_status=summary.standing_water_status,
     )
 
 
