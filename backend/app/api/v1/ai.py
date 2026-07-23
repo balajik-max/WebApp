@@ -407,7 +407,21 @@ async def urban_planning_solution(
             f"CONTEXT:\n{context}"
         )
 
-    reply = await run_grounded_completion(context=context, user_prompt=user_prompt, num_predict=1024, num_ctx=4096)
+    # Kept brief on purpose: this full report used to run ~1024 predicted
+    # tokens (~2.5 minutes on a 7B CPU model), which reliably exceeds the
+    # hard ~100-120s request timeout of Cloudflare's free quick tunnels —
+    # the request would still succeed on localhost but 504 through a
+    # public tunnel. The length cap alone would truncate the answer
+    # mid-section, so the instruction below asks the model to self-limit
+    # instead, keeping every section but shorter.
+    user_prompt += (
+        "\n\nLENGTH CONSTRAINT: Keep the ENTIRE response under 220 words total. "
+        "Every section above must still appear, but each one gets at most 1-2 "
+        "short sentences — be direct and skip elaboration. Do not let any "
+        "section run long at the expense of a later one; a short Recommendations "
+        "section is still required even if earlier sections used more words."
+    )
+    reply = await run_grounded_completion(context=context, user_prompt=user_prompt, num_predict=450, num_ctx=4096)
 
     return AiAnswer(
         kind="urban_planning",
