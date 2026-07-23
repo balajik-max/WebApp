@@ -181,6 +181,7 @@ export function MapView() {
 
   const [searchParams, setSearchParams] = useSearchParams();
   const locateFeatureId = searchParams.get("locateFeature") ?? undefined;
+  const isolateFocusFeature = searchParams.get("focusMode") === "isolate";
   const workflowVerificationId = searchParams.get("workflowVerification");
 
   const handleSelect = useCallback(
@@ -199,6 +200,7 @@ export function MapView() {
   const handleFeatureLocated = useCallback(() => {
     const next = new URLSearchParams(searchParams);
     next.delete("locateFeature");
+    next.delete("focusMode");
     setSearchParams(next, { replace: true });
   }, [searchParams, setSearchParams]);
 
@@ -219,6 +221,7 @@ export function MapView() {
         onBasemapChange={setBasemap}
         aiHighlights={aiHighlights}
         focusFeatureId={locateFeatureId}
+        isolateFocusFeature={isolateFocusFeature}
         onFocusHandled={handleFeatureLocated}
         sidebarCollapsed={sidebarCollapsed}
         onToggleSidebar={() => setSidebarCollapsed((current) => !current)}

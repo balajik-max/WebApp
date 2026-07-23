@@ -104,11 +104,20 @@ async def resolve_canonical_class(raw_category: str, session: AsyncSession) -> C
             select(CategoryClassMap).where(CategoryClassMap.raw_category == raw_category)
         )
     ).scalar_one_or_none()
-    if existing is not None:
-        return ClassResolution(existing.canonical_class, existing.match_method, existing.confidence)
-
     normalized = normalize_category(raw_category)
     synonym_hit = _synonym_lookup.get(normalized)
+    if existing is not None:
+        # Taxonomy lists grow as new surveyed feature classes are formally
+        # approved. Upgrade only a previously unresolved cache entry when an
+        # exact synonym now exists; never overwrite a human/manual mapping.
+        if existing.canonical_class == UNCLASSIFIED and synonym_hit is not None:
+            existing.canonical_class = synonym_hit
+            existing.match_method = ClassMatchMethod.EXACT
+            existing.confidence = 1.0
+            await session.commit()
+            return ClassResolution(synonym_hit, ClassMatchMethod.EXACT, 1.0)
+        return ClassResolution(existing.canonical_class, existing.match_method, existing.confidence)
+
     if synonym_hit is not None:
         resolution = ClassResolution(synonym_hit, ClassMatchMethod.EXACT, 1.0)
     else:

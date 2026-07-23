@@ -210,7 +210,7 @@ export function ProblemsDashboard({ data }: ProblemsDashboardProps) {
         <>
           <section className="problems-kpi-grid" aria-label="Problem summary">
             <KpiCard
-              helper="Road, manhole and drain records that need action"
+              helper="Road, drain, manhole, pothole and standing-water actions"
               icon="!"
               label="Known action items"
               tone="danger"
@@ -486,7 +486,7 @@ export function ProblemsDashboard({ data }: ProblemsDashboardProps) {
                 </div>
                 <p>
                   Use the location link to open an individual surveyed feature
-                  in Google Maps before assigning inspection or maintenance.
+                  on the survey map before assigning inspection or maintenance.
                 </p>
               </section>
 

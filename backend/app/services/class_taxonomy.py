@@ -49,6 +49,17 @@ CANONICAL_CLASSES: dict[str, str] = {
         "readings at a specific drain or manhole point — level survey "
         "data, not the drain channel geometry itself"
     ),
+    "Pothole": (
+        "Mapped road-surface depression or pavement defect polygon used for "
+        "depth, area, severity, and repair-volume assessment"
+    ),
+    "Pothole_Reference": (
+        "Top or surrounding road-surface reference polygon paired with a "
+        "pothole bottom polygon for depth calculation"
+    ),
+    "Standing_Water": (
+        "Mapped standing-water, waterlogging, ponding, or road-surface water polygon"
+    ),
 }
 
 # Lowercased, whitespace/punctuation-normalized synonym seeds. Matched via
@@ -95,6 +106,18 @@ CLASS_SYNONYMS: dict[str, set[str]] = {
     "Drainage_Level_Point": {
         "drain levels", "drain level", "manhole levels", "manhole level",
         "invert levels", "invert level", "level point", "level points",
+    },
+    "Pothole": {
+        "pothole", "potholes", "pathhole", "pathholes",
+        "road pothole", "road defect", "pavement defect",
+    },
+    "Pothole_Reference": {
+        "pothole top", "pothole_top", "pathhole top", "pathhole_top",
+        "pothole reference", "pothole top surface",
+    },
+    "Standing_Water": {
+        "standing water", "standing_water", "water stagnation",
+        "water_stagnation", "waterlogging", "water logging", "ponding",
     },
 }
 

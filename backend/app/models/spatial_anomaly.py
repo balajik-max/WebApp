@@ -1,7 +1,8 @@
 """spatial_anomalies table — persisted findings from the AI spatial audit
 engine (pole redundancy clustering, building/drain encroachment, manhole
-status). One shared table across all three detection goals; `anomaly_type`
-distinguishes them and `metadata` carries the type-specific facts.
+status, road narrowing, potholes, and standing water). One shared table
+across all detection goals; `anomaly_type` distinguishes them and `metadata`
+carries the type-specific facts.
 
 All spatial math that PRODUCES these rows lives in app.services.spatial_audit
 as deterministic PostGIS/Python computation — this table only stores results.
@@ -29,6 +30,8 @@ class AnomalyType(str, enum.Enum):
     MANHOLE_STATUS = "manhole_status"
     ROAD_WIDTH_NARROWING = "road_width_narrowing"
     POWERLINE_PROXIMITY = "powerline_proximity"
+    POTHOLE_STATUS = "pothole_status"
+    STANDING_WATER_STATUS = "standing_water_status"
 
 
 class AnomalyColor(str, enum.Enum):

@@ -15,6 +15,9 @@ from typing import Iterable
 DASHBOARD_TYPES: dict[str, str] = {
     "roads": "Road infrastructure",
     "drainage": "Storm-water drainage",
+    "potholes": "Potholes and pavement defects",
+    "pothole_reference": "Pothole top/reference surface",
+    "standing_water": "Standing water and waterlogging",
     "manholes": "Manholes and access chambers",
     "streetlights": "Street-lighting infrastructure",
     "water_network": "Water-supply network",
@@ -61,6 +64,15 @@ _CANONICAL_LAYER_TYPES: dict[str, str] = {
     "drain level": "drainage",
     "landmark": "landmarks",
     "landmarks": "landmarks",
+    "standing water": "standing_water",
+    "water stagnation": "standing_water",
+    "waterlogging": "standing_water",
+    "pothole": "potholes",
+    "potholes": "potholes",
+    "pathhole": "potholes",
+    "pathholes": "potholes",
+    "pothole top": "pothole_reference",
+    "pathhole top": "pothole_reference",
     # Generic source feature-class names must remain geometry-generic.
     # Their per-row LAYER/category values are analysed inside the utilities
     # dashboard and must not be silently reclassified as roads/buildings.
@@ -77,6 +89,14 @@ _RULES: dict[str, dict[str, tuple[str, ...]]] = {
     "drainage": {
         "name": ("drain", "swd", "storm water", "stormwater", "culvert", "nala"),
         "fields": ("silt level", "drain type", "width x depth", "widthxdepth", "top level", "bottom level"),
+    },
+    "potholes": {
+        "name": ("pothole", "pathhole", "road defect", "road damage", "pavement defect", "surface defect"),
+        "fields": ("pothole id", "defect id", "depth", "depth cm", "depth m", "area sqm", "volume m3", "elevation"),
+    },
+    "standing_water": {
+        "name": ("standing water", "water stagnation", "waterlogging", "water logging", "ponding", "flood spot"),
+        "fields": ("area sqm", "water depth", "standing water depth", "ponding depth", "volume m3"),
     },
     "manholes": {
         "name": ("manhole", "man hole", "mh", "inspection chamber", "access chamber"),
@@ -185,7 +205,7 @@ def classify_layer(
         if line_only and scores[key] > 0:
             scores[key] += 0.08
             reasons[key].append("Line geometry supports this network type")
-    for key in ("buildings", "parcels", "boundaries"):
+    for key in ("buildings", "parcels", "boundaries", "potholes", "standing_water"):
         if polygon_only and scores[key] > 0:
             scores[key] += 0.08
             reasons[key].append("Polygon geometry supports this area type")

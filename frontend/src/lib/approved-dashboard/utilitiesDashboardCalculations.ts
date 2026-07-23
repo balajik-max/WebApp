@@ -1,4 +1,5 @@
 import type { GisRow, GisWorkbookData } from "./gisTypes";
+import { featureIdFromRow, featureMapHref } from "./mapLinks";
 
 export type UtilityGroup =
   | "Point assets"
@@ -8,6 +9,8 @@ export type UtilityGroup =
 
 export type UtilityRecord = {
   id: string;
+  featureId: string | null;
+  mapHref: string | null;
   group: UtilityGroup;
   category: string;
   name: string;
@@ -139,6 +142,8 @@ export function prepareUtilityRecords(data: GisWorkbookData): UtilityRecord[] {
 
     return {
       id: text(row.GDB_FID, `point-${index + 1}`),
+      featureId: featureIdFromRow(row),
+      mapHref: featureMapHref(row),
       group: "Point assets",
       category,
       name: category,
@@ -153,6 +158,8 @@ export function prepareUtilityRecords(data: GisWorkbookData): UtilityRecord[] {
 
     return {
       id: text(row.GDB_FID, `line-${index + 1}`),
+      featureId: featureIdFromRow(row),
+      mapHref: featureMapHref(row),
       group: "Linear features",
       category,
       name: category,
@@ -167,6 +174,8 @@ export function prepareUtilityRecords(data: GisWorkbookData): UtilityRecord[] {
 
     return {
       id: text(row.GDB_FID, `polygon-${index + 1}`),
+      featureId: featureIdFromRow(row),
+      mapHref: featureMapHref(row),
       group: "Buildings & areas",
       category,
       name: category,
@@ -181,6 +190,8 @@ export function prepareUtilityRecords(data: GisWorkbookData): UtilityRecord[] {
 
     return {
       id: text(row.GDB_FID, `landmark-${index + 1}`),
+      featureId: featureIdFromRow(row),
+      mapHref: featureMapHref(row),
       group: "Landmarks",
       category: landmarkCategory(name),
       name,

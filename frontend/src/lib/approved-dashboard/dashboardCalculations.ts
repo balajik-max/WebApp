@@ -1,4 +1,4 @@
-import type { GisRow, GisWorkbookData } from "./gisTypes";
+import type { GisLayerName, GisRow, GisWorkbookData } from "./gisTypes";
 
 export type CategoryCount = {
   name: string;
@@ -25,6 +25,8 @@ export type ExecutiveDashboardData = {
   stormWaterDrains: number;
   utilityAssets: number;
   landmarks: number;
+  potholes: number;
+  standingWaterLocations: number;
   issuesNeedingAttention: number;
   layerDistribution: CategoryCount[];
   topCategories: CategoryCount[];
@@ -38,16 +40,18 @@ export type ExecutiveDashboardData = {
   };
 };
 
-const LAYER_LABELS: Record<keyof GisWorkbookData, string> = {
-  Road_Centerline: "Roads",
-  Polygon: "Buildings & polygons",
-  Point: "Utility points",
-  Line: "Utility lines",
-  Manhole: "Manholes",
-  SWD: "Storm-water drains",
-  Drain_Levels: "Drain observations",
-  Landmark: "Landmarks",
-};
+const LAYER_LABELS: Array<{ layer: GisLayerName; label: string }> = [
+  { layer: "Road_Centerline", label: "Roads" },
+  { layer: "Polygon", label: "Buildings & polygons" },
+  { layer: "Point", label: "Utility points" },
+  { layer: "Line", label: "Utility lines" },
+  { layer: "Manhole", label: "Manholes" },
+  { layer: "SWD", label: "Storm-water drains" },
+  { layer: "Drain_Levels", label: "Drain observations" },
+  { layer: "Landmark", label: "Landmarks" },
+  { layer: "Pothole", label: "Potholes" },
+  { layer: "Standing_Water", label: "Standing water" },
+];
 
 function text(value: unknown): string {
   if (value === null || value === undefined) {
@@ -189,11 +193,9 @@ function countWhere(
 export function calculateExecutiveDashboard(
   data: GisWorkbookData,
 ): ExecutiveDashboardData {
-  const layerDistribution = (Object.keys(LAYER_LABELS) as Array<
-    keyof GisWorkbookData
-  >).map((layerName) => ({
-    name: LAYER_LABELS[layerName],
-    count: data[layerName].length,
+  const layerDistribution = LAYER_LABELS.map(({ layer, label }) => ({
+    name: label,
+    count: data[layer].length,
   }));
 
   const totalFeatures = layerDistribution.reduce(
@@ -236,8 +238,10 @@ export function calculateExecutiveDashboard(
     stormWaterDrains: data.SWD.length,
     utilityAssets: data.Point.length + data.Line.length,
     landmarks: data.Landmark.length,
+    potholes: data.Pothole.length,
+    standingWaterLocations: data.Standing_Water.length,
     issuesNeedingAttention:
-      roadsWithoutFootpath + manholeIssues + poorDrainObservations,
+      roadsWithoutFootpath + manholeIssues + poorDrainObservations + data.Pothole.length + data.Standing_Water.length,
     layerDistribution,
     topCategories: mergeTopCategories(data),
     conditionSummary: combinedConditions,

@@ -31,7 +31,364 @@ const ANOMALY_COLOR: Record<string, number> = {
   red: 0xdc2626,
   yellow: 0xeab308,
   green: 0x16a34a,
+  blue: 0x2563eb,
 };
+
+type SurfaceDetectionMode3D = "potholes" | "standing_water";
+type SurfaceContextMode3D = "selected_roads" | "all_classes";
+
+function normalize3DCategory(value: string | null | undefined): string {
+  return (value ?? "").trim().toLowerCase().replace(/[_-]+/g, " ").replace(/\s+/g, " ");
+}
+
+function surfaceModeForCategory3D(
+  rawCategory: string | null | undefined,
+  canonicalClass: string | null | undefined,
+): SurfaceDetectionMode3D | null {
+  const canonical = normalize3DCategory(canonicalClass);
+  const raw = normalize3DCategory(rawCategory);
+  if (
+    canonical.includes("pothole")
+    || ["pothole", "potholes", "pot hole", "pot holes", "pathhole", "pathholes"].includes(raw)
+    || raw.includes("pothole")
+    || raw.includes("pot hole")
+  ) {
+    return "potholes";
+  }
+  if (
+    canonical.includes("standing water")
+    || canonical.includes("water stagnation")
+    || ["standing water", "water stagnation", "stagnant water", "waterlogging", "ponding"].includes(raw)
+    || raw.includes("standing water")
+    || raw.includes("water stagnation")
+    || raw.includes("stagnant water")
+    || raw.includes("waterlogging")
+    || raw.includes("ponding")
+  ) {
+    return "standing_water";
+  }
+  return null;
+}
+
+function surfaceModeForFeature3D(
+  feature: UrbanFeature,
+  effectiveClassMap: Record<string, string>,
+): SurfaceDetectionMode3D | null {
+  const raw = (feature.properties.category ?? "").trim();
+  const embedded = (feature.properties.attributes?._canonical_class as string | undefined)
+    ?? effectiveClassMap[raw]
+    ?? null;
+  return surfaceModeForCategory3D(raw, embedded);
+}
+
+function isRoadCategory3D(rawCategory: string, canonicalClass: string | undefined): boolean {
+  const canonical = normalize3DCategory(canonicalClass);
+  if (["road segment", "road centerline", "road surface"].includes(canonical)) return true;
+  const raw = normalize3DCategory(rawCategory);
+  if (raw.includes("road sign")) return false;
+  return [
+    "road", "street", "carriageway", "centerline", "centreline",
+    "lane", "footpath", "sidewalk", "track", "concrete edge",
+  ].some((token) => raw.includes(token));
+}
+
+function surfaceSeverity3D(anomaly: SpatialAnomaly | undefined): {
+  colorKey: "red" | "yellow" | "green" | "blue";
+  label: string;
+} {
+  if (anomaly?.status === "resolved") return { colorKey: "blue", label: "Resolved" };
+  if (anomaly?.color === "red") return { colorKey: "red", label: "Critical" };
+  if (anomaly?.color === "yellow") return { colorKey: "yellow", label: "Moderate" };
+  return { colorKey: "green", label: "Safe / Low" };
+}
+
+function surfaceRecommendationDetails3D(
+  anomaly: SpatialAnomaly | undefined,
+  mode: SurfaceDetectionMode3D,
+): Record<string, unknown> {
+  const metadata = anomaly?.anomaly_metadata ?? {};
+  const severity = surfaceSeverity3D(anomaly);
+  const resolved = anomaly?.status === "resolved";
+  const numberOrNull = (value: unknown): number | null => {
+    const parsed = typeof value === "number" ? value : Number(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  };
+  const area = numberOrNull(metadata.area_sqm);
+  const depth = numberOrNull(metadata.depth_cm);
+  const repairVolume = numberOrNull(metadata.estimated_repair_volume_m3);
+  const nearestRoad = numberOrNull(metadata.nearest_road_distance_m);
+  const nearestDrain = numberOrNull(metadata.nearest_drain_distance_m);
+
+  let priority = "Routine";
+  let recommendation = "Monitor the mapped feature and verify it during the next field inspection.";
+  if (resolved) {
+    priority = "Resolved";
+    recommendation = mode === "potholes"
+      ? "Verify the repaired patch after traffic and rainfall, retain completion evidence, and reopen only if settlement or cracking returns."
+      : "Verify that water no longer accumulates after the next rainfall, retain completion evidence, and reopen only if ponding returns.";
+  } else if (mode === "potholes") {
+    if (severity.colorKey === "red") {
+      priority = "Urgent";
+      recommendation = "Barricade the defect, remove loose material, square-cut and clean the edges, apply tack coat, place compatible asphalt or concrete repair material, compact it, and complete a field-quality check.";
+    } else if (severity.colorKey === "yellow") {
+      priority = "Scheduled repair";
+      recommendation = "Schedule patch repair, clean and prepare the defect, fill it with compatible road material, compact it, and recheck the patch after traffic and rainfall.";
+    } else {
+      recommendation = "Carry out preventive sealing or a minor patch where required and monitor whether the area or depth increases.";
+    }
+  } else {
+    if (severity.colorKey === "red") {
+      priority = "Urgent";
+      recommendation = "Dewater the location, clear the nearest drain or inlet, inspect for blockage and inadequate road cross-fall, then correct the low point or drainage connection and verify it during rainfall.";
+    } else if (severity.colorKey === "yellow") {
+      priority = "Scheduled correction";
+      recommendation = "Clean nearby drains, verify the outlet and road slope, and schedule local regrading or inlet correction before the next heavy rainfall.";
+    } else {
+      recommendation = "Perform preventive drain cleaning and monitor the location after rainfall for recurring ponding.";
+    }
+  }
+
+  return {
+    "AI finding": mode === "potholes" ? "Pothole condition" : "Standing water",
+    "AI severity": severity.label,
+    "Workflow status": resolved ? "Resolved / final approval" : (anomaly?.status ?? "Mapped"),
+    Priority: priority,
+    ...(area !== null ? { "Affected area (m²)": area } : {}),
+    ...(mode === "potholes" && depth !== null ? { "Depth (cm)": depth } : {}),
+    ...(mode === "potholes" && repairVolume !== null ? { "Estimated repair volume (m³)": repairVolume } : {}),
+    ...(mode === "standing_water" && typeof metadata.intersects_road === "boolean" ? { "Intersects road": metadata.intersects_road ? "Yes" : "No" } : {}),
+    ...(mode === "standing_water" && typeof metadata.intersects_drain === "boolean" ? { "Intersects drain": metadata.intersects_drain ? "Yes" : "No" } : {}),
+    ...(mode === "standing_water" && nearestRoad !== null ? { "Nearest road distance (m)": nearestRoad } : {}),
+    ...(mode === "standing_water" && nearestDrain !== null ? { "Nearest drain distance (m)": nearestDrain } : {}),
+    "Recommended action": recommendation,
+  };
+}
+
+function openRing3D(ring: [number, number][]): [number, number][] {
+  if (ring.length < 2) return ring;
+  const first = ring[0];
+  const last = ring[ring.length - 1];
+  return first[0] === last[0] && first[1] === last[1] ? ring.slice(0, -1) : ring;
+}
+
+/** Surface issue geometry at its exact surveyed GDB location.
+ * Polygon/MultiPolygon features keep their original rings and are draped
+ * vertex-by-vertex on the DTM. Point/MultiPoint potholes keep the exact
+ * surveyed coordinate and use a visible 3D marker sized from surveyed
+ * length/width/area attributes when those values exist. */
+function buildSurfaceIssueFeature3D(
+  feature: UrbanFeature,
+  projector: Projector,
+  elevAt: (lon: number, lat: number) => number,
+  color: number,
+  mode: SurfaceDetectionMode3D,
+  highlighted: boolean = true,
+): THREE.Group | null {
+  const geometry = feature.geometry;
+  const group = new THREE.Group();
+  const colorObject = new THREE.Color(color);
+  // Road ribbons sit around elevAt()+0.4 m and extend to roughly +0.59 m.
+  // Surface findings therefore need to sit just above that ribbon, otherwise
+  // a correctly located pothole is hidden underneath the road mesh.
+  const lift = mode === "standing_water" ? 0.74 : 0.70;
+
+  const readNumber = (aliases: string[]): number | null => {
+    const attrs = feature.properties.attributes ?? {};
+    const normalizedAliases = new Set(aliases.map((key) => normalize3DCategory(key)));
+    for (const [key, value] of Object.entries(attrs)) {
+      if (!normalizedAliases.has(normalize3DCategory(key))) continue;
+      const parsed = typeof value === "number" ? value : Number(value);
+      if (Number.isFinite(parsed) && parsed > 0) return parsed;
+    }
+    return null;
+  };
+
+  const addPointMarker = (lon: number, lat: number) => {
+    const [x, z] = projector.toLocal(lon, lat);
+    const y = elevAt(lon, lat) + lift;
+    const area = readNumber(["area_m2", "area_m²", "area_sqm", "shape_area"]);
+    const measuredLength = readNumber(["length_m", "length", "pothole_length_m"]);
+    const measuredWidth = readNumber(["width_m", "width", "pothole_width_m"]);
+    const estimatedDiameter = area !== null ? Math.max(0.35, Math.sqrt((4 * area) / Math.PI)) : 0.7;
+    const length = Math.max(0.55, measuredLength ?? estimatedDiameter);
+    const width = Math.max(0.40, measuredWidth ?? estimatedDiameter * 0.75);
+
+    const fillGeometry = new THREE.CircleGeometry(1, 36);
+    fillGeometry.rotateX(-Math.PI / 2);
+    const fill = new THREE.Mesh(
+      fillGeometry,
+      new THREE.MeshStandardMaterial({
+        color: colorObject,
+        emissive: highlighted ? colorObject : new THREE.Color(0x000000),
+        emissiveIntensity: highlighted ? 0.45 : 0,
+        transparent: true,
+        opacity: highlighted ? 0.86 : 0.58,
+        roughness: mode === "standing_water" ? 0.16 : 0.72,
+        metalness: mode === "standing_water" ? 0.16 : 0,
+        depthWrite: false,
+        depthTest: !highlighted,
+        side: THREE.DoubleSide,
+        polygonOffset: true,
+        polygonOffsetFactor: -4,
+        polygonOffsetUnits: -4,
+      }),
+    );
+    fill.position.set(x, y, z);
+    fill.scale.set(length / 2, 1, width / 2);
+    fill.renderOrder = 140;
+    group.add(fill);
+
+    // A dark inner patch makes a point-source pothole read as a road defect,
+    // while Standing Water stays as a reflective severity-coloured puddle.
+    if (mode === "potholes") {
+      const innerGeometry = new THREE.CircleGeometry(0.62, 32);
+      innerGeometry.rotateX(-Math.PI / 2);
+      const inner = new THREE.Mesh(
+        innerGeometry,
+        new THREE.MeshStandardMaterial({
+          color: 0x2c2926,
+          transparent: true,
+          opacity: highlighted ? 0.72 : 0.5,
+          roughness: 1,
+          depthWrite: false,
+          depthTest: !highlighted,
+          side: THREE.DoubleSide,
+        }),
+      );
+      inner.position.set(x, y + 0.025, z);
+      inner.scale.set(length / 2, 1, width / 2);
+      inner.renderOrder = 142;
+      group.add(inner);
+    }
+
+    const ringGeometry = new THREE.RingGeometry(0.78, 1, 40);
+    ringGeometry.rotateX(-Math.PI / 2);
+    const ring = new THREE.Mesh(
+      ringGeometry,
+      new THREE.MeshBasicMaterial({
+        color,
+        transparent: true,
+        opacity: highlighted ? 1 : 0.72,
+        blending: highlighted ? THREE.AdditiveBlending : THREE.NormalBlending,
+        depthWrite: false,
+        depthTest: !highlighted,
+        side: THREE.DoubleSide,
+      }),
+    );
+    ring.position.set(x, y + 0.055, z);
+    ring.scale.set(length / 2 + 0.18, 1, width / 2 + 0.18);
+    ring.renderOrder = 145;
+    group.add(ring);
+
+    if (highlighted) {
+      const pin = buildPin(x, y + 2.1, z, color);
+      pin.renderOrder = 160;
+      group.add(pin);
+      const label = buildLabelSprite(
+        [mode === "potholes" ? "Pothole" : "Standing Water"],
+        color,
+      );
+      label.position.set(x, y + 3.15, z);
+      group.add(label);
+    }
+  };
+
+  if (geometry.type === "Point") {
+    const [lon, lat] = geometry.coordinates as [number, number];
+    addPointMarker(lon, lat);
+    return group;
+  }
+  if (geometry.type === "MultiPoint") {
+    for (const [lon, lat] of geometry.coordinates as [number, number][]) addPointMarker(lon, lat);
+    return group.children.length > 0 ? group : null;
+  }
+
+  const polygons: [number, number][][][] = geometry.type === "Polygon"
+    ? [geometry.coordinates as [number, number][][]]
+    : geometry.type === "MultiPolygon"
+      ? geometry.coordinates as [number, number][][][]
+      : [];
+  if (polygons.length === 0) return null;
+
+  for (const polygon of polygons) {
+    const rings = polygon.map(openRing3D).filter((ring) => ring.length >= 3);
+    if (rings.length === 0) continue;
+    const localRings = rings.map((ring) => ring.map(([lon, lat]) => {
+      const [x, z] = projector.toLocal(lon, lat);
+      return { x, z, y: elevAt(lon, lat) + lift };
+    }));
+    const contour = localRings[0].map((point) => new THREE.Vector2(point.x, point.z));
+    const holes = localRings.slice(1).map((ring) => ring.map((point) => new THREE.Vector2(point.x, point.z)));
+    const faces = THREE.ShapeUtils.triangulateShape(contour, holes);
+    const allPoints = localRings.flat();
+    if (faces.length === 0 || allPoints.length < 3) continue;
+
+    const positions = new Float32Array(allPoints.length * 3);
+    allPoints.forEach((point, index) => {
+      positions[index * 3] = point.x;
+      positions[index * 3 + 1] = point.y;
+      positions[index * 3 + 2] = point.z;
+    });
+    const fillGeometry = new THREE.BufferGeometry();
+    fillGeometry.setAttribute("position", new THREE.BufferAttribute(positions, 3));
+    fillGeometry.setIndex(faces.flat());
+    fillGeometry.computeVertexNormals();
+    const fillMaterial = new THREE.MeshStandardMaterial({
+      color: colorObject,
+      emissive: highlighted ? colorObject : new THREE.Color(0x000000),
+      emissiveIntensity: highlighted ? (mode === "standing_water" ? 0.42 : 0.34) : 0,
+      transparent: true,
+      opacity: highlighted ? (mode === "standing_water" ? 0.72 : 0.82) : 0.55,
+      roughness: mode === "standing_water" ? 0.18 : 0.58,
+      metalness: mode === "standing_water" ? 0.12 : 0.02,
+      depthWrite: false,
+      depthTest: !highlighted,
+      side: THREE.DoubleSide,
+      polygonOffset: true,
+      polygonOffsetFactor: -4,
+      polygonOffsetUnits: -4,
+    });
+    const fill = new THREE.Mesh(fillGeometry, fillMaterial);
+    fill.renderOrder = 140;
+    group.add(fill);
+
+    for (const ring of localRings) {
+      const borderPoints = ring.map((point) => new THREE.Vector3(point.x, point.y + 0.05, point.z));
+      if (borderPoints.length < 3) continue;
+      borderPoints.push(borderPoints[0].clone());
+      const border = new THREE.Line(
+        new THREE.BufferGeometry().setFromPoints(borderPoints),
+        new THREE.LineBasicMaterial({
+          color,
+          transparent: true,
+          opacity: highlighted ? 1 : 0.65,
+          depthTest: !highlighted,
+        }),
+      );
+      border.renderOrder = 150;
+      group.add(border);
+
+      if (highlighted) {
+        const curve = new THREE.CatmullRomCurve3(borderPoints.slice(0, -1), true, "centripetal");
+        const glow = new THREE.Mesh(
+          new THREE.TubeGeometry(curve, Math.max(12, borderPoints.length * 4), 0.22, 8, true),
+          new THREE.MeshBasicMaterial({
+            color,
+            transparent: true,
+            opacity: 0.46,
+            blending: THREE.AdditiveBlending,
+            depthWrite: false,
+            depthTest: false,
+          }),
+        );
+        glow.renderOrder = 148;
+        group.add(glow);
+      }
+    }
+  }
+
+  return group.children.length > 0 ? group : null;
+}
 
 interface Projector {
   toLocal: (lon: number, lat: number) => [number, number]; // -> [x, z] metres
@@ -1194,6 +1551,11 @@ export function Map3DViewer({ features, classMap, anomalies, datasets, activeDat
   // glow / manhole defect geometry), so the 3D view never shows all three
   // finding types' extra geometry cluttered together.
   const [detectionMode3D, setDetectionMode3D] = useState<DetectionMode>(null);
+  // Potholes/Standing Water have two explicit context presets:
+  //   selected_roads -> terrain + selected surface class + roads
+  //   all_classes    -> terrain + every loaded GDB class
+  // The selected surface polygons stay severity-highlighted in both presets.
+  const [surfaceContextMode3D, setSurfaceContextMode3D] = useState<SurfaceContextMode3D>("selected_roads");
   // Per-category visibility toggles (shown as chips beside the Underground
   // button). Each category lives in its own THREE.Group so toggling is a live
   // show/hide with no scene rebuild.
@@ -1257,6 +1619,21 @@ export function Map3DViewer({ features, classMap, anomalies, datasets, activeDat
       .sort((a, b) => b.count - a.count);
   }, [features, colorMode]);
 
+  // New taxonomy classes may be backfilled directly onto old feature rows by
+  // the audit engine. Prefer that authoritative per-feature value over the
+  // older category cache so 3D focus works immediately after an audit.
+  const effectiveClassMap = useMemo(() => {
+    const next = { ...classMap };
+    for (const feature of features) {
+      const raw = (feature.properties.category ?? "").trim();
+      const embedded = feature.properties.attributes?._canonical_class;
+      if (raw && typeof embedded === "string" && embedded.trim()) {
+        next[raw] = embedded.trim();
+      }
+    }
+    return next;
+  }, [classMap, features]);
+
   useEffect(() => {
     const container = containerRef.current;
     if (!container) return;
@@ -1267,8 +1644,8 @@ export function Map3DViewer({ features, classMap, anomalies, datasets, activeDat
       setLoading(true);
       setError(null);
       try {
-        const buildings = features.filter((f) => classMap[f.properties.category ?? ""] === "Building");
-        const manholes = features.filter((f) => classMap[f.properties.category ?? ""] === "Access_Point");
+        const buildings = features.filter((f) => effectiveClassMap[f.properties.category ?? ""] === "Building");
+        const manholes = features.filter((f) => effectiveClassMap[f.properties.category ?? ""] === "Access_Point");
 
         // Drain encroachment — the literal "this drain runs through this
         // building" fact, rendered instead of stated: the flagged building
@@ -1288,6 +1665,28 @@ export function Map3DViewer({ features, classMap, anomalies, datasets, activeDat
             // worse (red) severity rather than whichever anomaly is seen last.
             if (a.color === "red" || flaggedDrainColor.get(id) !== "red") {
               flaggedDrainColor.set(id, a.color as "red" | "yellow");
+            }
+          }
+        }
+
+        const surfaceAnomalyByFeatureId = new Map<string, SpatialAnomaly>();
+        const surfaceAnomalyRank = (anomaly: SpatialAnomaly): number => {
+          if (anomaly.status === "resolved") return 4;
+          if (anomaly.color === "red") return 3;
+          if (anomaly.color === "yellow") return 2;
+          return 1;
+        };
+        for (const anomaly of anomalies) {
+          if (anomaly.anomaly_type !== "pothole_status" && anomaly.anomaly_type !== "standing_water_status") continue;
+          const ids = new Set<string>([
+            String(anomaly.anomaly_metadata.pothole_id ?? ""),
+            String(anomaly.anomaly_metadata.standing_water_id ?? ""),
+            ...anomaly.feature_ids.map(String),
+          ].filter(Boolean));
+          for (const id of ids) {
+            const previous = surfaceAnomalyByFeatureId.get(id);
+            if (!previous || surfaceAnomalyRank(anomaly) >= surfaceAnomalyRank(previous)) {
+              surfaceAnomalyByFeatureId.set(id, anomaly);
             }
           }
         }
@@ -1359,6 +1758,7 @@ export function Map3DViewer({ features, classMap, anomalies, datasets, activeDat
         scene.add(sun);
 
         const clickable: THREE.Object3D[] = [];
+        let firstSurfaceDetail: Object3DDetail | null = null;
 
         // Real elevations here are absolute (e.g. ~575 m above sea level),
         // which would place the whole scene far outside any sane camera
@@ -1802,7 +2202,7 @@ export function Map3DViewer({ features, classMap, anomalies, datasets, activeDat
         // encroachment finding are shown — an open, unflagged drain adds
         // nothing to that specific story and only clutters the view.
         const drains = features.filter((f) => {
-          if (classMap[f.properties.category ?? ""] !== "Drainage_Asset") return false;
+          if (effectiveClassMap[f.properties.category ?? ""] !== "Drainage_Asset") return false;
           if (detectionMode3D !== "drains") return true;
           const isClosed = (f.properties.category ?? "").toLowerCase().includes("closed");
           return isClosed || flaggedDrainColor.has(f.properties.id);
@@ -1929,7 +2329,7 @@ export function Map3DViewer({ features, classMap, anomalies, datasets, activeDat
         );
         const polePointById = new Map<string, [number, number]>();
         for (const f of features) {
-          const cls = classMap[f.properties.category ?? ""];
+          const cls = effectiveClassMap[f.properties.category ?? ""];
           if ((cls === "Illumination_Asset" || cls === "Utility_Pole") && f.geometry.type === "Point") {
             polePointById.set(f.properties.id, f.geometry.coordinates as [number, number]);
           }
@@ -1939,7 +2339,7 @@ export function Map3DViewer({ features, classMap, anomalies, datasets, activeDat
         // can aim its arm + lamp at the carriageway instead of the building side.
         const roadPts: [number, number][] = [];
         for (const f of features) {
-          if (classMap[f.properties.category ?? ""] !== "Road_Segment") continue;
+          if (effectiveClassMap[f.properties.category ?? ""] !== "Road_Segment") continue;
           const g = f.geometry;
           const push = (lon: number, lat: number) => {
             const [X, Z] = projector.toLocal(lon, lat);
@@ -2175,7 +2575,7 @@ export function Map3DViewer({ features, classMap, anomalies, datasets, activeDat
           clickable.push(g);
         };
 
-        const illuminationPoles = features.filter((f) => classMap[f.properties.category ?? ""] === "Illumination_Asset");
+        const illuminationPoles = features.filter((f) => effectiveClassMap[f.properties.category ?? ""] === "Illumination_Asset");
         for (const p of illuminationPoles) {
           const subtype = classifyIlluminationSubtype(p.properties.category);
           if (subtype === "solar") {
@@ -2198,7 +2598,7 @@ export function Map3DViewer({ features, classMap, anomalies, datasets, activeDat
         // (not just support masts along an overhead line — those stay in
         // the power-lines rendering below) get their own "power pole" marker.
         const standalonePowerPoles = features.filter(
-          (f) => classMap[f.properties.category ?? ""] === "Utility_Pole" && f.geometry.type === "Point"
+          (f) => effectiveClassMap[f.properties.category ?? ""] === "Utility_Pole" && f.geometry.type === "Point"
         );
         for (const p of standalonePowerPoles) {
           buildPoleMarker(p, gfor(p), "power-pole", "Utility_Pole");
@@ -2207,7 +2607,7 @@ export function Map3DViewer({ features, classMap, anomalies, datasets, activeDat
         // Real surveyed concrete roads (Road_Segment centerlines) drawn as a
         // flat ribbon just above the terrain, in the map's road color.
         const roads = features.filter((f) => {
-          if (classMap[f.properties.category ?? ""] !== "Road_Segment") return false;
+          if (effectiveClassMap[f.properties.category ?? ""] !== "Road_Segment") return false;
           // In manholes focus, show ONLY the sewage/pipe network (the buried
           // tubes), not the concrete road ribbons — the manhole context is the
           // underground sewer, not the carriageway.
@@ -2292,7 +2692,7 @@ export function Map3DViewer({ features, classMap, anomalies, datasets, activeDat
         //     the poles instead of floating past them at a flat height (the
         //     line and the pole points are two separately-surveyed layers,
         //     so their raw coordinates never line up exactly on their own).
-        const powerLines = features.filter((f) => classMap[f.properties.category ?? ""] === "Power_Line");
+        const powerLines = features.filter((f) => effectiveClassMap[f.properties.category ?? ""] === "Power_Line");
         const OVERHEAD_LINE_H = 8; // typical conductor height above ground when not on a pole
         // Closest point on segment a->b to point p (local x/z); returns the
         // fractional position t along the segment and the perpendicular distance.
@@ -2543,7 +2943,7 @@ export function Map3DViewer({ features, classMap, anomalies, datasets, activeDat
         // each surveyed point: a tall slender trunk with a crown of drooping
         // fronds, tinted with the same category color used on the 2D map.
         // Heights vary a little so the grove looks natural rather than cloned.
-        const vegetation = features.filter((f) => classMap[f.properties.category ?? ""] === "Vegetation");
+        const vegetation = features.filter((f) => effectiveClassMap[f.properties.category ?? ""] === "Vegetation");
         // Built once and reused (scaled) for every frond on every tree.
         const frondGeo = buildFrondGeometry(4.2, 0.6, 1.6);
         for (const v of vegetation) {
@@ -2616,7 +3016,7 @@ export function Map3DViewer({ features, classMap, anomalies, datasets, activeDat
 
         // Real surveyed signage (road signs, markers) — a thin post with a
         // small flat board, colored with the map's category color.
-        const signage = features.filter((f) => classMap[f.properties.category ?? ""] === "Signage");
+        const signage = features.filter((f) => effectiveClassMap[f.properties.category ?? ""] === "Signage");
         for (const s of signage) {
           if (s.geometry.type !== "Point") continue;
           const [lon, lat] = s.geometry.coordinates;
@@ -2645,7 +3045,7 @@ export function Map3DViewer({ features, classMap, anomalies, datasets, activeDat
 
         // Real surveyed elevation contour lines, draped directly on the
         // terrain surface (no lift) as thin ribbons in the map's category color.
-        const contours = features.filter((f) => classMap[f.properties.category ?? ""] === "Elevation_Contour");
+        const contours = features.filter((f) => effectiveClassMap[f.properties.category ?? ""] === "Elevation_Contour");
         for (const c of contours) {
           // This contour's OWN raw category color — matches the 2D Layers panel.
           const contourColor = new THREE.Color(sceneColor(c.properties.category));
@@ -2679,7 +3079,7 @@ export function Map3DViewer({ features, classMap, anomalies, datasets, activeDat
         // level, pipe type, condition) — a small flat disc marker at each
         // surveyed point, distinct from the Access_Point/Drainage_Asset
         // geometry it was measured at.
-        const levelPoints = features.filter((f) => classMap[f.properties.category ?? ""] === "Drainage_Level_Point");
+        const levelPoints = features.filter((f) => effectiveClassMap[f.properties.category ?? ""] === "Drainage_Level_Point");
         for (const lp of levelPoints) {
           if (lp.geometry.type !== "Point") continue;
           const [lon, lat] = lp.geometry.coordinates;
@@ -2705,7 +3105,7 @@ export function Map3DViewer({ features, classMap, anomalies, datasets, activeDat
         for (const f of features) {
           const raw = (f.properties.category ?? "").trim() || "uncategorized";
           if (raw === "raster_pixel") continue;
-          const canonical = classMap[raw];
+          const canonical = effectiveClassMap[raw];
           if (canonical && HANDLED_CANONICAL.has(canonical)) continue; // handled above
           const key = `cat:${raw}`;
           if (!groups[key]) {
@@ -2715,8 +3115,29 @@ export function Map3DViewer({ features, classMap, anomalies, datasets, activeDat
             scene.add(g);
             groupRefs.current[key] = g;
           }
-          const color = sceneColor(raw);
-          const obj = buildGenericFeature(f, projector, elevAt, color);
+          const surfaceFeatureMode = surfaceModeForFeature3D(f, effectiveClassMap);
+          const surfaceAnomaly = surfaceAnomalyByFeatureId.get(String(f.properties.id));
+          const surfaceModeMatches = surfaceFeatureMode !== null && detectionMode3D === surfaceFeatureMode;
+          const surfaceSeverity = surfaceSeverity3D(surfaceAnomaly);
+          const surfaceColorNumber = ANOMALY_COLOR[surfaceSeverity.colorKey];
+          const normalColor = sceneColor(raw);
+          const color = surfaceModeMatches
+            ? `#${surfaceColorNumber.toString(16).padStart(6, "0")}`
+            : normalColor;
+          // Surface issues always use the dedicated terrain-draped polygon
+          // renderer, even outside an active AI focus. This avoids the generic
+          // water extrusion's X-axis rotation, which mirrored latitude and
+          // placed Standing Water on the wrong side of the 3D scene.
+          const obj = surfaceFeatureMode
+            ? buildSurfaceIssueFeature3D(
+                f,
+                projector,
+                elevAt,
+                surfaceModeMatches ? surfaceColorNumber : new THREE.Color(normalColor).getHex(),
+                surfaceFeatureMode,
+                surfaceModeMatches,
+              )
+            : buildGenericFeature(f, projector, elevAt, color);
           if (obj) {
             const fg = f.geometry;
             let flon: number, flat: number;
@@ -2726,7 +3147,23 @@ export function Map3DViewer({ features, classMap, anomalies, datasets, activeDat
             else if (fg.type === "Polygon") [flon, flat] = fg.coordinates[0][0];
             else if (fg.type === "MultiPolygon") [flon, flat] = fg.coordinates[0][0][0];
             else [flon, flat] = fg.coordinates[0];
-            obj.userData = featureDetail(f, raw, color, flon, flat);
+            const baseDetail = featureDetail(f, raw, color, flon, flat);
+            const detail: Object3DDetail = surfaceFeatureMode
+              ? {
+                  ...baseDetail,
+                  label: `${surfaceFeatureMode === "potholes" ? "Pothole" : "Standing Water"} - ${surfaceSeverity.label}`,
+                  kind: surfaceFeatureMode === "potholes" ? "pothole" : "standing-water",
+                  attributes: {
+                    ...baseDetail.attributes,
+                    ...(surfaceModeMatches ? surfaceRecommendationDetails3D(surfaceAnomaly, surfaceFeatureMode) : {}),
+                    "3D geometry": f.geometry.type === "Point" || f.geometry.type === "MultiPoint"
+                      ? "Exact GDB point at surveyed coordinate; visible marker sized from surveyed dimensions"
+                      : "Exact GDB polygon draped on terrain",
+                  },
+                }
+              : baseDetail;
+            obj.userData = detail;
+            if (surfaceModeMatches && firstSurfaceDetail === null) firstSurfaceDetail = detail;
             groups[key].add(obj);
             clickable.push(obj);
           }
@@ -2868,6 +3305,14 @@ export function Map3DViewer({ features, classMap, anomalies, datasets, activeDat
           g.visible = k === "heatmap" ? showHeatmap : visible[k] !== false;
         });
 
+        // Surface modes open the first highlighted issue in the existing
+        // right-side details panel, so the recommendation is visible
+        // immediately. Clicking another exact polygon replaces it normally.
+        if (detectionMode3D === "potholes" || detectionMode3D === "standing_water") {
+          setSelected(firstSurfaceDetail);
+        } else {
+          setSelected(null);
+        }
         setLoading(false);
       } catch (e) {
         if (!disposed) {
@@ -2963,6 +3408,23 @@ export function Map3DViewer({ features, classMap, anomalies, datasets, activeDat
     return q ? categoryList.filter((c) => c.category.toLowerCase().includes(q)) : categoryList;
   })();
 
+  const applySurfaceContextVisibility = (
+    mode: SurfaceDetectionMode3D,
+    context: SurfaceContextMode3D,
+  ) => {
+    setSurfaceContextMode3D(context);
+    setVisible((current) => {
+      const next: Record<string, boolean> = { ...current, terrain: true };
+      for (const category of categoryList) {
+        const canonical = effectiveClassMap[category.category];
+        const selectedSurface = surfaceModeForCategory3D(category.category, canonical) === mode;
+        const road = isRoadCategory3D(category.category, canonical);
+        next[`cat:${category.category}`] = context === "all_classes" || selectedSurface || road;
+      }
+      return next;
+    });
+  };
+
   return (
     <div className="manhole-3d-overlay" data-testid="manhole-plan-3d">
       <header className="manhole-3d-overlay__head">
@@ -2997,7 +3459,7 @@ export function Map3DViewer({ features, classMap, anomalies, datasets, activeDat
           </button>
         </div>
         <div className="manhole-3d-overlay__colormode" role="radiogroup" aria-label="AI detection focus">
-          {(["poles", "drains", "manholes", "powerlines"] as const).map((mode) => (
+          {(["poles", "drains", "manholes", "powerlines", "potholes", "standing_water"] as const).map((mode) => (
             <button
               key={mode}
               type="button"
@@ -3007,6 +3469,8 @@ export function Map3DViewer({ features, classMap, anomalies, datasets, activeDat
               onClick={() => {
                 const next = detectionMode3D === mode ? null : mode;
                 setDetectionMode3D(next);
+                const nextIsSurface = next === "potholes" || next === "standing_water";
+                if (nextIsSurface) setSurfaceContextMode3D("selected_roads");
                 // The heatmap is tied to the Manholes focus only: turning
                 // Manholes on shows it, leaving Manholes (for poles/drains or
                 // off) hides it so it never lingers on other modes.
@@ -3022,7 +3486,13 @@ export function Map3DViewer({ features, classMap, anomalies, datasets, activeDat
                   const nextVisible: Record<string, boolean> = { ...v, terrain: true };
                   const allowed = next ? DETECTION_MODE_TARGET_CLASSES[next] : null;
                   for (const c of categoryList) {
-                    nextVisible[`cat:${c.category}`] = allowed ? allowed.includes(classMap[c.category]) : true;
+                    const canonical = effectiveClassMap[c.category];
+                    if (next === "potholes" || next === "standing_water") {
+                      const selectedSurface = surfaceModeForCategory3D(c.category, canonical) === next;
+                      nextVisible[`cat:${c.category}`] = selectedSurface || isRoadCategory3D(c.category, canonical);
+                    } else {
+                      nextVisible[`cat:${c.category}`] = allowed ? allowed.includes(canonical) : true;
+                    }
                   }
                   return nextVisible;
                 });
@@ -3033,6 +3503,30 @@ export function Map3DViewer({ features, classMap, anomalies, datasets, activeDat
             </button>
           ))}
         </div>
+        {(detectionMode3D === "potholes" || detectionMode3D === "standing_water") && (
+          <div className="manhole-3d-overlay__colormode" role="radiogroup" aria-label="Surface issue display context">
+            <button
+              type="button"
+              role="radio"
+              aria-checked={surfaceContextMode3D === "selected_roads"}
+              className={`manhole-3d-overlay__colormode-btn${surfaceContextMode3D === "selected_roads" ? " is-active" : ""}`}
+              onClick={() => applySurfaceContextVisibility(detectionMode3D, "selected_roads")}
+              title="Show terrain, roads and only the selected surface issue class"
+            >
+              Selected + Roads
+            </button>
+            <button
+              type="button"
+              role="radio"
+              aria-checked={surfaceContextMode3D === "all_classes"}
+              className={`manhole-3d-overlay__colormode-btn${surfaceContextMode3D === "all_classes" ? " is-active" : ""}`}
+              onClick={() => applySurfaceContextVisibility(detectionMode3D, "all_classes")}
+              title="Show every GDB class while keeping the selected surface issue highlighted"
+            >
+              All Classes
+            </button>
+          </div>
+        )}
         <div className="command-center__section">
           <div className="command-center__section-head">
             <span className="command-center__section-title">Layers</span>

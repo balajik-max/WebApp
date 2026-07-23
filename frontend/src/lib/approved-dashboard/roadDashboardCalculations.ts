@@ -1,7 +1,10 @@
 import type { GisRow } from "./gisTypes";
+import { featureIdFromRow, featureMapHref } from "./mapLinks";
 
 export type RoadRecord = {
   id: string;
+  featureId: string | null;
+  mapHref: string | null;
   name: string;
   surface: string;
   usage: string;
@@ -127,6 +130,8 @@ export function prepareRoadRecords(rows: GisRow[]): RoadRecord[] {
 
     return {
       id: text(row.GDB_FID, `road-${index + 1}`),
+      featureId: featureIdFromRow(row),
+      mapHref: featureMapHref(row),
       name: text(row.Road_Name, `Unnamed road ${index + 1}`),
       surface: text(row.Type_of_Road),
       usage: text(row.Usage_of_Road),

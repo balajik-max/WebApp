@@ -371,6 +371,7 @@ export function RoadDashboard({ data }: RoadDashboardProps) {
                     <th>Length</th>
                     <th>Footpath</th>
                     <th>UGD status</th>
+                    <th>Map</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -395,6 +396,7 @@ export function RoadDashboard({ data }: RoadDashboardProps) {
                           {record.ugdStatus}
                         </span>
                       </td>
+                      <td>{record.mapHref ? <a className="dashboard-map-link" href={record.mapHref}>View on map</a> : "—"}</td>
                     </tr>
                   ))}
                 </tbody>

@@ -1687,3 +1687,276 @@
   .approved-dashboard-host .dashboard-titlebar__side { justify-items: stretch; width: 100%; }
   .approved-dashboard-host .approved-dashboard-actions { justify-content: flex-start; }
 }
+
+/* -------------------------------------------------------------------------
+   Pothole + standing-water extension
+   Scoped entirely to the approved dashboard so Map, Datasets, Analytics,
+   Tasks, Activity and every other workspace module keep their existing CSS.
+   ------------------------------------------------------------------------- */
+.approved-dashboard-host .approved-kpi-grid {
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+}
+
+.approved-dashboard-host .surface-kpi-grid {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 13px;
+  margin-top: 18px;
+}
+
+.approved-dashboard-host .surface-kpi-grid .approved-kpi-card {
+  min-height: 174px;
+}
+
+.approved-dashboard-host .dashboard-filter-panel--surface-issue {
+  grid-template-columns: minmax(220px, 0.42fr) minmax(320px, 1.58fr);
+  align-items: end;
+}
+
+.approved-dashboard-host .surface-method-note {
+  display: grid;
+  gap: 4px;
+  min-height: 42px;
+  align-content: center;
+  padding: 10px 13px;
+  border: 1px solid #d9e5ed;
+  border-radius: 10px;
+  color: #647186;
+  background: #f7fafc;
+}
+
+.approved-dashboard-host .surface-method-note strong {
+  color: #263348;
+  font-size: 0.8rem;
+}
+
+.approved-dashboard-host .surface-method-note span {
+  font-size: 0.78rem;
+  line-height: 1.45;
+}
+
+.approved-dashboard-host .chart-container--surface {
+  height: 300px;
+}
+
+.approved-dashboard-host .chart-container--surface-donut {
+  height: 300px;
+}
+
+.approved-dashboard-host .dashboard-chart-grid--surface-summary {
+  grid-template-columns: minmax(320px, 0.72fr) minmax(0, 1.28fr);
+  margin-top: 16px;
+}
+
+.approved-dashboard-host .surface-highlight-panel {
+  display: grid;
+  align-content: start;
+  gap: 12px;
+}
+
+.approved-dashboard-host .surface-highlight-panel > span,
+.approved-dashboard-host .surface-alert-panel span {
+  color: #187660;
+  font-size: 0.74rem;
+  font-weight: 800;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.approved-dashboard-host .surface-highlight-panel > h3 {
+  margin: -5px 0 2px;
+  font-size: 1.15rem;
+}
+
+.approved-dashboard-host .surface-highlight-panel > div {
+  display: grid;
+  grid-template-columns: 34px 1fr;
+  gap: 11px;
+  align-items: start;
+  padding: 13px;
+  border: 1px solid #e0e8ef;
+  border-radius: 12px;
+  background: #f8fafc;
+}
+
+.approved-dashboard-host .surface-highlight-panel > div > strong {
+  display: grid;
+  width: 30px;
+  height: 30px;
+  place-items: center;
+  border-radius: 9px;
+  color: #fff;
+  background: #267d6b;
+  font-size: 0.8rem;
+}
+
+.approved-dashboard-host .surface-highlight-panel p {
+  margin: 0;
+  color: #657287;
+  font-size: 0.82rem;
+  line-height: 1.55;
+}
+
+.approved-dashboard-host .surface-empty-chart {
+  display: grid;
+  height: 300px;
+  place-items: center;
+  padding: 24px;
+  border: 1px dashed #cdd8e4;
+  border-radius: 13px;
+  color: #758196;
+  background: #f8fafc;
+  text-align: center;
+}
+
+.approved-dashboard-host .surface-alert-panel {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 16px;
+  margin-top: 18px;
+  padding: 18px 20px;
+  border: 1px solid #ecd4d4;
+  border-left: 5px solid #cf5555;
+  border-radius: 15px;
+  background: #fffafa;
+}
+
+.approved-dashboard-host .surface-alert-panel__icon {
+  display: grid;
+  width: 42px;
+  height: 42px;
+  place-items: center;
+  border-radius: 50%;
+  color: #fff;
+  background: #cf5555;
+  font-size: 1.15rem;
+  font-weight: 900;
+}
+
+.approved-dashboard-host .surface-alert-panel strong {
+  display: block;
+  margin-top: 3px;
+  font-size: 1rem;
+}
+
+.approved-dashboard-host .surface-alert-panel p {
+  margin: 5px 0 0;
+  color: #6b778b;
+  font-size: 0.82rem;
+  line-height: 1.5;
+}
+
+.approved-dashboard-host .surface-table-scroller {
+  max-height: 520px;
+  overflow: auto;
+}
+
+.approved-dashboard-host .surface-table thead {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+}
+
+.approved-dashboard-host .surface-table td {
+  vertical-align: top;
+}
+
+.approved-dashboard-host .surface-table td > strong,
+.approved-dashboard-host .surface-table td > small {
+  display: block;
+}
+
+.approved-dashboard-host .surface-table td > small {
+  margin-top: 4px;
+  color: #7a8698;
+  font-size: 0.7rem;
+}
+
+.approved-dashboard-host .surface-depth-badge {
+  display: inline-flex;
+  align-items: center;
+  min-height: 27px;
+  padding: 4px 9px;
+  border-radius: 999px;
+  color: #17634f;
+  background: #e9f7f2;
+  font-size: 0.73rem;
+  font-weight: 750;
+}
+
+.approved-dashboard-host .surface-depth-badge--warning {
+  color: #956113;
+  background: #fff3dc;
+}
+
+.approved-dashboard-host .surface-depth-badge--danger {
+  color: #a43d3d;
+  background: #fdecec;
+}
+
+.approved-dashboard-host .dashboard-map-link {
+  display: inline-flex;
+  align-items: center;
+  min-height: 31px;
+  padding: 6px 10px;
+  border: 1px solid #bedfd6;
+  border-radius: 9px;
+  color: #17634f;
+  background: #eef9f6;
+  font-size: 0.74rem;
+  font-weight: 800;
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.approved-dashboard-host .dashboard-map-link:hover {
+  border-color: #2b846f;
+  background: #e4f5ef;
+}
+
+@media (max-width: 1260px) {
+  .approved-dashboard-host .approved-kpi-grid,
+  .approved-dashboard-host .surface-kpi-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 900px) {
+  .approved-dashboard-host .dashboard-chart-grid--surface-summary,
+  .approved-dashboard-host .dashboard-filter-panel--surface-issue {
+    grid-template-columns: 1fr;
+  }
+
+  .approved-dashboard-host .surface-alert-panel {
+    grid-template-columns: auto 1fr;
+  }
+
+  .approved-dashboard-host .surface-alert-panel > .dashboard-map-link {
+    grid-column: 1 / -1;
+    justify-self: start;
+  }
+}
+
+@media (max-width: 680px) {
+  .approved-dashboard-host .approved-kpi-grid,
+  .approved-dashboard-host .surface-kpi-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .approved-dashboard-host .surface-kpi-grid .approved-kpi-card {
+    min-height: 155px;
+  }
+}
+
+@media (max-width: 480px) {
+  .approved-dashboard-host .approved-kpi-grid,
+  .approved-dashboard-host .surface-kpi-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.approved-dashboard-host .surface-depth-badge--neutral {
+  color: #5f6b7a;
+  background: #eef1f5;
+}

@@ -634,25 +634,19 @@ export function WorkspaceLayout() {
         <TabsNav pathname={location.pathname} user={user} />
 
         {showSearch && (
-          <>
-            {/* Mobile-only (see .workspace__menu-btn in mobile.css) — desktop
-               keeps the Data Sources sidebar permanently visible, so it has
-               no need for a drawer toggle. */}
-            <button
-              type="button"
-              className="workspace__menu-btn"
-              onClick={() => setCommandCenterMobileOpen(true)}
-              aria-label="Open data sources"
-              data-testid="mobile-menu-btn"
-            >
-              <svg viewBox="0 0 24 24" aria-hidden="true" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
-                <path d="M4 6h16M4 12h16M4 18h16" />
-              </svg>
-            </button>
-            <div className="workspace__search">
-              <FidSearch datasetIds={selectedDatasetIds} />
-            </div>
-          </>
+          /* Mobile-only (see .workspace__menu-btn in mobile.css) — desktop
+             keeps the Data Sources sidebar permanently visible. */
+          <button
+            type="button"
+            className="workspace__menu-btn"
+            onClick={() => setCommandCenterMobileOpen(true)}
+            aria-label="Open data sources"
+            data-testid="mobile-menu-btn"
+          >
+            <svg viewBox="0 0 24 24" aria-hidden="true" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+              <path d="M4 6h16M4 12h16M4 18h16" />
+            </svg>
+          </button>
         )}
 
         <div className="workspace__right">
@@ -663,6 +657,11 @@ export function WorkspaceLayout() {
           >
             <span>{t("nav.grievance")}</span>
           </NavLink>
+          {showSearch && (
+            <div className="workspace__search">
+              <FidSearch datasetIds={selectedDatasetIds} />
+            </div>
+          )}
           <button
             type="button"
             className="lang-toggle"

@@ -7,6 +7,9 @@ export const GIS_LAYER_NAMES = [
   "SWD",
   "Drain_Levels",
   "Landmark",
+  "Standing_Water",
+  "Pothole",
+  "Pothole_Top",
 ] as const;
 
 export type GisLayerName = (typeof GIS_LAYER_NAMES)[number];

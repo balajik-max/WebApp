@@ -564,6 +564,7 @@ export function ManholeDashboard({ data }: ManholeDashboardProps) {
                     <th>Top level</th>
                     <th>Bottom level</th>
                     <th>Image</th>
+                    <th>Map</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -592,6 +593,7 @@ export function ManholeDashboard({ data }: ManholeDashboardProps) {
                       <td>{record.topLevel}</td>
                       <td>{record.bottomLevel}</td>
                       <td>{record.imageNumber}</td>
+                      <td>{record.mapHref ? <a className="dashboard-map-link" href={record.mapHref}>View on map</a> : "—"}</td>
                     </tr>
                   ))}
                 </tbody>

@@ -50,12 +50,16 @@ _MODE_TO_ANOMALY: dict[str, AnomalyType] = {
     "poles": AnomalyType.POLE_REDUNDANCY,
     "drains": AnomalyType.DRAIN_ENCROACHMENT,
     "manholes": AnomalyType.MANHOLE_STATUS,
+    "potholes": AnomalyType.POTHOLE_STATUS,
+    "standing_water": AnomalyType.STANDING_WATER_STATUS,
 }
 _SETTINGS = get_settings()
 _BUFFER_BY_MODE: dict[str, float] = {
     "poles": _SETTINGS.remediation_pole_buffer_m,
     "drains": _SETTINGS.remediation_drain_buffer_m,
     "manholes": _SETTINGS.remediation_manhole_buffer_m,
+    "potholes": _SETTINGS.remediation_pothole_buffer_m,
+    "standing_water": _SETTINGS.remediation_standing_water_buffer_m,
 }
 _ELIGIBLE_AI_COLORS = {AnomalyColor.RED, AnomalyColor.YELLOW}
 _ALLOWED_IMAGE_TYPES = {"image/jpeg", "image/png", "image/webp"}
@@ -92,6 +96,8 @@ def _primary_feature_id(anomaly: SpatialAnomaly) -> uuid.UUID | None:
         metadata.get("this_feature_id")
         or metadata.get("building_id")
         or metadata.get("manhole_id")
+        or metadata.get("pothole_id")
+        or metadata.get("standing_water_id")
         or (anomaly.feature_ids[0] if anomaly.feature_ids else None)
     )
     if raw is None:
