@@ -16,6 +16,8 @@ import { NotificationBell, type NotificationItem } from "./NotificationBell";
 import type { FeatureFilter } from "../lib/types";
 import { searchFeatureFids, type FidSearchResult } from "../lib/features";
 import type { DatasetRow } from "../lib/workflow";
+import type { Basemap } from "./MapCanvas";
+import type { MapState } from "../pages/MapView";
 import {
   fetchRemediationUpdates,
   markRemediationUpdateRead,
@@ -413,14 +415,15 @@ function TabsNav({ pathname, user }: { pathname: string; user: AuthUser | null }
 /**
  * WorkspaceLayout — the shell that hosts the three tab views.
  *
- * Filters AND the selected-dataset(s) live at this level, not inside the
- * map tab, so switching tabs preserves them — the map/datasets/analytics
- * routes are unmounted and remounted by the router on every tab switch,
- * so any state that lived inside one of those pages was getting wiped
- * out the moment you left it.
+ * Filters, the selected-dataset(s), and the map's basemap style all live
+ * at this level, not inside the map tab, so switching tabs preserves them —
+ * the map/datasets/analytics routes are unmounted and remounted by the
+ * router on every tab switch, so any state that lived inside one of those
+ * pages was getting wiped out the moment you left it.
  */
 export function WorkspaceLayout() {
   const { user } = useAuth();
+
   const { t, lang, toggle } = useLanguage();
   const location = useLocation();
   const navigate = useNavigate();
@@ -524,6 +527,12 @@ export function WorkspaceLayout() {
   const [selectedDatasets, setSelectedDatasets] = useState<DatasetRow[]>([]);
   const selectedDatasetIds = useMemo(() => selectedDatasets.map((dataset) => dataset.id), [selectedDatasets]);
 
+  // Which basemap style (street/satellite/off) the user last chose — owned
+  // here for the same reason as selectedDatasets above: MapCanvas unmounts
+  // on every tab switch, so it must live here to survive that and stay
+  // exactly as the user left it until they explicitly change it again.
+  const [basemap, setBasemap] = useState<Basemap>("street");
+
   // Spatial Audit must run exactly once per fresh app load, triggered by the
   // first AI Detection icon click — never again on subsequent clicks, and
   // never again after leaving/returning to the Map tab. MapCanvas (like
@@ -562,11 +571,21 @@ export function WorkspaceLayout() {
     if (!showSearch) setCommandCenterMobileOpen(false);
   }, [showSearch]);
 
+  // Current map camera state (zoom, center, pitch, bearing) - persists through tab navigation
+  const [mapState, setMapState] = useState<MapState>({
+    zoom: 12,
+    center: [75.9218, 14.4644],
+    pitch: 0,
+    bearing: 0,
+  });
+
   const outletContext = useMemo(
     () => ({
       filter: EMPTY_FILTER,
       selectedDatasets,
       setSelectedDatasets,
+      basemap,
+      setBasemap,
       commandCenterMobileOpen,
       setCommandCenterMobileOpen,
       spatialAuditRequested,
@@ -574,8 +593,11 @@ export function WorkspaceLayout() {
       spatialAuditExecutedRef,
       spatialAuditStatus,
       setSpatialAuditStatus,
+      mapState,
+      setMapState,
     }),
-    [selectedDatasets, commandCenterMobileOpen, spatialAuditStatus, spatialAuditRequested]
+    [selectedDatasets, basemap, commandCenterMobileOpen, spatialAuditStatus, spatialAuditRequested,
+     mapState]
   );
 
   return (

@@ -125,6 +125,29 @@ interface Props {
   /** Refetch point-verification state after an Admin or Architect update. */
   refreshToken?: number;
 
+  /** Initial zoom level for the map - preserves user settings across tab navigation */
+  initialZoom?: number;
+  /** Initial center coordinates for the map - preserves user settings across tab navigation */
+  initialCenter?: [number, number];
+  /** Initial pitch (tilt) for the map - preserves user settings across tab navigation */
+  initialPitch?: number;
+  /** Initial bearing (rotation) for the map - preserves user settings across tab navigation */
+  initialBearing?: number;
+  /** Callback fired when map camera changes - used to persist state to parent */
+  onCameraChange?: (state: { zoom: number; center: [number, number]; pitch: number; bearing: number }) => void;
+
+  /** Basemap style (street/satellite/off) persisted by the parent —
+   * same rationale and pattern as initialActiveDatasets/onActiveDatasetsChange
+   * above: this component unmounts on every tab switch, so the style the
+   * user picked was silently resetting back to "street" every time they
+   * left the Map tab and came back. Seeds the initial style; onBasemapChange
+   * fires only for the user's own street/satellite/off picker choice, never
+   * for Quick Analysis's transient "cadastral" preset, so a Quick Analysis
+   * session left running across a tab switch can't leave the restored map
+   * stuck showing the cadastral tint with no dashboard to explain it. */
+  initialBasemap?: Basemap;
+  onBasemapChange?: (basemap: Basemap) => void;
+
   /** Whether the mobile Data Sources drawer is open — lifted up to
    * WorkspaceLayout so the topbar's menu button can open it. Ignored on
    * desktop, where the sidebar is always visible. */
@@ -568,7 +591,7 @@ const BASE_STYLE: maplibregl.StyleSpecification = {
   ],
 };
 
-type Basemap = "cadastral" | "street" | "satellite" | "off";
+export type Basemap = "cadastral" | "street" | "satellite" | "off";
 
 const FEATURE_SOURCE = "urban-features";
 const LAYER_POINTS = "urban-features-points";
@@ -2882,6 +2905,8 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     onFeatureSelect,
     onActiveDatasetsChange,
     initialActiveDatasets,
+    initialBasemap,
+    onBasemapChange,
     aiHighlights,
     focusFeatureId,
     onFocusHandled,
@@ -2889,6 +2914,11 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     onToggleSidebar,
     onQuickAnalysisActiveChange,
     refreshToken = 0,
+    initialZoom,
+    initialCenter,
+    initialPitch,
+    initialBearing,
+    onCameraChange,
     commandCenterMobileOpen, onCommandCenterMobileOpenChange,
     spatialAuditRequested, setSpatialAuditRequested, spatialAuditExecutedRef,
     spatialAuditStatus, onSpatialAuditStatusChange,
@@ -2959,8 +2989,8 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
   // starts empty every time a mode is entered/left, so nothing extra shows
   // until the user explicitly asks for it.
   const [extraVisibleCategories, setExtraVisibleCategories] = useState<Set<string>>(new Set());
-  const [basemap, setBasemap] = useState<Basemap>("street");
-  const basemapRef = useRef<Basemap>("street");
+  const [basemap, setBasemap] = useState<Basemap>(initialBasemap ?? "street");
+  const basemapRef = useRef<Basemap>(initialBasemap ?? "street");
   const preCadastralHiddenCategoriesRef = useRef<Set<string> | null>(null);
   const cadastralPresetActiveRef = useRef(false);
   const [hover, setHover] = useState<HoverInfo | null>(null);
@@ -3925,7 +3955,12 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     if (!map) return;
     setBasemap(next);
     applyBasemapVisibility(map, next);
-  }, [applyBasemapVisibility]);
+    // "cadastral" is Quick Analysis's own transient preset — the picker UI
+    // never offers it (only street/satellite/off) — so only persist those
+    // explicit user choices upward. Otherwise closing the tab mid-Quick-
+    // Analysis would persist "cadastral" as if the user had chosen it.
+    if (next !== "cadastral") onBasemapChange?.(next);
+  }, [applyBasemapVisibility, onBasemapChange]);
 
   useEffect(() => {
     const map = mapRef.current;
@@ -6928,8 +6963,10 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     const map = new maplibregl.Map({
       container: containerRef.current,
       style: BASE_STYLE,
-      center: DAVANGERE_CENTER,
-      zoom: DAVANGERE_ZOOM,
+      center: initialCenter || DAVANGERE_CENTER,
+      zoom: initialZoom || DAVANGERE_ZOOM,
+      pitch: initialPitch ?? 0,
+      bearing: initialBearing ?? 0,
       minZoom: 4,
       // Raster/image overlays (aerial TIFs etc.) have no tile pyramid of
       // their own, so they can be zoomed in far past where basemap tiles
@@ -7025,8 +7062,23 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
       }
     };
     map.on("mousemove", handleCursorMove);
+    map.on("mouseleave", handleCursorLeave);
     map.on("mouseout", handleCursorLeave);
     map.on("render", handleMapRender);
+
+    // Persist camera state to parent component on every moveend event.
+    // This fires after all camera changes (pan, zoom, rotate, pitch, and
+    // programmatic flyTo/fitBounds/easeTo), allowing the parent layout to
+    // restore the exact camera state when returning to the Map page.
+    const persistCameraState = () => {
+      onCameraChange?.({
+        zoom: map.getZoom(),
+        center: map.getCenter().toArray() as [number, number],
+        pitch: map.getPitch(),
+        bearing: map.getBearing(),
+      });
+    };
+    map.on("moveend", persistCameraState);
 
     map.on("load", () => {
       map.addSource(FEATURE_SOURCE, { type: "geojson", data: EMPTY_FC as unknown as GeoJSON.FeatureCollection, promoteId: "id" });
@@ -9432,10 +9484,10 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
           scopeLabel={attributeTable.sourceLabel}
           layerFilter={attributeTable}
           onClose={() => setAttributeTable(null)}
-          onLocateFeature={(row: FeatureTableRow) => {
-            setAttributeTable(null);
-            setPendingFocusFeatureId(row.id);
-          }}
+           onLocateFeature={(row: FeatureTableRow) => {
+             setAttributeTable(null);
+             setPendingFocusFeatureId(row.id);
+           }}
         />
       )}
     </>
