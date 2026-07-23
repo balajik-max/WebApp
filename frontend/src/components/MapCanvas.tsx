@@ -22,6 +22,11 @@ import {
   fetchAnalyticsFeatures, fetchDrainEncroachment, fetchAnomalies, fetchRoadInspection, runSpatialAudit, updateAnomalyStatus, fetchAllClassMappings,
   type DrainEncroachmentReport, type RoadInspection, type RoadInspectionFeature, type SpatialAnomaly, type AnomalyStatus,
 } from "../lib/workflow";
+import type { QuickAnalysisViewState } from "../lib/quickAnalysisViewState";
+import {
+  ASSET_GROUP_CLASSES, ALL_ASSET_GROUP_CANONICAL,
+  ROAD_ISSUE_DEPTH_KEYS, issueNumberValue, isPotholeFeature, isStandingWaterFeature,
+} from "../lib/quickAnalysisStats";
 import { AttributeTable } from "./AttributeTable";
 import { PanoramaViewer } from "./PanoramaViewer";
 import { CylinderPanoramaViewer } from "./CylinderPanoramaViewer";
@@ -126,6 +131,10 @@ interface Props {
   onToggleSidebar?: () => void;
   /** Lets the page hide global AI/report floating buttons in Quick Analysis. */
   onQuickAnalysisActiveChange?: (active: boolean) => void;
+  /** Session-scoped Quick Analysis UI state lifted to WorkspaceLayout so it
+   * survives route/tab switches that unmount this component. */
+  quickAnalysisViewState?: QuickAnalysisViewState;
+  onQuickAnalysisViewStateChange?: (state: QuickAnalysisViewState) => void;
   /** Refetch point-verification state after an Admin or Architect update. */
   refreshToken?: number;
 
@@ -1022,6 +1031,11 @@ const LAYER_QUICK_ANALYSIS_WATER_LINE = "quick-analysis-water-line";
 
 const QUICK_ANALYSIS_TELECOM_LINE_SOURCE = "quick-analysis-telecom-lines-source";
 const LAYER_QUICK_ANALYSIS_TELECOM_LINE = "quick-analysis-telecom-line";
+
+const QUICK_ANALYSIS_ROAD_ISSUE_SOURCE = "quick-analysis-road-issues";
+const LAYER_QUICK_ANALYSIS_ROAD_ISSUE_FILL = "quick-analysis-road-issue-fill";
+const LAYER_QUICK_ANALYSIS_ROAD_ISSUE_LINE = "quick-analysis-road-issue-line";
+const LAYER_QUICK_ANALYSIS_ROAD_ISSUE_POINT = "quick-analysis-road-issue-point";
 
 // Spatial Audit Engine — persisted findings (pole redundancy, drain
 // encroachment, manhole status), one shared point layer colored by the
@@ -2584,11 +2598,7 @@ const QUICK_ANALYSIS_MAP_CONFIG: Record<string, QuickAnalysisMapConfig> = {
   },
   "asset-catalog": {
     title: "Full Asset Catalog",
-    description: "All geo-referenced survey features in the active dataset.",
-  },
-  "condition-overview": {
-    title: "Asset Condition Overview",
-    description: "Condition and severity signals across mapped infrastructure.",
+    description: "Every mapped feature with its type, location and recorded condition. Pick an asset to focus the map and the numbers.",
   },
   "survey-kpis": {
     title: "Survey KPIs",
@@ -2601,6 +2611,14 @@ const QUICK_ANALYSIS_MAP_CONFIG: Record<string, QuickAnalysisMapConfig> = {
   "road-width": {
     title: "Road Width Check",
     description: "Road segments narrowed below the local average, marked on the cadastral map.",
+  },
+  "pothole-check": {
+    title: "Pothole Surface Check",
+    description: "Pothole and surface-depression records with depth, elevation and road-surface evidence.",
+  },
+  "standing-water": {
+    title: "Standing Water Check",
+    description: "Waterlogging and ponding records with water depth, elevation and surface-condition evidence.",
   },
 };
 
@@ -2681,6 +2699,12 @@ function summarizeAnomalyForTooltip(a: SpatialAnomaly): { color: AnomalyDisplayC
         ? `Nearest drain: ${m.nearest_drain_category} (${m.nearest_drain_distance_m ?? "?"}m)`
         : "No nearby drain found"
     );
+  } else if (a.anomaly_type === "powerline_proximity") {
+    const basis = typeof m.basis === "string" ? `${m.basis} · ` : "";
+    const distance = m.nearest_powerline_distance_m ?? "?";
+    const red = m.red_threshold_m ?? m.danger_threshold_m ?? "?";
+    const yellow = m.yellow_threshold_m ?? "?";
+    metric = `${basis}${distance}m from nearest power line (red <= ${red}m, yellow <= ${yellow}m)`;
   }
   const resolved = a.status === "resolved";
   return {
@@ -2929,6 +2953,8 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     sidebarCollapsed = false,
     onToggleSidebar,
     onQuickAnalysisActiveChange,
+    quickAnalysisViewState,
+    onQuickAnalysisViewStateChange,
     refreshToken = 0,
     initialZoom,
     initialCenter,
@@ -2942,10 +2968,22 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
   ref
 ) {
   const { t } = useLanguage();
-  const [sidebarPanel, setSidebarPanel] = useState<"layers" | "analysis">("layers");
+  const [sidebarPanel, setSidebarPanel] = useState<"layers" | "analysis">(
+    quickAnalysisViewState?.sidebarPanel ?? "layers"
+  );
+  const analysisWorkspaceActive = sidebarPanel === "analysis";
+  const layersWorkspaceActive = !analysisWorkspaceActive;
   // The card list always remains in the Quick Analysis sidebar. A selected
-  const [quickAnalysisCardId, setQuickAnalysisCardId] = useState<string | null>(null);
-  const [utilitySubCategory, setUtilitySubCategory] = useState<string>("all");
+  const [quickAnalysisCardId, setQuickAnalysisCardId] = useState<string | null>(
+    quickAnalysisViewState?.quickAnalysisCardId ?? null
+  );
+  const activeQuickAnalysisCardId = analysisWorkspaceActive ? quickAnalysisCardId : null;
+  const [utilitySubCategory, setUtilitySubCategory] = useState<string>(
+    quickAnalysisViewState?.utilitySubCategory ?? "all"
+  );
+  const [assetCategoryFilter, setAssetCategoryFilter] = useState<string>(
+    quickAnalysisViewState?.assetCategoryFilter ?? "all"
+  );
   const [quickAnalysisFeatures, setQuickAnalysisFeatures] = useState<UrbanFeature[]>([]);
   const [quickAnalysisLoading, setQuickAnalysisLoading] = useState(false);
   const [quickAnalysisError, setQuickAnalysisError] = useState<string | null>(null);
@@ -2953,6 +2991,9 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
   const [quickDrainEncroachmentLoading, setQuickDrainEncroachmentLoading] = useState(false);
   const [quickDrainEncroachmentError, setQuickDrainEncroachmentError] = useState<string | null>(null);
   const [quickAnalysisTool, setQuickAnalysisTool] = useState<QuickAnalysisTool>(null);
+  const [quickAnalysisCanvasBlank, setQuickAnalysisCanvasBlank] = useState(
+    quickAnalysisViewState?.quickAnalysisCanvasBlank ?? false
+  );
   const quickAnalysisToolRef = useRef<QuickAnalysisTool>(null);
   const [selectedQuickAnalysisFeature, setSelectedQuickAnalysisFeature] = useState<UrbanFeature | null>(null);
   const quickAnalysisFeatureByIdRef = useRef<Map<string, UrbanFeature>>(new Map());
@@ -2964,8 +3005,25 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
   const quickAnalysisPreviousMapRef = useRef<{ basemap: Basemap; detectionMode: DetectionMode; aiOverlayEnabled: boolean } | null>(null);
 
   useEffect(() => {
-    onQuickAnalysisActiveChange?.(sidebarPanel === "analysis" && !sidebarCollapsed);
-  }, [onQuickAnalysisActiveChange, sidebarCollapsed, sidebarPanel]);
+    onQuickAnalysisActiveChange?.(analysisWorkspaceActive);
+  }, [analysisWorkspaceActive, onQuickAnalysisActiveChange]);
+
+  useEffect(() => {
+    onQuickAnalysisViewStateChange?.({
+      sidebarPanel,
+      quickAnalysisCardId,
+      utilitySubCategory,
+      assetCategoryFilter,
+      quickAnalysisCanvasBlank,
+    });
+  }, [
+    assetCategoryFilter,
+    onQuickAnalysisViewStateChange,
+    quickAnalysisCanvasBlank,
+    quickAnalysisCardId,
+    sidebarPanel,
+    utilitySubCategory,
+  ]);
 
   useEffect(() => {
     if (!selectedQuickAnalysisFeature) return;
@@ -3801,8 +3859,10 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
       || basemap !== "cadastral"
       || detectionMode
       || roadInspectionActive
-      || quickAnalysisCardId === "drain-encroachment"
-      || quickAnalysisCardId === "road-width"
+      || activeQuickAnalysisCardId === "drain-encroachment"
+      || activeQuickAnalysisCardId === "road-width"
+      || activeQuickAnalysisCardId === "pothole-check"
+      || activeQuickAnalysisCardId === "standing-water"
     ) return;
 
     const markers: maplibregl.Marker[] = [];
@@ -3813,9 +3873,9 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
       const normCat = normalizeCategoryName(category);
       const canon = feature.properties.canonical_class ?? "";
 
-      if (quickAnalysisCardId === "manhole-detail") {
+      if (activeQuickAnalysisCardId === "manhole-detail") {
         if (canon !== "Access_Point" && normCat !== "manhole") return false;
-      } else if (quickAnalysisCardId === "utility-tracker") {
+      } else if (activeQuickAnalysisCardId === "utility-tracker") {
         const isUtilityPoint = ["power pole", "power pole with light", "light pole", "solar light", "transformer", "high mast", "flag pole", "microwave tower", "tower", "water tank", "water pump", "overhead tank", "cc camera"].includes(normCat)
           || ["Utility_Pole", "Illumination_Asset", "Electrical_Asset", "Hydrological_Asset", "Telecom_Asset", "Security_Asset"].includes(canon);
         if (!isUtilityPoint) return false;
@@ -3868,9 +3928,9 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
           // A focused point-analysis card must show its subject at the fitted
           // ward extent. The normal cadastral min-zoom rule is for the busy
           // all-assets map and would hide manholes/utilities here.
-          element.dataset.minZoom = String(quickAnalysisCardId ? 0 : cadastralMarkerMinZoom(feature));
+          element.dataset.minZoom = String(activeQuickAnalysisCardId ? 0 : cadastralMarkerMinZoom(feature));
           applyCadastralMarkerZoom(element, map.getZoom());
-          if (quickAnalysisCardId === "manhole-detail") {
+          if (activeQuickAnalysisCardId === "manhole-detail") {
             // Select the exact marker that was clicked. The transparent map
             // hit circles overlap at ward scale and can otherwise return a
             // nearby manhole instead of this one.
@@ -3914,7 +3974,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
       for (const marker of markers) marker.remove();
       if (cadastralPointMarkersRef.current === markers) cadastralPointMarkersRef.current = [];
     };
-  }, [basemap, detectionMode, hiddenCategories, loadedFeatures, mapReady, quickAnalysisCardId, roadInspectionActive, utilitySubCategory]);
+  }, [activeQuickAnalysisCardId, basemap, detectionMode, hiddenCategories, loadedFeatures, mapReady, roadInspectionActive, utilitySubCategory]);
 
   useEffect(() => {
     basemapRef.current = basemap;
@@ -3979,6 +4039,16 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     if (next !== "cadastral") onBasemapChange?.(next);
   }, [applyBasemapVisibility, onBasemapChange]);
 
+  const hideBaseMapBackground = useCallback((map: maplibregl.Map) => {
+    [
+      "osm",
+      "satellite",
+      CADASTRAL_TILE_LAYER,
+    ].forEach((layerId) => {
+      if (map.getLayer(layerId)) map.setLayoutProperty(layerId, "visibility", "none");
+    });
+  }, []);
+
   useEffect(() => {
     const map = mapRef.current;
     if (!map || !mapReady) return;
@@ -3986,7 +4056,8 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
   }, [applyBasemapVisibility, basemap, mapReady]);
 
   useEffect(() => {
-    if (detectionMode || roadInspectionActive || quickAnalysisCardId) return;
+    if (analysisWorkspaceActive) return;
+    if (detectionMode || roadInspectionActive || activeQuickAnalysisCardId) return;
 
     if (basemap !== "cadastral") {
       if (!cadastralPresetActiveRef.current) return;
@@ -4018,7 +4089,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
       }
       return nextHidden;
     });
-  }, [basemap, categoryStats, detectionMode, hiddenCategories, roadInspectionActive]);
+  }, [activeQuickAnalysisCardId, analysisWorkspaceActive, basemap, categoryStats, detectionMode, hiddenCategories, roadInspectionActive]);
 
   // Renders the locked vertices plus, while still placing the shape, a live
   // preview out to `previewPoint` (the current mouse position) — the same
@@ -4858,7 +4929,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     // While an AI Detection mode owns the map, the detection effect below
     // drives layer visibility by canonical class; this manual-checklist
     // filter must not fight it, so stand down in that case.
-    if (detectionMode || roadInspectionActive || quickAnalysisCardId) return;
+    if (analysisWorkspaceActive || detectionMode || roadInspectionActive || activeQuickAnalysisCardId) return;
     const hiddenForBase = selectedVisualizationFeatures.length > 0
       ? new Set(selectedVisualizationCompositeIds)
       : new Set<string>();
@@ -4886,7 +4957,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     if (map.getLayer(VIZ_SELECTED_POLY_OUTLINE)) map.setFilter(VIZ_SELECTED_POLY_OUTLINE, withFeatureVisibility(POLY_BASE_FILTER, hiddenCategories, noHiddenVisualizationLayers));
     if (map.getLayer(VIZ_SELECTED_LINES)) map.setFilter(VIZ_SELECTED_LINES, withFeatureVisibility(LINE_BASE_FILTER, hiddenCategories, noHiddenVisualizationLayers));
     if (map.getLayer(VIZ_SELECTED_POINTS)) map.setFilter(VIZ_SELECTED_POINTS, withFeatureVisibility(POINT_BASE_FILTER, hiddenCategories, noHiddenVisualizationLayers));
-  }, [mapReady, hiddenCategories, detectionMode, quickAnalysisCardId, roadInspectionActive, selectedVisualizationCompositeIds, selectedVisualizationFeatures.length]);
+  }, [activeQuickAnalysisCardId, analysisWorkspaceActive, mapReady, hiddenCategories, detectionMode, roadInspectionActive, selectedVisualizationCompositeIds, selectedVisualizationFeatures.length]);
 
   // Each Quick Analysis card owns a focused cadastral view. Drain keeps only
   // building context + drain lines; utility and manhole views keep building
@@ -4894,8 +4965,8 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
   // survey. None of these filters reuse AI Detection state.
   useEffect(() => {
     const map = mapRef.current;
-    if (!mapReady || !map || !quickAnalysisCardId) return;
-    if (!["drain-encroachment", "utility-tracker", "manhole-detail", "road-width"].includes(quickAnalysisCardId)) return;
+    if (!analysisWorkspaceActive || !mapReady || !map || !activeQuickAnalysisCardId) return;
+    if (!["drain-encroachment", "utility-tracker", "manhole-detail", "road-width", "pothole-check", "standing-water"].includes(activeQuickAnalysisCardId)) return;
     const buildingFilter: maplibregl.FilterSpecification = [
       "all", POLY_BASE_FILTER,
       ["==", ["coalesce", ["get", "canonical_class"], ""], "Building"],
@@ -4905,7 +4976,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     if (map.getLayer(LAYER_POLY_OUTLINE)) map.setFilter(LAYER_POLY_OUTLINE, buildingFilter);
     if (map.getLayer(LAYER_POLY_FILL_CADASTRAL)) map.setFilter(LAYER_POLY_FILL_CADASTRAL, buildingFilter);
     if (map.getLayer(LAYER_POLY_OUTLINE_CADASTRAL)) map.setFilter(LAYER_POLY_OUTLINE_CADASTRAL, buildingFilter);
-    if (quickAnalysisCardId === "drain-encroachment") {
+    if (activeQuickAnalysisCardId === "drain-encroachment") {
       const drainFilter: maplibregl.FilterSpecification = [
         "all", LINE_BASE_FILTER,
         ["==", ["coalesce", ["get", "canonical_class"], ""], "Drainage_Asset"],
@@ -4919,7 +4990,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
       return;
     }
 
-    if (quickAnalysisCardId === "road-width") {
+    if (activeQuickAnalysisCardId === "road-width" || activeQuickAnalysisCardId === "pothole-check" || activeQuickAnalysisCardId === "standing-water") {
       const roadFilter = withRoadCompatibilityVisibility(LINE_BASE_FILTER, true);
       if (map.getLayer(LAYER_LINES)) map.setFilter(LAYER_LINES, roadFilter);
       if (map.getLayer(LAYER_LINES_CADASTRAL)) map.setFilter(LAYER_LINES_CADASTRAL, roadFilter);
@@ -4930,7 +5001,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
       return;
     }
 
-    const targetClasses = quickAnalysisCardId === "manhole-detail"
+    const targetClasses = activeQuickAnalysisCardId === "manhole-detail"
       ? ["Access_Point"]
       : ["Access_Point", "Illumination_Asset", "Utility_Pole"];
     const targetPoints: maplibregl.FilterSpecification = [
@@ -4943,7 +5014,40 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     if (map.getLayer(LAYER_POINTS_CADASTRAL_HIT)) map.setFilter(LAYER_POINTS_CADASTRAL_HIT, targetPoints);
     if (map.getLayer(LAYER_POINTS_CADASTRAL)) map.setFilter(LAYER_POINTS_CADASTRAL, targetPoints);
     if (map.getLayer(REFERENCE_SURVEY_ROAD_LABELS)) map.setFilter(REFERENCE_SURVEY_ROAD_LABELS, hideAll);
-  }, [mapReady, quickAnalysisCardId]);
+  }, [activeQuickAnalysisCardId, analysisWorkspaceActive, mapReady]);
+
+  // Full Asset Catalog: an optional per-group/per-category focus. "All"
+  // leaves the whole survey visible (its original behaviour, inherited from
+  // whatever the base hiddenCategories filter last set); picking a group or
+  // a specific category restricts every base layer to just that so the
+  // catalog's charts and the map always agree on what's counted.
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!analysisWorkspaceActive || !mapReady || !map || activeQuickAnalysisCardId !== "asset-catalog") return;
+    const filter = assetCategoryFilter || "all";
+    const groupClasses = ASSET_GROUP_CLASSES[filter as keyof typeof ASSET_GROUP_CLASSES];
+    const classFilter: maplibregl.FilterSpecification | null =
+      filter === "all"
+        ? null
+        : groupClasses
+          ? ["in", ["coalesce", ["get", "canonical_class"], ""], ["literal", groupClasses]]
+          : filter === "other"
+            ? ["!", ["in", ["coalesce", ["get", "canonical_class"], ""], ["literal", ALL_ASSET_GROUP_CANONICAL]]]
+            : ["==", ["coalesce", ["get", "category"], ""], filter];
+    const withAssetFilter = (base: maplibregl.FilterSpecification): maplibregl.FilterSpecification =>
+      classFilter ? (["all", base, classFilter] as unknown as maplibregl.FilterSpecification) : base;
+    const noHidden = new Set<string>();
+
+    if (map.getLayer(LAYER_POLY_FILL)) map.setFilter(LAYER_POLY_FILL, withFeatureVisibility(withAssetFilter(POLY_BASE_FILTER), hiddenCategories, noHidden));
+    if (map.getLayer(LAYER_POLY_OUTLINE)) map.setFilter(LAYER_POLY_OUTLINE, withFeatureVisibility(withAssetFilter(POLY_BASE_FILTER), hiddenCategories, noHidden));
+    if (map.getLayer(LAYER_POLY_FILL_CADASTRAL)) map.setFilter(LAYER_POLY_FILL_CADASTRAL, withFeatureVisibility(withAssetFilter(POLY_BASE_FILTER), hiddenCategories, noHidden));
+    if (map.getLayer(LAYER_POLY_OUTLINE_CADASTRAL)) map.setFilter(LAYER_POLY_OUTLINE_CADASTRAL, withFeatureVisibility(withAssetFilter(POLY_BASE_FILTER), hiddenCategories, noHidden));
+    if (map.getLayer(LAYER_LINES)) map.setFilter(LAYER_LINES, withFeatureVisibility(withAssetFilter(LINE_BASE_FILTER), hiddenCategories, noHidden));
+    if (map.getLayer(LAYER_LINES_CADASTRAL)) map.setFilter(LAYER_LINES_CADASTRAL, withFeatureVisibility(withAssetFilter(LINE_BASE_FILTER), hiddenCategories, noHidden));
+    if (map.getLayer(LAYER_POINTS)) map.setFilter(LAYER_POINTS, withFeatureVisibility(withAssetFilter(POINT_BASE_FILTER), hiddenCategories, noHidden));
+    if (map.getLayer(LAYER_POINTS_CADASTRAL_HIT)) map.setFilter(LAYER_POINTS_CADASTRAL_HIT, withFeatureVisibility(withAssetFilter(CADASTRAL_POINT_HIT_FILTER), hiddenCategories, noHidden));
+    if (map.getLayer(LAYER_POINTS_CADASTRAL)) map.setFilter(LAYER_POINTS_CADASTRAL, withFeatureVisibility(withAssetFilter(CADASTRAL_POINT_HIT_FILTER), hiddenCategories, noHidden));
+  }, [activeQuickAnalysisCardId, analysisWorkspaceActive, mapReady, assetCategoryFilter, hiddenCategories]);
 
   // Drain Encroachment fades the cadastral fabric so the drainage network
   // owns the visual hierarchy. Manhole Detail retains that fabric, but gives
@@ -4953,11 +5057,12 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
   useEffect(() => {
     const map = mapRef.current;
     if (!mapReady || !map) return;
-    const isDrainAnalysis = quickAnalysisCardId === "drain-encroachment";
-    const isManholeDetail = quickAnalysisCardId === "manhole-detail";
-    const isRoadWidth = quickAnalysisCardId === "road-width";
-    const isUtilityTracker = quickAnalysisCardId === "utility-tracker";
-    const hasFocusedCadastralSubject = isDrainAnalysis || isManholeDetail || isRoadWidth || isUtilityTracker;
+    const isDrainAnalysis = activeQuickAnalysisCardId === "drain-encroachment";
+    const isManholeDetail = activeQuickAnalysisCardId === "manhole-detail";
+    const isRoadWidth = activeQuickAnalysisCardId === "road-width";
+    const isUtilityTracker = activeQuickAnalysisCardId === "utility-tracker";
+    const isRoadSurfaceIssue = activeQuickAnalysisCardId === "pothole-check" || activeQuickAnalysisCardId === "standing-water";
+    const hasFocusedCadastralSubject = isDrainAnalysis || isManholeDetail || isRoadWidth || isUtilityTracker || isRoadSurfaceIssue;
     const activeFeatureId = selectedQuickAnalysisFeature?.properties.id ?? "";
     const selectedManholeId = isManholeDetail
       && selectedQuickAnalysisFeature?.properties.canonical_class === "Access_Point"
@@ -4981,7 +5086,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
         "line-color",
         isDrainAnalysis
           ? ["case", ["==", ["get", "id"], activeFeatureId], "#9f1239", "#e11d48"]
-          : isRoadWidth
+          : (isRoadWidth || isRoadSurfaceIssue)
             ? "#94a3b8"
             : cadastralLineColorExpression()
       );
@@ -5004,11 +5109,11 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
           ? (hasDrainSelection
               ? ["case", ["==", ["get", "id"], activeFeatureId], 1, 0.2]
               : 0.98)
-          : (isRoadWidth || isUtilityTracker)
+          : (isRoadWidth || isUtilityTracker || isRoadSurfaceIssue)
             ? 0.18
             : 0.82
       );
-      if (isDrainAnalysis || isRoadWidth) map.moveLayer(LAYER_LINES_CADASTRAL);
+      if (isDrainAnalysis || isRoadWidth || isRoadSurfaceIssue) map.moveLayer(LAYER_LINES_CADASTRAL);
     }
     if (map.getLayer(LAYER_POINTS_CADASTRAL_HIT)) {
       map.setPaintProperty(
@@ -5059,7 +5164,20 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     ].forEach((layerId) => {
       if (map.getLayer(layerId)) map.setLayoutProperty(layerId, "visibility", "none");
     });
-  }, [mapReady, quickAnalysisCardId, selectedQuickAnalysisFeature]);
+  }, [activeQuickAnalysisCardId, mapReady, selectedQuickAnalysisFeature]);
+
+  // Quick Analysis normally uses the raster street/cadastral map as context.
+  // This toggle hides only that background image layer; surveyed cadastral
+  // features, labels, highlighted overlays, and click targets stay visible.
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!analysisWorkspaceActive || !mapReady || !map || !activeQuickAnalysisCardId) return;
+    if (!quickAnalysisCanvasBlank) {
+      applyBasemapVisibility(map, basemap);
+      return;
+    }
+    hideBaseMapBackground(map);
+  }, [activeQuickAnalysisCardId, analysisWorkspaceActive, applyBasemapVisibility, basemap, hideBaseMapBackground, mapReady, quickAnalysisCanvasBlank]);
 
   // Publish the selected source layer into its own viewport-scoped overlay.
   // Large datasets such as AMRUT exceed the normal 5,000-feature base snapshot;
@@ -5282,7 +5400,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     // The Quick Analysis dashboard owns the feature source while it is open.
     // Do not let a concurrent home-map refresh overwrite that independent
     // dataset snapshot.
-    if (quickAnalysisActiveRef.current || quickAnalysisCardId) return;
+    if (analysisWorkspaceActive || quickAnalysisActiveRef.current) return;
     const requestSequence = ++fetchSequenceRef.current;
 
     // If no dataset is selected AND no real topbar filter is active,
@@ -5318,7 +5436,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
       applyFeatureCollection(EMPTY_FC);
       setStatus({ loading: false, count: 0, truncated: false, error: msg, bbox });
     }
-  }, [applyFeatureCollection, quickAnalysisCardId]);
+  }, [analysisWorkspaceActive, applyFeatureCollection]);
 
   const scheduleFetch = useCallback(() => {
     if (debounceRef.current !== null) window.clearTimeout(debounceRef.current);
@@ -5715,7 +5833,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     if (!mapReady || !map) return;
     const src = map.getSource(MANHOLE_ROUTES_SOURCE) as GeoJSONSource | undefined;
     if (!src) return;
-    if (quickAnalysisCardId) {
+    if (analysisWorkspaceActive) {
       src.setData({ type: "FeatureCollection", features: [] });
       return;
     }
@@ -5810,7 +5928,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
       if (map.getLayer(LAYER_MANHOLE_ROUTES)) map.moveLayer(LAYER_MANHOLE_ROUTES);
       if (map.getLayer(LAYER_MANHOLE_FLOW_ARROWS)) map.moveLayer(LAYER_MANHOLE_FLOW_ARROWS);
     }
-  }, [mapReady, manholeRecommendAnswer, quickAnalysisCardId]);
+  }, [analysisWorkspaceActive, mapReady, manholeRecommendAnswer]);
 
   // Push the current manhole-recommend answer's proposed manhole locations
   // (coverage gaps / disconnected manholes) into their own point layer.
@@ -5819,7 +5937,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     if (!mapReady || !map) return;
     const src = map.getSource(MANHOLE_POINTS_SOURCE) as GeoJSONSource | undefined;
     if (!src) return;
-    if (quickAnalysisCardId) {
+    if (analysisWorkspaceActive) {
       src.setData({ type: "FeatureCollection", features: [] });
       return;
     }
@@ -5833,7 +5951,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
         properties: { id: loc.id, reason: loc.reason },
       })),
     });
-  }, [mapReady, manholeRecommendAnswer, quickAnalysisCardId]);
+  }, [analysisWorkspaceActive, mapReady, manholeRecommendAnswer]);
 
   // Push manholes with no real sewage/drain pipe within reach (network
   // mode) into their own point layer, so "not connected to the sewage
@@ -5843,7 +5961,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     if (!mapReady || !map) return;
     const src = map.getSource(MANHOLE_UNCONNECTED_SOURCE) as GeoJSONSource | undefined;
     if (!src) return;
-    if (quickAnalysisCardId) {
+    if (analysisWorkspaceActive) {
       src.setData({ type: "FeatureCollection", features: [] });
       return;
     }
@@ -5857,7 +5975,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
         properties: { id: loc.id, reason: loc.reason },
       })),
     });
-  }, [mapReady, manholeRecommendAnswer, quickAnalysisCardId]);
+  }, [analysisWorkspaceActive, mapReady, manholeRecommendAnswer]);
 
   // Keep the ref mirror in sync so applyFeatureCollection (a stable
   // useCallback) always reads the current mode on the next fetch.
@@ -5909,7 +6027,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     // geometries; the detection-mode cleanup below previously cleared hidden
     // categories and caused the general filter effect to restore every road,
     // power and unclassified line after the drain filter had been applied.
-    if (quickAnalysisActiveRef.current || quickAnalysisCardId) return;
+    if (analysisWorkspaceActive || quickAnalysisActiveRef.current) return;
     if (!detectionMode && !roadInspectionActive) {
       // Hand control back to the manual checklist filter.
       setHiddenCategories(new Set());
@@ -5938,7 +6056,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     if (map.getLayer(LAYER_POINTS_CADASTRAL_HIT)) map.setFilter(LAYER_POINTS_CADASTRAL_HIT, focusedFilter(CADASTRAL_POINT_HIT_FILTER));
     if (map.getLayer(LAYER_POINTS_CADASTRAL)) map.setFilter(LAYER_POINTS_CADASTRAL, focusedFilter(CADASTRAL_POINT_HIT_FILTER));
     // LAYER_PHOTOS is intentionally left as-is so geotagged evidence stays visible.
-  }, [mapReady, detectionMode, roadInspectionActive, extraVisibleCategories, quickAnalysisCardId]);
+  }, [analysisWorkspaceActive, mapReady, detectionMode, roadInspectionActive, extraVisibleCategories]);
 
   // Drives the two mode-specific map treatments: (1) Drains mode recolors
   // building polygons by their own encroachment finding instead of showing
@@ -6022,7 +6140,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
       // specific mode). Drains mode communicates via polygon fill, so it
       // hides the road lines too.
       const roadInScope = (aiOn && detectionMode !== "drains" && (detectionMode === "roads" || detectionMode === null))
-        || quickAnalysisCardId === "road-width";
+        || activeQuickAnalysisCardId === "road-width";
       const roadFilter: maplibregl.FilterSpecification = roadInScope
         ? ["==", ["get", "anomaly_type"], "road_width_narrowing"]
         : ["==", ["get", "anomaly_type"], "__none__"];
@@ -6033,7 +6151,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
       return buildCategoryColorExpression(colorByCategoryRef.current);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [mapReady, detectionMode, roadInspectionActive, anomalies, aiOverlayEnabled, quickAnalysisCardId]);
+  }, [activeQuickAnalysisCardId, mapReady, detectionMode, roadInspectionActive, anomalies, aiOverlayEnabled]);
 
   // Manhole heatmap — populate from the real, persisted manhole_status audit
   // findings (the same red/yellow/green results the individual anomaly
@@ -6259,25 +6377,73 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     toggleMeasureActive();
   }, [toggleMeasureActive]);
 
+  const toggleQuickAnalysisCanvasBlank = useCallback(() => {
+    setQuickAnalysisCanvasBlank((current) => !current);
+  }, []);
+
+  const restoreMainMapWorkspace = useCallback(() => {
+    const previous = quickAnalysisPreviousMapRef.current;
+    if (!previous) return;
+    quickAnalysisPreviousMapRef.current = null;
+    setDetectionMode(previous.detectionMode);
+    setAiOverlayEnabled(previous.aiOverlayEnabled);
+    changeBasemap(previous.basemap);
+    scheduleFetch();
+  }, [changeBasemap, scheduleFetch]);
+
+  const applyQuickAnalysisIdleWorkspace = useCallback(() => {
+    if (measureActiveRef.current) closeMeasureSafely();
+    roadInspectionActiveRef.current = false;
+    setRoadInspectionActive(false);
+    closeRoadInspection();
+    setSelectedAnomalyId(null);
+    setDetectionMode(null);
+    setAiOverlayEnabled(false);
+    setExtraVisibleCategories(new Set());
+    setManholeRecommendOpen(false);
+    streetPickModeRef.current = false;
+    setStreetPickMode(false);
+    placemarkModeRef.current = false;
+    setPlacemarkMode(false);
+    changeBasemap("off");
+    applyFeatureCollection(EMPTY_FC);
+    setQuickAnalysisFeatures([]);
+    setQuickAnalysisError(null);
+    setStatus({ loading: false, count: 0, truncated: false, error: null, bbox: null });
+    setHover(null);
+  }, [applyFeatureCollection, changeBasemap, closeMeasureSafely, closeRoadInspection]);
+
+  useEffect(() => {
+    if (analysisWorkspaceActive) {
+      quickAnalysisActiveRef.current = true;
+      if (!quickAnalysisPreviousMapRef.current) {
+        quickAnalysisPreviousMapRef.current = { basemap, detectionMode, aiOverlayEnabled };
+      }
+      if (!activeQuickAnalysisCardId) applyQuickAnalysisIdleWorkspace();
+      return;
+    }
+
+    quickAnalysisActiveRef.current = false;
+    if (measureActiveRef.current) closeMeasureSafely();
+    restoreMainMapWorkspace();
+  }, [
+    activeQuickAnalysisCardId,
+    analysisWorkspaceActive,
+    aiOverlayEnabled,
+    applyQuickAnalysisIdleWorkspace,
+    basemap,
+    closeMeasureSafely,
+    detectionMode,
+    restoreMainMapWorkspace,
+  ]);
+
   // A selected card is presented as a focused cadastral dashboard. The
   // dashboard controls this state directly rather than routing through the
   // normal map-tool menu, so that menu and unrelated controls never appear
   // as part of a Quick Analysis result.
   useEffect(() => {
-    if (!quickAnalysisCardId) {
-      const previous = quickAnalysisPreviousMapRef.current;
-      if (!previous) return;
-      quickAnalysisPreviousMapRef.current = null;
-      setDetectionMode(previous.detectionMode);
-      setAiOverlayEnabled(previous.aiOverlayEnabled);
-      changeBasemap(previous.basemap);
-      setQuickAnalysisFeatures([]);
-      setQuickAnalysisError(null);
-      scheduleFetch();
-      return;
-    }
-
-    const config = QUICK_ANALYSIS_MAP_CONFIG[quickAnalysisCardId];
+    if (!analysisWorkspaceActive || !activeQuickAnalysisCardId) return;
+    const config = QUICK_ANALYSIS_MAP_CONFIG[activeQuickAnalysisCardId];
     if (!config) return;
     roadInspectionAbortRef.current?.abort();
     roadInspectionActiveRef.current = false;
@@ -6294,7 +6460,8 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     setDetectionMode(null);
     setAiOverlayEnabled(false);
     changeBasemap("cadastral");
-  }, [changeBasemap, quickAnalysisCardId, scheduleFetch]);
+    if (quickAnalysisCanvasBlank && mapRef.current) hideBaseMapBackground(mapRef.current);
+  }, [activeQuickAnalysisCardId, analysisWorkspaceActive, changeBasemap, hideBaseMapBackground, quickAnalysisCanvasBlank]);
 
   // Quick Analysis must not read its metrics from the home-map viewport
   // state. Fetch a full, independent snapshot of the active datasets while
@@ -6302,7 +6469,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
   // This keeps a result available even if the home map has hidden the source
   // layer or is showing a different live selection.
   useEffect(() => {
-    if (!quickAnalysisCardId || !mapReady) return;
+    if (!analysisWorkspaceActive || !activeQuickAnalysisCardId || !mapReady) return;
     if (activeDatasetIds.length === 0) {
       setQuickAnalysisFeatures([]);
       setQuickAnalysisLoading(false);
@@ -6330,7 +6497,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
         if (!controller.signal.aborted) setQuickAnalysisLoading(false);
       });
     return () => controller.abort();
-  }, [activeDatasetIds, applyFeatureCollection, mapReady, quickAnalysisCardId]);
+  }, [activeQuickAnalysisCardId, analysisWorkspaceActive, activeDatasetIds, applyFeatureCollection, mapReady]);
 
   useEffect(() => {
     if (quickAnalysisCardId !== "drain-encroachment" || activeDatasetIds.length === 0) {
@@ -6339,6 +6506,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
       setQuickDrainEncroachmentError(null);
       return;
     }
+    if (!analysisWorkspaceActive) return;
     const controller = new AbortController();
     setQuickDrainEncroachmentLoading(true);
     setQuickDrainEncroachmentError(null);
@@ -6356,7 +6524,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
         if (!controller.signal.aborted) setQuickDrainEncroachmentLoading(false);
       });
     return () => controller.abort();
-  }, [activeDatasetIds, quickAnalysisCardId]);
+  }, [analysisWorkspaceActive, activeDatasetIds, quickAnalysisCardId]);
 
   // The Manhole Detail card is a cadastral network view, not just a point
   // catalogue. Build its verified downstream connections when the card
@@ -6369,6 +6537,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
       setQuickAnalysisManholeNetworkError(null);
       return;
     }
+    if (!analysisWorkspaceActive) return;
     let cancelled = false;
     setQuickAnalysisManholeNetwork(null);
     setQuickAnalysisManholeNetworkLoading(true);
@@ -6384,7 +6553,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
         if (!cancelled) setQuickAnalysisManholeNetworkLoading(false);
       });
     return () => { cancelled = true; };
-  }, [activeDatasetIds, quickAnalysisCardId]);
+  }, [analysisWorkspaceActive, activeDatasetIds, quickAnalysisCardId]);
 
   useEffect(() => {
     quickAnalysisFeatureByIdRef.current = new Map(
@@ -6394,22 +6563,30 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
 
   useEffect(() => {
     const selectable = new Set<string>();
-    if (quickAnalysisCardId === "drain-encroachment") {
+    if (activeQuickAnalysisCardId === "drain-encroachment") {
       quickAnalysisFeatures.forEach((feature) => {
         if (isQuickAnalysisDrain(feature)) selectable.add(feature.properties.id);
       });
       quickDrainEncroachment?.buildings.forEach((hit) => selectable.add(hit.building_id));
-    } else if (quickAnalysisCardId === "manhole-detail") {
+    } else if (activeQuickAnalysisCardId === "manhole-detail") {
       quickAnalysisFeatures.forEach((feature) => {
         if (feature.properties.canonical_class === "Access_Point") selectable.add(feature.properties.id);
       });
-    } else if (quickAnalysisCardId === "road-width") {
+    } else if (activeQuickAnalysisCardId === "road-width") {
       quickAnalysisFeatures.forEach((feature) => {
         if (isRoadCenterlineFeature(feature) || isRoadSurfaceFeature(feature)) {
           selectable.add(feature.properties.id);
         }
       });
-    } else if (quickAnalysisCardId === "utility-tracker") {
+    } else if (activeQuickAnalysisCardId === "pothole-check") {
+      quickAnalysisFeatures.forEach((feature) => {
+        if (isPotholeFeature(feature)) selectable.add(feature.properties.id);
+      });
+    } else if (activeQuickAnalysisCardId === "standing-water") {
+      quickAnalysisFeatures.forEach((feature) => {
+        if (isStandingWaterFeature(feature)) selectable.add(feature.properties.id);
+      });
+    } else if (activeQuickAnalysisCardId === "utility-tracker") {
       quickAnalysisFeatures.forEach((feature) => {
         const cat = feature.properties.category ?? "";
         const normCat = normalizeCategoryName(cat);
@@ -6432,11 +6609,11 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
           selectable.add(feature.properties.id);
         }
       });
-    } else if (quickAnalysisCardId) {
+    } else if (activeQuickAnalysisCardId) {
       quickAnalysisFeatures.forEach((feature) => selectable.add(feature.properties.id));
     }
     quickAnalysisSelectableFeatureIdsRef.current = selectable;
-  }, [quickAnalysisCardId, quickAnalysisFeatures, quickDrainEncroachment, utilitySubCategory]);
+  }, [activeQuickAnalysisCardId, quickAnalysisFeatures, quickDrainEncroachment, utilitySubCategory]);
 
   // Render the complete surveyed drain geometry in its own high-contrast
   // overlay and frame the camera around that network. The red cross source
@@ -6446,20 +6623,20 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     if (!mapReady || !map) return;
     const source = map.getSource(QUICK_ANALYSIS_DRAIN_SOURCE) as GeoJSONSource | undefined;
     if (!source) return;
-    const drainFeatures = quickAnalysisCardId === "drain-encroachment"
+    const drainFeatures = activeQuickAnalysisCardId === "drain-encroachment"
       ? quickAnalysisFeatures.filter(isQuickAnalysisDrain)
       : [];
     source.setData({
       type: "FeatureCollection",
       features: quickAnalysisDrainLines(drainFeatures, selectedQuickAnalysisFeature?.properties.id),
     });
-    if (quickAnalysisCardId === "drain-encroachment") {
+    if (activeQuickAnalysisCardId === "drain-encroachment") {
       if (map.getLayer(LAYER_QUICK_ANALYSIS_DRAIN_CORRIDOR)) map.moveLayer(LAYER_QUICK_ANALYSIS_DRAIN_CORRIDOR);
       if (map.getLayer(LAYER_QUICK_ANALYSIS_DRAIN_LINE)) map.moveLayer(LAYER_QUICK_ANALYSIS_DRAIN_LINE);
     }
 
-    if (drainFeatures.length === 0 || quickAnalysisCardId !== "drain-encroachment") return;
-    const fitKey = `${quickAnalysisCardId}:${activeDatasetIds.join(",")}:${drainFeatures.length}`;
+    if (drainFeatures.length === 0 || activeQuickAnalysisCardId !== "drain-encroachment") return;
+    const fitKey = `${activeQuickAnalysisCardId}:${activeDatasetIds.join(",")}:${drainFeatures.length}`;
     if (quickAnalysisFitKeyRef.current === fitKey) return;
     const bounds = new maplibregl.LngLatBounds();
     drainFeatures.forEach((feature) => extendCoordinateBounds(bounds, feature.geometry.coordinates));
@@ -6470,7 +6647,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
       maxZoom: 18,
       duration: 900,
     });
-  }, [activeDatasetIds, mapReady, quickAnalysisCardId, quickAnalysisFeatures, selectedQuickAnalysisFeature]);
+  }, [activeDatasetIds, activeQuickAnalysisCardId, mapReady, quickAnalysisFeatures, selectedQuickAnalysisFeature]);
 
   useEffect(() => {
     const map = mapRef.current;
@@ -6484,7 +6661,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
       if (!map.getLayer(layerId)) return;
       map.setLayoutProperty(layerId, "visibility", "none");
     });
-  }, [mapReady, quickAnalysisCardId, selectedQuickAnalysisFeature]);
+  }, [activeQuickAnalysisCardId, mapReady, selectedQuickAnalysisFeature]);
 
   // Manhole Detail owns this connection source. It intentionally does not
   // reuse the general AI Manhole Recommendation layers: Quick Analysis has
@@ -6494,7 +6671,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     if (!mapReady || !map) return;
     const source = map.getSource(QUICK_ANALYSIS_MANHOLE_CONNECTION_SOURCE) as GeoJSONSource | undefined;
     if (!source) return;
-    const connections = quickAnalysisCardId === "manhole-detail"
+    const connections = activeQuickAnalysisCardId === "manhole-detail"
       ? (quickAnalysisManholeNetwork?.routes ?? []).map(quickAnalysisConnectionDetail)
       : [];
     const manholeCoordinates = new Map<string, [number, number]>();
@@ -6552,7 +6729,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
       if (map.getLayer(LAYER_QUICK_ANALYSIS_MANHOLE_CONNECTION_CRITICAL)) map.moveLayer(LAYER_QUICK_ANALYSIS_MANHOLE_CONNECTION_CRITICAL);
       if (map.getLayer(LAYER_QUICK_ANALYSIS_MANHOLE_FLOW_ARROWS)) map.moveLayer(LAYER_QUICK_ANALYSIS_MANHOLE_FLOW_ARROWS);
     }
-  }, [mapReady, quickAnalysisCardId, quickAnalysisFeatures, quickAnalysisManholeNetwork, selectedQuickAnalysisConnection]);
+  }, [activeQuickAnalysisCardId, mapReady, quickAnalysisFeatures, quickAnalysisManholeNetwork, selectedQuickAnalysisConnection]);
 
   // Unconnected manholes need a map cue of their own: there is no path to
   // click, so a high-contrast ring makes the missing connection explicit.
@@ -6561,7 +6738,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     if (!mapReady || !map) return;
     const source = map.getSource(QUICK_ANALYSIS_MANHOLE_UNCONNECTED_SOURCE) as GeoJSONSource | undefined;
     if (!source) return;
-    const unconnected = quickAnalysisCardId === "manhole-detail"
+    const unconnected = activeQuickAnalysisCardId === "manhole-detail"
       ? quickAnalysisManholeNetwork?.unconnected_manholes ?? []
       : [];
     source.setData({
@@ -6577,7 +6754,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
       if (map.getLayer(LAYER_QUICK_ANALYSIS_MANHOLE_UNCONNECTED_HALO)) map.moveLayer(LAYER_QUICK_ANALYSIS_MANHOLE_UNCONNECTED_HALO);
       if (map.getLayer(LAYER_QUICK_ANALYSIS_MANHOLE_UNCONNECTED_RING)) map.moveLayer(LAYER_QUICK_ANALYSIS_MANHOLE_UNCONNECTED_RING);
     }
-  }, [mapReady, quickAnalysisCardId, quickAnalysisManholeNetwork]);
+  }, [activeQuickAnalysisCardId, mapReady, quickAnalysisManholeNetwork]);
 
   useEffect(() => {
     const map = mapRef.current;
@@ -6587,7 +6764,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     const waterSource = map.getSource(QUICK_ANALYSIS_WATER_LINE_SOURCE) as GeoJSONSource | undefined;
     const telecomSource = map.getSource(QUICK_ANALYSIS_TELECOM_LINE_SOURCE) as GeoJSONSource | undefined;
 
-    if (quickAnalysisCardId !== "utility-tracker") {
+    if (activeQuickAnalysisCardId !== "utility-tracker") {
       powerSource?.setData({ type: "FeatureCollection", features: [] });
       waterSource?.setData({ type: "FeatureCollection", features: [] });
       telecomSource?.setData({ type: "FeatureCollection", features: [] });
@@ -6636,7 +6813,49 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     if (powerFeatures.length > 0 && map.getLayer(LAYER_QUICK_ANALYSIS_POWER_LINE)) map.moveLayer(LAYER_QUICK_ANALYSIS_POWER_LINE);
     if (waterFeatures.length > 0 && map.getLayer(LAYER_QUICK_ANALYSIS_WATER_LINE)) map.moveLayer(LAYER_QUICK_ANALYSIS_WATER_LINE);
     if (telecomFeatures.length > 0 && map.getLayer(LAYER_QUICK_ANALYSIS_TELECOM_LINE)) map.moveLayer(LAYER_QUICK_ANALYSIS_TELECOM_LINE);
-  }, [mapReady, quickAnalysisCardId, quickAnalysisFeatures, utilitySubCategory]);
+  }, [activeQuickAnalysisCardId, mapReady, quickAnalysisFeatures, utilitySubCategory]);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!mapReady || !map) return;
+    const source = map.getSource(QUICK_ANALYSIS_ROAD_ISSUE_SOURCE) as GeoJSONSource | undefined;
+    if (!source) return;
+    const issueType = activeQuickAnalysisCardId === "pothole-check"
+      ? "pothole"
+      : activeQuickAnalysisCardId === "standing-water"
+        ? "standing-water"
+        : null;
+    [
+      LAYER_QUICK_ANALYSIS_ROAD_ISSUE_FILL,
+      LAYER_QUICK_ANALYSIS_ROAD_ISSUE_LINE,
+      LAYER_QUICK_ANALYSIS_ROAD_ISSUE_POINT,
+    ].forEach((layerId) => {
+      if (map.getLayer(layerId)) map.setLayoutProperty(layerId, "visibility", issueType ? "visible" : "none");
+    });
+    const selectedId = selectedQuickAnalysisFeature?.properties.id ?? "";
+    const features = issueType
+      ? quickAnalysisFeatures
+          .filter((feature) => issueType === "pothole" ? isPotholeFeature(feature) : isStandingWaterFeature(feature))
+          .map((feature) => {
+            const depth = issueNumberValue(feature, ROAD_ISSUE_DEPTH_KEYS);
+            return {
+              ...feature,
+              properties: {
+                ...feature.properties,
+                qa_issue: issueType,
+                qa_depth: depth,
+                selected: feature.properties.id === selectedId,
+              },
+            } as unknown as GeoJSON.Feature;
+          })
+      : [];
+    source.setData({ type: "FeatureCollection", features });
+    if (features.length > 0) {
+      if (map.getLayer(LAYER_QUICK_ANALYSIS_ROAD_ISSUE_FILL)) map.moveLayer(LAYER_QUICK_ANALYSIS_ROAD_ISSUE_FILL);
+      if (map.getLayer(LAYER_QUICK_ANALYSIS_ROAD_ISSUE_LINE)) map.moveLayer(LAYER_QUICK_ANALYSIS_ROAD_ISSUE_LINE);
+      if (map.getLayer(LAYER_QUICK_ANALYSIS_ROAD_ISSUE_POINT)) map.moveLayer(LAYER_QUICK_ANALYSIS_ROAD_ISSUE_POINT);
+    }
+  }, [activeQuickAnalysisCardId, mapReady, quickAnalysisFeatures, selectedQuickAnalysisFeature]);
 
   useEffect(() => {
     const map = mapRef.current;
@@ -6646,7 +6865,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     const selectedId = selectedQuickAnalysisFeature?.properties.id ?? "";
     const hasSelection = selectedId !== "";
     const features: GeoJSON.Feature[] = [];
-    if (quickAnalysisCardId === "drain-encroachment" && quickDrainEncroachment) {
+    if (activeQuickAnalysisCardId === "drain-encroachment" && quickDrainEncroachment) {
       for (const hit of quickDrainEncroachment.buildings) {
         const buildingSelected = hit.building_id === selectedId;
         const crossingSelected = buildingSelected || hit.drain_ids.includes(selectedId);
@@ -6681,7 +6900,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
       }
     }
     source.setData({ type: "FeatureCollection", features });
-    if (quickAnalysisCardId === "drain-encroachment") {
+    if (activeQuickAnalysisCardId === "drain-encroachment") {
       [
         LAYER_QUICK_ANALYSIS_ENCROACHMENT_FILL,
         LAYER_QUICK_ANALYSIS_ENCROACHMENT_OUTLINE,
@@ -6689,7 +6908,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
         LAYER_QUICK_ANALYSIS_ENCROACHMENT_CROSSING,
       ].forEach((layerId) => { if (map.getLayer(layerId)) map.moveLayer(layerId); });
     }
-  }, [mapReady, quickAnalysisCardId, quickDrainEncroachment, selectedQuickAnalysisFeature]);
+  }, [activeQuickAnalysisCardId, mapReady, quickDrainEncroachment, selectedQuickAnalysisFeature]);
 
   // Quick Analysis markers are populated from the independently fetched
   // survey snapshot. They never read spatial_anomalies or AI-highlight
@@ -6699,15 +6918,15 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     if (!mapReady || !map) return;
     const source = map.getSource(QUICK_ANALYSIS_MARKER_SOURCE) as GeoJSONSource | undefined;
     if (!source) return;
-    const features = quickAnalysisCardId === "drain-encroachment"
+    const features = activeQuickAnalysisCardId === "drain-encroachment"
       ? quickAnalysisDrainMarkers(quickAnalysisFeatures, selectedQuickAnalysisFeature?.properties.id)
       : [];
     source.setData({ type: "FeatureCollection", features });
-    if (quickAnalysisCardId === "drain-encroachment") {
+    if (activeQuickAnalysisCardId === "drain-encroachment") {
       if (map.getLayer(LAYER_QUICK_ANALYSIS_DRAIN_RING)) map.moveLayer(LAYER_QUICK_ANALYSIS_DRAIN_RING);
       if (map.getLayer(LAYER_QUICK_ANALYSIS_DRAIN_CROSS)) map.moveLayer(LAYER_QUICK_ANALYSIS_DRAIN_CROSS);
     }
-  }, [mapReady, quickAnalysisCardId, quickAnalysisFeatures, selectedQuickAnalysisFeature]);
+  }, [activeQuickAnalysisCardId, mapReady, quickAnalysisFeatures, selectedQuickAnalysisFeature]);
 
   useEffect(() => {
     const map = mapRef.current;
@@ -7332,6 +7551,62 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
           "line-opacity": 0.9,
         },
       });
+      map.addSource(QUICK_ANALYSIS_ROAD_ISSUE_SOURCE, {
+        type: "geojson",
+        data: { type: "FeatureCollection", features: [] },
+        promoteId: "id",
+      });
+      const roadIssueColor: maplibregl.ExpressionSpecification = [
+        "case",
+        ["==", ["get", "qa_issue"], "standing-water"], "#0ea5e9",
+        "#f97316",
+      ] as unknown as maplibregl.ExpressionSpecification;
+      map.addLayer({
+        id: LAYER_QUICK_ANALYSIS_ROAD_ISSUE_FILL,
+        type: "fill",
+        source: QUICK_ANALYSIS_ROAD_ISSUE_SOURCE,
+        filter: POLY_BASE_FILTER,
+        paint: {
+          "fill-color": roadIssueColor,
+          "fill-opacity": ["case", ["==", ["get", "selected"], true], 0.72, 0.48],
+        },
+      });
+      map.addLayer({
+        id: LAYER_QUICK_ANALYSIS_ROAD_ISSUE_LINE,
+        type: "line",
+        source: QUICK_ANALYSIS_ROAD_ISSUE_SOURCE,
+        filter: LINE_BASE_FILTER,
+        layout: { "line-cap": "round", "line-join": "round" },
+        paint: {
+          "line-color": roadIssueColor,
+          "line-width": [
+            "case",
+            ["==", ["get", "selected"], true],
+            ["interpolate", ["linear"], ["zoom"], 12, 5, 16, 8, 20, 12],
+            ["interpolate", ["linear"], ["zoom"], 12, 3, 16, 5, 20, 8],
+          ],
+          "line-opacity": 0.94,
+        },
+      });
+      map.addLayer({
+        id: LAYER_QUICK_ANALYSIS_ROAD_ISSUE_POINT,
+        type: "circle",
+        source: QUICK_ANALYSIS_ROAD_ISSUE_SOURCE,
+        filter: POINT_BASE_FILTER,
+        paint: {
+          "circle-radius": [
+            "case",
+            ["==", ["get", "selected"], true],
+            ["interpolate", ["linear"], ["zoom"], 12, 10, 16, 15, 20, 20],
+            ["interpolate", ["linear"], ["zoom"], 12, 6, 16, 10, 20, 14],
+          ],
+          "circle-color": roadIssueColor,
+          "circle-opacity": 0.94,
+          "circle-stroke-color": "#fff7ed",
+          "circle-stroke-width": ["case", ["==", ["get", "selected"], true], 4, 2],
+          "circle-stroke-opacity": 0.96,
+        },
+      });
       map.addSource(QUICK_ANALYSIS_MANHOLE_CONNECTION_SOURCE, {
         type: "geojson",
         data: { type: "FeatureCollection", features: [] },
@@ -7585,6 +7860,9 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
         LAYER_QUICK_ANALYSIS_ENCROACHMENT_OUTLINE,
         LAYER_QUICK_ANALYSIS_ENCROACHMENT_CROSSING_HALO,
         LAYER_QUICK_ANALYSIS_ENCROACHMENT_CROSSING,
+        LAYER_QUICK_ANALYSIS_ROAD_ISSUE_FILL,
+        LAYER_QUICK_ANALYSIS_ROAD_ISSUE_LINE,
+        LAYER_QUICK_ANALYSIS_ROAD_ISSUE_POINT,
       ].forEach((layerId) => {
         map.on("click", layerId, handleQuickAnalysisMarkerClick);
         map.on("mouseenter", layerId, handleQuickAnalysisMarkerEnter);
@@ -9222,11 +9500,11 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
       />}
       <div className="map-canvas" data-testid="map-canvas">
         <div ref={containerRef} className="map-canvas__map" data-testid="map-gl" />
-        {quickAnalysisCardId && QUICK_ANALYSIS_MAP_CONFIG[quickAnalysisCardId] && (
+        {analysisWorkspaceActive && activeQuickAnalysisCardId && QUICK_ANALYSIS_MAP_CONFIG[activeQuickAnalysisCardId] && (
           <QuickAnalysisMapDashboard
-            cardId={quickAnalysisCardId}
-            title={QUICK_ANALYSIS_MAP_CONFIG[quickAnalysisCardId].title}
-            description={QUICK_ANALYSIS_MAP_CONFIG[quickAnalysisCardId].description}
+            cardId={activeQuickAnalysisCardId}
+            title={QUICK_ANALYSIS_MAP_CONFIG[activeQuickAnalysisCardId].title}
+            description={QUICK_ANALYSIS_MAP_CONFIG[activeQuickAnalysisCardId].description}
             datasetIds={activeDatasetIds}
             features={quickAnalysisFeatures}
             loading={quickAnalysisLoading}
@@ -9243,16 +9521,20 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
             selectedFeature={selectedQuickAnalysisFeature}
             selectedConnection={selectedQuickAnalysisConnection}
             activeTool={measureActive ? "measure" : quickAnalysisTool}
+            canvasBlank={quickAnalysisCanvasBlank}
             utilitySubCategory={utilitySubCategory}
             onSelectUtilitySubCategory={setUtilitySubCategory}
+            assetCategoryFilter={assetCategoryFilter}
+            onSelectAssetCategoryFilter={setAssetCategoryFilter}
             onActivateSelect={activateQuickAnalysisSelect}
             onActivateMeasure={activateQuickAnalysisMeasure}
+            onToggleCanvasBlank={toggleQuickAnalysisCanvasBlank}
             onClearSelectedFeature={() => setSelectedQuickAnalysisFeature(null)}
             onClearSelectedConnection={() => setSelectedQuickAnalysisConnection(null)}
             onClose={closeQuickAnalysis}
           />
         )}
-        {!quickAnalysisCardId && <MapControls
+        {layersWorkspaceActive && <MapControls
           basemap={basemap}
           onChangeBasemap={changeBasemap}
           status={status}
@@ -9274,12 +9556,12 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
           onToggleCoordinateSearch={toggleCoordinateSearch}
           referenceLayers={referenceLayers}
           onToggleReferenceLayer={handleToggleReferenceLayer}
-          hideBasemap={sidebarPanel === "analysis"}
+          hideBasemap={false}
           measureActive={measureActive}
           onToggleMeasure={toggleMeasureActive}
         />}
-        {!quickAnalysisCardId && <HoverTooltip hover={hover} />}
-        {selectedAnomaly && (
+        {layersWorkspaceActive && <HoverTooltip hover={hover} />}
+        {layersWorkspaceActive && selectedAnomaly && (
           <AnomalyAlertCard
             anomaly={selectedAnomaly}
             onClose={() => setSelectedAnomalyId(null)}
@@ -9287,7 +9569,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
             onStale={handleAnomalyStale}
           />
         )}
-        {roadInspectionRoad && (
+        {layersWorkspaceActive && roadInspectionRoad && (
           <RoadInspectionCard
             roadLabel={roadInspectionRoad.properties.label}
             report={roadInspectionReport}
@@ -9360,7 +9642,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
             onHover={(placemark) => setListHoveredPlacemarkId(placemark?.id ?? null)}
           />
         )}
-        {!quickAnalysisCardId && <MapStatusBar
+        {layersWorkspaceActive && <MapStatusBar
           lngLat={cursorLngLat}
           scaleLabel={mapScaleLabel}
           datasetName={activeStatusDataset?.name ?? null}
@@ -9368,7 +9650,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
           elevation={elevationSample?.elevation ?? null}
           eyeAltitudeMeters={eyeAltitudeMeters}
         />}
-        {!quickAnalysisCardId && <div className="map-side-controls">
+        {layersWorkspaceActive && <div className="map-side-controls">
           <LookAroundCompass
             bearing={mapBearing}
             pitch={mapPitch}

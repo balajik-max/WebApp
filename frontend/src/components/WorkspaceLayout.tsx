@@ -19,6 +19,10 @@ import type { DatasetRow } from "../lib/workflow";
 import type { Basemap, RasterDisplaySettings } from "./MapCanvas";
 import type { MapState } from "../pages/MapView";
 import {
+  DEFAULT_QUICK_ANALYSIS_VIEW_STATE,
+  type QuickAnalysisViewState,
+} from "../lib/quickAnalysisViewState";
+import {
   fetchRemediationUpdates,
   markRemediationUpdateRead,
   type RemediationUpdateItem,
@@ -525,18 +529,17 @@ export function WorkspaceLayout() {
   }, [navigate]);
 
   const [selectedDatasets, setSelectedDatasets] = useState<DatasetRow[]>([]);
-  const selectedDatasetIds = useMemo(() => selectedDatasets.map((dataset) => dataset.id), [selectedDatasets]);
-  // Per-TIFF visual adjustments must survive MapCanvas unmounts just like
-  // the selected dataset ids. They remain in memory until the user changes
-  // or resets them (a full application reload still starts from defaults).
+  const [mapSelectedDatasets, setMapSelectedDatasets] = useState<DatasetRow[]>([]);
+  const mapSelectedDatasetIds = useMemo(
+    () => mapSelectedDatasets.map((dataset) => dataset.id),
+    [mapSelectedDatasets]
+  );
   const [rasterSettingsById, setRasterSettingsById] =
     useState<Record<string, RasterDisplaySettings>>({});
-
-  // Which basemap style (street/satellite/off) the user last chose — owned
-  // here for the same reason as selectedDatasets above: MapCanvas unmounts
-  // on every tab switch, so it must live here to survive that and stay
-  // exactly as the user left it until they explicitly change it again.
   const [basemap, setBasemap] = useState<Basemap>("street");
+  const [quickAnalysisViewState, setQuickAnalysisViewState] = useState<QuickAnalysisViewState>(
+    DEFAULT_QUICK_ANALYSIS_VIEW_STATE
+  );
 
   // Spatial Audit must run exactly once per fresh app load, triggered by the
   // first AI Detection icon click — never again on subsequent clicks, and
@@ -589,12 +592,16 @@ export function WorkspaceLayout() {
       filter: EMPTY_FILTER,
       selectedDatasets,
       setSelectedDatasets,
+      mapSelectedDatasets,
+      setMapSelectedDatasets,
       rasterSettingsById,
       setRasterSettingsById,
       basemap,
       setBasemap,
       commandCenterMobileOpen,
       setCommandCenterMobileOpen,
+      quickAnalysisViewState,
+      setQuickAnalysisViewState,
       spatialAuditRequested,
       setSpatialAuditRequested,
       spatialAuditExecutedRef,
@@ -603,8 +610,17 @@ export function WorkspaceLayout() {
       mapState,
       setMapState,
     }),
-    [selectedDatasets, rasterSettingsById, basemap, commandCenterMobileOpen, spatialAuditStatus, spatialAuditRequested,
-     mapState]
+    [
+      selectedDatasets,
+      mapSelectedDatasets,
+      rasterSettingsById,
+      basemap,
+      commandCenterMobileOpen,
+      quickAnalysisViewState,
+      spatialAuditStatus,
+      spatialAuditRequested,
+      mapState,
+    ]
   );
 
   return (
@@ -650,7 +666,7 @@ export function WorkspaceLayout() {
               </svg>
             </button>
             <div className="workspace__search">
-              <FidSearch datasetIds={selectedDatasetIds} />
+              <FidSearch datasetIds={mapSelectedDatasetIds} />
             </div>
           </>
         )}

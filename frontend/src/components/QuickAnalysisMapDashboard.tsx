@@ -6,7 +6,13 @@ import {
 import type { UrbanFeature } from "../lib/types";
 import { colorForCategory } from "../lib/categoryColors";
 import { fetchManholeReadiness, type DrainEncroachmentReport, type ManholeReadinessReport, type SpatialAnomaly } from "../lib/workflow";
-import { computeDashboardData, type LegendEntry } from "../lib/quickAnalysisStats";
+import {
+  computeDashboardData, attributeBreakdown, assetGroupForCanonical,
+  ASSET_GROUP_CLASSES, ALL_ASSET_GROUP_CANONICAL, CONDITION_ATTRIBUTE_KEYS,
+  ROAD_ISSUE_DEPTH_KEYS, ROAD_ISSUE_ELEVATION_KEYS, ROAD_ISSUE_SURFACE_KEYS, ROAD_ISSUE_LOCATION_KEYS,
+  firstIssueAttribute, issueNumberValue, isPotholeFeature, isStandingWaterFeature,
+  type LegendEntry, type AssetGroup,
+} from "../lib/quickAnalysisStats";
 
 export type QuickAnalysisTool = "select" | "measure" | null;
 
@@ -45,8 +51,12 @@ interface QuickAnalysisMapDashboardProps {
   selectedFeature: UrbanFeature | null;
   selectedConnection: ManholeConnectionDetail | null;
   activeTool: QuickAnalysisTool;
+  canvasBlank: boolean;
   utilitySubCategory?: string;
   onSelectUtilitySubCategory?: (subCategory: string) => void;
+  assetCategoryFilter?: string;
+  onSelectAssetCategoryFilter?: (filter: string) => void;
+  onToggleCanvasBlank: () => void;
   onActivateSelect: () => void;
   onActivateMeasure: () => void;
   onClearSelectedFeature: () => void;
@@ -62,6 +72,7 @@ const CHART_TOOLTIP_STYLE = {
   color: "#e5edf6",
   fontSize: 11,
 };
+const ROAD_ISSUE_IMAGE_KEYS = ["Image", "IMAGE", "image", "Photo", "PHOTO", "photo", "Photo_Path", "Image_Path", "Image_Number", "Image_No", "Img3", "IMG3", "img3", "Image_3", "Photo_3"];
 
 function normalizeCategoryName(value: string): string {
   return value.trim().toLowerCase().replace(/[_-]+/g, " ").replace(/\s+/g, " ");
@@ -167,8 +178,9 @@ export function QuickAnalysisMapDashboard({
   manholeNetworkLoading, manholeNetworkError, manholeNetworkRouteCount, manholeNetworkFlowCount,
   manholeNetworkStatusCounts,
   anomalies,
-  selectedFeature, selectedConnection, activeTool, utilitySubCategory = "all", onSelectUtilitySubCategory, onActivateMeasure,
-  onClearSelectedFeature, onClearSelectedConnection, onClose,
+  selectedFeature, selectedConnection, activeTool, canvasBlank, utilitySubCategory = "all", onSelectUtilitySubCategory, onActivateMeasure,
+  assetCategoryFilter = "all", onSelectAssetCategoryFilter,
+  onToggleCanvasBlank, onClearSelectedFeature, onClearSelectedConnection, onClose,
 }: QuickAnalysisMapDashboardProps) {
   const [readiness, setReadiness] = useState<ManholeReadinessReport | null>(null);
   const [toolsOpen, setToolsOpen] = useState(false);
@@ -199,9 +211,23 @@ export function QuickAnalysisMapDashboard({
           return norm === utilitySubCategory;
         });
       }
+      if (cardId === "asset-catalog") {
+        const filter = assetCategoryFilter || "all";
+        if (filter === "all") return features;
+        const groupClasses = ASSET_GROUP_CLASSES[filter as Exclude<AssetGroup, "other">];
+        if (groupClasses) return features.filter((f) => groupClasses.includes(f.properties.canonical_class ?? ""));
+        if (filter === "other") return features.filter((f) => !ALL_ASSET_GROUP_CANONICAL.includes(f.properties.canonical_class ?? ""));
+        return features.filter((f) => (f.properties.category ?? "").trim() === filter);
+      }
+      if (cardId === "pothole-check") {
+        return features.filter(isPotholeFeature);
+      }
+      if (cardId === "standing-water") {
+        return features.filter(isStandingWaterFeature);
+      }
       return features;
     },
-    [cardId, features, utilitySubCategory]
+    [cardId, features, utilitySubCategory, assetCategoryFilter]
   );
   const categoryStats = useMemo(() => categoryBreakdown(dashboardFeatures), [dashboardFeatures]);
 
@@ -284,6 +310,243 @@ export function QuickAnalysisMapDashboard({
     return { powerM, waterM };
   }, [cardId, features]);
 
+  const ASSET_GROUP_LABEL: Record<AssetGroup, string> = {
+    roads: "Roads", drains: "Drains", manholes: "Manholes",
+    utility: "Utility & Lighting", buildings: "Buildings", other: "Other",
+  };
+  const assetCatalogData = useMemo(() => {
+    if (cardId !== "asset-catalog") {
+      return { groups: [] as { id: string; label: string; count: number }[], filteredSubCats: [] as { id: string; label: string; count: number; color: string }[], activeGroup: "all", total: 0 };
+    }
+    const groupCounts: Record<AssetGroup, number> = { roads: 0, drains: 0, manholes: 0, utility: 0, buildings: 0, other: 0 };
+    for (const f of features) groupCounts[assetGroupForCanonical(f.properties.canonical_class)] += 1;
+
+    const groups = (["all", "roads", "drains", "manholes", "utility", "buildings", "other"] as const)
+      .map((id) => ({ id, label: id === "all" ? "All" : ASSET_GROUP_LABEL[id], count: id === "all" ? features.length : groupCounts[id] }))
+      .filter((g) => g.id === "all" || g.count > 0);
+
+    const currentFilter = assetCategoryFilter || "all";
+    const isKnownGroup = currentFilter === "all" || currentFilter === "other" || currentFilter in ASSET_GROUP_CLASSES;
+    const activeGroup: string = isKnownGroup
+      ? currentFilter
+      : assetGroupForCanonical(features.find((f) => (f.properties.category ?? "").trim() === currentFilter)?.properties.canonical_class);
+
+    const scoped = activeGroup === "all" ? features : features.filter((f) => assetGroupForCanonical(f.properties.canonical_class) === activeGroup);
+    const catCounts = new Map<string, number>();
+    for (const f of scoped) {
+      const cat = (f.properties.category ?? "").trim();
+      if (cat) catCounts.set(cat, (catCounts.get(cat) ?? 0) + 1);
+    }
+    const filteredSubCats = [...catCounts.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .map(([cat, count]) => ({ id: cat, label: cat, count, color: colorForCategory(cat) }));
+
+    return { groups, filteredSubCats, activeGroup, total: features.length };
+  }, [cardId, features, assetCategoryFilter]);
+
+  const assetConditionBreakdown = useMemo(
+    () => (cardId === "asset-catalog" ? attributeBreakdown(dashboardFeatures, CONDITION_ATTRIBUTE_KEYS, "Not recorded", ["#22c55e", "#ef4444", "#f59e0b", "#8b5cf6", "#38bdf8", "#ec4899", "#14b8a6"]) : []),
+    [cardId, dashboardFeatures]
+  );
+
+  const assetCatalogInsights = useMemo(() => {
+    if (cardId !== "asset-catalog") return { recordedCount: 0, notRecordedCount: 0, topCondition: null as { label: string; count: number } | null, needsAttention: 0 };
+    const notRecordedCount = assetConditionBreakdown.find((b) => b.label === "Not recorded")?.count ?? 0;
+    const recordedCount = dashboardFeatures.length - notRecordedCount;
+    const badTokens = ["bad", "block", "damag", "poor", "chok", "silt", "leak", "crack", "broken"];
+    const needsAttention = dashboardFeatures.filter((f) => {
+      const raw = String(firstRecorded(f, CONDITION_ATTRIBUTE_KEYS) ?? "").toLowerCase();
+      return badTokens.some((t) => raw.includes(t));
+    }).length;
+    const topCondition = assetConditionBreakdown.filter((b) => b.label !== "Not recorded").sort((a, b) => b.count - a.count)[0] ?? null;
+    return { recordedCount, notRecordedCount, topCondition, needsAttention };
+  }, [cardId, dashboardFeatures, assetConditionBreakdown]);
+
+  const isRoadSurfaceIssue = cardId === "pothole-check" || cardId === "standing-water";
+  const roadSurfaceIssueData = useMemo(() => {
+    if (!isRoadSurfaceIssue) {
+      return {
+        depthValues: [] as number[],
+        elevationValues: [] as number[],
+        avgDepth: null as number | null,
+        deepest: null as number | null,
+        lowestElevation: null as number | null,
+        surfaceRecorded: 0,
+        surfaceBreakdown: [] as { label: string; count: number; color: string }[],
+        topDepthRecords: [] as { name: string; depth: number; color: string }[],
+        locationBreakdown: [] as { label: string; count: number; color: string }[],
+        issueGroups: [] as { label: string; count: number; ids: string; maxDepth: string; minElevation: string; evidence: string; color: string }[],
+        issueGroupChart: [] as { name: string; count: number; color: string }[],
+        evidenceSignals: [] as { label: string; value: number; count: string; color: string }[],
+        causeSignals: [] as { label: string; value: number; note: string; color: string }[],
+        causeSummary: "No issue data available",
+        resolutionSummary: "No repair recommendation can be produced without matched issue records.",
+        resolutionSteps: [] as string[],
+        issueRecords: [] as { id: string; label: string; depth: string; elevation: string; surface: string; image: string; source: string; color: string }[],
+        imageRecorded: 0,
+        elevationSpread: null as number | null,
+        evidenceScore: 0,
+        priorityLabel: "No matching records",
+        priorityReason: "No pothole or standing-water records match this quick analysis.",
+      };
+    }
+    const depthValues = dashboardFeatures
+      .map((feature) => issueNumberValue(feature, ROAD_ISSUE_DEPTH_KEYS))
+      .filter((value): value is number => value !== null);
+    const elevationValues = dashboardFeatures
+      .map((feature) => issueNumberValue(feature, ROAD_ISSUE_ELEVATION_KEYS))
+      .filter((value): value is number => value !== null);
+    const avgDepth = depthValues.length ? depthValues.reduce((sum, value) => sum + value, 0) / depthValues.length : null;
+    const deepest = depthValues.length ? Math.max(...depthValues) : null;
+    const lowestElevation = elevationValues.length ? Math.min(...elevationValues) : null;
+    const highestElevation = elevationValues.length ? Math.max(...elevationValues) : null;
+    const elevationSpread = lowestElevation !== null && highestElevation !== null && elevationValues.length > 1 ? highestElevation - lowestElevation : null;
+    const surfaceBreakdown = attributeBreakdown(dashboardFeatures, ROAD_ISSUE_SURFACE_KEYS, "Not recorded", ["#f97316", "#0ea5e9", "#eab308", "#22c55e", "#8b5cf6", "#ef4444"]);
+    const surfaceRecorded = dashboardFeatures.filter((feature) => firstIssueAttribute(feature, ROAD_ISSUE_SURFACE_KEYS) !== undefined).length;
+    const imageRecorded = dashboardFeatures.filter((feature) => firstRecorded(feature, ROAD_ISSUE_IMAGE_KEYS) !== undefined).length;
+    const groupedFeatures = new Map<string, UrbanFeature[]>();
+    for (const feature of dashboardFeatures) {
+      const location = String(firstIssueAttribute(feature, ROAD_ISSUE_LOCATION_KEYS) ?? feature.properties.label ?? feature.properties.category ?? "Unspecified location").trim();
+      const key = location || "Unspecified location";
+      groupedFeatures.set(key, [...(groupedFeatures.get(key) ?? []), feature]);
+    }
+    const locationBreakdown = [...groupedFeatures.entries()]
+      .map(([label, group], index) => ({ label, count: group.length, color: ["#14b8a6", "#38bdf8", "#f97316", "#eab308", "#8b5cf6"][index % 5] }))
+      .sort((a, b) => b.count - a.count)
+      .slice(0, 8);
+    const issueGroupsDetailed = [...groupedFeatures.entries()]
+      .map(([label, group], index) => {
+        const groupDepths = group.map((feature) => issueNumberValue(feature, ROAD_ISSUE_DEPTH_KEYS)).filter((value): value is number => value !== null);
+        const groupElevations = group.map((feature) => issueNumberValue(feature, ROAD_ISSUE_ELEVATION_KEYS)).filter((value): value is number => value !== null);
+        const groupIds = group
+          .map((feature) => String(firstRecorded(feature, ["FID", "GDB_FID", "OBJECTID", "ObjectId"]) ?? feature.properties.id.slice(0, 8)))
+          .slice(0, 3);
+        const imageCount = group.filter((feature) => firstRecorded(feature, ROAD_ISSUE_IMAGE_KEYS) !== undefined).length;
+        const surfaceCount = group.filter((feature) => firstIssueAttribute(feature, ROAD_ISSUE_SURFACE_KEYS) !== undefined).length;
+        return {
+          label,
+          count: group.length,
+          ids: groupIds.join(", "),
+          maxDepth: groupDepths.length ? `${Math.max(...groupDepths).toFixed(2)} m` : "No depth",
+          minElevation: groupElevations.length ? `${Math.min(...groupElevations).toFixed(2)}` : "No level",
+          evidence: `${imageCount} photo / ${surfaceCount} surface`,
+          color: cardId === "pothole-check" ? ["#ef4444", "#f97316", "#eab308", "#14b8a6"][index % 4] : ["#0ea5e9", "#2563eb", "#14b8a6", "#64748b"][index % 4],
+        };
+      })
+      .sort((a, b) => b.count - a.count)
+      .slice(0, 8);
+    const issueGroupChart = issueGroupsDetailed.map((group) => {
+      const label = group.label === "Unspecified location" ? `FID ${group.ids}` : group.label;
+      return {
+        name: label.length > 18 ? `${label.slice(0, 17)}...` : label,
+        count: group.count,
+        color: group.color,
+      };
+    });
+    const topDepthRecords = dashboardFeatures
+      .map((feature, index) => {
+        const depth = issueNumberValue(feature, ROAD_ISSUE_DEPTH_KEYS);
+        if (depth === null) return null;
+        const fid = firstRecorded(feature, ["FID", "GDB_FID", "OBJECTID", "ObjectId"]);
+        const road = firstRecorded(feature, ["Road_Name", "Name"]);
+        return {
+          name: String(road ?? fid ?? feature.properties.label ?? `Record ${index + 1}`).slice(0, 18),
+          depth,
+          color: cardId === "pothole-check" ? "#f97316" : "#0ea5e9",
+        };
+      })
+      .filter((entry): entry is { name: string; depth: number; color: string } => entry !== null)
+      .sort((a, b) => b.depth - a.depth)
+      .slice(0, 8);
+    const issueRecords = dashboardFeatures.slice(0, 10).map((feature, index) => {
+      const fid = firstRecorded(feature, ["FID", "GDB_FID", "OBJECTID", "ObjectId"]);
+      const category = feature.properties.category ?? "Issue record";
+      const label = String(firstIssueAttribute(feature, ROAD_ISSUE_LOCATION_KEYS) ?? feature.properties.label ?? category ?? `Record ${index + 1}`);
+      return {
+        id: String(fid ?? feature.properties.id.slice(0, 8)),
+        label: label === String(fid ?? "") ? `${category} / ${label}` : label,
+        depth: displayValue(firstIssueAttribute(feature, ROAD_ISSUE_DEPTH_KEYS)),
+        elevation: displayValue(firstIssueAttribute(feature, ROAD_ISSUE_ELEVATION_KEYS)),
+        surface: displayValue(firstIssueAttribute(feature, ROAD_ISSUE_SURFACE_KEYS)),
+        image: displayValue(firstRecorded(feature, ROAD_ISSUE_IMAGE_KEYS)),
+        source: displayValue(firstRecorded(feature, ["gdb_layer", "GDB_LAYER", "LAYER", "Layer", "layer_name"])),
+        color: cardId === "pothole-check" ? "#f97316" : "#0ea5e9",
+      };
+    });
+    const evidenceScore = [depthValues.length > 0, elevationValues.length > 0, surfaceRecorded > 0, imageRecorded > 0].filter(Boolean).length;
+    const priorityLabel = dashboardFeatures.length === 0
+      ? "No matching records"
+      : evidenceScore >= 3
+        ? "Work-order ready"
+        : evidenceScore >= 1
+          ? "Field verify first"
+          : "Location-only";
+    const priorityReason = dashboardFeatures.length === 0
+      ? "No issue layer records matched this card."
+      : evidenceScore >= 3
+        ? "Enough location and condition evidence exists to compare sites and assign repair priority."
+        : cardId === "pothole-check"
+          ? "Record the pothole depth, surface type and photo evidence before preparing patching quantities."
+          : "Record ponding depth, road level and outlet condition before deciding drainage improvement work.";
+    const coverage = (count: number) => dashboardFeatures.length ? Math.round((count / dashboardFeatures.length) * 100) : 0;
+    const evidenceSignals = [
+      { label: "Location", value: dashboardFeatures.length ? 100 : 0, count: `${locationBreakdown.length}/${dashboardFeatures.length} sites`, color: "#14b8a6" },
+      { label: "Level", value: coverage(elevationValues.length), count: `${elevationValues.length}/${dashboardFeatures.length}`, color: "#2563eb" },
+      { label: "Depth", value: coverage(depthValues.length), count: `${depthValues.length}/${dashboardFeatures.length}`, color: cardId === "pothole-check" ? "#f97316" : "#0ea5e9" },
+      { label: "Surface", value: coverage(surfaceRecorded), count: `${surfaceRecorded}/${dashboardFeatures.length}`, color: "#eab308" },
+      { label: "Photo", value: coverage(imageRecorded), count: `${imageRecorded}/${dashboardFeatures.length}`, color: "#8b5cf6" },
+    ];
+    const topGroup = locationBreakdown[0] ?? null;
+    const topSurface = surfaceBreakdown.filter((entry) => entry.label !== "Not recorded").sort((a, b) => b.count - a.count)[0] ?? null;
+    const clusterStrength = dashboardFeatures.length && topGroup ? Math.round((topGroup.count / dashboardFeatures.length) * 100) : 0;
+    const levelSignal = elevationValues.length
+      ? Math.min(100, Math.max(35, Math.round(((elevationSpread ?? 1) / 5) * 100)))
+      : 0;
+    const depthSignal = depthValues.length ? Math.min(100, Math.max(35, coverage(depthValues.length))) : 0;
+    const surfaceSignal = surfaceRecorded ? Math.min(100, Math.max(35, coverage(surfaceRecorded))) : 0;
+    const causeSignals = cardId === "pothole-check"
+      ? [
+        { label: "Low spot stress", value: levelSignal, note: lowestElevation !== null ? `lowest ${lowestElevation.toFixed(2)}` : "level missing", color: "#2563eb" },
+        { label: "Surface failure", value: surfaceSignal, note: topSurface ? topSurface.label : "surface missing", color: "#f97316" },
+        { label: "Repeated damage", value: clusterStrength, note: topGroup ? `${topGroup.count} at top site` : "no cluster", color: "#ef4444" },
+        { label: "Severity measured", value: depthSignal, note: deepest !== null ? `${deepest.toFixed(2)} m max` : "depth missing", color: "#8b5cf6" },
+      ]
+      : [
+        { label: "Low point", value: levelSignal, note: lowestElevation !== null ? `lowest ${lowestElevation.toFixed(2)}` : "level missing", color: "#2563eb" },
+        { label: "Outlet/crossfall check", value: Math.max(levelSignal, clusterStrength), note: topGroup ? `${topGroup.count} at top site` : "no cluster", color: "#0ea5e9" },
+        { label: "Ponding severity", value: depthSignal, note: deepest !== null ? `${deepest.toFixed(2)} m max` : "depth missing", color: "#14b8a6" },
+        { label: "Surface runoff", value: surfaceSignal, note: topSurface ? topSurface.label : "surface missing", color: "#eab308" },
+      ];
+    const causeSummary = dashboardFeatures.length === 0
+      ? "No matched issue records."
+      : cardId === "pothole-check"
+        ? lowestElevation !== null
+          ? `Likely pavement failure around low-level locations; ${topSurface ? `${topSurface.label} surface context is present.` : "surface type must be confirmed."}`
+          : "Pothole locations are mapped, but level/depth fields must confirm whether water retention is the driver."
+        : lowestElevation !== null
+          ? `Likely ponding at local low points; check outlet, crossfall and nearby drain connectivity.`
+          : "Standing-water locations are mapped, but road levels must confirm whether these are low points or outlet failures.";
+    const resolutionSummary = cardId === "pothole-check"
+      ? deepest !== null
+        ? "Prepare patching by depth class, then fix drainage if the defect sits at the lowest level."
+        : "Measure pothole depth and surface failure before estimating repair quantity."
+      : deepest !== null
+        ? "Prioritise dewatering, drain cleaning and crossfall correction by measured ponding depth."
+        : "Measure ponding depth and verify outlet/crossfall before selecting the drainage treatment.";
+    const resolutionSteps = cardId === "pothole-check"
+      ? [
+        lowestElevation !== null ? "Treat the lowest-level cluster first because runoff will keep damaging the patch." : "Capture road level at each pothole to separate impact damage from drainage-related failure.",
+        surfaceRecorded > 0 ? "Match repair method to recorded surface: patch asphalt/BT, reinstate concrete panel, or rebuild unpaved base." : "Record surface type so the estimate is not a generic patch item.",
+        deepest !== null ? "Use max depth to classify patch quantity and compaction requirement." : "Measure depth before work order release.",
+      ]
+      : [
+        lowestElevation !== null ? "Check the lowest-level point first and trace where water should discharge." : "Capture road level/crossfall to identify the low pocket.",
+        "Inspect nearest drain inlet, outlet and blockage before proposing new construction.",
+        deepest !== null ? "Use water depth to rank desilting, regrading or inlet improvement priority." : "Measure water depth during or soon after ponding.",
+      ];
+    return { depthValues, elevationValues, avgDepth, deepest, lowestElevation, surfaceRecorded, surfaceBreakdown, topDepthRecords, locationBreakdown, issueGroups: issueGroupsDetailed, issueGroupChart, evidenceSignals, causeSignals, causeSummary, resolutionSummary, resolutionSteps, issueRecords, imageRecorded, elevationSpread, evidenceScore, priorityLabel, priorityReason };
+  }, [cardId, dashboardFeatures, isRoadSurfaceIssue]);
+
   useEffect(() => {
     if (cardId !== "survey-kpis" || datasetIds.length === 0) return;
     const controller = new AbortController();
@@ -335,7 +598,7 @@ export function QuickAnalysisMapDashboard({
       activeDatasetIds: datasetIds,
       readiness,
     });
-  }, [cardId, categoryStats, dashboardFeatures, datasetIds, drainEncroachment, features, readiness, utilityLineLengths.powerM, utilityLineLengths.waterM, utilitySubCategory]);
+  }, [anomalies, cardId, categoryStats, dashboardFeatures, datasetIds, drainEncroachment, features, readiness, utilityLineLengths.powerM, utilityLineLengths.waterM, utilitySubCategory]);
 
   const generalAnalytics = useMemo(() => {
     const geometry = [
@@ -369,10 +632,14 @@ export function QuickAnalysisMapDashboard({
     ? drainEncroachment
       ? `${drainEncroachment.affected_buildings.toLocaleString()} encroached buildings across ${drainEncroachment.affected_drains} drain segments highlighted`
       : "Calculating exact drain/building intersections..."
+    : isRoadSurfaceIssue
+      ? `${displayedFeatureCount.toLocaleString()} ${cardId === "pothole-check" ? "pothole" : "standing-water"} issue${displayedFeatureCount === 1 ? "" : "s"} highlighted for planner review`
     : `${displayedFeatureCount.toLocaleString()} mapped features shown`;
   const selectedLength = selectedFeature ? featureLengthMeters(selectedFeature) : 0;
   const selectedIsDrain = selectedFeature?.properties.canonical_class === "Drainage_Asset";
   const selectedIsManhole = selectedFeature?.properties.canonical_class === "Access_Point";
+  const selectedIsPothole = selectedFeature ? isPotholeFeature(selectedFeature) : false;
+  const selectedIsStandingWater = selectedFeature ? isStandingWaterFeature(selectedFeature) : false;
   const selectedCondition = selectedFeature
     ? firstRecorded(
         selectedFeature,
@@ -389,12 +656,17 @@ export function QuickAnalysisMapDashboard({
   const selectedSiltLevel = selectedFeature ? firstRecorded(selectedFeature, ["Silt_Level"]) : undefined;
   const selectedRemarks = selectedFeature ? firstRecorded(selectedFeature, ["Remarks", "Maintenance_Status", "Maintenance_Status_1"]) : undefined;
   const selectedDimensions = selectedFeature ? firstRecorded(selectedFeature, ["SWD_WidthXDepth", "WidthXDepth", "Depth", "Diameter"]) : undefined;
-  const selectedRoad = selectedFeature ? firstRecorded(selectedFeature, ["Road_Name", "Name"]) : undefined;
+  const selectedRoad = selectedFeature ? firstIssueAttribute(selectedFeature, ROAD_ISSUE_LOCATION_KEYS) ?? firstRecorded(selectedFeature, ["Road_Name", "Name"]) : undefined;
   const selectedFid = selectedFeature ? firstRecorded(selectedFeature, ["FID"]) : undefined;
+  const selectedIssueDepth = selectedFeature ? firstIssueAttribute(selectedFeature, ROAD_ISSUE_DEPTH_KEYS) : undefined;
+  const selectedIssueElevation = selectedFeature ? firstIssueAttribute(selectedFeature, ROAD_ISSUE_ELEVATION_KEYS) : undefined;
+  const selectedIssueSurface = selectedFeature ? firstIssueAttribute(selectedFeature, ROAD_ISSUE_SURFACE_KEYS) : undefined;
+  const selectedIssueImage = selectedFeature ? firstRecorded(selectedFeature, ROAD_ISSUE_IMAGE_KEYS) : undefined;
+  const selectedSourceLayer = selectedFeature ? firstRecorded(selectedFeature, ["gdb_layer", "GDB_LAYER", "LAYER", "Layer", "layer_name"]) : undefined;
   const selectedAttributes = selectedFeature
     ? Object.entries(selectedFeature.properties.attributes ?? {})
         .filter(([key, value]) => !key.startsWith("_") && recordedValue(value))
-        .slice(0, 5)
+        .slice(0, 10)
     : [];
   const selectedEncroachment = selectedFeature && drainEncroachment
     ? drainEncroachment.buildings.find((hit) => hit.building_id === selectedFeature.properties.id) ?? null
@@ -518,6 +790,19 @@ export function QuickAnalysisMapDashboard({
         >
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true"><path d="M14.5 6.5 17.5 9.5 9 18l-4 1 1-4Z" /><path d="m13 8 3 3" /></svg>
         </button>
+        <button
+          type="button"
+          className={`quick-map-dashboard__canvas-toggle${canvasBlank ? " is-active" : ""}`}
+          onClick={() => {
+            setToolsOpen(false);
+            onToggleCanvasBlank();
+          }}
+          aria-pressed={canvasBlank}
+          aria-label={canvasBlank ? "Show background map" : "Hide background map"}
+          title={canvasBlank ? "Show background" : "Hide background"}
+        >
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true"><rect x="4" y="5" width="16" height="14" rx="2" /><path d="M8 9h8M8 13h5" /><path d="m4 19 16-14" /></svg>
+        </button>
         {toolsOpen && (
           <div className="quick-map-dashboard__tools-menu">
             <button type="button" className={activeTool === "measure" ? "is-active" : ""} onClick={() => { onActivateMeasure(); setToolsOpen(false); }}>
@@ -598,6 +883,48 @@ export function QuickAnalysisMapDashboard({
           </div>
         )}
 
+        {cardId === "asset-catalog" && (
+          <div className="quick-map-dashboard__utility-filter">
+            <div className="quick-map-dashboard__utility-groups">
+              {assetCatalogData.groups.map((group) => {
+                const active = assetCatalogData.activeGroup === group.id;
+                return (
+                  <button
+                    key={group.id}
+                    type="button"
+                    className={`quick-map-dashboard__utility-btn${active ? " is-active" : ""}`}
+                    onClick={() => onSelectAssetCategoryFilter?.(group.id)}
+                  >
+                    <span>{group.label}{group.id !== "all" ? ` (${group.count})` : ""}</span>
+                  </button>
+                );
+              })}
+            </div>
+            {assetCatalogData.filteredSubCats.length > 0 && (
+              <div className="quick-map-dashboard__utility-select-wrap">
+                <label htmlFor="asset-subcat-select">Category Filter:</label>
+                <select
+                  id="asset-subcat-select"
+                  className="quick-map-dashboard__utility-select"
+                  value={assetCategoryFilter || "all"}
+                  onChange={(e) => onSelectAssetCategoryFilter?.(e.target.value)}
+                >
+                  <option value={assetCatalogData.activeGroup}>
+                    {assetCatalogData.activeGroup === "all"
+                      ? `All Categories (${assetCatalogData.total})`
+                      : `All ${assetCatalogData.groups.find((g) => g.id === assetCatalogData.activeGroup)?.label ?? ""} (${assetCatalogData.groups.find((g) => g.id === assetCatalogData.activeGroup)?.count ?? 0})`}
+                  </option>
+                  {assetCatalogData.filteredSubCats.map((sub) => (
+                    <option key={sub.id} value={sub.id}>
+                      {sub.label} ({sub.count})
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
+          </div>
+        )}
+
         {selectedConnection ? (
           <div className="quick-map-dashboard__selection">
             <div className={`quick-map-dashboard__assessment${selectedConnection.status === "critical" ? " is-danger" : selectedConnection.status === "warning" ? " is-warning" : " is-recorded"}`}>
@@ -637,6 +964,12 @@ export function QuickAnalysisMapDashboard({
                 <strong>{selectedCondition === undefined ? "Not recorded" : displayValue(selectedCondition)}</strong>
                 <small>{displayValue(selectedPipeType)} pipe{selectedDepth !== undefined ? ` · ${displayValue(selectedDepth)} deep` : ""}</small>
               </div>
+            ) : selectedIsPothole || selectedIsStandingWater ? (
+              <div className={`quick-map-dashboard__assessment${selectedIsPothole ? " is-warning" : " is-recorded"}`}>
+                <span>{selectedIsPothole ? "Pothole / surface defect" : "Standing water / ponding"}</span>
+                <strong>{displayValue(selectedIssueDepth !== undefined ? selectedIssueDepth : selectedIssueSurface)}</strong>
+                <small>{displayValue(selectedRoad)}{selectedIssueElevation !== undefined ? ` / level ${displayValue(selectedIssueElevation)}` : ""}</small>
+              </div>
             ) : (
               <div className="quick-map-dashboard__assessment is-recorded">
                 <span>{selectedFeature.properties.category || "Survey feature"}</span>
@@ -664,9 +997,19 @@ export function QuickAnalysisMapDashboard({
               {selectedIsManhole && <div><dt>Bottom level</dt><dd>{displayValue(selectedBottomLevel)}</dd></div>}
               {selectedIsManhole && <div><dt>Silt level</dt><dd>{displayValue(selectedSiltLevel)}</dd></div>}
               {selectedIsManhole && <div><dt>Connection / remarks</dt><dd>{displayValue(selectedRemarks)}</dd></div>}
-              {!selectedIsDrain && !selectedIsManhole && <div><dt>Source layer</dt><dd>{displayValue(firstRecorded(selectedFeature, ["gdb_layer", "LAYER"]))}</dd></div>}
-              {!selectedIsDrain && !selectedIsManhole && <div><dt>Geometry</dt><dd>{selectedFeature.geometry.type}</dd></div>}
-              {!selectedIsDrain && !selectedIsManhole && selectedAttributes.map(([key, value]) => <div key={key}><dt>{key.replace(/_/g, " ")}</dt><dd>{displayValue(value)}</dd></div>)}
+              {(selectedIsPothole || selectedIsStandingWater) && <div><dt>Road / location</dt><dd>{displayValue(selectedRoad)}</dd></div>}
+              {(selectedIsPothole || selectedIsStandingWater) && <div><dt>Depth</dt><dd>{displayValue(selectedIssueDepth)}</dd></div>}
+              {(selectedIsPothole || selectedIsStandingWater) && <div><dt>Elevation / level</dt><dd>{displayValue(selectedIssueElevation)}</dd></div>}
+              {(selectedIsPothole || selectedIsStandingWater) && <div><dt>Surface</dt><dd>{displayValue(selectedIssueSurface)}</dd></div>}
+              {(selectedIsPothole || selectedIsStandingWater) && <div><dt>Condition / status</dt><dd>{displayValue(selectedCondition)}</dd></div>}
+              {(selectedIsPothole || selectedIsStandingWater) && <div><dt>Image / photo</dt><dd>{displayValue(selectedIssueImage)}</dd></div>}
+              {(selectedIsPothole || selectedIsStandingWater) && <div><dt>Source layer</dt><dd>{displayValue(selectedSourceLayer)}</dd></div>}
+              {(selectedIsPothole || selectedIsStandingWater) && <div><dt>Geometry</dt><dd>{selectedFeature.geometry.type}</dd></div>}
+              {(selectedIsPothole || selectedIsStandingWater) && <div><dt>Remarks</dt><dd>{displayValue(selectedRemarks)}</dd></div>}
+              {(selectedIsPothole || selectedIsStandingWater) && selectedAttributes.map(([key, value]) => <div key={key}><dt>{key.replace(/_/g, " ")}</dt><dd>{displayValue(value)}</dd></div>)}
+              {!selectedIsDrain && !selectedIsManhole && !selectedIsPothole && !selectedIsStandingWater && <div><dt>Source layer</dt><dd>{displayValue(firstRecorded(selectedFeature, ["gdb_layer", "LAYER"]))}</dd></div>}
+              {!selectedIsDrain && !selectedIsManhole && !selectedIsPothole && !selectedIsStandingWater && <div><dt>Geometry</dt><dd>{selectedFeature.geometry.type}</dd></div>}
+              {!selectedIsDrain && !selectedIsManhole && !selectedIsPothole && !selectedIsStandingWater && selectedAttributes.map(([key, value]) => <div key={key}><dt>{key.replace(/_/g, " ")}</dt><dd>{displayValue(value)}</dd></div>)}
             </dl>
             <button type="button" className="quick-map-dashboard__back-summary" onClick={onClearSelectedFeature}>Deselect feature</button>
           </div>
@@ -683,6 +1026,16 @@ export function QuickAnalysisMapDashboard({
                 { label: "Affected distance", value: formatLength(roadWidthAffectedM) },
                 { label: "Edge buildings", value: String(roadWidthEdgeBuildings) },
                 { label: "Worst drop", value: roadWidthWorstDropPct !== null ? `${roadWidthWorstDropPct.toFixed(0)}%` : "—" },
+              ] : cardId === "asset-catalog" ? [
+                { label: "Total assets", value: String(dashboardFeatures.length) },
+                { label: "Categories", value: String(categoryStats.length) },
+                { label: "Condition recorded", value: String(assetCatalogInsights.recordedCount) },
+                { label: "Needs attention", value: String(assetCatalogInsights.needsAttention) },
+              ] : isRoadSurfaceIssue ? [
+                { label: "Affected sites", value: String(roadSurfaceIssueData.locationBreakdown.length) },
+                { label: "Priority", value: roadSurfaceIssueData.priorityLabel },
+                { label: "Lowest level", value: roadSurfaceIssueData.lowestElevation !== null ? roadSurfaceIssueData.lowestElevation.toFixed(2) : "Field check" },
+                { label: "Cause basis", value: `${roadSurfaceIssueData.evidenceScore}/4 fields` },
               ] : data.bottom).map((tile) => (
                 <article className="quick-map-dashboard__metric" key={tile.label}>
                   <span>{tile.label}</span>
@@ -892,6 +1245,118 @@ export function QuickAnalysisMapDashboard({
                 <li>{roadWidthAvgWidthM !== null ? `Average narrowed width is ${roadWidthAvgWidthM.toFixed(1)} m` : "No width recorded"}{roadWidthWorstDropPct !== null ? `; worst drop ${roadWidthWorstDropPct.toFixed(0)}% below the local average.` : ""}</li>
                 <li>{roadWidthEdgeBuildings} narrowing edge{roadWidthEdgeBuildings === 1 ? "" : "s"} back onto a building, temple or structure footprint — the usual cause of the squeeze.</li>
                 <li>Run the Spatial Audit if no narrowing has been detected for this survey.</li>
+              </ul>
+            </article>
+          </div>
+        ) : isRoadSurfaceIssue ? (
+          <div className="quick-map-dashboard__analysis-grid">
+            <article className="quick-map-dashboard__chart-card quick-map-dashboard__chart-card--issue-bars">
+              <h3>Affected-site distribution</h3>
+              <p>{roadSurfaceIssueData.locationBreakdown.length > 1 ? "Shows whether issues are clustered or spread across the ward" : "Grouped by road, location, chainage or FID"}</p>
+              <div className="quick-map-dashboard__chart quick-map-dashboard__chart--horizontal">
+                {roadSurfaceIssueData.issueGroupChart.length > 0 ? (
+                  <ResponsiveContainer width="100%" height="100%">
+                    <BarChart data={roadSurfaceIssueData.issueGroupChart} layout="vertical" margin={{ top: 4, right: 18, bottom: 0, left: 2 }}>
+                      <CartesianGrid stroke="#d8e3ef" strokeDasharray="3 3" horizontal={false} />
+                      <XAxis type="number" allowDecimals={false} tick={{ fill: "#7890aa", fontSize: 9 }} axisLine={false} tickLine={false} />
+                      <YAxis type="category" dataKey="name" width={68} tick={{ fill: "#64748b", fontSize: 8 }} axisLine={false} tickLine={false} />
+                      <Tooltip contentStyle={CHART_TOOLTIP_STYLE} cursor={{ fill: "rgba(20,184,166,0.08)" }} formatter={(value: number) => [`${value} issue${value === 1 ? "" : "s"}`, "Records"]} />
+                      <Bar dataKey="count" name="Issues" radius={[0, 4, 4, 0]} barSize={13}>
+                        {roadSurfaceIssueData.issueGroupChart.map((entry) => <Cell key={entry.name} fill={entry.color} />)}
+                      </Bar>
+                    </BarChart>
+                  </ResponsiveContainer>
+                ) : (
+                  <p className="quick-map-dashboard__message">No matching issue records were found for this selection.</p>
+                )}
+              </div>
+            </article>
+
+            <article className="quick-map-dashboard__chart-card quick-map-dashboard__chart-card--signals">
+              <h3>{cardId === "pothole-check" ? "Why potholes occur" : "Why water stands"}</h3>
+              <p>{roadSurfaceIssueData.causeSummary}</p>
+              <div className="quick-map-dashboard__signal-board">
+                {roadSurfaceIssueData.causeSignals.map((signal) => (
+                  <div className="quick-map-dashboard__signal" key={signal.label}>
+                    <div>
+                      <strong>{signal.label}</strong>
+                      <span>{signal.note}</span>
+                    </div>
+                    <b>{signal.value}%</b>
+                    <i><em style={{ width: `${signal.value}%`, background: signal.color }} /></i>
+                  </div>
+                ))}
+                <div className="quick-map-dashboard__signal-summary">
+                  <strong>{roadSurfaceIssueData.lowestElevation !== null ? `Level evidence present: ${roadSurfaceIssueData.lowestElevation.toFixed(2)} lowest` : "Level evidence missing"}</strong>
+                  <span>{roadSurfaceIssueData.deepest !== null ? `Depth evidence present: ${roadSurfaceIssueData.deepest.toFixed(2)} m max` : cardId === "pothole-check" ? "Depth still needed for repair quantity" : "Water depth still needed for ponding severity"}</span>
+                </div>
+              </div>
+            </article>
+
+            <article className="quick-map-dashboard__insights quick-map-dashboard__insights--planner">
+              <h3>How to resolve</h3>
+              <p>{roadSurfaceIssueData.resolutionSummary}</p>
+              <ul>
+                {roadSurfaceIssueData.resolutionSteps.map((step) => <li key={step}>{step}</li>)}
+                <li>{roadSurfaceIssueData.locationBreakdown[0] ? `Start at ${roadSurfaceIssueData.locationBreakdown[0].label}; it has ${roadSurfaceIssueData.locationBreakdown[0].count} mapped issue${roadSurfaceIssueData.locationBreakdown[0].count === 1 ? "" : "s"}.` : "No matched issue location is available for planning action."}</li>
+              </ul>
+            </article>
+          </div>
+        ) : cardId === "asset-catalog" ? (
+          <div className="quick-map-dashboard__analysis-grid">
+            <article className="quick-map-dashboard__chart-card">
+              <h3>Category breakdown</h3>
+              <p>{assetCatalogData.activeGroup === "all" ? "All mapped categories in the active survey" : `Categories within ${assetCatalogData.groups.find((g) => g.id === assetCatalogData.activeGroup)?.label ?? "this group"}`}</p>
+              <div className="quick-map-dashboard__chart">
+                {categoryStats.length > 0 ? (
+                  <ResponsiveContainer width="100%" height="100%">
+                    <BarChart data={categoryStats.slice(0, 8)} margin={{ top: 6, right: 8, bottom: 0, left: -22 }}>
+                      <CartesianGrid stroke="#27364a" strokeDasharray="3 3" vertical={false} />
+                      <XAxis dataKey="category" tick={{ fill: "#94a3b8", fontSize: 8 }} axisLine={false} tickLine={false} interval={0} />
+                      <YAxis allowDecimals={false} tick={{ fill: "#94a3b8", fontSize: 9 }} axisLine={false} tickLine={false} />
+                      <Tooltip contentStyle={CHART_TOOLTIP_STYLE} cursor={{ fill: "rgba(20,184,166,0.08)" }} />
+                      <Bar dataKey="count" name="Records" radius={[4, 4, 0, 0]}>
+                        {categoryStats.slice(0, 8).map((entry) => <Cell key={entry.category} fill={entry.color} />)}
+                      </Bar>
+                    </BarChart>
+                  </ResponsiveContainer>
+                ) : (
+                  <p className="quick-map-dashboard__message">No categories in this selection.</p>
+                )}
+              </div>
+            </article>
+
+            <article className="quick-map-dashboard__chart-card quick-map-dashboard__chart-card--donut">
+              <h3>Condition breakdown</h3>
+              <p>Recorded condition / maintenance status across the selected assets</p>
+              <div className="quick-map-dashboard__donut-wrap">
+                <div className="quick-map-dashboard__donut">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <PieChart>
+                      <Pie data={assetConditionBreakdown} dataKey="count" nameKey="label" innerRadius={36} outerRadius={55} paddingAngle={2}>
+                        {assetConditionBreakdown.map((entry) => <Cell key={entry.label} fill={entry.color} />)}
+                      </Pie>
+                      <Tooltip contentStyle={CHART_TOOLTIP_STYLE} />
+                    </PieChart>
+                  </ResponsiveContainer>
+                  <div><strong>{dashboardFeatures.length}</strong><span>assets</span></div>
+                </div>
+                <ul>{assetConditionBreakdown.slice(0, 6).map((entry) => <li key={entry.label}><i style={{ background: entry.color }} /><span>{entry.label}</span><b>{entry.count}</b></li>)}</ul>
+              </div>
+            </article>
+
+            <article className="quick-map-dashboard__insights">
+              <h3>Asset findings</h3>
+              <p>What the recorded condition data shows for this selection</p>
+              <ul>
+                <li>{dashboardFeatures.length.toLocaleString()} assets across {categoryStats.length} categories are shown for this selection.</li>
+                <li>{assetCatalogInsights.recordedCount.toLocaleString()} assets have a recorded condition; {assetCatalogInsights.notRecordedCount.toLocaleString()} do not.</li>
+                {assetCatalogInsights.topCondition ? (
+                  <li>&quot;{assetCatalogInsights.topCondition.label}&quot; is the most common recorded condition, affecting {assetCatalogInsights.topCondition.count.toLocaleString()} assets.</li>
+                ) : (
+                  <li>No recorded condition values are available for this selection yet.</li>
+                )}
+                <li>{assetCatalogInsights.needsAttention.toLocaleString()} assets have a condition flagged as bad, blocked, damaged, poor or silted.</li>
               </ul>
             </article>
           </div>

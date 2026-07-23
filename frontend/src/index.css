@@ -2139,10 +2139,14 @@ body.is-resizing-sidebar {
   top: 0;
   left: 0;
   z-index: 3;
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
   pointer-events: auto;
 }
 
-.quick-map-dashboard__tools-toggle {
+.quick-map-dashboard__tools-toggle,
+.quick-map-dashboard__canvas-toggle {
   display: grid;
   width: 42px;
   height: 42px;
@@ -2156,14 +2160,17 @@ body.is-resizing-sidebar {
   cursor: pointer;
 }
 
-.quick-map-dashboard__tools-toggle svg {
+.quick-map-dashboard__tools-toggle svg,
+.quick-map-dashboard__canvas-toggle svg {
   width: 21px;
   height: 21px;
 }
 
 .quick-map-dashboard__tools-toggle:hover,
 .quick-map-dashboard__tools-toggle.is-open,
-.quick-map-dashboard__tools-toggle.is-active {
+.quick-map-dashboard__tools-toggle.is-active,
+.quick-map-dashboard__canvas-toggle:hover,
+.quick-map-dashboard__canvas-toggle.is-active {
   border-color: var(--accent);
   background: var(--accent);
   color: var(--accent-ink);
@@ -2467,6 +2474,71 @@ body.is-resizing-sidebar {
   height: 145px;
 }
 
+.quick-map-dashboard__chart--horizontal {
+  height: 158px;
+}
+
+.quick-map-dashboard__issue-list {
+  display: grid;
+  max-height: 145px;
+  overflow: auto;
+  gap: 7px;
+  padding-right: 2px;
+}
+
+.quick-map-dashboard__issue-list article {
+  display: grid;
+  grid-template-columns: 8px minmax(70px, 0.65fr) minmax(0, 1.35fr);
+  align-items: start;
+  gap: 8px;
+  padding: 7px 8px;
+  border: 1px solid var(--edge);
+  border-radius: var(--radius-sm);
+  background: var(--surface-3);
+}
+
+.quick-map-dashboard__issue-list i {
+  width: 8px;
+  height: 8px;
+  margin-top: 3px;
+  border-radius: 999px;
+}
+
+.quick-map-dashboard__issue-list strong,
+.quick-map-dashboard__issue-list span {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.quick-map-dashboard__issue-list strong {
+  color: var(--ink);
+  font-size: 10px;
+}
+
+.quick-map-dashboard__issue-list span,
+.quick-map-dashboard__issue-list dt {
+  color: var(--ink-mute);
+  font-size: 8.5px;
+}
+
+.quick-map-dashboard__issue-list dl {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 4px 10px;
+  margin: 0;
+}
+
+.quick-map-dashboard__issue-list dd {
+  margin: 0;
+  overflow: hidden;
+  color: var(--ink);
+  font-size: 8.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .quick-map-dashboard__donut-wrap {
   display: flex;
   min-height: 145px;
@@ -2560,6 +2632,81 @@ body.is-resizing-sidebar {
   border-radius: 50%;
   background: var(--accent);
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent);
+}
+
+.quick-map-dashboard__signal-board {
+  display: grid;
+  gap: 7px;
+  padding-top: 1px;
+}
+
+.quick-map-dashboard__signal {
+  display: grid;
+  grid-template-columns: minmax(62px, 0.85fr) 34px minmax(80px, 1.2fr);
+  align-items: center;
+  gap: 8px;
+}
+
+.quick-map-dashboard__signal div {
+  min-width: 0;
+}
+
+.quick-map-dashboard__signal strong,
+.quick-map-dashboard__signal span {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.quick-map-dashboard__signal strong {
+  color: var(--ink);
+  font-size: 9.5px;
+}
+
+.quick-map-dashboard__signal span {
+  color: var(--ink-mute);
+  font-size: 8.5px;
+}
+
+.quick-map-dashboard__signal b {
+  color: var(--ink);
+  font-size: 10px;
+  text-align: right;
+}
+
+.quick-map-dashboard__signal i {
+  height: 8px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--surface-3);
+  box-shadow: inset 0 0 0 1px var(--edge);
+}
+
+.quick-map-dashboard__signal em {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+}
+
+.quick-map-dashboard__signal-summary {
+  display: grid;
+  gap: 2px;
+  margin-top: 2px;
+  padding: 8px 9px;
+  border: 1px solid color-mix(in srgb, var(--accent) 28%, var(--edge));
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--accent) 7%, var(--surface-3));
+}
+
+.quick-map-dashboard__signal-summary strong {
+  color: var(--ink);
+  font-size: 10px;
+}
+
+.quick-map-dashboard__signal-summary span {
+  color: var(--ink-dim);
+  font-size: 9px;
 }
 
 .quick-map-dashboard__selection {
@@ -15694,7 +15841,7 @@ html[data-lang="kn"] body {
 }
 
 
-/* ===== Protected integrated Layer Review + AE/AEE workflow styles ===== */
+/* ===== Protected integrated Layer Review + AE/AEE workflow styles =====
    Layer Review Page
    ========================================================================= */
 .layer-review-page {
