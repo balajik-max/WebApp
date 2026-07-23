@@ -27,6 +27,10 @@ interface Props {
 const DEFAULT_BUILDING_HEIGHT_M = 6; // stated fallback when DSM/DTM sampling has no value here — never silently 0
 const MANHOLE_TOTAL_H = 3.0; // slab + chamber + shaft — lid tops out at this height above the chamber base
 
+const POWERLINE_RED_CLEARANCE_M = 0.5;
+const POWERLINE_YELLOW_CLEARANCE_M = 1.0;
+const POWERLINE_SEARCH_RADIUS_M = 1.5;
+
 const ANOMALY_COLOR: Record<string, number> = {
   red: 0xdc2626,
   yellow: 0xeab308,
@@ -1903,27 +1907,54 @@ export function Map3DViewer({ features, classMap, anomalies, datasets, activeDat
           }
           return bestY;
         };
-        // Closest approach between two 2D segments (local x/z) — checks the
-        // 4 endpoint-vs-opposite-segment cases, which is what real building-
-        // edge vs line-segment geometry actually needs (short, straight
-        // pieces at this survey scale); doesn't special-case true crossings
-        // as an exact 0, but that's fine here — this only ever feeds a
-        // red/yellow/green color tier, not a certified measurement.
+        // Closest approach between two 2D segments (local x/z). True segment
+        // crossings return exactly 0 before falling back to endpoint-vs-
+        // opposite-segment distances.
         const closestApproach2D = (
           a1x: number, a1z: number, a2x: number, a2z: number,
           b1x: number, b1z: number, b2x: number, b2z: number
         ): { dist: number; x: number; z: number } => {
-          const onSeg = (px: number, pz: number, ax: number, az: number, bx: number, bz: number) => {
+          const EPS = 1e-9;
+          const between = (v: number, a: number, b: number) => v >= Math.min(a, b) - EPS && v <= Math.max(a, b) + EPS;
+          const pointOnSegment = (px: number, pz: number, ax: number, az: number, bx: number, bz: number) => (
+            between(px, ax, bx) &&
+            between(pz, az, bz) &&
+            Math.abs((px - ax) * (bz - az) - (pz - az) * (bx - ax)) <= EPS
+          );
+          const rx = a2x - a1x, rz = a2z - a1z;
+          const sx = b2x - b1x, sz = b2z - b1z;
+          const qpx = b1x - a1x, qpz = b1z - a1z;
+          const denom = rx * sz - rz * sx;
+          if (Math.abs(denom) > EPS) {
+            const t = (qpx * sz - qpz * sx) / denom;
+            const u = (qpx * rz - qpz * rx) / denom;
+            if (t >= -EPS && t <= 1 + EPS && u >= -EPS && u <= 1 + EPS) {
+              const clampedT = Math.max(0, Math.min(1, t));
+              return { dist: 0, x: a1x + rx * clampedT, z: a1z + rz * clampedT };
+            }
+          } else if (Math.abs(qpx * rz - qpz * rx) <= EPS) {
+            const overlap = [
+              { x: a1x, z: a1z },
+              { x: a2x, z: a2z },
+              { x: b1x, z: b1z },
+              { x: b2x, z: b2z },
+            ].find((p) =>
+              pointOnSegment(p.x, p.z, a1x, a1z, a2x, a2z) &&
+              pointOnSegment(p.x, p.z, b1x, b1z, b2x, b2z)
+            );
+            if (overlap) return { dist: 0, x: overlap.x, z: overlap.z };
+          }
+          const closestPointOnSegment = (px: number, pz: number, ax: number, az: number, bx: number, bz: number) => {
             const vx = bx - ax, vz = bz - az;
             const len2 = vx * vx + vz * vz;
             const t = len2 > 0 ? Math.max(0, Math.min(1, ((px - ax) * vx + (pz - az) * vz) / len2)) : 0;
             return { x: ax + vx * t, z: az + vz * t };
           };
           const cases: [{ x: number; z: number }, number, number][] = [
-            [onSeg(a1x, a1z, b1x, b1z, b2x, b2z), a1x, a1z],
-            [onSeg(a2x, a2z, b1x, b1z, b2x, b2z), a2x, a2z],
-            [onSeg(b1x, b1z, a1x, a1z, a2x, a2z), b1x, b1z],
-            [onSeg(b2x, b2z, a1x, a1z, a2x, a2z), b2x, b2z],
+            [closestPointOnSegment(a1x, a1z, b1x, b1z, b2x, b2z), a1x, a1z],
+            [closestPointOnSegment(a2x, a2z, b1x, b1z, b2x, b2z), a2x, a2z],
+            [closestPointOnSegment(b1x, b1z, a1x, a1z, a2x, a2z), b1x, b1z],
+            [closestPointOnSegment(b2x, b2z, a1x, a1z, a2x, a2z), b2x, b2z],
           ];
           let best = Infinity, bx = 0, bz = 0;
           for (const [pt, fromX, fromZ] of cases) {
@@ -1932,14 +1963,16 @@ export function Map3DViewer({ features, classMap, anomalies, datasets, activeDat
           }
           return { dist: best, x: bx, z: bz };
         };
-        // Real (non-buried) power lines only — Water Line/Electric Line
-        // share the same canonical class but aren't overhead conductors.
+        // Real overhead conductors only. Water Line shares the Power_Line
+        // canonical class for layer grouping, but is still a buried utility.
+        // Electric Line is rendered as overhead conductor below, so include
+        // it in the same clearance calculation.
         const realPowerLines =
           detectionMode3D === "powerlines"
             ? features.filter((f) => {
                 if (classMap[f.properties.category ?? ""] !== "Power_Line") return false;
                 const raw = (f.properties.category ?? "").toLowerCase();
-                return !raw.includes("water") && !raw.includes("electric");
+                return !raw.includes("water");
               })
             : [];
 
@@ -2027,9 +2060,9 @@ export function Map3DViewer({ features, classMap, anomalies, datasets, activeDat
                 }
               }
             }
-            if (best <= 0.5) powerlineTier = "red";
-            else if (best <= 1.0) powerlineTier = "yellow";
-            else if (best <= 3.0) powerlineTier = "green";
+            if (best <= POWERLINE_RED_CLEARANCE_M) powerlineTier = "red";
+            else if (best <= POWERLINE_YELLOW_CLEARANCE_M) powerlineTier = "yellow";
+            else if (best <= POWERLINE_SEARCH_RADIUS_M) powerlineTier = "green";
             if (powerlineTier) powerlineDist3D = best;
           }
           // A powerline-flagged building is tinted by its own real tier —
@@ -2749,6 +2782,68 @@ export function Map3DViewer({ features, classMap, anomalies, datasets, activeDat
           gfor(pl).add(mesh);
           clickable.push(mesh);
         };
+        const buildOverheadLinePoints = (line: [number, number][]): THREE.Vector3[] => {
+          const POLE_SNAP_TOL = 4; // metres from the line to count as a support
+          const vlocal = line.map(([lon, lat]) => {
+            const [x, z] = projector.toLocal(lon, lat);
+            const y = polePositions.length
+              ? nearestPoleTopY(x, z)
+              : elevAt(lon, lat) + OVERHEAD_LINE_H;
+            return { x, z, y };
+          });
+          const out: { x: number; z: number; y: number }[] = [];
+          for (let i = 0; i < vlocal.length; i++) {
+            out.push(vlocal[i]);
+            if (i < vlocal.length - 1) {
+              const a = vlocal[i], b = vlocal[i + 1];
+              const hits: { t: number; x: number; z: number; y: number }[] = [];
+              for (const p of polePositions) {
+                const c = segClosest(p, a, b);
+                if (c.t > 0.02 && c.t < 0.98 && c.dist <= POLE_SNAP_TOL) {
+                  hits.push({
+                    t: c.t,
+                    x: a.x + (b.x - a.x) * c.t,
+                    z: a.z + (b.z - a.z) * c.t,
+                    y: p.topY,
+                  });
+                }
+              }
+              hits.sort((h1, h2) => h1.t - h2.t);
+              for (const h of hits) out.push({ x: h.x, z: h.z, y: h.y });
+            }
+          }
+          const SAG_RATIO = 0.035; // ~3.5% of span length
+          const MIN_SAG_M = 0.12;
+          const MAX_SAG_M = 1.8;
+          const pts: THREE.Vector3[] = [];
+          for (let i = 0; i < out.length; i++) {
+            const a = out[i];
+            pts.push(new THREE.Vector3(a.x, a.y, a.z));
+            if (i === out.length - 1) continue;
+            const b = out[i + 1];
+            const spanLen = Math.hypot(b.x - a.x, b.z - a.z);
+            const sag = Math.min(MAX_SAG_M, Math.max(MIN_SAG_M, spanLen * SAG_RATIO));
+            const steps = Math.max(3, Math.min(12, Math.round(spanLen / 4)));
+            for (let s = 1; s < steps; s++) {
+              const t = s / steps;
+              const droop = 4 * sag * t * (1 - t);
+              pts.push(new THREE.Vector3(
+                a.x + (b.x - a.x) * t,
+                a.y + (b.y - a.y) * t - droop,
+                a.z + (b.z - a.z) * t
+              ));
+            }
+          }
+          return pts;
+        };
+        const offsetWirePoints = (pts: THREE.Vector3[], off: number): THREE.Vector3[] => pts.map((p, i) => {
+          const prev = pts[Math.max(0, i - 1)];
+          const next = pts[Math.min(pts.length - 1, i + 1)];
+          const t = new THREE.Vector3().subVectors(next, prev);
+          if (t.lengthSq() < 1e-6) t.set(1, 0, 0);
+          const perp = new THREE.Vector3(-t.z, 0, t.x).normalize().multiplyScalar(off);
+          return new THREE.Vector3(p.x + perp.x, p.y, p.z + perp.z);
+        });
         for (const pl of powerLines) {
           const raw = (pl.properties.category ?? "").toLowerCase();
           const isWater = raw.includes("water");
@@ -2859,14 +2954,7 @@ export function Map3DViewer({ features, classMap, anomalies, datasets, activeDat
               // (see buildPoleMarker).
               const waysCount = readAttr(pl.properties.attributes ?? {}, "ways");
               for (const off of wireOffsetsForWays(waysCount)) {
-                const cpts = pts.map((p, i) => {
-                  const prev = pts[Math.max(0, i - 1)];
-                  const next = pts[Math.min(pts.length - 1, i + 1)];
-                  const t = new THREE.Vector3().subVectors(next, prev);
-                  if (t.lengthSq() < 1e-6) t.set(1, 0, 0);
-                  const perp = new THREE.Vector3(-t.z, 0, t.x).normalize().multiplyScalar(off);
-                  return new THREE.Vector3(p.x + perp.x, p.y, p.z + perp.z);
-                });
+                const cpts = offsetWirePoints(pts, off);
                 // cpts is already densely sampled (sag subdivision above), so
                 // the tube only needs roughly one segment per input point,
                 // not a further 3x multiplier — that alone kept this smooth
@@ -2896,11 +2984,10 @@ export function Map3DViewer({ features, classMap, anomalies, datasets, activeDat
         // tube around each overhead conductor so users can see the
         // 1m safety clearance envelope.
         if (detectionMode3D === "powerlines") {
-          const POWERLINE_BUFFER_M = 1.0;
           for (const pl of powerLines) {
             const raw = (pl.properties.category ?? "").toLowerCase();
-            // Only show buffer for overhead power lines, not buried water/electric
-            if (raw.includes("water") || raw.includes("electric")) continue;
+            // Only show buffer for overhead conductors, not buried water lines.
+            if (raw.includes("water")) continue;
             const geom = pl.geometry;
             const lines: [number, number][][] =
               geom.type === "LineString"
@@ -2910,31 +2997,29 @@ export function Map3DViewer({ features, classMap, anomalies, datasets, activeDat
                   : [];
             for (const line of lines) {
               if (line.length < 2) continue;
-              // Densify for smooth buffer tube
-              const dense = densifyLine(line, projector, 2);
-              const pts = dense.map(([lon, lat]) => {
-                const [x, z] = projector.toLocal(lon, lat);
-                return new THREE.Vector3(x, elevAt(lon, lat) + 8, z);
-              });
-              if (pts.length < 2) continue;
-              const curve = new THREE.CatmullRomCurve3(pts);
-              const geo = new THREE.TubeGeometry(
-                curve,
-                Math.max(4, pts.length * 2),
-                POWERLINE_BUFFER_M,
-                12,
-                false
-              );
-              const mat = new THREE.MeshStandardMaterial({
-                color: 0xef4444,
-                transparent: true,
-                opacity: 0.12,
-                side: THREE.DoubleSide,
-                depthWrite: false,
-              });
-              const mesh = new THREE.Mesh(geo, mat);
-              mesh.renderOrder = -1; // render behind other objects
-              gfor(pl).add(mesh);
+              const pts = buildOverheadLinePoints(line);
+              const waysCount = readAttr(pl.properties.attributes ?? {}, "ways");
+              for (const off of wireOffsetsForWays(waysCount)) {
+                const cpts = offsetWirePoints(pts, off);
+                if (cpts.length < 2) continue;
+                const geo = new THREE.TubeGeometry(
+                  new THREE.CatmullRomCurve3(cpts),
+                  Math.max(2, Math.min(400, cpts.length)),
+                  POWERLINE_YELLOW_CLEARANCE_M,
+                  12,
+                  false
+                );
+                const mat = new THREE.MeshStandardMaterial({
+                  color: 0xef4444,
+                  transparent: true,
+                  opacity: 0.12,
+                  side: THREE.DoubleSide,
+                  depthWrite: false,
+                });
+                const mesh = new THREE.Mesh(geo, mat);
+                mesh.renderOrder = -1; // render behind other objects
+                gfor(pl).add(mesh);
+              }
             }
           }
         }

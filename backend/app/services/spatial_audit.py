@@ -606,14 +606,12 @@ async def _detect_powerline_proximity(
     height (not a flat assumption — see _nearest_pole_height_m) does
     horizontal proximity become a real contact risk.
 
-    The Power_Line canonical class also absorbs "Water Line" and "Electric
-    Line" (buried utilities, not overhead conductors — see
-    class_taxonomy.py) under the SAME class as real "Power Line"/
-    "Powerline" categories. A building's water/sewer service pipe running
-    right into its own wall is completely normal and carries zero
-    electrocution risk, so those raw categories are explicitly excluded
-    from this join — otherwise a nearby buried pipe could dominate the
-    "nearest powerline" distance and produce a meaningless result.
+    The Power_Line canonical class also absorbs "Water Line" for layer
+    grouping. A building's water/sewer service pipe running right into its
+    own wall is completely normal and carries zero electrocution risk, so
+    water raw categories are explicitly excluded from this join. "Electric
+    Line" is treated as an overhead conductor elsewhere in the 3D UI, so it
+    remains included here with real powerline categories.
 
     Every building that passes the height gate gets a row, colored by real
     distance tier (RED <= 0.5 m, YELLOW <= 1.0 m, GREEN beyond that but
@@ -634,7 +632,7 @@ async def _detect_powerline_proximity(
                 "FROM features b "
                 "JOIN features p ON p.dataset_id = b.dataset_id "
                 "  AND p.attributes->>'_canonical_class' = 'Power_Line' "
-                "  AND p.category !~* 'water|electric' "
+                "  AND p.category !~* 'water' "
                 "WHERE b.dataset_id = :dataset_id "
                 "  AND b.attributes->>'_canonical_class' = 'Building' "
                 "  AND ST_DWithin(b.geom::geography, p.geom::geography, :radius_m) "

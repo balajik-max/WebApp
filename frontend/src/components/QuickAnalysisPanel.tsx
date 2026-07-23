@@ -37,18 +37,10 @@ const CARDS: QuickAnalysisCard[] = [
   {
     id: "asset-catalog",
     title: "Full Asset Catalog",
-    description: "Geo-referenced catalog of every mapped feature, with type, location, and attribute completeness.",
+    description: "Every mapped feature with its type, location, and recorded condition — pick an asset to drill in.",
     cta: "View catalog",
     action: "quick",
     icon: <svg {...ICON_PROPS}><rect x="4" y="4" width="16" height="4.5" rx="1" /><rect x="4" y="10.2" width="16" height="4.5" rx="1" /><rect x="4" y="16.4" width="16" height="4.5" rx="1" /></svg>,
-  },
-  {
-    id: "condition-overview",
-    title: "Asset Condition Overview",
-    description: "Roll-up of the survey's condition and severity signals across roads, drains, and utilities.",
-    cta: "View analysis",
-    action: "quick",
-    icon: <svg {...ICON_PROPS}><path d="M3 12a9 9 0 1 1 9 9" /><path d="M12 12 8 8m4 4 6-3" /></svg>,
   },
   {
     id: "survey-kpis",
@@ -73,6 +65,22 @@ const CARDS: QuickAnalysisCard[] = [
     cta: "View on map",
     action: "quick",
     icon: <svg {...ICON_PROPS}><path d="M4 9h16M4 15h16" /><path d="M8 9V6m8 3V6M8 18v-3m8 3v-3" /></svg>,
+  },
+  {
+    id: "pothole-check",
+    title: "Pothole Surface Check",
+    description: "Pothole and road-depression records with depth, elevation, surface type, and repair context.",
+    cta: "View on map",
+    action: "quick",
+    icon: <svg {...ICON_PROPS}><path d="M4 12c2.2-2.5 4.4-2.5 6.6 0s4.6 2.5 9.4-.2" /><path d="M8.5 15.5c.7 1.6 2 2.5 3.6 2.5s3-.9 3.8-2.6" /><path d="M10 9.5h.01M14.5 10.5h.01" /></svg>,
+  },
+  {
+    id: "standing-water",
+    title: "Standing Water Check",
+    description: "Waterlogging and ponding records with water depth, level/elevation evidence, and road-surface details.",
+    cta: "View on map",
+    action: "quick",
+    icon: <svg {...ICON_PROPS}><path d="M4 15c1.8-1.6 3.6-1.6 5.4 0s3.7 1.6 5.6 0 3.4-1.6 5 0" /><path d="M8 10c1.3-1.2 2.7-1.2 4 0s2.7 1.2 4 0" /><path d="M12 4c1.8 2.2 2.7 3.8 2.7 5a2.7 2.7 0 1 1-5.4 0c0-1.2.9-2.8 2.7-5Z" /></svg>,
   },
 ];
 

@@ -37,8 +37,73 @@ function normalizeCategory(value: string | null | undefined): string {
   return (value ?? "").trim().toLowerCase().replace(/[_-]+/g, " ").replace(/\s+/g, " ");
 }
 
+// Broad asset groups for the Full Asset Catalog card — every canonical_class
+// the classifier produces (see backend/app/services/class_taxonomy.py) rolls
+// up into one of these, so the group tabs cover the whole survey.
+export type AssetGroup = "roads" | "drains" | "manholes" | "utility" | "buildings" | "other";
+export const ASSET_GROUP_CLASSES: Record<Exclude<AssetGroup, "other">, string[]> = {
+  roads: ["Road_Centerline", "Road_Surface", "Road_Segment"],
+  drains: ["Drainage_Asset", "Drainage_Level_Point"],
+  manholes: ["Access_Point"],
+  utility: ["Illumination_Asset", "Utility_Pole", "Power_Line"],
+  buildings: ["Building"],
+};
+export const ALL_ASSET_GROUP_CANONICAL: string[] = Object.values(ASSET_GROUP_CLASSES).flat();
+export function assetGroupForCanonical(canonicalClass: string | null | undefined): AssetGroup {
+  const canon = canonicalClass ?? "";
+  for (const [group, classes] of Object.entries(ASSET_GROUP_CLASSES)) {
+    if (classes.includes(canon)) return group as AssetGroup;
+  }
+  return "other";
+}
+
+// Condition/maintenance-status fields recorded across different asset types
+// in the real survey data — checked in order, first recorded value wins.
+export const CONDITION_ATTRIBUTE_KEYS = [
+  "Condition", "Manhole_Condition", "SWD_Status", "Road_Condition",
+  "Maintenance_Status", "Maintenance_Status_1",
+];
+export const ROAD_ISSUE_DEPTH_KEYS = [
+  "Pothole_Depth", "PotHole_Depth", "POTHOLE_DEPTH", "Defect_Depth", "Depression_Depth", "Water_Depth",
+  "Standing_Water_Depth", "Max_Depth", "Average_Depth", "Avg_Depth",
+  "Depth", "depth", "Depth_m", "depth_m",
+];
+export const ROAD_ISSUE_ELEVATION_KEYS = [
+  "Elevation", "Ground_Elevation", "Ground_Level", "Top_Level", "Bottom_Level",
+  "Reduced_Level", "RL", "Level", "Z",
+];
+export const ROAD_ISSUE_SURFACE_KEYS = [
+  "Type_of_Road", "Road_Surface", "Surface", "surface", "Surface_Type",
+  "Road_Condition", "Condition",
+];
+export const ROAD_ISSUE_LOCATION_KEYS = [
+  "Road_Name", "Name", "Location", "Chainage", "FID", "GDB_FID", "OBJECTID", "ObjectId",
+];
+const POTHOLE_FLAG_KEYS = [
+  "Pothole", "Potholes", "PotHole", "Road_Defect", "Surface_Defect", "Defect_Type", "Issue_Type", "Problem_Type",
+];
+const STANDING_WATER_FLAG_KEYS = [
+  "Standing_Water", "Waterlogging", "Water_Logging", "Stagnant_Water", "Ponding", "Flooding", "Issue_Type", "Problem_Type",
+];
+const POTHOLE_TOKENS = [
+  "pothole", "potholes", "pot hole", "pot holes",
+  "pothhole", "pothholes", "pothhole top",
+  "pathhole", "pathholes", "pathhole top", "pathole",
+  "road depression", "surface depression", "crater",
+];
+const STANDING_WATER_TOKENS = ["standing water", "waterlogging", "water logging", "stagnant water", "water stagnation", "ponding", "flooding"];
+
 function normalizeAttrValue(value: unknown): string {
   return String(value ?? "").trim().toLowerCase();
+}
+
+function normalizeSearchText(value: unknown): string {
+  return String(value ?? "")
+    .toLowerCase()
+    .replace(/[_-]+/g, " ")
+    .replace(/[^a-z0-9.]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 function isRecorded(value: unknown): boolean {
@@ -53,6 +118,67 @@ function firstAttribute(feature: UrbanFeature, keys: string[]): unknown {
   return undefined;
 }
 
+function firstNamedAttribute(feature: UrbanFeature, keys: string[]): unknown {
+  const attrs = feature.properties.attributes ?? {};
+  for (const [attrKey, value] of Object.entries(attrs)) {
+    if (!isRecorded(value)) continue;
+    const normKey = normalizeSearchText(attrKey);
+    if (keys.some((key) => normKey === normalizeSearchText(key))) return value;
+  }
+  return undefined;
+}
+
+function hasRecordedNamedAttribute(feature: UrbanFeature, keys: string[]): boolean {
+  const raw = normalizeSearchText(firstNamedAttribute(feature, keys));
+  return Boolean(raw && !["no", "false", "0", "nil"].includes(raw));
+}
+
+export function firstIssueAttribute(feature: UrbanFeature, keys: string[]): unknown {
+  return firstAttribute(feature, keys);
+}
+
+export function issueNumberValue(feature: UrbanFeature, keys: string[]): number | null {
+  const raw = firstAttribute(feature, keys);
+  if (raw === undefined) return null;
+  const parsed = parseFloat(String(raw).replace(/[^0-9.+-]/g, ""));
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function featureIssueText(feature: UrbanFeature): string {
+  const attrs = feature.properties.attributes ?? {};
+  const recordedAttributeText = Object.entries(attrs)
+    .filter(([, value]) => isRecorded(value))
+    .flatMap(([key, value]) => [key, value]);
+  return normalizeSearchText([
+    feature.properties.category,
+    feature.properties.label,
+    feature.properties.canonical_class,
+    attrs.gdb_layer,
+    attrs.LAYER,
+    attrs.Layer,
+    attrs.layer_name,
+    ...recordedAttributeText,
+  ].join(" "));
+}
+
+function hasIssueToken(feature: UrbanFeature, tokens: string[]): boolean {
+  const text = featureIssueText(feature);
+  return tokens.some((token) => {
+    const normalized = normalizeSearchText(token);
+    return Boolean(normalized) && text.includes(normalized);
+  });
+}
+
+export function isPotholeFeature(feature: UrbanFeature): boolean {
+  return hasIssueToken(feature, POTHOLE_TOKENS)
+    || hasRecordedNamedAttribute(feature, POTHOLE_FLAG_KEYS);
+}
+
+export function isStandingWaterFeature(feature: UrbanFeature): boolean {
+  return hasIssueToken(feature, STANDING_WATER_TOKENS)
+    || hasRecordedNamedAttribute(feature, STANDING_WATER_FLAG_KEYS);
+}
+
 function numericAverage(features: UrbanFeature[], keys: string[]): number | null {
   const values: number[] = [];
   for (const feature of features) {
@@ -65,7 +191,7 @@ function numericAverage(features: UrbanFeature[], keys: string[]): number | null
   return values.reduce((sum, v) => sum + v, 0) / values.length;
 }
 
-function attributeBreakdown(features: UrbanFeature[], keys: string[], emptyLabel: string, palette: string[]): BreakdownItem[] {
+export function attributeBreakdown(features: UrbanFeature[], keys: string[], emptyLabel: string, palette: string[]): BreakdownItem[] {
   const counts = new Map<string, number>();
   for (const feature of features) {
     const raw = firstAttribute(feature, keys);
@@ -75,12 +201,6 @@ function attributeBreakdown(features: UrbanFeature[], keys: string[], emptyLabel
   return [...counts.entries()]
     .sort((a, b) => b[1] - a[1])
     .map(([label, count], i) => ({ label, count, color: label === emptyLabel ? "#64748b" : palette[i % palette.length] }));
-}
-
-function severityBucket(severity: number): "low" | "medium" | "high" {
-  if (severity < 0.34) return "low";
-  if (severity < 0.67) return "medium";
-  return "high";
 }
 
 function anomaliesByType(anomalies: SpatialAnomaly[], type: AnomalyType): SpatialAnomaly[] {
@@ -176,28 +296,6 @@ export function computeDashboardData(cardId: string, ctx: QuickAnalysisContext):
         right: top.slice(0, 6).map((c) => ({ label: c.category, count: c.count, color: colorForCategory(c.category) })),
       };
     }
-    case "condition-overview": {
-      const buckets = { low: 0, medium: 0, high: 0 };
-      let sum = 0;
-      for (const f of loadedFeatures) {
-        buckets[severityBucket(f.properties.severity)] += 1;
-        sum += f.properties.severity;
-      }
-      const avg = loadedFeatures.length ? sum / loadedFeatures.length : 0;
-      return {
-        bottom: [
-          { label: "Average severity", value: avg.toFixed(2) },
-          { label: "High severity", value: String(buckets.high) },
-          { label: "Low severity", value: String(buckets.low) },
-        ],
-        rightHeading: "Severity mix",
-        right: [
-          { label: "High", count: buckets.high, color: "#ef4444" },
-          { label: "Medium", count: buckets.medium, color: "#f59e0b" },
-          { label: "Low", count: buckets.low, color: "#22c55e" },
-        ],
-      };
-    }
     case "drainage-capacity": {
       const top = numericAverage(manholeFeatures, ["Top_Level", "top_level"]);
       const bottom = numericAverage(manholeFeatures, ["Bottom_Level", "bottom_level"]);
@@ -227,6 +325,43 @@ export function computeDashboardData(cardId: string, ctx: QuickAnalysisContext):
         rightHeading: "By severity",
         right: colorBreakdown(list),
         rightEmptyLabel: "Run the audit to populate this",
+      };
+    }
+    case "pothole-check": {
+      const potholes = loadedFeatures.filter(isPotholeFeature);
+      const depths = potholes
+        .map((feature) => issueNumberValue(feature, ROAD_ISSUE_DEPTH_KEYS))
+        .filter((value): value is number => value !== null);
+      const deepest = depths.length ? Math.max(...depths) : null;
+      return {
+        bottom: [
+          { label: "Pothole records", value: String(potholes.length) },
+          { label: "Depth recorded", value: String(depths.length) },
+          { label: "Deepest", value: deepest === null ? "—" : `${deepest.toFixed(2)} m` },
+        ],
+        rightHeading: "Surface / condition",
+        right: attributeBreakdown(potholes, ROAD_ISSUE_SURFACE_KEYS, "Not recorded", PALETTE),
+        rightEmptyLabel: "No pothole records were found in the active dataset.",
+      };
+    }
+    case "standing-water": {
+      const water = loadedFeatures.filter(isStandingWaterFeature);
+      const depths = water
+        .map((feature) => issueNumberValue(feature, ROAD_ISSUE_DEPTH_KEYS))
+        .filter((value): value is number => value !== null);
+      const elevations = water
+        .map((feature) => issueNumberValue(feature, ROAD_ISSUE_ELEVATION_KEYS))
+        .filter((value): value is number => value !== null);
+      const avgDepth = depths.length ? depths.reduce((sum, value) => sum + value, 0) / depths.length : null;
+      return {
+        bottom: [
+          { label: "Standing-water records", value: String(water.length) },
+          { label: "Depth recorded", value: String(depths.length) },
+          { label: "Elevation recorded", value: String(elevations.length), sub: avgDepth === null ? "" : `avg depth ${avgDepth.toFixed(2)} m` },
+        ],
+        rightHeading: "Surface / condition",
+        right: attributeBreakdown(water, ROAD_ISSUE_SURFACE_KEYS, "Not recorded", PALETTE),
+        rightEmptyLabel: "No standing-water records were found in the active dataset.",
       };
     }
     case "priority-zones": {
