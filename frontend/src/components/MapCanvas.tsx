@@ -125,6 +125,17 @@ interface Props {
   /** Refetch point-verification state after an Admin or Architect update. */
   refreshToken?: number;
 
+  /** Initial zoom level for the map - preserves user settings across tab navigation */
+  initialZoom?: number;
+  /** Initial center coordinates for the map - preserves user settings across tab navigation */
+  initialCenter?: [number, number];
+  /** Initial pitch (tilt) for the map - preserves user settings across tab navigation */
+  initialPitch?: number;
+  /** Initial bearing (rotation) for the map - preserves user settings across tab navigation */
+  initialBearing?: number;
+  /** Callback fired when map camera changes - used to persist state to parent */
+  onCameraChange?: (state: { zoom: number; center: [number, number]; pitch: number; bearing: number }) => void;
+
   /** Basemap style (street/satellite/off) persisted by the parent —
    * same rationale and pattern as initialActiveDatasets/onActiveDatasetsChange
    * above: this component unmounts on every tab switch, so the style the
@@ -2884,6 +2895,11 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     onToggleSidebar,
     onQuickAnalysisActiveChange,
     refreshToken = 0,
+    initialZoom,
+    initialCenter,
+    initialPitch,
+    initialBearing,
+    onCameraChange,
     commandCenterMobileOpen, onCommandCenterMobileOpenChange,
     spatialAuditRequested, setSpatialAuditRequested, spatialAuditExecutedRef,
     spatialAuditStatus, onSpatialAuditStatusChange,
@@ -6908,8 +6924,10 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     const map = new maplibregl.Map({
       container: containerRef.current,
       style: BASE_STYLE,
-      center: DAVANGERE_CENTER,
-      zoom: DAVANGERE_ZOOM,
+      center: initialCenter || DAVANGERE_CENTER,
+      zoom: initialZoom || DAVANGERE_ZOOM,
+      pitch: initialPitch ?? 0,
+      bearing: initialBearing ?? 0,
       minZoom: 4,
       // Raster/image overlays (aerial TIFs etc.) have no tile pyramid of
       // their own, so they can be zoomed in far past where basemap tiles
@@ -7005,8 +7023,23 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
       }
     };
     map.on("mousemove", handleCursorMove);
+    map.on("mouseleave", handleCursorLeave);
     map.on("mouseout", handleCursorLeave);
     map.on("render", handleMapRender);
+
+    // Persist camera state to parent component on every moveend event.
+    // This fires after all camera changes (pan, zoom, rotate, pitch, and
+    // programmatic flyTo/fitBounds/easeTo), allowing the parent layout to
+    // restore the exact camera state when returning to the Map page.
+    const persistCameraState = () => {
+      onCameraChange?.({
+        zoom: map.getZoom(),
+        center: map.getCenter().toArray() as [number, number],
+        pitch: map.getPitch(),
+        bearing: map.getBearing(),
+      });
+    };
+    map.on("moveend", persistCameraState);
 
     map.on("load", () => {
       map.addSource(FEATURE_SOURCE, { type: "geojson", data: EMPTY_FC as unknown as GeoJSON.FeatureCollection, promoteId: "id" });
@@ -9412,10 +9445,10 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
           scopeLabel={attributeTable.sourceLabel}
           layerFilter={attributeTable}
           onClose={() => setAttributeTable(null)}
-          onLocateFeature={(row: FeatureTableRow) => {
-            setAttributeTable(null);
-            setPendingFocusFeatureId(row.id);
-          }}
+           onLocateFeature={(row: FeatureTableRow) => {
+             setAttributeTable(null);
+             setPendingFocusFeatureId(row.id);
+           }}
         />
       )}
     </>

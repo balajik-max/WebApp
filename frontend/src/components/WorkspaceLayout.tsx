@@ -17,6 +17,7 @@ import type { FeatureFilter } from "../lib/types";
 import { searchFeatureFids, type FidSearchResult } from "../lib/features";
 import type { DatasetRow } from "../lib/workflow";
 import type { Basemap } from "./MapCanvas";
+import type { MapState } from "../pages/MapView";
 import {
   fetchRemediationUpdates,
   markRemediationUpdateRead,
@@ -422,6 +423,7 @@ function TabsNav({ pathname, user }: { pathname: string; user: AuthUser | null }
  */
 export function WorkspaceLayout() {
   const { user } = useAuth();
+
   const { t, lang, toggle } = useLanguage();
   const location = useLocation();
   const navigate = useNavigate();
@@ -569,6 +571,14 @@ export function WorkspaceLayout() {
     if (!showSearch) setCommandCenterMobileOpen(false);
   }, [showSearch]);
 
+  // Current map camera state (zoom, center, pitch, bearing) - persists through tab navigation
+  const [mapState, setMapState] = useState<MapState>({
+    zoom: 12,
+    center: [75.9218, 14.4644],
+    pitch: 0,
+    bearing: 0,
+  });
+
   const outletContext = useMemo(
     () => ({
       filter: EMPTY_FILTER,
@@ -583,8 +593,11 @@ export function WorkspaceLayout() {
       spatialAuditExecutedRef,
       spatialAuditStatus,
       setSpatialAuditStatus,
+      mapState,
+      setMapState,
     }),
-    [selectedDatasets, basemap, commandCenterMobileOpen, spatialAuditStatus, spatialAuditRequested]
+    [selectedDatasets, basemap, commandCenterMobileOpen, spatialAuditStatus, spatialAuditRequested,
+     mapState]
   );
 
   return (

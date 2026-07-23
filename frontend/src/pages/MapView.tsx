@@ -14,6 +14,13 @@ import { useIsMobile } from "../lib/useIsMobile";
 
 type SpatialAuditStatus = "idle" | "running" | "success" | "error";
 
+export interface MapState {
+  zoom: number;
+  center: [number, number];
+  pitch: number;
+  bearing: number;
+}
+
 // Single source of truth for the left sidebar's width — desktop only (the
 // mobile drawer keeps its own fixed width from index.css, see
 // `.command-center` under the 768px breakpoint). Widened from the previous
@@ -49,6 +56,8 @@ interface LayoutCtx {
   spatialAuditExecutedRef: MutableRefObject<boolean>;
   spatialAuditStatus: SpatialAuditStatus;
   setSpatialAuditStatus: (status: SpatialAuditStatus) => void;
+  mapState: MapState;
+  setMapState: (state: MapState) => void;
 }
 
 export function MapView() {
@@ -65,6 +74,8 @@ export function MapView() {
     spatialAuditExecutedRef,
     spatialAuditStatus,
     setSpatialAuditStatus,
+    mapState,
+    setMapState,
   } = useOutletContext<LayoutCtx>();
   const [selected, setSelected] = useState<UrbanFeature | null>(null);
   const [verificationTarget, setVerificationTarget] = useState<{
@@ -77,6 +88,7 @@ export function MapView() {
   const [pointVerificationRefresh, setPointVerificationRefresh] = useState(0);
 
   const isMobile = useIsMobile();
+  
   // Deliberately not persisted (no localStorage/sessionStorage) — a manual
   // resize only lives for as long as this component stays mounted, and a
   // fresh app load (or a hard refresh) always starts back at the default.
@@ -208,6 +220,11 @@ export function MapView() {
         spatialAuditExecutedRef={spatialAuditExecutedRef}
         spatialAuditStatus={spatialAuditStatus}
         onSpatialAuditStatusChange={setSpatialAuditStatus}
+        initialZoom={mapState.zoom}
+        initialCenter={mapState.center}
+        initialPitch={mapState.pitch}
+        initialBearing={mapState.bearing}
+        onCameraChange={setMapState}
       />
 
       {!isMobile && !sidebarCollapsed && (
