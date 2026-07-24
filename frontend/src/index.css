@@ -10534,21 +10534,29 @@ body.is-resizing-sidebar {
 
 .profile-card__signout {
   width: 100%;
-  padding: 10px;
-  font-size: 12.5px;
-  font-weight: 600;
-  letter-spacing: 0.03em;
-  background: var(--danger-muted);
-  border: 1px solid var(--danger);
-  border-radius: var(--radius-md);
-  color: var(--danger);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  background: var(--danger);
+  color: #fff;
+  border: none;
+  border-radius: 12px;
+  padding: 13px 18px;
+  font-weight: 700;
+  font-size: 1rem;
   cursor: pointer;
-  transition: all var(--transition-fast);
+  box-shadow: 0 3px 0 color-mix(in srgb, var(--danger) 78%, black), 0 10px 20px -8px color-mix(in srgb, var(--danger) 60%, transparent);
+  transition: transform 0.15s ease, box-shadow 0.15s ease;
 }
 
 .profile-card__signout:hover {
-  background: var(--danger);
-  color: white;
+  transform: translateY(-1px);
+}
+
+.profile-card__signout:active {
+  transform: translateY(2px);
+  box-shadow: 0 0 0 color-mix(in srgb, var(--danger) 78%, black);
 }
 /* â”€â”€ DATASET/CATEGORY ANALYTICS WORKBENCH â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 .analytics-card-eyebrow {
