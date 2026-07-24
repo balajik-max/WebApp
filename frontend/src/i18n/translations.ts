@@ -117,6 +117,22 @@ export const STRINGS: Dict = {
   "common.aee": { en: "AEE", kn: "ಎಇಇ" },
   "common.ae": { en: "AE", kn: "ಎಇ" },
   "common.admin": { en: "Administrator", kn: "ನಿರ್ವಾಹಕ" },
+  "common.backToProfile": { en: "Back to Profile", kn: "ಪ್ರೊಫೈಲ್‌ಗೆ ಹಿಂತಿರುಗಿ" },
+  "common.monitorSystem": { en: "Monitor System", kn: "ಮಾನಿಟರ್ ಸಿಸ್ಟಮ್" },
+
+  // ── System Monitor (Admin) ────────────────────────────────
+  "monitor.title": { en: "System Monitor", kn: "ಸಿಸ್ಟಮ್ ಮಾನಿಟರ್" },
+  "monitor.subtitle": { en: "Health & diagnostics", kn: "ಆರೋಗ್ಯ ಮತ್ತು ರೋಗನಿರ್ಣಯ" },
+  "monitor.systemStatus": { en: "System Status", kn: "ಸಿಸ್ಟಮ್ ಸ್ಥಿತಿ" },
+  "monitor.apiStatus": { en: "API Status", kn: "API ಸ್ಥಿತಿ" },
+  "monitor.database": { en: "Database", kn: "ಡೇಟಾಬೇಸ್" },
+  "monitor.storageUsed": { en: "Storage Used", kn: "ಬಳಸಿದ ಸಂಗ್ರಹಣೆ" },
+  "monitor.environment": { en: "Environment", kn: "ಪರಿಸರ" },
+  "monitor.online": { en: "Online", kn: "ಆನ್‌ಲೈನ್" },
+  "monitor.offline": { en: "Offline", kn: "ಆಫ್‌ಲೈನ್" },
+  "monitor.connected": { en: "Connected", kn: "ಸಂಪರ್ಕಗೊಂಡಿದೆ" },
+  "monitor.unreachable": { en: "Unreachable", kn: "ತಲುಪಲು ಸಾಧ್ಯವಾಗುತ್ತಿಲ್ಲ" },
+  "monitor.checking": { en: "Checking…", kn: "ಪರಿಶೀಲಿಸಲಾಗುತ್ತಿದೆ…" },
 
   // ── Tasks / Activity (AE / AEE) ───────────────────────────
   "tasks.comingSoon": { en: "Tasks Dashboard Coming Soon", kn: "ಕಾರ್ಯ ಡ್ಯಾಶ್‌ಬೋರ್ಡ್ ಶೀಘ್ರದಲ್ಲೇ" },
