@@ -122,6 +122,36 @@ async def delete_object(key: str) -> None:
     await asyncio.to_thread(_do)
 
 
+async def bucket_health(max_count: int = 5000) -> dict[str, str]:
+    """Cheap MinIO/S3 reachability probe for the admin dashboard.
+
+    Object counting is capped so a very large bucket can't turn a status
+    check into a full unbounded listing.
+    """
+    s = get_settings()
+
+    def _do() -> dict[str, str]:
+        client = _client()
+        client.head_bucket(Bucket=s.s3_bucket)
+        paginator = client.get_paginator("list_objects_v2")
+        count = 0
+        capped = False
+        for page in paginator.paginate(Bucket=s.s3_bucket, PaginationConfig={"MaxItems": max_count + 1}):
+            count += len(page.get("Contents", []))
+            if count > max_count:
+                capped = True
+                break
+        detail = f"{max_count}+ objects" if capped else f"{count} object(s)"
+        return {"status": "ok", "detail": detail}
+
+    try:
+        return await asyncio.to_thread(_do)
+    except ClientError as exc:
+        return {"status": "error", "detail": exc.response.get("Error", {}).get("Message", str(exc))}
+    except Exception as exc:  # noqa: BLE001
+        return {"status": "error", "detail": str(exc)}
+
+
 async def delete_objects_with_prefix(prefix: str, *, keep: set[str] | None = None) -> int:
     """Delete objects under a dataset-owned prefix, optionally preserving keys."""
     s = get_settings()
