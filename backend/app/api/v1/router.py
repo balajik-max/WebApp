@@ -2,6 +2,7 @@
 from fastapi import APIRouter
 
 from app.api.v1 import (
+    admin,
     ai,
     analytics,
     auth,
@@ -23,6 +24,7 @@ api_router = APIRouter()
 api_router.include_router(health.router, tags=["health"])
 api_router.include_router(auth.router, prefix="/auth", tags=["auth"])
 api_router.include_router(system.router, tags=["system"])
+api_router.include_router(admin.router, prefix="/v1/admin", tags=["admin"])
 api_router.include_router(datasets.router, prefix="/v1/datasets", tags=["datasets"])
 api_router.include_router(features.router, prefix="/v1/features", tags=["features"])
 api_router.include_router(review_items.router, prefix="/v1/review-items", tags=["reviews"])

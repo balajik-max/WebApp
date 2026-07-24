@@ -10558,6 +10558,54 @@ body.is-resizing-sidebar {
   transform: translateY(2px);
   box-shadow: 0 0 0 color-mix(in srgb, var(--danger) 78%, black);
 }
+
+.profile-monitor-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  width: fit-content;
+  margin: 16px auto 0;
+  padding: 8px 18px;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  background: var(--surface);
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-full);
+  color: var(--accent);
+  text-decoration: none;
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.profile-monitor-btn:hover {
+  background: var(--accent);
+  color: var(--accent-ink);
+  box-shadow: var(--shadow-sm);
+}
+
+.monitor-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 10px;
+  border-radius: var(--radius-full);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.monitor-status::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.monitor-status--ok { background: var(--ok-muted); color: var(--ok); }
+.monitor-status--error { background: var(--danger-muted); color: var(--danger); }
+.monitor-status--pending { background: var(--surface-2); color: var(--ink-mute); }
 /* â”€â”€ DATASET/CATEGORY ANALYTICS WORKBENCH â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 .analytics-card-eyebrow {
   font-size: 9px;
