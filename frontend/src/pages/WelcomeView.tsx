@@ -114,9 +114,6 @@ export default function WelcomeView() {
               Urban Intelligence
             </h1>
             <p className="welcome-hero__subtitle">{HERO_SUBTITLE}</p>
-            <p className="welcome-hero__hint" aria-hidden="true">
-              Scroll to explore the city
-            </p>
           </div>
         </section>
 

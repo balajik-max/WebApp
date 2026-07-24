@@ -138,7 +138,6 @@ export function LoginPage() {
                   data-testid="input-password"
                   type={showPw ? "text" : "password"}
                   autoComplete="current-password"
-                  placeholder="••••••••"
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
                   onBlur={() =>
@@ -206,7 +205,7 @@ export function LoginPage() {
             <p>Demo credentials:</p>
             <div className="auth-demo-accounts">
               <button type="button" onClick={() => { setEmail("admin@davangere.gov.in"); setPassword("Admin@12345"); }}>
-                <span className="auth-demo-badge auth-demo-badge--admin">DEMO</span>
+                <span className="auth-demo-badge auth-demo-badge--admin">ADMIN</span>
                 admin@davangere.gov.in
               </button>
               <button type="button" onClick={() => { setEmail("commissioner@davangere.gov.in"); setPassword("Commissioner@123"); }}>
