@@ -98,40 +98,22 @@ async def _extract_file_text(file: UploadFile) -> str:
 
 def _build_feature_context(feature: Feature | None) -> str:
     if feature is None:
-        return "FEATURE: Feature not found in database."
+        return "FEATURE: Not found."
     label = (feature.category or "FEATURE").upper()
     lines = [
-        f"=== {label} SURVEY DATA ===",
-        f"Feature ID: {feature.id}",
+        f"=== {label} ===",
+        f"ID: {feature.id}",
         f"Label: {feature.label or 'N/A'}",
-        f"Category: {feature.category or 'N/A'}",
         f"Severity: {feature.severity:.2f}",
-        "--- Survey Attributes ---",
     ]
     attrs = feature.attributes or {}
-    key_fields = [
-        "Condition", "condition",
-        "Top_Level", "top_level", "RL", "rl",
-        "Bottom_Level", "bottom_level", "Invert_Level", "invert_level",
-        "Silt_Level", "silt_level",
-        "Gradient", "gradient",
-        "Pipe_Type", "pipe_type",
-        "Diameter", "diameter",
-        "Cover_Type", "cover_type",
-        "Road_Name", "road_name",
-        "Ward", "ward",
-        "X_Long", "x_long", "Y_Lat", "y_lat",
-        "Remarks", "remarks", "Notes", "notes",
-    ]
-    shown = set()
+    # Only show the most critical attributes
+    key_fields = ["Condition", "condition", "Pipe_Type", "pipe_type", "Diameter", "diameter"]
     for key in key_fields:
         val = attrs.get(key)
-        if val is not None and key not in shown:
-            lines.append(f"  {key}: {val}")
-            shown.add(key)
-    for k, v in attrs.items():
-        if k not in shown and v is not None and str(v).strip():
-            lines.append(f"  {k}: {v}")
+        if val is not None:
+            lines.append(f"{key}: {val}")
+            break  # Show only first matching field
     return "\n".join(lines)
 
 
@@ -176,21 +158,33 @@ def _build_road_inspection_context(report: dict) -> str:
         lines.append("No unresolved red or yellow audit finding is currently assigned to this road.")
         return "\n".join(lines)
 
-    for index, issue in enumerate(issues, start=1):
+    # `issues` is already ordered worst-first (red before yellow, then
+    # severity_score DESC) by the query in build_road_inspection, so capping
+    # here keeps the most important findings and bounds the prompt sent to
+    # the LLM — a road with dozens of findings would otherwise blow up
+    # prefill time (and risk the request outliving a public proxy's read
+    # timeout) for no grounding benefit, since the verdict only needs the
+    # findings that actually drive it.
+    MAX_RENDERED_FINDINGS = 3
+    shown_issues = issues[:MAX_RENDERED_FINDINGS]
+    omitted = len(issues) - len(shown_issues)
+
+    for index, issue in enumerate(shown_issues, start=1):
         metadata = issue.get("anomaly_metadata") or {}
         lines.extend([
             "",
-            f"--- Road finding {index} ---",
-            f"Type: {issue.get('anomaly_type')}",
-            f"Color: {issue.get('color')}",
-            f"Severity score: {issue.get('severity_score')}/100",
-            f"Status: {issue.get('status')}",
-            f"Longitude: {issue.get('lon')}",
-            f"Latitude: {issue.get('lat')}",
+            f"Finding {index}: {issue.get('anomaly_type')} ({issue.get('color')}) - Severity {issue.get('severity_score')}/100",
         ])
+        # Only show non-empty metadata values, condensed
         for key, value in metadata.items():
-            if value is not None and str(value).strip():
-                lines.append(f"  {key}: {value}")
+            if value and str(value).strip():
+                lines.append(f"{key}: {value}")
+                break  # Show only first key metadata field to save tokens
+    if omitted > 0:
+        lines.append(
+            f"\n(({omitted} additional lower-severity finding(s) omitted from this context "
+            "for brevity — do not assume they are resolved.))"
+        )
     return "\n".join(lines)
 
 
@@ -264,150 +258,80 @@ async def urban_planning_solution(
 
     if road_report is not None:
         user_prompt = (
-            "You are a senior municipal road, pavement, drainage, and traffic-safety engineer "
-            "evaluating a proposed solution for one surveyed road inspection. Below you have:\n"
-            "1. The ROAD SURVEY DATA from the selected centerline\n"
-            "2. The ROAD INSPECTION DATA, including real unresolved findings and roadside assets\n"
-            "3. The USER'S PROPOSED SOLUTION\n\n"
-            "Generate a structured evaluation using exactly these sections:\n\n"
-            "`## Current Road Inspection` — Summarize the surveyed road length, roadside assets, "
-            "and every unresolved finding. Cite only values present in the context.\n\n"
-            "`## Summary of Proposed Solution` — Restate the user's proposal accurately.\n\n"
-            "`## Suitability Assessment` — Check whether the proposal addresses the actual road "
-            "findings. Consider pavement distress, road-width narrowing, potholes, standing water, "
-            "drainage influence, base failure, surface treatment, material and layer thickness, "
-            "estimated quantity when supplied, traffic diversion, pedestrian/two-wheeler safety, "
-            "construction sequencing, and post-repair inspection. Do not require an item when the "
-            "inspection data gives no evidence for it.\n\n"
-            "`## Verdict` — State **Suitable**, **Partially Suitable**, or **Not Suitable**, with a "
-            "brief technical reason.\n\n"
-            "`## Recommendations` — Give concrete corrections or additions grounded only in the "
-            "road inspection facts. Separate immediate safety controls from permanent repair.\n\n"
-            "CRITICAL: Never invent a road width, layer thickness, quantity, material, defect, or "
-            "location. If a required design input is missing, identify it as a field verification "
-            "or engineering-design requirement. Do not mark the proposal Suitable unless it resolves "
-            "the actual findings listed in ROAD INSPECTION DATA.\n\n"
+            "You are a road engineer evaluating a solution for a road inspection. You have:\n"
+            "1. ROAD SURVEY DATA\n2. ROAD INSPECTION DATA with findings\n3. USER'S PROPOSED SOLUTION\n\n"
+            "Generate:\n"
+            "`## Current Inspection` — Summarize findings from context only.\n"
+            "`## Proposed Solution` — Restate the proposal.\n"
+            "`## Assessment` — Does it address actual findings? Consider pavement, drainage, safety.\n"
+            "`## Verdict` — **Suitable**, **Partially Suitable**, or **Not Suitable** with brief reason.\n"
+            "`## Recommendations` — Concrete improvements based on facts only.\n\n"
+            "CRITICAL: Use only provided data. Never invent dimensions or defects. Mark Suitable "
+            "only if proposal resolves actual findings.\n\n"
             f"CONTEXT:\n{context}"
         )
     elif anomaly_type == "pothole_status":
         user_prompt = (
-            "You are a senior pavement-maintenance and municipal road-safety engineer evaluating "
-            "a proposed solution for one mapped pothole. Below you have the real survey attributes, "
-            "the persisted pothole audit finding, and the user's proposal.\n\n"
-            "Generate a structured evaluation using exactly these sections:\n\n"
-            "`## Current Pothole Condition` — Cite the mapped area, depth, estimated repair volume, "
-            "severity, road relationship, and any stated basis that actually appear in the context.\n\n"
-            "`## Summary of Proposed Solution` — Restate the proposal.\n\n"
-            "`## Suitability Assessment` — Evaluate whether the proposed treatment matches the real "
-            "severity and likely repair depth. Check edge cutting, removal of loose/failed material, "
-            "base repair where needed, tack coat, patch material, layer placement and compaction, "
-            "surface level, drainage/water ingress, traffic control, quantity adequacy, and post-rain "
-            "inspection. Distinguish a superficial patch from full-depth repair when the facts justify it.\n\n"
-            "`## Verdict` — State **Suitable**, **Partially Suitable**, or **Not Suitable**, with a reason.\n\n"
-            "`## Recommendations` — Give exact improvements grounded in the available facts.\n\n"
-            "CRITICAL: Never invent dimensions, depth, volume, pavement composition, material, or "
-            "traffic condition. Missing design inputs must be stated as missing. Mark Suitable only "
-            "when the proposal addresses the actual mapped pothole condition, not merely its visible surface.\n\n"
+            "You are a pavement engineer evaluating a pothole solution. You have survey data, "
+            "audit finding, and user's proposal.\n\n"
+            "Generate:\n"
+            "`## Pothole Condition` — Cite area, depth, severity from context.\n"
+            "`## Proposed Solution` — Restate proposal.\n"
+            "`## Assessment` — Does treatment match severity? Check base repair, materials, compaction.\n"
+            "`## Verdict` — **Suitable**, **Partially Suitable**, or **Not Suitable** with reason.\n"
+            "`## Recommendations` — Exact improvements from facts.\n\n"
+            "CRITICAL: Use only provided data. Mark Suitable only if proposal addresses actual condition.\n\n"
             f"CONTEXT:\n{context}"
         )
     elif anomaly_type == "standing_water_status":
         user_prompt = (
-            "You are a senior urban-drainage, road-level, and public-safety engineer evaluating a "
-            "proposed solution for one mapped standing-water area. Below you have the real survey "
-            "attributes, persisted audit finding, and user's proposal.\n\n"
-            "Generate a structured evaluation using exactly these sections:\n\n"
-            "`## Current Standing-Water Condition` — Cite the mapped area, recorded depth when available, "
-            "road intersection/distance, drain intersection/distance, severity, and stated cause/basis.\n\n"
-            "`## Summary of Proposed Solution` — Restate the proposal.\n\n"
-            "`## Suitability Assessment` — Determine whether the proposal addresses the root cause rather "
-            "than only removing water temporarily. Check drain/inlet cleaning, downstream flow, blockage, "
-            "road depression, crossfall, regrading, inlet provision, outfall availability, pavement repair, "
-            "temporary pumping, recurrence risk, pedestrian/traffic safety, and maintenance access.\n\n"
-            "`## Verdict` — State **Suitable**, **Partially Suitable**, or **Not Suitable**, with a reason.\n\n"
-            "`## Recommendations` — Separate immediate dewatering/safety measures from the permanent "
-            "drainage or level-correction work.\n\n"
-            "CRITICAL: Never invent water depth, drain capacity, invert level, road level, rainfall, or outfall. "
-            "If those inputs are absent, require field verification. Pumping alone is temporary unless the "
-            "proposal also resolves the evidenced drainage or surface-level cause.\n\n"
+            "You are a drainage engineer evaluating a standing-water solution. You have survey "
+            "data, audit finding, and user's proposal.\n\n"
+            "Generate:\n"
+            "`## Water Condition` — Cite area, depth, severity, cause from context.\n"
+            "`## Proposed Solution` — Restate proposal.\n"
+            "`## Assessment` — Does it address root cause? Check drainage, road level, inlet provision.\n"
+            "`## Verdict` — **Suitable**, **Partially Suitable**, or **Not Suitable** with reason.\n"
+            "`## Recommendations` — Separate immediate dewatering from permanent drainage work.\n\n"
+            "CRITICAL: Use only provided data. Pumping alone is temporary unless proposal resolves drainage cause.\n\n"
             f"CONTEXT:\n{context}"
         )
     elif anomaly_type == "powerline_proximity":
         user_prompt = (
-            "You are a senior electrical-safety and urban infrastructure engineer "
-            "evaluating a proposed solution for a building flagged too close to a "
-            "power line. Below you have:\n"
-            "1. The BUILDING SURVEY DATA (real attributes from the GIS database)\n"
-            "2. The AI ANOMALY FINDING (automated clearance-distance audit result)\n"
-            "3. The USER'S PROPOSED SOLUTION (what the user suggests doing)\n\n"
-            "Generate a structured evaluation with these sections:\n\n"
-            "`## Current Clearance Finding` — Summarize the real surveyed distance to "
-            "the nearest power line, the clearance thresholds, and the conductor "
-            "height. Cite specific figures from the finding.\n\n"
-            "`## Summary of Proposed Solution` — Restate what the user is proposing.\n\n"
-            "`## Suitability Assessment` — Evaluate whether the proposed solution actually "
-            "restores electrical safety clearance. Consider:\n"
-            "  - Does it address the real hazard (an under-clearance bare/uninsulated "
-            "conductor near an occupied structure), not just move the problem?\n"
-            "  - Is it something a building owner can do (e.g. insulating exposed "
-            "metal fixtures, keeping the roof/terrace unused near the line), or does it "
-            "require the electricity board (raising/rerouting the line, replacing bare "
-            "conductor with insulated cable)?\n"
-            "  - A proposal to relocate or demolish the building is almost never the "
-            "right answer for a clearance issue and should be marked Not Suitable "
-            "unless the user's own text shows the line genuinely cannot be modified.\n"
-            "  - Insulated/PVC or XLPE-covered conductor, or increasing the physical "
-            "clearance from the line side, is the standard fix — judge the proposal "
-            "against that standard.\n\n"
-            "`## Verdict` — Clearly state whether the solution is: **Suitable**, **Partially Suitable** "
-            "(with modifications needed), or **Not Suitable**. Give a brief reason.\n\n"
-            "`## Recommendations` — Concrete, standard electrical-safety suggestions to improve "
-            "or correct the proposal, grounded only in the data provided.\n\n"
-            "CRITICAL: Base your entire response ONLY on the data provided below. Never invent "
-            "attribute values. If specific data is missing, state that clearly. Do NOT default "
-            "to 'Suitable' as a courtesy — you are a safety reviewer, not a cheerleader. Before "
-            "writing the Verdict, check the proposal against the 'Issue:'/'Required:' facts in "
-            "the AI ANOMALY FINDING above line by line: if the proposal does not restore the "
-            "specific clearance/insulation problem stated there, or only treats a symptom "
-            "(e.g. it modifies the building instead of the line, or ignores the actual "
-            "clearance distance given), the Verdict MUST be Partially Suitable or Not Suitable "
-            "and you must say exactly what part of the real issue is left unaddressed. Only "
-            "mark Suitable if the proposal genuinely fixes the exact clearance problem in FACTS.\n\n"
+            "You are an electrical safety engineer evaluating a building-powerline clearance solution. "
+            "You have building data, clearance audit, and user's proposal.\n\n"
+            "Generate:\n"
+            "`## Clearance Finding` — Cite distance, thresholds, conductor height.\n"
+            "`## Proposed Solution` — Restate proposal.\n"
+            "`## Assessment` — Does it restore safety clearance? Insulation or line modification is standard. "
+            "Building demolition is almost never suitable.\n"
+            "`## Verdict` — **Suitable**, **Partially Suitable**, or **Not Suitable** with reason.\n"
+            "`## Recommendations` — Standard electrical-safety suggestions from data.\n\n"
+            "CRITICAL: Use only provided data. Before marking Suitable, verify proposal fixes the exact "
+            "clearance problem stated in findings.\n\n"
             f"CONTEXT:\n{context}"
         )
     else:
         user_prompt = (
-            f"You are a senior urban infrastructure engineer evaluating a proposed solution "
-            f"for a specific {subject}. Below you have:\n"
-            f"1. The SURVEY DATA (real attributes from the GIS database)\n"
-            f"2. The AI ANOMALY FINDING (automated audit result for this {subject})\n"
-            "3. The USER'S PROPOSED SOLUTION (what the user suggests doing)\n\n"
-            "Generate a structured evaluation with these sections:\n\n"
-            f"`## Current Condition` — Summarize this {subject}'s real surveyed condition and "
-            "any AI anomaly finding. Cite specific attribute values from the survey data.\n\n"
-            "`## Summary of Proposed Solution` — Restate what the user is proposing.\n\n"
-            f"`## Suitability Assessment` — Evaluate whether the proposed solution is appropriate "
-            f"for THIS specific {subject}'s condition. Consider:\n"
-            "  - Does the solution address the actual surveyed issues?\n"
-            "  - Are the proposed materials/approach appropriate for the existing setup?\n"
-            "  - Are there any gaps or mismatches between the solution and the real condition?\n\n"
-            f"`## Verdict` — Clearly state whether the solution is: **Suitable**, **Partially Suitable** "
-            f"(with modifications needed), or **Not Suitable** for this {subject}. Give a brief reason.\n\n"
-            "`## Recommendations` — Concrete suggestions to improve or adjust the solution based "
-            "on the actual surveyed attributes.\n\n"
-            "CRITICAL: Base your entire response ONLY on the data provided below. Never invent "
-            "attribute values. If specific data is missing, state that clearly. Do NOT default "
-            "to 'Suitable' as a courtesy — you are a technical reviewer, not a cheerleader. Before "
-            "writing the Verdict, check the proposal against the specific issue named in the "
-            "AI ANOMALY FINDING above (its 'Issue:'/'Required:' lines if present, otherwise its "
-            "stated finding) point by point: if the proposal does not address that exact "
-            f"problem, or only treats a symptom instead of the real cause described for this {subject}, "
-            "the Verdict MUST be Partially Suitable or Not Suitable, and you must state exactly "
-            "what part of the real issue is left unaddressed. Only mark Suitable if the proposal "
-            "genuinely resolves the specific problem in FACTS.\n\n"
+            f"You are an infrastructure engineer evaluating a solution for a {subject}. "
+            f"You have survey data, AI anomaly finding, and user's proposal.\n\n"
+            "Generate:\n"
+            f"`## Current Condition` — Summarize {subject}'s condition and anomaly from context.\n"
+            "`## Proposed Solution` — Restate proposal.\n"
+            f"`## Assessment` — Is solution appropriate for this {subject}'s actual issues?\n"
+            f"`## Verdict` — **Suitable**, **Partially Suitable**, or **Not Suitable** with reason.\n"
+            "`## Recommendations` — Concrete improvements from actual data.\n\n"
+            "CRITICAL: Use only provided data. Before marking Suitable, verify proposal addresses "
+            "the exact problem stated in findings.\n\n"
             f"CONTEXT:\n{context}"
         )
 
-    reply = await run_grounded_completion(context=context, user_prompt=user_prompt, num_predict=1024, num_ctx=4096)
+    # Capped well below the 1024 default: on this deployment's hardware
+    # (partial-GPU-offload Ollama), generation runs at ~5 tokens/sec, and a
+    # public proxy in front of this API (e.g. a Cloudflare Tunnel) enforces
+    # a hard ~120s read timeout. 250 tokens plus the trimmed context above
+    # keeps total request time safely under that ceiling.
+    reply = await run_grounded_completion(context=context, user_prompt=user_prompt, num_predict=250, num_ctx=1536)
 
     return AiAnswer(
         kind="urban_planning",

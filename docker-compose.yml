@@ -80,6 +80,13 @@ services:
       - ollama_data:/root/.ollama
       - ./scripts/ollama_bootstrap.sh:/bootstrap.sh:ro
     entrypoint: ["/bin/sh", "/bootstrap.sh"]
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
     healthcheck:
       # curl is not present in the ollama/ollama base image — use the
       # ollama CLI itself so the healthcheck can actually succeed.
