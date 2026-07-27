@@ -44,6 +44,7 @@ async def _ensure_spatial_index() -> None:
     * `idx_features_attributes_gin` — GIN on features.attributes for
       unstructured JSONB queries (`?`, `@>`, `#>` operators).
     """
+    settings = get_settings()
     async with engine.begin() as conn:
         await conn.execute(
             text(
@@ -81,6 +82,133 @@ async def _ensure_spatial_index() -> None:
                 "ON placemarks (owner_id, updated_at DESC);"
             )
         )
+        await conn.execute(
+            text(
+                """
+                CREATE TABLE IF NOT EXISTS pothole_sr_rate_cache (
+                    id SMALLINT PRIMARY KEY CHECK (id = 1),
+                    rate_per_sqm DOUBLE PRECISION NOT NULL CHECK (rate_per_sqm > 0),
+                    rate_source VARCHAR(512) NOT NULL,
+                    rate_year VARCHAR(32) NOT NULL,
+                    item_code VARCHAR(128) NOT NULL,
+                    source_url TEXT,
+                    source_status VARCHAR(40) NOT NULL DEFAULT 'configured_fallback',
+                    verified_at TIMESTAMPTZ,
+                    source_hash VARCHAR(64),
+                    last_sync_error TEXT,
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+                );
+                """
+            )
+        )
+        await conn.execute(
+            text(
+                """
+                INSERT INTO pothole_sr_rate_cache (
+                    id, rate_per_sqm, rate_source, rate_year, item_code,
+                    source_url, source_status, verified_at, updated_at
+                ) VALUES (
+                    1, :rate, :source, :year, :item_code,
+                    :source_url, 'configured_fallback', NULL, now()
+                )
+                ON CONFLICT (id) DO NOTHING;
+                """
+            ),
+            {
+                "rate": settings.pothole_sr_rate_per_sqm,
+                "source": settings.pothole_sr_rate_source,
+                "year": settings.pothole_sr_rate_year,
+                "item_code": settings.pothole_sr_item_code,
+                "source_url": settings.pothole_sr_source_url,
+            },
+        )
+        await conn.execute(
+            text(
+                """
+                CREATE TABLE IF NOT EXISTS pothole_labour_settings (
+                    user_id UUID PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+                    enabled BOOLEAN NOT NULL DEFAULT FALSE,
+                    charge_per_pothole_inr DOUBLE PRECISION NOT NULL DEFAULT 0
+                        CHECK (charge_per_pothole_inr >= 0 AND charge_per_pothole_inr <= 10000000),
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+                );
+                """
+            )
+        )
+        await conn.execute(
+            text(
+                """
+                CREATE TABLE IF NOT EXISTS pothole_cost_overrides (
+                    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                    anomaly_id UUID NOT NULL REFERENCES spatial_anomalies(id) ON DELETE CASCADE,
+                    rate_mode VARCHAR(16) NOT NULL DEFAULT 'official'
+                        CHECK (rate_mode IN ('official', 'manual')),
+                    selected_item_code VARCHAR(32),
+                    manual_rate_per_sqm DOUBLE PRECISION
+                        CHECK (manual_rate_per_sqm IS NULL OR (manual_rate_per_sqm > 0 AND manual_rate_per_sqm <= 10000000)),
+                    labour_enabled BOOLEAN NOT NULL DEFAULT FALSE,
+                    labour_charge_per_pothole_inr DOUBLE PRECISION NOT NULL DEFAULT 0
+                        CHECK (labour_charge_per_pothole_inr >= 0 AND labour_charge_per_pothole_inr <= 10000000),
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                    PRIMARY KEY (user_id, anomaly_id)
+                );
+                """
+            )
+        )
+        await conn.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS idx_pothole_cost_overrides_anomaly "
+                "ON pothole_cost_overrides (anomaly_id);"
+            )
+        )
+        # Multi-surface, year-aware SR costing fields are additive so legacy
+        # estimates and colleague features remain compatible.
+        await conn.execute(text("ALTER TABLE pothole_cost_overrides ADD COLUMN IF NOT EXISTS financial_year VARCHAR(16) NOT NULL DEFAULT '2026-27';"))
+        await conn.execute(text("ALTER TABLE pothole_cost_overrides ADD COLUMN IF NOT EXISTS estimate_date DATE NOT NULL DEFAULT CURRENT_DATE;"))
+        await conn.execute(text("ALTER TABLE pothole_cost_overrides ADD COLUMN IF NOT EXISTS manual_rate_value DOUBLE PRECISION;"))
+        await conn.execute(text("ALTER TABLE pothole_cost_overrides ADD COLUMN IF NOT EXISTS manual_rate_unit VARCHAR(8) NOT NULL DEFAULT 'm2';"))
+        await conn.execute(text("ALTER TABLE pothole_cost_overrides ADD COLUMN IF NOT EXISTS repair_depth_mm DOUBLE PRECISION;"))
+        await conn.execute(text("ALTER TABLE pothole_cost_overrides ADD COLUMN IF NOT EXISTS additional_charge_reason VARCHAR(500);"))
+        await conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS kpwd_sr_documents (
+                id BIGSERIAL PRIMARY KEY,
+                financial_year VARCHAR(16) NOT NULL,
+                year_page_url TEXT,
+                title TEXT NOT NULL,
+                document_category VARCHAR(32) NOT NULL DEFAULT 'main_sr',
+                source_url TEXT NOT NULL,
+                local_path TEXT NOT NULL,
+                sha256 VARCHAR(64) NOT NULL,
+                page_count INTEGER NOT NULL DEFAULT 0,
+                parsing_status VARCHAR(32) NOT NULL,
+                extracted_text_length INTEGER NOT NULL DEFAULT 0,
+                last_error TEXT,
+                downloaded_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                UNIQUE (financial_year, source_url)
+            );
+        """))
+        await conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS kpwd_sr_rates (
+                id BIGSERIAL PRIMARY KEY,
+                financial_year VARCHAR(16) NOT NULL,
+                item_code VARCHAR(32) NOT NULL,
+                road_surface VARCHAR(32) NOT NULL,
+                repair_method TEXT NOT NULL,
+                unit VARCHAR(8) NOT NULL,
+                rate_value DOUBLE PRECISION NOT NULL CHECK (rate_value > 0),
+                effective_from DATE NOT NULL,
+                source_document_id BIGINT REFERENCES kpwd_sr_documents(id) ON DELETE SET NULL,
+                source_document TEXT NOT NULL,
+                source_page INTEGER,
+                source_url TEXT NOT NULL,
+                verification_status VARCHAR(48) NOT NULL,
+                gst_included BOOLEAN NOT NULL DEFAULT FALSE,
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                UNIQUE (financial_year, item_code, effective_from, source_url)
+            );
+        """))
+        await conn.execute(text("CREATE INDEX IF NOT EXISTS idx_kpwd_sr_rates_lookup ON kpwd_sr_rates (financial_year, item_code, effective_from);"))
         # Workflow notification values now include REMEDIATION_COMMISSIONER_ACCEPTED
         # (33 characters). Widen legacy VARCHAR/enum-backed columns additively.
         await conn.execute(

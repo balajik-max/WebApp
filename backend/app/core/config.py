@@ -82,6 +82,22 @@ class Settings(BaseSettings):
     remediation_standing_water_buffer_m: float = Field(default=30.0, validation_alias="REMEDIATION_STANDING_WATER_BUFFER_M")
     remediation_max_image_mb: int = Field(default=12, validation_alias="REMEDIATION_MAX_IMAGE_MB")
 
+    # --- Pothole repair-cost estimate -----------------------------------
+    # The configured value is the current 40 mm BC reference rate. Runtime
+    # estimates use the verified 2026-27 Document 152 rate table and permit
+    # a selected-pothole manual override plus additional labour/mobilisation.
+    pothole_sr_rate_per_sqm: float = Field(default=631.0, validation_alias="POTHOLE_SR_RATE_PER_SQM")
+    pothole_sr_rate_source: str = Field(default="Karnataka PWD Roads & Bridges SR", validation_alias="POTHOLE_SR_RATE_SOURCE")
+    pothole_sr_rate_year: str = Field(default="2026-27", validation_alias="POTHOLE_SR_RATE_YEAR")
+    pothole_sr_item_code: str = Field(default="10.5", validation_alias="POTHOLE_SR_ITEM_CODE")
+    pothole_sr_source_url: str = Field(
+        default="https://kpwd.karnataka.gov.in/85/2026-27/en",
+        validation_alias="POTHOLE_SR_SOURCE_URL",
+    )
+    pothole_sr_cache_ttl_hours: int = Field(default=24, validation_alias="POTHOLE_SR_CACHE_TTL_HOURS")
+    pothole_sr_http_timeout_seconds: float = Field(default=25.0, validation_alias="POTHOLE_SR_HTTP_TIMEOUT_SECONDS")
+    pothole_sr_max_source_bytes: int = Field(default=25 * 1024 * 1024, validation_alias="POTHOLE_SR_MAX_SOURCE_BYTES")
+
     # --- Seed users ------------------------------------------------------
     admin_email: str = Field(validation_alias="ADMIN_EMAIL")
     admin_password: str = Field(validation_alias="ADMIN_PASSWORD")

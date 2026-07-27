@@ -54,6 +54,7 @@ from app.services.ai_context import (
     build_recommend_context,
     build_report_facts,
 )
+from app.services.pothole_costing import estimate_pothole_cost
 from app.services.manhole_recommend import (
     FeatureRecommendation,
     PipeRoute,
@@ -296,7 +297,8 @@ async def urban_planning_solution(
             "the persisted pothole audit finding, and the user's proposal.\n\n"
             "Generate a structured evaluation using exactly these sections:\n\n"
             "`## Current Pothole Condition` — Cite the mapped area, depth, estimated repair volume, "
-            "severity, road relationship, and any stated basis that actually appear in the context.\n\n"
+            "severity, road relationship, recommended repair method, and preliminary repair cost "
+            "with its SR rate/source/year when those values actually appear in the context.\n\n"
             "`## Summary of Proposed Solution` — Restate the proposal.\n\n"
             "`## Suitability Assessment` — Evaluate whether the proposed treatment matches the real "
             "severity and likely repair depth. Check edge cutting, removal of loose/failed material, "
@@ -1273,6 +1275,8 @@ def _anomaly_fact_sheet(row: SpatialAnomaly) -> str:
             f"Mapped pothole area: {m.get('area_sqm') if m.get('area_sqm') is not None else 'not recorded'} m².",
             f"Measured/calculated depth: {m.get('depth_cm') if m.get('depth_cm') is not None else 'not available'} cm.",
             f"Estimated repair volume: {m.get('estimated_repair_volume_m3') if m.get('estimated_repair_volume_m3') is not None else 'not available'} m³.",
+            f"Recommended repair method: {m.get('recommended_repair_method') or 'not configured'}.",
+            "The current repair-cost estimate is calculated separately from the latest validated SR rate and the signed-in user's optional labour setting.",
             f"Severity basis: {', '.join(m.get('reasons') or []) or 'mapped pothole evidence'}.",
         ]
     elif row.anomaly_type.value == "standing_water_status":
@@ -1527,31 +1531,78 @@ def _powerline_proximity_explain_prompt(row: SpatialAnomaly, crib: str) -> str:
 @router.post(
     "/audit/anomalies/{anomaly_id}/explain",
     response_model=AnomalyExplainResponse,
-    dependencies=[Depends(require_any)],
     summary="Get (or lazily generate) a plain-English explanation for one specific finding",
 )
-async def explain_anomaly(anomaly_id: uuid.UUID, db: AsyncSession = Depends(get_db)) -> AnomalyExplainResponse:
+async def explain_anomaly(
+    anomaly_id: uuid.UUID,
+    user: User = Depends(require_any),
+    db: AsyncSession = Depends(get_db),
+) -> AnomalyExplainResponse:
     row = (
         await db.execute(select(SpatialAnomaly).where(SpatialAnomaly.id == anomaly_id))
     ).scalar_one_or_none()
     if row is None:
         raise HTTPException(status_code=404, detail="Anomaly not found")
 
-    if row.explanation_text:
+    # Capture scalar values before any helper can commit/rollback the shared
+    # AsyncSession. Re-reading an expired ORM attribute outside greenlet_spawn
+    # is what caused the previous MissingGreenlet 500 error.
+    row_id_value = row.id
+    row_type_value = row.anomaly_type.value
+    cached_explanation_text = row.explanation_text
+    cached_explanation_model = row.explanation_model or ""
+
+    cost_summary = ""
+    if row_type_value == "pothole_status":
+        try:
+            estimate = await estimate_pothole_cost(
+                db,
+                anomaly_id=row_id_value,
+                user_id=user.id,
+                refresh_online=False,
+            )
+            base_cost = estimate.get("base_repair_cost_inr")
+            total_cost = estimate.get("total_repair_cost_inr")
+            rate_value = estimate.get("rate", {}).get("rate_value")
+            rate_unit = str(estimate.get("rate", {}).get("unit") or "INR/unit").replace("INR/", "")
+            if base_cost is None or total_cost is None or rate_value is None:
+                cost_summary = (
+                    "\n\nRepair-cost calculation is pending because a verified rate "
+                    "and measured quantity are not yet available for this selected pothole."
+                )
+            else:
+                additional_text = (
+                    f" The approved additional labour/mobilisation charge is INR {estimate['labour_charge_per_pothole_inr']:.2f} per pothole."
+                    if estimate["labour_charge_enabled"]
+                    else " No additional labour/mobilisation charge is applied."
+                )
+                cost_summary = (
+                    "\n\nCurrent cost calculation: finished-item repair cost is "
+                    f"INR {base_cost:.2f};" + additional_text +
+                    f" Total is INR {total_cost:.2f}. "
+                    f"The applied rate is INR {rate_value:.2f}/{rate_unit} "
+                    f"({estimate['rate']['year']}, item {estimate['rate']['item_code']}, "
+                    f"status {estimate['rate']['status']})."
+                )
+        except Exception as exc:  # Costing must never break the AI explanation.
+            log.warning("Pothole cost summary unavailable for %s: %s", row_id_value, exc)
+            cost_summary = ""
+
+    if cached_explanation_text:
         return AnomalyExplainResponse(
-            id=row.id,
-            explanation_text=row.explanation_text,
-            explanation_model=row.explanation_model or "",
+            id=row_id_value,
+            explanation_text=cached_explanation_text + cost_summary,
+            explanation_model=cached_explanation_model,
             cached=True,
         )
 
     crib = _anomaly_fact_sheet(row)
-    if row.anomaly_type.value == "manhole_status":
+    if row_type_value == "manhole_status":
         pipe_facts = await _manhole_pipe_suggestion_facts(row, db)
         if pipe_facts:
             crib = f"{crib}\n{pipe_facts}"
         prompt = _manhole_status_explain_prompt(row, crib)
-    elif row.anomaly_type.value == "powerline_proximity":
+    elif row_type_value == "powerline_proximity":
         prompt = _powerline_proximity_explain_prompt(row, crib)
     else:
         prompt = (
@@ -1583,7 +1634,7 @@ async def explain_anomaly(anomaly_id: uuid.UUID, db: AsyncSession = Depends(get_
     await db.commit()
 
     return AnomalyExplainResponse(
-        id=row.id, explanation_text=reply.text, explanation_model=reply.model, cached=False
+        id=row_id_value, explanation_text=reply.text + cost_summary, explanation_model=reply.model, cached=False
     )
 
 

@@ -14,6 +14,7 @@ from app.api.v1 import (
     map_context,
     placemarks,
     point_verifications,
+    pothole_cost,
     review_items,
     survey_requests,
     system,
@@ -31,6 +32,7 @@ api_router.include_router(review_items.router, prefix="/v1/review-items", tags=[
 api_router.include_router(survey_requests.router, prefix="/v1/survey-requests", tags=["survey-requests"])
 api_router.include_router(analytics.router, prefix="/v1/analytics", tags=["analytics"])
 api_router.include_router(ai.router, prefix="/v1/ai", tags=["ai"])
+api_router.include_router(pothole_cost.router, prefix="/v1/pothole-cost", tags=["pothole-cost"])
 api_router.include_router(classification.router, prefix="/v1/classification", tags=["classification"])
 api_router.include_router(visualization.router, prefix="/v1/visualization", tags=["visualization"])
 api_router.include_router(placemarks.router, prefix="/v1/placemarks", tags=["placemarks"])
