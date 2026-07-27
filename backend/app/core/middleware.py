@@ -9,6 +9,7 @@ import logging
 import time
 from collections import defaultdict
 from typing import Any
+from urllib.parse import urlsplit
 
 from fastapi import Request, Response
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
@@ -106,15 +107,29 @@ class SecurityMiddleware(BaseHTTPMiddleware):
                 elif request.url.path.startswith("/api/"):
                     pass
             else:
-                allowed = [settings.frontend_url.rstrip("/")]
+                # Compare against the request's own Host header rather than a
+                # fixed FRONTEND_URL: the frontend is always served same-origin
+                # (nginx proxies /api to the backend), so whatever host the
+                # browser is actually talking to — localhost, a Cloudflare
+                # Tunnel hostname, a future custom domain — is the only valid
+                # origin for that request. A fixed allow-list would otherwise
+                # need updating every time the public URL changes.
+                request_host = request.headers.get("host", "")
+                allowed_hosts = {request_host, settings.frontend_url.rstrip("/")}
+                # settings.frontend_url may be a bare origin like
+                # "http://localhost:3000" — also allow just its host part.
+                fu_host = urlsplit(settings.frontend_url).netloc
+                if fu_host:
+                    allowed_hosts.add(fu_host)
+
                 valid = False
                 for source in (origin, referer):
                     if not source:
                         continue
-                    for a in allowed:
-                        if source.startswith(a):
-                            valid = True
-                            break
+                    source_host = urlsplit(source).netloc
+                    if source_host and source_host in allowed_hosts:
+                        valid = True
+                        break
                 if not valid:
                     log.warning(
                         "CSRF check failed for %s: origin=%s referer=%s",

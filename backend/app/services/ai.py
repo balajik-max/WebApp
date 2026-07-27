@@ -73,6 +73,7 @@ def _client() -> ollama.Client:
 
 
 def _blocking_chat(*, model: str, system: str, user: str, num_ctx: int = 4096, num_predict: int = 1024) -> str:
+    """Non-streaming version for backward compatibility."""
     resp = _client().chat(
         model=model,
         messages=[
@@ -80,8 +81,8 @@ def _blocking_chat(*, model: str, system: str, user: str, num_ctx: int = 4096, n
             {"role": "user", "content": user},
         ],
         options={
-            "temperature": 0.2,
-            "top_p": 0.9,
+            "temperature": 0.1,  # Lower temperature for faster, more focused generation
+            "top_p": 0.85,  # Tighter sampling for faster decode
             "num_ctx": num_ctx,
             "num_predict": num_predict,
         },
@@ -92,6 +93,33 @@ def _blocking_chat(*, model: str, system: str, user: str, num_ctx: int = 4096, n
     if isinstance(resp, dict):
         return (resp.get("message", {}).get("content") or "").strip()
     return str(resp)
+
+
+def _blocking_chat_stream(*, model: str, system: str, user: str, num_ctx: int = 4096, num_predict: int = 1024):
+    """Streaming version that yields chunks as they arrive - keeps connection alive."""
+    stream = _client().chat(
+        model=model,
+        messages=[
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
+        ],
+        options={
+            "temperature": 0.1,
+            "top_p": 0.85,
+            "num_ctx": num_ctx,
+            "num_predict": num_predict,
+        },
+        stream=True,
+    )
+    for chunk in stream:
+        if hasattr(chunk, "message"):
+            content = chunk.message.content or ""
+        elif isinstance(chunk, dict):
+            content = chunk.get("message", {}).get("content") or ""
+        else:
+            content = str(chunk)
+        if content:
+            yield content
 
 
 def _blocking_embed(*, model: str, texts: list[str]) -> list[list[float]]:
