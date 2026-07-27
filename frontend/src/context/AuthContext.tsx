@@ -78,6 +78,21 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     void refresh();
   }, [refresh]);
 
+  // Tells the backend "still here" every 90s while a user is logged in, so
+  // Admin -> Users & Activity can report accurate online status and session
+  // duration even for people who close the tab instead of logging out.
+  useEffect(() => {
+    if (!user) return;
+    const ping = () => {
+      apiPost("/api/auth/heartbeat", {}).catch(() => {
+        /* a missed heartbeat just means slightly stale "last seen" — ignore */
+      });
+    };
+    ping();
+    const id = window.setInterval(ping, 90_000);
+    return () => window.clearInterval(id);
+  }, [user]);
+
   const login = useCallback(async (email: string, password: string): Promise<AuthUser> => {
     setError(null);
     const res = await apiPost<{

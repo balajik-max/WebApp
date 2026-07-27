@@ -41,6 +41,7 @@ from app.models import (
     ReviewPriority,
     ReviewStatus,
     User,
+    UserSession,
 )
 from app.schemas.admin import (
     ActivityEntryOut,
@@ -52,6 +53,7 @@ from app.schemas.admin import (
     FailedDatasetOut,
     SecurityInfo,
     ServiceProbe,
+    SessionOut,
     StuckWorkflowOut,
     UserRoleCount,
 )
@@ -1180,6 +1182,7 @@ async def admin_workflows(db: AsyncSession = Depends(get_db)) -> AdminWorkflowsO
 
 
 def _entry(row: ActivityLog) -> ActivityEntryOut:
+    payload = row.payload if isinstance(row.payload, dict) else {}
     return ActivityEntryOut(
         id=row.id,
         actor_name=row.actor.name if row.actor else None,
@@ -1187,14 +1190,33 @@ def _entry(row: ActivityLog) -> ActivityEntryOut:
         action=row.action.value,
         entity_type=row.entity_type,
         created_at=row.created_at,
+        ip_address=payload.get("ip"),
+        user_agent=payload.get("user_agent"),
+    )
+
+
+def _session_entry(session: UserSession, user_name: str, user_role: str, cutoff: datetime) -> SessionOut:
+    end = session.logout_at or session.last_seen_at
+    duration_minutes = max(0.0, round((end - session.login_at).total_seconds() / 60, 1))
+    return SessionOut(
+        id=session.id,
+        user_name=user_name,
+        user_role=user_role,
+        ip_address=session.ip_address,
+        user_agent=session.user_agent,
+        login_at=session.login_at,
+        last_seen_at=session.last_seen_at,
+        logout_at=session.logout_at,
+        duration_minutes=duration_minutes,
+        is_active=session.logout_at is None and session.last_seen_at >= cutoff,
     )
 
 
 @router.get("/activity", response_model=AdminActivityOut, dependencies=[Depends(require_admin)])
 async def admin_activity(db: AsyncSession = Depends(get_db)) -> AdminActivityOut:
-    # Window for "active users right now". Distinct users that logged in
-    # within this many minutes are surfaced in the Admin → Users & Activity
-    # section. Kept short on purpose so the count is meaningful in real time.
+    # Window for "active users right now". A session counts as active while
+    # it has no logout and its last heartbeat fell inside this window. Kept
+    # short on purpose so the count is meaningful in real time.
     active_window_minutes = 15
     cutoff = datetime.now(timezone.utc) - timedelta(minutes=active_window_minutes)
 
@@ -1208,14 +1230,24 @@ async def admin_activity(db: AsyncSession = Depends(get_db)) -> AdminActivityOut
         )
     ).all()
 
-    # Active users = distinct actors who logged in within the window.
-    active_users = (
+    active_session_rows = (
         await db.execute(
-            select(func.count(func.distinct(ActivityLog.actor_id)))
-            .where(ActivityLog.action == ActivityAction.LOGIN)
-            .where(ActivityLog.created_at >= cutoff)
+            select(UserSession, User.name, User.role)
+            .join(User, User.id == UserSession.user_id)
+            .where(UserSession.logout_at.is_(None), UserSession.last_seen_at >= cutoff)
+            .order_by(UserSession.last_seen_at.desc())
         )
-    ).scalar_one()
+    ).all()
+    active_users = len({row[0].user_id for row in active_session_rows})
+
+    recent_session_rows = (
+        await db.execute(
+            select(UserSession, User.name, User.role)
+            .join(User, User.id == UserSession.user_id)
+            .order_by(UserSession.login_at.desc())
+            .limit(15)
+        )
+    ).all()
 
     recent_events = (
         await db.execute(select(ActivityLog).order_by(ActivityLog.created_at.desc()).limit(25))
@@ -1232,11 +1264,19 @@ async def admin_activity(db: AsyncSession = Depends(get_db)) -> AdminActivityOut
 
     return AdminActivityOut(
         total_users=total_users,
-        active_users=int(active_users or 0),
+        active_users=active_users,
         active_users_window_minutes=active_window_minutes,
         users_by_role=[UserRoleCount(role=role.value, count=count) for role, count in role_rows],
         recent_logins=[_entry(r) for r in recent_logins],
         recent_events=[_entry(r) for r in recent_events],
+        active_sessions=[
+            _session_entry(session, name, role.value, cutoff)
+            for session, name, role in active_session_rows
+        ],
+        recent_sessions=[
+            _session_entry(session, name, role.value, cutoff)
+            for session, name, role in recent_session_rows
+        ],
     )
 
 

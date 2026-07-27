@@ -7,6 +7,7 @@ import type { ServiceMonitoringResponse, ServiceMonitoringStatus } from "../lib/
 import type { SecurityMonitoringResponse, SecurityPosture } from "../lib/adminSecurity";
 import { AdminServicesOverview } from "../components/admin/services/AdminServicesOverview";
 import { AdminSecurityOverview } from "../components/admin/security/AdminSecurityOverview";
+import { describeUserAgent } from "../lib/userAgent";
 import "../admin-dashboard.css";
 
 interface ServiceProbe {
@@ -73,6 +74,21 @@ interface ActivityEntry {
   action: string;
   entity_type: string | null;
   created_at: string;
+  ip_address: string | null;
+  user_agent: string | null;
+}
+
+interface SessionEntry {
+  id: string;
+  user_name: string;
+  user_role: string;
+  ip_address: string | null;
+  user_agent: string | null;
+  login_at: string;
+  last_seen_at: string;
+  logout_at: string | null;
+  duration_minutes: number;
+  is_active: boolean;
 }
 
 interface AdminActivity {
@@ -82,6 +98,8 @@ interface AdminActivity {
   users_by_role: { role: string; count: number }[];
   recent_logins: ActivityEntry[];
   recent_events: ActivityEntry[];
+  active_sessions: SessionEntry[];
+  recent_sessions: SessionEntry[];
 }
 
 type AdminTabId = "services" | "security" | "datasets" | "workflows" | "activity";
@@ -107,6 +125,17 @@ function relativeTime(iso: string, locale: string): string {
   const days = Math.round(hrs / 24);
   if (days < 30) return `${days}d ago`;
   return d.toLocaleDateString(locale, { year: "numeric", month: "short", day: "numeric" });
+}
+
+function formatDuration(minutes: number): string {
+  if (minutes < 1) return "<1m";
+  if (minutes < 60) return `${Math.round(minutes)}m`;
+  const hrs = Math.floor(minutes / 60);
+  const mins = Math.round(minutes % 60);
+  if (hrs < 24) return mins > 0 ? `${hrs}h ${mins}m` : `${hrs}h`;
+  const days = Math.floor(hrs / 24);
+  const remHrs = hrs % 24;
+  return remHrs > 0 ? `${days}d ${remHrs}h` : `${days}d`;
 }
 
 function formatLastUpdated(date: Date, locale: string): string {
@@ -392,6 +421,27 @@ export function AdminSystemView() {
                     </div>
                   </div>
 
+                  <div className="admin-subhead">{t("admin.activeSessions")}</div>
+                  {activity.active_sessions.length > 0 ? (
+                    <ul className="admin-list" data-testid="admin-active-sessions">
+                      {activity.active_sessions.map((s) => (
+                        <li key={s.id} className="admin-list__row">
+                          <span className="admin-list__title">
+                            <span className="admin-online-dot" aria-hidden="true" />
+                            {s.user_name}
+                          </span>
+                          <span className="admin-list__meta">{s.ip_address ?? "—"}</span>
+                          <span className="admin-list__meta">{describeUserAgent(s.user_agent)}</span>
+                          <span className="admin-list__time">
+                            {t("admin.onlineFor")} {formatDuration(s.duration_minutes)}
+                          </span>
+                        </li>
+                      ))}
+                    </ul>
+                  ) : (
+                    <div className="admin-empty">{t("admin.noActiveSessions")}</div>
+                  )}
+
                   <div className="admin-subhead">{t("admin.recentLogins")}</div>
                   {activity.recent_logins.length > 0 ? (
                     <ul className="admin-list" data-testid="admin-recent-logins">
@@ -399,12 +449,31 @@ export function AdminSystemView() {
                         <li key={e.id} className="admin-list__row">
                           <span className="admin-list__title">{e.actor_name ?? "—"}</span>
                           <span className="admin-list__meta">{e.actor_role ?? ""}</span>
+                          <span className="admin-list__meta">{e.ip_address ?? "—"}</span>
                           <span className="admin-list__time">{relativeTime(e.created_at, lang)}</span>
                         </li>
                       ))}
                     </ul>
                   ) : (
                     <div className="admin-empty">{t("admin.noRecentLogins")}</div>
+                  )}
+
+                  <div className="admin-subhead">{t("admin.sessionHistory")}</div>
+                  {activity.recent_sessions.length > 0 ? (
+                    <ul className="admin-list" data-testid="admin-session-history">
+                      {activity.recent_sessions.map((s) => (
+                        <li key={s.id} className="admin-list__row">
+                          <span className="admin-list__title">{s.user_name}</span>
+                          <span className="admin-list__meta">{s.ip_address ?? "—"}</span>
+                          <span className="admin-list__meta">
+                            {s.is_active ? t("admin.online") : relativeTime(s.login_at, lang)}
+                          </span>
+                          <span className="admin-list__time">{formatDuration(s.duration_minutes)}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  ) : (
+                    <div className="admin-empty">{t("admin.noSessionHistory")}</div>
                   )}
 
                   <div className="admin-subhead">{t("admin.recentEvents")}</div>
@@ -414,6 +483,7 @@ export function AdminSystemView() {
                         <li key={e.id} className="admin-list__row">
                           <span className="admin-list__title">{e.action.replace(/_/g, " ")}</span>
                           <span className="admin-list__meta">{e.actor_name ?? t("admin.system")}</span>
+                          <span className="admin-list__meta">{e.ip_address ?? ""}</span>
                           <span className="admin-list__time">{relativeTime(e.created_at, lang)}</span>
                         </li>
                       ))}

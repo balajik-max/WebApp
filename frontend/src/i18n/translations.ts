@@ -177,6 +177,12 @@ export const STRINGS: Dict = {
   "admin.recentEvents": { en: "Recent Events", kn: "ಇತ್ತೀಚಿನ ಘಟನೆಗಳು" },
   "admin.noRecentEvents": { en: "No recent events", kn: "ಇತ್ತೀಚಿನ ಘಟನೆಗಳಿಲ್ಲ" },
   "admin.system": { en: "System", kn: "ಸಿಸ್ಟಮ್" },
+  "admin.activeSessions": { en: "Online Now", kn: "ಈಗ ಆನ್‌ಲೈನ್‌ನಲ್ಲಿದ್ದಾರೆ" },
+  "admin.noActiveSessions": { en: "No one is online right now", kn: "ಈಗ ಯಾರೂ ಆನ್‌ಲೈನ್‌ನಲ್ಲಿಲ್ಲ" },
+  "admin.onlineFor": { en: "online for", kn: "ಇಷ್ಟು ಸಮಯದಿಂದ ಆನ್‌ಲೈನ್" },
+  "admin.online": { en: "Online now", kn: "ಈಗ ಆನ್‌ಲೈನ್" },
+  "admin.sessionHistory": { en: "Session History", kn: "ಸೆಷನ್ ಇತಿಹಾಸ" },
+  "admin.noSessionHistory": { en: "No sessions recorded yet", kn: "ಇನ್ನೂ ಯಾವುದೇ ಸೆಷನ್‌ಗಳು ದಾಖಲಾಗಿಲ್ಲ" },
 
   // ── Tasks / Activity (AE / AEE) ───────────────────────────
   "tasks.comingSoon": { en: "Tasks Dashboard Coming Soon", kn: "ಕಾರ್ಯ ಡ್ಯಾಶ್‌ಬೋರ್ಡ್ ಶೀಘ್ರದಲ್ಲೇ" },
