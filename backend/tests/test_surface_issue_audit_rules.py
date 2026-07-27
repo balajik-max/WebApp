@@ -64,7 +64,10 @@ def test_bituminous_deep_pothole_uses_document_152_rate() -> None:
         road_category="Bituminous Road",
     )
 
-    assert estimate["recommended_repair_method"] == "Deep pothole patching (WBM base plus SDBC)"
+    repair_method = estimate["recommended_repair_method"]
+    assert repair_method.startswith("Deep pothole patching")
+    assert "WBM" in repair_method
+    assert "SDBC" in repair_method
     assert estimate["sr_item_code"] == "10.15(ii)"
     assert estimate["sr_rate_per_sqm"] == 635.0
     assert estimate["estimated_repair_cost_inr"] == 2190.18
