@@ -227,10 +227,8 @@ class LidarReader:
             if point_count == 0:
                 raise ValueError("LAS/LAZ file has no points")
 
-            # Basic validation
-            file_signature = header.file_signature
-            if file_signature != b"LASF":
-                raise ValueError("Invalid LAS/LAZ file: bad LASF signature")
+            # laspy.open() validates the LAS/LAZ header and signature.
+            # LasHeader in laspy 2.x has no file_signature attribute.
 
             # Extract basic metadata
             las_version = f"{header.version.major}.{header.version.minor}"
