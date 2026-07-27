@@ -634,7 +634,7 @@ def print_dag_report(result: DAGResult) -> None:
     print(f"  Cycles detected:  {result.cycles_found}")
 
     if result.cycles_broken:
-        print(f"\  Cycles broken:    {len(result.cycles_broken)}")
+        print(f"  Cycles broken:    {len(result.cycles_broken)}")
         for i, cb in enumerate(result.cycles_broken, 1):
             print(f"\n  --- Cycle {i} ---")
             print(f"    Nodes: {' → '.join(cb.cycle)} → {cb.cycle[0]}")

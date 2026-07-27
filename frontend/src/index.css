@@ -9084,6 +9084,63 @@ body.is-resizing-sidebar {
   overflow-wrap: anywhere;
 }
 
+.anomaly-card__repair-cost {
+  margin: 12px 0;
+  padding: 12px 13px;
+  border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent);
+  border-radius: var(--radius-md);
+  background: linear-gradient(145deg, color-mix(in srgb, var(--accent) 15%, transparent), var(--surface-2));
+  box-shadow: 0 8px 22px rgba(2, 6, 23, 0.20);
+}
+
+.anomaly-card__repair-cost-label {
+  color: var(--accent);
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.anomaly-card__repair-cost-value {
+  margin-top: 4px;
+  color: var(--ink);
+  font-size: 24px;
+  font-weight: 800;
+  line-height: 1.15;
+}
+
+.anomaly-card__repair-cost-formula {
+  margin-top: 4px;
+  color: var(--ink-dim);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+}
+
+.anomaly-card__repair-cost-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.25fr);
+  gap: 7px 10px;
+  margin-top: 11px;
+  font-size: 10.5px;
+}
+
+.anomaly-card__repair-cost-grid span {
+  color: var(--ink-mute);
+}
+
+.anomaly-card__repair-cost-grid strong {
+  color: var(--ink);
+  text-align: right;
+  overflow-wrap: anywhere;
+}
+
+.anomaly-card__repair-cost-note {
+  margin-top: 10px;
+  color: var(--ink-mute);
+  font-size: 9.5px;
+  line-height: 1.45;
+}
+
 .anomaly-card__summary {
   display: flex;
   flex-wrap: wrap;
@@ -17180,5 +17237,390 @@ html[data-lang="kn"] body {
     flex-wrap: wrap;
     justify-content: center;
     width: min(280px, calc(100% - 20px));
+  }
+}
+
+/* Pothole online SR rate + user labour controls. Scoped to the existing
+   anomaly card so no map, dashboard, workflow, or other issue UI is changed. */
+.anomaly-card__repair-cost-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.anomaly-card__repair-cost-status {
+  margin-top: 3px;
+  color: var(--ink-mute);
+  font-size: 9.5px;
+  line-height: 1.35;
+}
+
+.anomaly-card__repair-cost-refresh {
+  flex-shrink: 0;
+  padding: 5px 7px;
+  border: 1px solid color-mix(in srgb, var(--accent) 40%, var(--edge));
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--accent);
+  font-size: 9.5px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.anomaly-card__repair-cost-refresh:disabled {
+  cursor: wait;
+  opacity: 0.6;
+}
+
+.anomaly-card__repair-cost-loading,
+.anomaly-card__repair-cost-error {
+  margin-top: 9px;
+  padding: 7px 8px;
+  border-radius: var(--radius-sm);
+  font-size: 10px;
+  line-height: 1.4;
+}
+
+.anomaly-card__repair-cost-loading {
+  background: color-mix(in srgb, var(--accent) 10%, var(--surface));
+  color: var(--ink-dim);
+}
+
+.anomaly-card__repair-cost-error {
+  border: 1px solid color-mix(in srgb, var(--danger, #dc2626) 35%, transparent);
+  background: color-mix(in srgb, var(--danger, #dc2626) 8%, var(--surface));
+  color: var(--danger, #dc2626);
+}
+
+.anomaly-card__repair-cost-breakdown {
+  display: grid;
+  gap: 6px;
+  margin-top: 11px;
+}
+
+.anomaly-card__repair-cost-breakdown > div {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 6px 8px;
+  border: 1px solid var(--edge);
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--surface) 85%, transparent);
+  font-size: 10.5px;
+}
+
+.anomaly-card__repair-cost-breakdown span {
+  color: var(--ink-mute);
+}
+
+.anomaly-card__repair-cost-breakdown strong {
+  color: var(--ink);
+  font-family: var(--font-mono);
+  text-align: right;
+}
+
+.anomaly-card__repair-cost-breakdown .anomaly-card__repair-cost-total {
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--edge));
+  background: color-mix(in srgb, var(--accent) 12%, var(--surface));
+}
+
+.anomaly-card__repair-cost-total strong {
+  color: var(--accent);
+  font-size: 17px;
+}
+
+.anomaly-card__labour-settings {
+  display: grid;
+  gap: 8px;
+  margin-top: 11px;
+  padding: 9px;
+  border: 1px dashed color-mix(in srgb, var(--accent) 45%, var(--edge));
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+}
+
+.anomaly-card__labour-toggle {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--ink-dim);
+  font-size: 10.5px;
+  font-weight: 700;
+}
+
+.anomaly-card__labour-toggle input {
+  accent-color: var(--accent);
+}
+
+.anomaly-card__labour-row {
+  display: grid;
+  grid-template-columns: auto minmax(72px, 1fr) auto;
+  align-items: center;
+  gap: 6px;
+}
+
+.anomaly-card__labour-row > span {
+  color: var(--ink);
+  font-weight: 800;
+}
+
+.anomaly-card__labour-row input {
+  min-width: 0;
+  width: 100%;
+  box-sizing: border-box;
+  padding: 6px 7px;
+  border: 1px solid var(--edge);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--ink);
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+.anomaly-card__labour-row button {
+  padding: 6px 8px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: var(--accent);
+  color: #fff;
+  font-size: 9.5px;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.anomaly-card__labour-row button:disabled,
+.anomaly-card__labour-row input:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.anomaly-card__labour-settings small {
+  color: var(--ink-mute);
+  font-size: 9px;
+}
+
+.anomaly-card__repair-cost-source {
+  display: inline-flex;
+  margin-top: 9px;
+  color: var(--accent);
+  font-size: 10px;
+  font-weight: 700;
+  text-decoration: none;
+}
+
+.anomaly-card__repair-cost-source:hover {
+  text-decoration: underline;
+}
+
+.anomaly-card__repair-cost-warning {
+  margin-top: 8px;
+  padding: 6px 8px;
+  border: 1px solid color-mix(in srgb, #d97706 35%, transparent);
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, #d97706 8%, var(--surface));
+  color: #b45309;
+  font-size: 9.5px;
+  line-height: 1.4;
+}
+
+/* Selected-pothole 2026-27 official/manual rate workflow. */
+.anomaly-card__repair-cost-grid--selection {
+  margin-top: 10px;
+  padding-bottom: 9px;
+  border-bottom: 1px solid var(--edge);
+}
+
+.anomaly-card__rate-settings {
+  display: grid;
+  gap: 8px;
+  margin-top: 11px;
+  padding: 9px;
+  border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--edge));
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--accent) 5%, var(--surface-2));
+}
+
+.anomaly-card__settings-title {
+  color: var(--ink);
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.anomaly-card__rate-option {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--ink-dim);
+  font-size: 10.5px;
+  font-weight: 700;
+}
+
+.anomaly-card__rate-option input {
+  accent-color: var(--accent);
+}
+
+.anomaly-card__field-label {
+  display: grid;
+  gap: 5px;
+  color: var(--ink-mute);
+  font-size: 9.5px;
+  font-weight: 700;
+}
+
+.anomaly-card__field-label select,
+.anomaly-card__money-input {
+  width: 100%;
+  box-sizing: border-box;
+  border: 1px solid var(--edge);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--ink);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+}
+
+.anomaly-card__field-label select {
+  padding: 7px;
+}
+
+.anomaly-card__money-input {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  align-items: center;
+  gap: 6px;
+  padding-left: 8px;
+}
+
+.anomaly-card__money-input > span {
+  color: var(--ink);
+  font-weight: 800;
+}
+
+.anomaly-card__money-input input {
+  min-width: 0;
+  width: 100%;
+  box-sizing: border-box;
+  padding: 7px 8px;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--ink);
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+.anomaly-card__apply-cost {
+  width: 100%;
+  padding: 7px 9px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: var(--accent);
+  color: #fff;
+  font-size: 10px;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.anomaly-card__apply-cost:disabled,
+.anomaly-card__field-label select:disabled,
+.anomaly-card__money-input input:disabled,
+.anomaly-card__rate-option input:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+/* Multi-surface, year-aware SR estimate additions. These selectors stay
+   scoped to the existing anomaly card and do not change map/workflow UI. */
+.anomaly-card__field-label > input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 7px 8px;
+  border: 1px solid var(--edge);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--ink);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+}
+
+.anomaly-card__field-label > small {
+  color: var(--ink-mute);
+  font-size: 8.8px;
+  font-weight: 500;
+  line-height: 1.35;
+}
+
+.anomaly-card__sync-rates {
+  width: 100%;
+  padding: 7px 9px;
+  border: 1px solid color-mix(in srgb, var(--accent) 45%, var(--edge));
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--accent) 8%, var(--surface));
+  color: var(--accent);
+  font-size: 9.5px;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.anomaly-card__sync-rates:disabled {
+  cursor: wait;
+  opacity: 0.6;
+}
+
+.anomaly-card__sync-message {
+  color: var(--ink-mute);
+  font-size: 9px;
+  line-height: 1.4;
+}
+
+.anomaly-card__materials {
+  display: grid;
+  gap: 7px;
+  margin-top: 11px;
+  padding: 9px;
+  border: 1px solid var(--edge);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+}
+
+.anomaly-card__material-row {
+  display: grid;
+  grid-template-columns: minmax(115px, 1.35fr) repeat(3, minmax(68px, 0.75fr));
+  gap: 7px;
+  align-items: start;
+  padding: 7px 0;
+  border-bottom: 1px solid color-mix(in srgb, var(--edge) 70%, transparent);
+  color: var(--ink-dim);
+  font-size: 9px;
+}
+
+.anomaly-card__material-row:last-of-type {
+  border-bottom: 0;
+}
+
+.anomaly-card__material-row > div {
+  display: grid;
+  gap: 3px;
+}
+
+.anomaly-card__material-row strong {
+  color: var(--ink);
+  font-size: 9.5px;
+}
+
+.anomaly-card__material-row small,
+.anomaly-card__material-note {
+  color: var(--ink-mute);
+  font-size: 8.3px;
+  line-height: 1.35;
+}
+
+@media (max-width: 520px) {
+  .anomaly-card__material-row {
+    grid-template-columns: 1fr 1fr;
   }
 }

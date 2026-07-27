@@ -16,6 +16,12 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.spatial_anomaly import AnomalyColor, AnomalyType, SpatialAnomaly
+from app.services.pothole_sr_2026_27 import (
+    OFFICIAL_POTHOLE_RATES,
+    classify_road_surface,
+    official_rate_payload,
+    suggested_item_code,
+)
 
 _AREA_ALIASES = (
     # Only aliases that explicitly state square metres are accepted. Generic
@@ -128,6 +134,58 @@ def _severity_label(score: float) -> str:
     if score >= 40:
         return "Moderate"
     return "Low"
+
+
+def pothole_repair_estimate(
+    *,
+    area_sqm: float | None,
+    depth_m: float | None,
+    road_category: str | None,
+) -> dict[str, object]:
+    """Build the preliminary 2026-27 SR suggestion stored with a pothole.
+
+    The current official items in Document 152 are bitumen-related. Concrete
+    roads are therefore marked for a manual approved rate rather than being
+    assigned a misleading bituminous amount.
+    """
+    area = _positive(area_sqm)
+    if area is None or area <= 0:
+        return {
+            "estimated_repair_cost_inr": None,
+            "cost_estimate_status": "unavailable",
+            "cost_estimate_basis": "mapped_area_unavailable",
+        }
+
+    road_surface = classify_road_surface(road_category)
+    if road_surface == "concrete":
+        repair_method = "Concrete slab/base repair" if (depth_m or 0) >= 0.10 else "Concrete patch repair"
+        return {
+            "recommended_repair_method": repair_method,
+            "sr_rate_per_sqm": None,
+            "sr_rate_unit": "INR/m2",
+            "sr_rate_source": "Manual concrete-repair rate required",
+            "sr_rate_year": "2026-27",
+            "sr_item_code": "MANUAL",
+            "estimated_repair_cost_inr": None,
+            "cost_estimate_status": "manual_rate_required",
+            "cost_estimate_basis": "concrete_road_requires_approved_manual_rate",
+        }
+
+    depth_mm = depth_m * 1000.0 if depth_m is not None else None
+    item_code = suggested_item_code(depth_mm)
+    item = OFFICIAL_POTHOLE_RATES[item_code]
+    rate = official_rate_payload(item_code)
+    return {
+        "recommended_repair_method": item.repair_method,
+        "sr_rate_per_sqm": round(item.rate_per_sqm, 2),
+        "sr_rate_unit": "INR/m2",
+        "sr_rate_source": f"{rate['source']} - {rate['source_document']}",
+        "sr_rate_year": rate["year"],
+        "sr_item_code": item_code,
+        "estimated_repair_cost_inr": round(area * item.rate_per_sqm, 2),
+        "cost_estimate_status": "official_pdf_verified",
+        "cost_estimate_basis": "mapped_area_sqm_times_kpwd_2026_27_document_152_rate",
+    }
 
 
 def pothole_severity(
@@ -361,6 +419,12 @@ async def detect_pothole_status(
             volume_m3=volume_m3,
             road_distance_m=road_distance,
         )
+        repair_estimate = pothole_repair_estimate(
+            area_sqm=area,
+            depth_m=depth_m,
+            road_category=row["road_category"],
+        )
+
         counts[color.value] += 1
         feature_ids = [row["pothole_id"]]
         anomalies.append(
@@ -393,6 +457,7 @@ async def detect_pothole_status(
                     "severity_label": _severity_label(score),
                     "reasons": reasons,
                     "evidence_source": "surveyed_gdb",
+                    **repair_estimate,
                 },
             )
         )
