@@ -20,6 +20,17 @@ class HeartbeatRequest(BaseModel):
     screen_height: int | None = Field(default=None, ge=0, le=32767)
 
 
+class ChangePasswordRequest(BaseModel):
+    current_password: str = Field(min_length=1, max_length=256)
+    new_password: str = Field(min_length=1, max_length=256)
+    confirm_password: str = Field(min_length=1, max_length=256)
+
+
+class ChangePasswordResponse(BaseModel):
+    ok: bool = True
+    message: str
+
+
 class TokenResponse(BaseModel):
     access_token: str
     refresh_token: str

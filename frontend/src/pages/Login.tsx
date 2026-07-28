@@ -1,5 +1,5 @@
 import { Suspense, lazy, useEffect, useState } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
 import { ApiError } from "../lib/api";
 import { resolvePostLoginPath, debugAuthRedirect } from "../lib/authRedirect";
@@ -33,6 +33,8 @@ function isWebGLAvailable(): boolean {
 export function LoginPage() {
   const { user, login } = useAuth();
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
+  const passwordChanged = searchParams.get("passwordChanged") === "1";
 
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -46,6 +48,9 @@ export function LoginPage() {
 
   useEffect(() => {
     setMounted(true);
+    // The application never restores or prefills a login password.
+    setPassword("");
+    setShowPw(false);
   }, []);
 
   // Single owner of post-login navigation: land on /map. We deliberately
@@ -100,7 +105,7 @@ export function LoginPage() {
             <p className="auth-lead">Sign in to continue to your workspace</p>
           </div>
 
-          <form onSubmit={submit} className="auth-form" data-testid="login-form" noValidate>
+          <form onSubmit={submit} className="auth-form" data-testid="login-form" noValidate autoComplete="off">
             <div className="auth-field">
               <label className="auth-label" htmlFor="email">
                 Email address
@@ -137,7 +142,7 @@ export function LoginPage() {
                   id="password"
                   data-testid="input-password"
                   type={showPw ? "text" : "password"}
-                  autoComplete="current-password"
+                  autoComplete="off"
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
                   onBlur={() =>
@@ -175,6 +180,12 @@ export function LoginPage() {
               )}
             </div>
 
+            {passwordChanged && (
+              <div className="auth-alert auth-alert--success" data-testid="password-changed-message" role="status">
+                Password changed successfully. Sign in using your new password.
+              </div>
+            )}
+
             {serverError && (
               <div className="auth-alert" data-testid="login-error" role="alert">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="16" height="16">
@@ -202,25 +213,25 @@ export function LoginPage() {
           </form>
 
           <div className="auth-demo">
-            <p>Demo credentials:</p>
+            <p>Demo accounts — select an email, then type the password manually:</p>
             <div className="auth-demo-accounts">
-              <button type="button" onClick={() => { setEmail("admin@davangere.gov.in"); setPassword("Admin@12345"); }}>
+              <button type="button" onClick={() => { setEmail("admin@davangere.gov.in"); setPassword(""); setPwState({ touched: false, error: null }); }}>
                 <span className="auth-demo-badge auth-demo-badge--admin">ADMIN</span>
                 admin@davangere.gov.in
               </button>
-              <button type="button" onClick={() => { setEmail("commissioner@davangere.gov.in"); setPassword("Commissioner@123"); }}>
+              <button type="button" onClick={() => { setEmail("commissioner@davangere.gov.in"); setPassword(""); setPwState({ touched: false, error: null }); }}>
                 <span className="auth-demo-badge auth-demo-badge--commissioner">Commissioner</span>
                 commissioner@davangere.gov.in
               </button>
-              <button type="button" onClick={() => { setEmail("aee@davangere.gov.in"); setPassword("AEE@123"); }}>
+              <button type="button" onClick={() => { setEmail("aee@davangere.gov.in"); setPassword(""); setPwState({ touched: false, error: null }); }}>
                 <span className="auth-demo-badge auth-demo-badge--aee">AEE</span>
                 aee@davangere.gov.in
               </button>
-              <button type="button" onClick={() => { setEmail("ae@davangere.gov.in"); setPassword("AE@123"); }}>
+              <button type="button" onClick={() => { setEmail("ae@davangere.gov.in"); setPassword(""); setPwState({ touched: false, error: null }); }}>
                 <span className="auth-demo-badge auth-demo-badge--ae">AE</span>
                 ae@davangere.gov.in
               </button>
-              <button type="button" onClick={() => { setEmail("mla@davangere.gov.in"); setPassword("Mla@12345"); }}>
+              <button type="button" onClick={() => { setEmail("mla@davangere.gov.in"); setPassword(""); setPwState({ touched: false, error: null }); }}>
                 <span className="auth-demo-badge auth-demo-badge--mla">MLA</span>
                 mla@davangere.gov.in
               </button>

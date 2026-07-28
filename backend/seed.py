@@ -7,8 +7,8 @@ Usage (any of):
     docker compose exec backend python seed.py
 
 Idempotent:
-  * Creates the seeded users (admin, architect, commissioner) if missing.
-  * Rotates their bcrypt hash if the plaintext password in `.env` has changed.
+  * Creates the seeded users if missing. Existing password hashes are preserved.
+  * Treats `.env` passwords as bootstrap credentials only.
   * Leaves any other users untouched.
   * Emits an ActivityLog row (`USER_CREATED`) only for newly-inserted rows.
 
@@ -34,7 +34,7 @@ from sqlalchemy.ext.asyncio import AsyncSession  # noqa: E402
 
 from app.core.config import get_settings  # noqa: E402
 from app.core.logging import configure_logging  # noqa: E402
-from app.core.security import hash_password, verify_password  # noqa: E402
+from app.core.security import hash_password  # noqa: E402
 from app.db.init_db import init_database  # noqa: E402
 from app.db.session import SessionLocal  # noqa: E402
 from app.models import ActivityAction, ActivityLog, User, UserRole  # noqa: E402
@@ -55,10 +55,11 @@ class SeedSpec:
 
 
 async def _upsert_user(session: AsyncSession, spec: SeedSpec) -> tuple[User, bool]:
-    """Insert the user if missing; rotate the bcrypt hash if the password changed.
+    """Insert the user if missing and preserve existing database passwords.
 
-    Returns (user, created).  `created` is True only when the row was inserted
-    in this transaction.
+    Environment passwords are bootstrap credentials only. A normal restart must
+    never overwrite a password changed by the user from the Profile page.
+    Returns ``(user, created)``.
     """
     result = await session.execute(select(User).where(User.email == spec.email))
     existing = result.scalar_one_or_none()
@@ -83,10 +84,6 @@ async def _upsert_user(session: AsyncSession, spec: SeedSpec) -> tuple[User, boo
         )
         log.info("Seeded %s user %s", spec.role.value, spec.email)
         return user, True
-
-    if not verify_password(spec.password, existing.password_hash):
-        existing.password_hash = hash_password(spec.password)
-        log.info("Rotated password for %s", spec.email)
 
     # Keep name & role in sync with env-declared source of truth.
     if existing.name != spec.name:

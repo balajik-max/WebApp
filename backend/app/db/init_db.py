@@ -4,8 +4,8 @@ One-shot schema bootstrap + idempotent seed for the seeded users.
 * Creates every ORM table declared under `app.models`.
 * Ensures the GIST spatial index on `features.geom` exists with the exact
   name required by the spec (`idx_features_geom`).
-* Seeds all existing colleague roles plus MLA, updating passwords without
-  deactivating or deleting any working account.
+* Seeds all existing colleague roles plus MLA without overwriting passwords
+  changed by users or deactivating/deleting any working account.
 """
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ import logging
 from sqlalchemy import select, text
 
 from app.core.config import get_settings
-from app.core.security import hash_password, verify_password
+from app.core.security import hash_password
 from app.db.base import Base
 from app.db.session import SessionLocal, engine
 from app.models import User, UserRole  # noqa: F401  (import to register all models)
@@ -465,9 +465,9 @@ async def _seed_user(session, *, email: str, password: str, name: str, role: Use
             )
         )
         log.info("Seeded %s user %s", role.value, email)
-    elif not verify_password(password, existing.password_hash):
-        existing.password_hash = hash_password(password)
-        log.info("Rotated password for %s", email)
+    # Existing password hashes are intentionally preserved. Environment
+    # passwords are bootstrap credentials only and must not overwrite a
+    # password changed by the user after a normal backend restart.
     if existing is not None:
         existing.name = name
         existing.role = role

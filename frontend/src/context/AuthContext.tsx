@@ -1,10 +1,8 @@
 /**
- * AuthContext — thin session store backed by /api/auth/me + /api/auth/login.
+ * AuthContext — thin session store backed by /api/auth endpoints.
  *
- * The backend already sets httpOnly cookies on login and reads them on
- * every subsequent request, so we don't have to persist the token in JS.
- * We *do* persist the last-known user object so the UI can render its
- * chrome without a round-trip on cold boot.
+ * Authentication tokens remain in httpOnly cookies. JavaScript stores only
+ * the non-sensitive user projection needed to render the application chrome.
  */
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
 import { apiGet, apiPost, ApiError } from "../lib/api";
@@ -19,12 +17,19 @@ export interface AuthUser {
   created_at: string;
 }
 
+export interface ChangePasswordPayload {
+  current_password: string;
+  new_password: string;
+  confirm_password: string;
+}
+
 interface AuthContextValue {
   user: AuthUser | null;
   loading: boolean;
   error: string | null;
   login: (email: string, password: string) => Promise<AuthUser>;
   logout: () => Promise<void>;
+  changePassword: (payload: ChangePasswordPayload) => Promise<string>;
   refresh: () => Promise<void>;
 }
 
@@ -62,6 +67,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
 
+  const clearLocalSession = useCallback(() => {
+    setUser(null);
+    writeCache(null);
+  }, []);
+
   const refresh = useCallback(async () => {
     setLoading(true);
     try {
@@ -70,17 +80,15 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       writeCache(me);
       setError(null);
     } catch (e) {
-      // 401 is expected before login — clear cache silently.
       if (e instanceof ApiError && e.status === 401) {
-        setUser(null);
-        writeCache(null);
+        clearLocalSession();
       } else {
         setError((e as Error).message);
       }
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [clearLocalSession]);
 
   useEffect(() => {
     void refresh();
@@ -120,15 +128,26 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     try {
       await apiPost<{ ok: boolean }>("/api/auth/logout", {});
     } catch {
-      /* ignore — clear session locally either way */
+      /* clear the local session even if the server is unavailable */
     }
-    setUser(null);
-    writeCache(null);
-  }, []);
+    clearLocalSession();
+  }, [clearLocalSession]);
+
+  const changePassword = useCallback(
+    async (payload: ChangePasswordPayload): Promise<string> => {
+      const result = await apiPost<{ ok: boolean; message: string }>(
+        "/api/auth/change-password",
+        payload
+      );
+      clearLocalSession();
+      return result.message;
+    },
+    [clearLocalSession]
+  );
 
   const value = useMemo<AuthContextValue>(
-    () => ({ user, loading, error, login, logout, refresh }),
-    [user, loading, error, login, logout, refresh]
+    () => ({ user, loading, error, login, logout, changePassword, refresh }),
+    [user, loading, error, login, logout, changePassword, refresh]
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

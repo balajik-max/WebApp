@@ -17,10 +17,15 @@ def _extract_token(request: Request) -> str:
     token = request.cookies.get("access_token")
     if token:
         return token
+
     auth = request.headers.get("Authorization", "")
     if auth.startswith("Bearer "):
         return auth[7:]
-    raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
+
+    raise HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Not authenticated",
+    )
 
 
 async def get_current_user(
@@ -28,6 +33,7 @@ async def get_current_user(
     db: AsyncSession = Depends(get_db),
 ) -> User:
     token = _extract_token(request)
+
     try:
         payload = decode_token(token)
     except jwt.ExpiredSignatureError:
@@ -41,33 +47,56 @@ async def get_current_user(
     try:
         user_id = uuid.UUID(str(payload["sub"]))
     except (KeyError, ValueError):
-        raise HTTPException(status_code=401, detail="Malformed token subject")
+        raise HTTPException(
+            status_code=401,
+            detail="Malformed token subject",
+        )
 
-    result = await db.execute(select(User).where(User.id == user_id))
+    result = await db.execute(
+        select(User).where(User.id == user_id)
+    )
     user = result.scalar_one_or_none()
+
     if user is None:
         raise HTTPException(status_code=401, detail="User not found")
-    if not user.is_active:
-        raise HTTPException(status_code=403, detail="Account is inactive")
 
-    # MLA can inspect all map, layer, analytics, and workflow data but cannot
-    # mutate application state. This global guard prevents accidental writes
-    # even if a future endpoint forgets a role-specific dependency.
+    if not user.is_active:
+        raise HTTPException(
+            status_code=403,
+            detail="Account is inactive",
+        )
+
+    # MLA remains read-only for application data, but may maintain its own
+    # authentication session and change its own password.
     if (
         user.role == UserRole.MLA
         and request.method not in {"GET", "HEAD", "OPTIONS"}
-        and request.url.path not in {"/api/auth/logout", "/api/auth/heartbeat"}
+        and request.url.path
+        not in {
+            "/api/auth/logout",
+            "/api/auth/heartbeat",
+            "/api/auth/change-password",
+        }
     ):
-        raise HTTPException(status_code=403, detail="MLA access is strictly read-only")
+        raise HTTPException(
+            status_code=403,
+            detail="MLA access is strictly read-only",
+        )
+
     return user
 
 
 def require_roles(*allowed: UserRole):
     """Factory returning a dependency that only permits given roles."""
 
-    async def _guard(user: User = Depends(get_current_user)) -> User:
+    async def _guard(
+        user: User = Depends(get_current_user),
+    ) -> User:
         if user.role not in allowed:
-            raise HTTPException(status_code=403, detail="Forbidden")
+            raise HTTPException(
+                status_code=403,
+                detail="Forbidden",
+            )
         return user
 
     return _guard
@@ -77,11 +106,15 @@ def require_roles(*allowed: UserRole):
 require_admin = require_roles(UserRole.ADMIN)
 require_architect = require_roles(UserRole.ARCHITECT)
 
-# New operational remediation guards.
+# Operational remediation guards.
 require_commissioner = require_roles(UserRole.COMMISSIONER)
 require_ae = require_roles(UserRole.AE)
 require_aee = require_roles(UserRole.AEE)
-require_operational = require_roles(UserRole.COMMISSIONER, UserRole.AEE, UserRole.AE)
+require_operational = require_roles(
+    UserRole.COMMISSIONER,
+    UserRole.AEE,
+    UserRole.AE,
+)
 
 # All authenticated roles remain able to use existing read endpoints.
 require_any = require_roles(
