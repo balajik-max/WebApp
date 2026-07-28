@@ -66,11 +66,14 @@ class AdminWorkflowsOut(BaseModel):
 
 class ActivityEntryOut(BaseModel):
     id: uuid.UUID
+    actor_id: uuid.UUID | None = None
     actor_name: str | None
     actor_role: str | None
     action: str
     entity_type: str | None
     created_at: datetime
+    ip_address: str | None = None
+    user_agent: str | None = None
 
 
 class UserRoleCount(BaseModel):
@@ -78,13 +81,62 @@ class UserRoleCount(BaseModel):
     count: int
 
 
+class SessionOut(BaseModel):
+    id: uuid.UUID
+    user_id: uuid.UUID
+    user_name: str
+    user_role: str
+    ip_address: str | None
+    user_agent: str | None
+    device_category: str
+    screen_width: int | None = None
+    screen_height: int | None = None
+    orientation: str | None = None
+    login_at: datetime
+    last_seen_at: datetime
+    logout_at: datetime | None
+    duration_minutes: float
+    is_active: bool
+
+
 class AdminActivityOut(BaseModel):
     total_users: int
     active_users: int
-    """Number of distinct users that have logged in within the last
-    ``active_users_window_minutes`` (defaults to 15). Drives the
-    "Active Users" tile in the Admin → Users & Activity section."""
+    """Number of distinct users with an open session whose last heartbeat
+    fell within the last ``active_users_window_minutes`` (defaults to 15).
+    Drives the "Active Users" tile in the Admin → Users & Activity section."""
     active_users_window_minutes: int = 15
     users_by_role: list[UserRoleCount]
     recent_logins: list[ActivityEntryOut]
-    recent_events: list[ActivityEntryOut]
+    active_sessions: list[SessionOut] = []
+    recent_sessions: list[SessionOut] = []
+
+
+class UserSummaryOut(BaseModel):
+    id: uuid.UUID
+    name: str
+    email: str
+    role: str
+    is_active: bool
+    created_at: datetime
+
+
+class UserActivityStatsOut(BaseModel):
+    total_sessions: int
+    total_events: int
+    total_logins: int
+    is_online: bool
+    current_ip: str | None
+    current_device: str | None
+    current_location: str | None = None
+    current_device_category: str | None = None
+    current_screen_width: int | None = None
+    current_screen_height: int | None = None
+    current_orientation: str | None = None
+
+
+class AdminUserActivityOut(BaseModel):
+    user: UserSummaryOut
+    stats: UserActivityStatsOut
+    sessions: list[SessionOut]
+    events: list[ActivityEntryOut]
