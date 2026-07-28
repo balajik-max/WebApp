@@ -73,6 +73,14 @@ function isObjDataset(d: DatasetRow): boolean {
   return name.endsWith(".obj");
 }
 
+function isLidarDataset(d: Pick<DatasetRow, "file_type">): boolean {
+  return d.file_type === "lidar" || d.file_type === "las";
+}
+
+// The full 20M-point stress test is opt-in. Normal /map keeps the bounded,
+// lightweight renderer and all existing feature behavior unchanged.
+const FULL_LIDAR_EXPERIMENT = new URLSearchParams(window.location.search).get("lidarFull") !== "0";
+
 function isVectorVisualizationDataset(d: DatasetRow): boolean {
   if (d.status !== "ready" || isObjDataset(d)) return false;
   if (d.file_type === "geotiff" || (d.file_type === "lidar" || d.file_type === "las") || d.file_type === "image") return false;
@@ -232,6 +240,7 @@ const HAS_EXTERNAL_CADASTRAL_TILES = CADASTRAL_TILE_URL.length > 0;
 const rasterSourceId = (datasetId: string) => `raster-preview-${datasetId}`;
 const rasterLayerId = (datasetId: string) => `raster-preview-layer-${datasetId}`;
 const obj3dLayerId = (datasetId: string) => `obj-3d-layer-${datasetId}`;
+const lidarPointLayerId = (datasetId: string) => `${FULL_LIDAR_EXPERIMENT ? "lidar-full-points" : "lidar-real-points"}-${datasetId}`;
 
 export type RasterColorMode = "rgb" | "grayscale" | "enhanced";
 
@@ -722,6 +731,7 @@ const POINT_BASE_FILTER: maplibregl.FilterSpecification = [
   ["in", ["geometry-type"], ["literal", ["Point", "MultiPoint"]]],
   ["!=", ["get", "category"], "raster_pixel"],
   ["!=", ["get", "category"], "site_photo"],
+  ["!=", ["get", "category"], "lidar_point"],
 ];
 const PHOTO_BASE_FILTER: maplibregl.FilterSpecification = ["==", ["get", "category"], "site_photo"];
 
@@ -3184,6 +3194,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
   );
   const rasterLayersRef = useRef<Set<string>>(new Set());
   const obj3dLayersRef = useRef<Set<string>>(new Set());
+  const lidarPointLayersRef = useRef<Set<string>>(new Set());
   // Dataset ids whose data is an OBJ mesh — their vertex point features are
   // drawn as the draped 3D mesh (Obj3DMapLayer), so they must NOT also be
   // plotted as flat 2D circles in the feature source below.
@@ -4022,6 +4033,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
       return category !== "raster_pixel"
         && category !== "site_photo"
         && category !== "3d_vertex"
+        && category !== "lidar_point"
         && !hiddenCategories.has(category)
         && (feature.properties as unknown as Record<string, unknown>)[CADASTRAL_DUPLICATE_POINT_PROP] !== true;
     });
@@ -5006,7 +5018,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     const counts = new Map<string, number>();
     for (const f of features) {
       const raw = (f.properties as { category?: string | null } | null)?.category;
-      if (raw === "raster_pixel") continue;
+      if (raw === "raster_pixel" || raw === "lidar_point") continue;
       const category = raw && raw.trim() !== "" ? raw : "uncategorized";
       if (!colorMap.has(category)) colorMap.set(category, colorForCategory(category));
       counts.set(category, (counts.get(category) ?? 0) + 1);
@@ -5570,7 +5582,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     const map = mapRef.current;
     if (!map || !map.isStyleLoaded()) return;
     const overlay = dataset.dataset_metadata?.raster_overlay;
-    if ((dataset.file_type !== "geotiff" && (dataset.file_type !== "lidar" && dataset.file_type !== "las")) || !overlay) return;
+    if (dataset.file_type !== "geotiff" || !overlay) return;
 
     const sourceId = rasterSourceId(dataset.id);
     const layerId = rasterLayerId(dataset.id);
@@ -5636,6 +5648,42 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
   const clearAllRasterOverlays = useCallback(() => {
     for (const id of Array.from(rasterLayersRef.current)) removeRasterOverlay(id);
   }, [removeRasterOverlay]);
+
+  const removeLidarPointLayer = useCallback((datasetId: string) => {
+    lidarPointLayersRef.current.delete(datasetId);
+    const map = mapRef.current;
+    if (!map) return;
+    const layerId = lidarPointLayerId(datasetId);
+    if (map.getLayer(layerId)) map.removeLayer(layerId);
+  }, []);
+
+  const addLidarPointLayer = useCallback(async (dataset: DatasetRow) => {
+    const map = mapRef.current;
+    if (!map || !isLidarDataset(dataset) || dataset.status !== "ready") return;
+    const layerId = lidarPointLayerId(dataset.id);
+    lidarPointLayersRef.current.add(dataset.id);
+    if (map.getLayer(layerId)) return;
+    try {
+      const currentMap = mapRef.current;
+      if (!currentMap || !lidarPointLayersRef.current.has(dataset.id)) return;
+      if (currentMap.getLayer(layerId)) return;
+      const beforeId = currentMap.getLayer(LAYER_POLY_FILL) ? LAYER_POLY_FILL : undefined;
+      if (FULL_LIDAR_EXPERIMENT) {
+        const { LidarFullPointCloudLayer } = await import("./LidarFullPointCloudLayer");
+        currentMap.addLayer(new LidarFullPointCloudLayer(layerId, dataset.id), beforeId);
+      } else {
+        const { LidarPointCloudLayer } = await import("./LidarPointCloudLayer");
+        currentMap.addLayer(new LidarPointCloudLayer(layerId, dataset.id), beforeId);
+      }
+    } catch (error) {
+      lidarPointLayersRef.current.delete(dataset.id);
+      console.error("Could not add real LiDAR point layer:", error);
+    }
+  }, []);
+
+  const clearAllLidarPointLayers = useCallback(() => {
+    for (const id of Array.from(lidarPointLayersRef.current)) removeLidarPointLayer(id);
+  }, [removeLidarPointLayer]);
 
   // Drapes the dataset's actual OBJ mesh onto the map at its real
   // georeferenced location (see Obj3DMapLayer) instead of only offering a
@@ -5792,10 +5840,16 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
       for (const id of Array.from(rasterLayersRef.current)) {
         if (!activeIds.has(id)) removeRasterOverlay(id);
       }
+      for (const id of Array.from(lidarPointLayersRef.current)) {
+        if (!activeIds.has(id)) removeLidarPointLayer(id);
+      }
       if (activeDatasetIds.length === 0) return;
       const matched = datasets.filter((d) => activeIds.has(d.id));
       if (matched.length === 0) return;
-      for (const d of matched) addRasterOverlay(d);
+      for (const d of matched) {
+        if (isLidarDataset(d)) void addLidarPointLayer(d);
+        else addRasterOverlay(d);
+      }
       filterRef.current = { datasetIds: activeDatasetIds };
       scheduleFetch();
     };
@@ -7532,6 +7586,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     if (isActive) {
       setExpandedDatasetId((current) => (current === dataset.id ? null : current));
       removeRasterOverlay(dataset.id);
+      removeLidarPointLayer(dataset.id);
       if (isObjDataset(dataset)) {
         hideObj3DLayer(dataset.id);
       } else {
@@ -7540,7 +7595,8 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
       scheduleFetch();
       return;
     }
-    addRasterOverlay(dataset);
+    if (isLidarDataset(dataset)) void addLidarPointLayer(dataset);
+    else addRasterOverlay(dataset);
     // Load the complete updated dataset selection immediately. fitBounds
     // below changes only the camera and deliberately does not trigger a
     // second data request.
@@ -7552,21 +7608,26 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
         // a 3D model instead of a flat top-down footprint.
         map.setPitch(58);
         map.setBearing(-18);
+      } else if (isLidarDataset(dataset)) {
+        // Real XYZ points need a modest tilt to reveal their vertical structure.
+        map.setPitch(48);
+        map.setBearing(-12);
       }
       map.fitBounds([[b.min_lon, b.min_lat], [b.max_lon, b.max_lat]], { padding: 80, duration: 1000, maxZoom: 18 });
       if (isObjDataset(dataset)) void addObj3DLayer(dataset, b);
     } catch (e) { setFlyError((e as Error).message); }
-  }, [activeDatasetIds, datasets, filter, scheduleFetch, addRasterOverlay, removeRasterOverlay, addObj3DLayer, removeObj3DLayer, hideObj3DLayer, onActiveDatasetsChange]);
+  }, [activeDatasetIds, datasets, filter, scheduleFetch, addRasterOverlay, removeRasterOverlay, addLidarPointLayer, removeLidarPointLayer, addObj3DLayer, removeObj3DLayer, hideObj3DLayer, onActiveDatasetsChange]);
 
   const clearAllDatasets = useCallback(() => {
     setActiveDatasetIds([]);
     setExpandedDatasetId(null);
     filterRef.current = filter;
     clearAllRasterOverlays();
+    clearAllLidarPointLayers();
     clearAllObj3DLayers();
     onActiveDatasetsChange?.([]);
     scheduleFetch();
-  }, [filter, scheduleFetch, clearAllRasterOverlays, clearAllObj3DLayers, onActiveDatasetsChange]);
+  }, [filter, scheduleFetch, clearAllRasterOverlays, clearAllLidarPointLayers, clearAllObj3DLayers, onActiveDatasetsChange]);
 
   // Bulk toggle used by the Data Sources "Select All" control. Selecting every
   // dataset activates the full set at once without per-dataset camera moves;
@@ -7581,9 +7642,12 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     setActiveDatasetIds(next);
     filterRef.current = { datasetIds: next };
     onActiveDatasetsChange?.(datasets);
-    datasets.forEach((d) => addRasterOverlay(d));
+    datasets.forEach((d) => {
+      if (isLidarDataset(d)) void addLidarPointLayer(d);
+      else addRasterOverlay(d);
+    });
     scheduleFetch();
-  }, [datasets, clearAllDatasets, addRasterOverlay, scheduleFetch, onActiveDatasetsChange]);
+  }, [datasets, clearAllDatasets, addRasterOverlay, addLidarPointLayer, scheduleFetch, onActiveDatasetsChange]);
 
   useImperativeHandle(
     ref,

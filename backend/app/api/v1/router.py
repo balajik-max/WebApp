@@ -11,6 +11,8 @@ from app.api.v1 import (
     features,
     health,
     legacy_point_verifications,
+    lidar,
+    lidar_full,
     map_context,
     placemarks,
     point_verifications,
@@ -27,6 +29,8 @@ api_router.include_router(auth.router, prefix="/auth", tags=["auth"])
 api_router.include_router(system.router, tags=["system"])
 api_router.include_router(admin.router, prefix="/v1/admin", tags=["admin"])
 api_router.include_router(datasets.router, prefix="/v1/datasets", tags=["datasets"])
+api_router.include_router(lidar.router, prefix="/v1/lidar", tags=["lidar"])
+api_router.include_router(lidar_full.router, prefix="/v1/lidar-full", tags=["lidar-full"])
 api_router.include_router(features.router, prefix="/v1/features", tags=["features"])
 api_router.include_router(review_items.router, prefix="/v1/review-items", tags=["reviews"])
 api_router.include_router(survey_requests.router, prefix="/v1/survey-requests", tags=["survey-requests"])
