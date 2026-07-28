@@ -60,6 +60,21 @@ async def get_current_user(
     if user is None:
         raise HTTPException(status_code=401, detail="User not found")
 
+    # MLA can inspect all map, layer, analytics, and workflow data but cannot
+    # mutate application state. This global guard prevents accidental writes
+    # even if a future endpoint forgets a role-specific dependency.
+    # Two actions are exempted as non-destructive, MLA-appropriate oversight:
+    # running the spatial audit engine (recomputes findings from already-
+    # surveyed data, doesn't let MLA edit anything) and marking a finding as
+    # Open/Reviewing (the route itself still blocks Resolved for every role
+    # — that requires Architect evidence + Admin approval regardless).
+    _mla_exempt_paths = {"/api/auth/logout", "/api/v1/ai/audit"}
+    _mla_exempt_prefixes = ("/api/v1/ai/audit/anomalies/",)
+    if (
+        user.role == UserRole.MLA
+        and request.method not in {"GET", "HEAD", "OPTIONS"}
+        and request.url.path not in _mla_exempt_paths
+        and not request.url.path.startswith(_mla_exempt_prefixes)
     if not user.is_active:
         raise HTTPException(
             status_code=403,
