@@ -16,6 +16,7 @@ from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoin
 from starlette.status import HTTP_429_TOO_MANY_REQUESTS, HTTP_403_FORBIDDEN
 
 from app.core.config import MAX_UPLOAD_BYTES, get_settings
+from app.core.net import client_ip as _client_ip
 
 log = logging.getLogger("davangere.middleware")
 
@@ -40,13 +41,6 @@ class _SlidingWindowCounter:
 
 
 _rate_limiter = _SlidingWindowCounter()
-
-
-def _client_ip(request: Request) -> str:
-    forwarded = request.headers.get("X-Forwarded-For", "")
-    if forwarded:
-        return forwarded.split(",")[0].strip()
-    return request.client.host if request.client else "0.0.0.0"
 
 
 # ---------------------------------------------------------------------------
