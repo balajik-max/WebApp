@@ -16,13 +16,16 @@ corresponding card, not a 500 for the whole endpoint.
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 import logging
 import os
+import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
+import httpx
 import ollama
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -41,6 +44,7 @@ from app.models import (
     ReviewPriority,
     ReviewStatus,
     User,
+    UserRole,
     UserSession,
 )
 from app.schemas.admin import (
@@ -48,6 +52,7 @@ from app.schemas.admin import (
     AdminActivityOut,
     AdminDatasetsOut,
     AdminServicesOut,
+    AdminUserActivityOut,
     AdminWorkflowsOut,
     DatasetStatusCounts,
     FailedDatasetOut,
@@ -55,7 +60,9 @@ from app.schemas.admin import (
     ServiceProbe,
     SessionOut,
     StuckWorkflowOut,
+    UserActivityStatsOut,
     UserRoleCount,
+    UserSummaryOut,
 )
 from app.schemas.service_monitoring import (
     ServiceMonitoringGroup,
@@ -1181,10 +1188,33 @@ async def admin_workflows(db: AsyncSession = Depends(get_db)) -> AdminWorkflowsO
     )
 
 
+def _device_category(ua: str | None) -> str:
+    """Classify a User-Agent string as desktop/mobile/tablet/unknown.
+
+    Order matters: tablet checks must run before the generic mobile check,
+    since iPadOS/Android tablets are otherwise indistinguishable from
+    phones by a naive "Mobile" substring match.
+    """
+    if not ua:
+        return "unknown"
+    if "iPad" in ua or ("Android" in ua and "Mobile" not in ua) or "Tablet" in ua:
+        return "tablet"
+    if any(tok in ua for tok in ("Mobi", "iPhone", "iPod", "BlackBerry", "IEMobile", "Opera Mini")):
+        return "mobile"
+    return "desktop"
+
+
+def _orientation(width: int | None, height: int | None) -> str | None:
+    if not width or not height:
+        return None
+    return "landscape" if width >= height else "portrait"
+
+
 def _entry(row: ActivityLog) -> ActivityEntryOut:
     payload = row.payload if isinstance(row.payload, dict) else {}
     return ActivityEntryOut(
         id=row.id,
+        actor_id=row.actor_id,
         actor_name=row.actor.name if row.actor else None,
         actor_role=row.actor.role.value if row.actor else None,
         action=row.action.value,
@@ -1200,10 +1230,15 @@ def _session_entry(session: UserSession, user_name: str, user_role: str, cutoff:
     duration_minutes = max(0.0, round((end - session.login_at).total_seconds() / 60, 1))
     return SessionOut(
         id=session.id,
+        user_id=session.user_id,
         user_name=user_name,
         user_role=user_role,
         ip_address=session.ip_address,
         user_agent=session.user_agent,
+        device_category=_device_category(session.user_agent),
+        screen_width=session.screen_width,
+        screen_height=session.screen_height,
+        orientation=_orientation(session.screen_width, session.screen_height),
         login_at=session.login_at,
         last_seen_at=session.last_seen_at,
         logout_at=session.logout_at,
@@ -1220,13 +1255,21 @@ async def admin_activity(db: AsyncSession = Depends(get_db)) -> AdminActivityOut
     active_window_minutes = 15
     cutoff = datetime.now(timezone.utc) - timedelta(minutes=active_window_minutes)
 
+    # The System Administrator is the one watching this dashboard, not a
+    # subject of it — every list and count here excludes the admin role.
+    not_admin = User.role != UserRole.ADMIN
+
     total_users = (
-        await db.execute(select(func.count()).select_from(User).where(User.is_active.is_(True)))
+        await db.execute(
+            select(func.count()).select_from(User).where(User.is_active.is_(True), not_admin)
+        )
     ).scalar_one()
 
     role_rows = (
         await db.execute(
-            select(User.role, func.count()).where(User.is_active.is_(True)).group_by(User.role)
+            select(User.role, func.count())
+            .where(User.is_active.is_(True), not_admin)
+            .group_by(User.role)
         )
     ).all()
 
@@ -1234,7 +1277,7 @@ async def admin_activity(db: AsyncSession = Depends(get_db)) -> AdminActivityOut
         await db.execute(
             select(UserSession, User.name, User.role)
             .join(User, User.id == UserSession.user_id)
-            .where(UserSession.logout_at.is_(None), UserSession.last_seen_at >= cutoff)
+            .where(UserSession.logout_at.is_(None), UserSession.last_seen_at >= cutoff, not_admin)
             .order_by(UserSession.last_seen_at.desc())
         )
     ).all()
@@ -1244,19 +1287,17 @@ async def admin_activity(db: AsyncSession = Depends(get_db)) -> AdminActivityOut
         await db.execute(
             select(UserSession, User.name, User.role)
             .join(User, User.id == UserSession.user_id)
+            .where(not_admin)
             .order_by(UserSession.login_at.desc())
             .limit(15)
         )
     ).all()
 
-    recent_events = (
-        await db.execute(select(ActivityLog).order_by(ActivityLog.created_at.desc()).limit(25))
-    ).scalars().all()
-
     recent_logins = (
         await db.execute(
             select(ActivityLog)
-            .where(ActivityLog.action == ActivityAction.LOGIN)
+            .join(User, User.id == ActivityLog.actor_id)
+            .where(ActivityLog.action == ActivityAction.LOGIN, not_admin)
             .order_by(ActivityLog.created_at.desc())
             .limit(10)
         )
@@ -1268,7 +1309,6 @@ async def admin_activity(db: AsyncSession = Depends(get_db)) -> AdminActivityOut
         active_users_window_minutes=active_window_minutes,
         users_by_role=[UserRoleCount(role=role.value, count=count) for role, count in role_rows],
         recent_logins=[_entry(r) for r in recent_logins],
-        recent_events=[_entry(r) for r in recent_events],
         active_sessions=[
             _session_entry(session, name, role.value, cutoff)
             for session, name, role in active_session_rows
@@ -1280,9 +1320,153 @@ async def admin_activity(db: AsyncSession = Depends(get_db)) -> AdminActivityOut
     )
 
 
+@router.get(
+    "/users/{user_id}/activity",
+    response_model=AdminUserActivityOut,
+    dependencies=[Depends(require_admin)],
+)
+async def admin_user_activity(user_id: uuid.UUID, db: AsyncSession = Depends(get_db)) -> AdminUserActivityOut:
+    """Full tracking detail for a single user — every session and logged
+    action, plus summary stats. Backs the right-hand drawer opened by
+    clicking a user anywhere in Admin → Users & Activity.
+
+    The System Administrator is excluded: this feature tracks other
+    accounts, not the admin viewing the dashboard.
+    """
+    user = (await db.execute(select(User).where(User.id == user_id))).scalar_one_or_none()
+    if user is None or user.role == UserRole.ADMIN:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    active_window_minutes = 15
+    cutoff = datetime.now(timezone.utc) - timedelta(minutes=active_window_minutes)
+    # LOGIN/LOGOUT are self-referential (entity_type "user") and already
+    # fully covered by the session history below — the event log below
+    # should only show what this user actually *did*, not their comings
+    # and goings.
+    non_session_actions = ActivityAction.LOGIN, ActivityAction.LOGOUT
+
+    sessions = (
+        await db.execute(
+            select(UserSession)
+            .where(UserSession.user_id == user_id)
+            .order_by(UserSession.login_at.desc())
+            .limit(100)
+        )
+    ).scalars().all()
+
+    events = (
+        await db.execute(
+            select(ActivityLog)
+            .where(ActivityLog.actor_id == user_id, ActivityLog.action.notin_(non_session_actions))
+            .order_by(ActivityLog.created_at.desc())
+            .limit(100)
+        )
+    ).scalars().all()
+
+    total_sessions = (
+        await db.execute(
+            select(func.count()).select_from(UserSession).where(UserSession.user_id == user_id)
+        )
+    ).scalar_one()
+
+    total_events = (
+        await db.execute(
+            select(func.count())
+            .select_from(ActivityLog)
+            .where(ActivityLog.actor_id == user_id, ActivityLog.action.notin_(non_session_actions))
+        )
+    ).scalar_one()
+
+    total_logins = (
+        await db.execute(
+            select(func.count())
+            .select_from(ActivityLog)
+            .where(ActivityLog.actor_id == user_id, ActivityLog.action == ActivityAction.LOGIN)
+        )
+    ).scalar_one()
+
+    is_online = any(s.logout_at is None and s.last_seen_at >= cutoff for s in sessions)
+    current_ip = sessions[0].ip_address if sessions and is_online else None
+    current_device = sessions[0].user_agent if sessions and is_online else None
+    current_location = await _approximate_location(current_ip)
+    current_screen_width = sessions[0].screen_width if sessions and is_online else None
+    current_screen_height = sessions[0].screen_height if sessions and is_online else None
+
+    return AdminUserActivityOut(
+        user=UserSummaryOut(
+            id=user.id,
+            name=user.name,
+            email=user.email,
+            role=user.role.value,
+            is_active=user.is_active,
+            created_at=user.created_at,
+        ),
+        stats=UserActivityStatsOut(
+            total_sessions=total_sessions,
+            total_events=total_events,
+            total_logins=total_logins,
+            is_online=is_online,
+            current_ip=current_ip,
+            current_device=current_device,
+            current_location=current_location,
+            current_device_category=_device_category(current_device) if current_device else None,
+            current_screen_width=current_screen_width,
+            current_screen_height=current_screen_height,
+            current_orientation=_orientation(current_screen_width, current_screen_height),
+        ),
+        sessions=[_session_entry(s, user.name, user.role.value, cutoff) for s in sessions],
+        events=[_entry(e) for e in events],
+    )
+
+
 # ---------------------------------------------------------------------------
 # Small helpers
 # ---------------------------------------------------------------------------
+
+_GEO_LOOKUP_TIMEOUT = httpx.Timeout(2.5)
+_geo_location_cache: dict[str, str | None] = {}
+
+
+def _is_internal_ip(ip: str) -> bool:
+    try:
+        addr = ipaddress.ip_address(ip)
+    except ValueError:
+        return True
+    return addr.is_private or addr.is_loopback or addr.is_link_local or addr.is_reserved or addr.is_unspecified
+
+
+async def _approximate_location(ip: str | None) -> str | None:
+    """Best-effort "City, Region, Country" label for a public IP address,
+    via a free reverse-geocoding lookup. Internal/private addresses
+    (docker network, localhost, LAN) never leave the box and are labeled
+    directly. Results are cached per-IP for the life of the process.
+
+    Never raises — an unreachable or rate-limited lookup service just
+    means the field comes back empty; it must never fail the drawer
+    this backs.
+    """
+    if not ip:
+        return None
+    if ip in _geo_location_cache:
+        return _geo_location_cache[ip]
+    if _is_internal_ip(ip):
+        _geo_location_cache[ip] = "Internal network"
+        return _geo_location_cache[ip]
+
+    label: str | None = None
+    try:
+        async with httpx.AsyncClient(timeout=_GEO_LOOKUP_TIMEOUT) as client:
+            resp = await client.get(f"https://ipapi.co/{ip}/json/")
+        if resp.status_code == 200:
+            data = resp.json()
+            if not data.get("error"):
+                parts = [p for p in (data.get("city"), data.get("region"), data.get("country_name")) if p]
+                label = ", ".join(parts) or None
+    except Exception:  # noqa: BLE001 - any network/parsing failure just yields "unknown"
+        label = None
+
+    _geo_location_cache[ip] = label
+    return label
 
 
 def _format_bytes(n: int | None) -> str:

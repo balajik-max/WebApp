@@ -30,7 +30,7 @@ from app.core.security import (
 )
 from app.db.session import get_db
 from app.models import ActivityAction, ActivityLog, User, UserSession
-from app.schemas.auth import LoginRequest, TokenResponse
+from app.schemas.auth import HeartbeatRequest, LoginRequest, TokenResponse
 from app.schemas.user import UserPublic
 
 log = logging.getLogger("davangere.auth")
@@ -125,7 +125,16 @@ async def login(
     session_id = uuid.uuid4()
     _set_auth_cookies(response, access, refresh, session_id)
 
-    db.add(UserSession(id=session_id, user_id=user.id, ip_address=ip, user_agent=ua))
+    db.add(
+        UserSession(
+            id=session_id,
+            user_id=user.id,
+            ip_address=ip,
+            user_agent=ua,
+            screen_width=payload.screen_width,
+            screen_height=payload.screen_height,
+        )
+    )
     db.add(
         ActivityLog(
             actor_id=user.id,
@@ -178,15 +187,20 @@ async def logout(
 @router.post("/heartbeat")
 async def heartbeat(
     request: Request,
+    payload: HeartbeatRequest | None = None,
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user),
 ) -> dict:
     """Called periodically by the frontend while a tab is open so
     "active users" / session duration stay accurate for people who close
-    the tab instead of clicking Logout."""
+    the tab instead of clicking Logout. Also refreshes the reported screen
+    size, so a rotated tablet/phone shows current orientation."""
     session = await _find_open_session(db, request, user.id)
     if session is not None and session.logout_at is None:
         session.last_seen_at = datetime.now(timezone.utc)
+        if payload is not None and payload.screen_width is not None and payload.screen_height is not None:
+            session.screen_width = payload.screen_width
+            session.screen_height = payload.screen_height
         await db.commit()
     return {"ok": True}
 

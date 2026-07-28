@@ -444,6 +444,12 @@ async def _ensure_spatial_index() -> None:
         )
         await conn.execute(text("CREATE INDEX IF NOT EXISTS ix_point_verifications_workflow_queue ON point_verifications (workflow_status, submitted_at DESC);"))
         await conn.execute(text("CREATE INDEX IF NOT EXISTS ix_point_verifications_aee_id ON point_verifications (aee_id);"))
+        # Client-reported viewport size at login/heartbeat, for the device
+        # detail shown in Admin -> Users & Activity. Best-effort only —
+        # NULL when the client didn't report it (older sessions, non-browser
+        # clients).
+        await conn.execute(text("ALTER TABLE user_sessions ADD COLUMN IF NOT EXISTS screen_width SMALLINT;"))
+        await conn.execute(text("ALTER TABLE user_sessions ADD COLUMN IF NOT EXISTS screen_height SMALLINT;"))
 
 
 async def _seed_user(session, *, email: str, password: str, name: str, role: UserRole) -> None:

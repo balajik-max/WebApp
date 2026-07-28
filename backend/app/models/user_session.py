@@ -10,7 +10,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, String
+from sqlalchemy import DateTime, ForeignKey, SmallInteger, String
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -30,6 +30,11 @@ class UserSession(Base):
     )
     ip_address: Mapped[str | None] = mapped_column(String(64), nullable=True)
     user_agent: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    # Client-reported viewport size (window.screen.width/height), captured
+    # at login and refreshed on heartbeat so a rotated tablet/phone stays
+    # current. Best-effort — NULL for non-browser clients or older sessions.
+    screen_width: Mapped[int | None] = mapped_column(SmallInteger, nullable=True)
+    screen_height: Mapped[int | None] = mapped_column(SmallInteger, nullable=True)
 
     login_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, nullable=False, index=True
