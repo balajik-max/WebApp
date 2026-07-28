@@ -9,7 +9,13 @@ from fastapi import HTTPException, Request, Response
 
 from app.api.v1.auth import change_password
 from app.core.security import hash_password, password_policy_error, verify_password
-from app.models import ActivityAction, ActivityLog, User, UserRole
+from app.models import (
+    ActivityAction,
+    ActivityLog,
+    User,
+    UserRole,
+    UserSession,
+)
 from app.schemas.auth import ChangePasswordRequest
 from seed import SeedSpec, _upsert_user
 
@@ -29,7 +35,19 @@ class _FakeSession:
         self.commits = 0
         self.flushes = 0
 
-    async def execute(self, _statement):
+    async def execute(self, statement):
+        entities = {
+            description.get("entity")
+            for description in getattr(
+                statement,
+                "column_descriptions",
+                [],
+            )
+        }
+
+        if UserSession in entities:
+            return _ScalarResult(None)
+
         return _ScalarResult(self.value)
 
     def add(self, value):

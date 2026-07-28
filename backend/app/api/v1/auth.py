@@ -2,16 +2,18 @@
 Authentication endpoints.
 
 Endpoints:
-  POST /api/auth/login            – email + password → access/refresh tokens
-  POST /api/auth/logout           – clears auth cookies
-  GET  /api/auth/me               – returns current user
-  POST /api/auth/refresh          – rotates access token using refresh cookie
-  POST /api/auth/change-password  – changes the current user's password
+  POST /api/auth/login            - email + password -> access/refresh tokens
+  POST /api/auth/logout           - closes the session and clears auth cookies
+  POST /api/auth/heartbeat        - updates current session activity
+  POST /api/auth/change-password  - changes the current user's password
+  GET  /api/auth/me               - returns the current user
+  POST /api/auth/refresh          - rotates the access token
 """
 from __future__ import annotations
 
 import logging
 import uuid
+from datetime import datetime, timezone
 
 import jwt
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
@@ -20,6 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_user
 from app.core.config import get_settings
+from app.core.net import client_ip, user_agent as request_user_agent
 from app.core.security import (
     TOKEN_TYPE_REFRESH,
     create_access_token,
@@ -30,10 +33,11 @@ from app.core.security import (
     verify_password,
 )
 from app.db.session import get_db
-from app.models import ActivityAction, ActivityLog, User
+from app.models import ActivityAction, ActivityLog, User, UserSession
 from app.schemas.auth import (
     ChangePasswordRequest,
     ChangePasswordResponse,
+    HeartbeatRequest,
     LoginRequest,
     TokenResponse,
 )
@@ -43,9 +47,15 @@ log = logging.getLogger("davangere.auth")
 router = APIRouter()
 
 
-def _set_auth_cookies(response: Response, access: str, refresh: str) -> None:
+def _set_auth_cookies(
+    response: Response,
+    access: str,
+    refresh: str,
+    session_id: uuid.UUID,
+) -> None:
     settings = get_settings()
     is_prod = settings.app_env == "production"
+
     response.set_cookie(
         "access_token",
         access,
@@ -64,17 +74,79 @@ def _set_auth_cookies(response: Response, access: str, refresh: str) -> None:
         max_age=settings.jwt_refresh_ttl_days * 86400,
         path="/",
     )
+    response.set_cookie(
+        "session_id",
+        str(session_id),
+        httponly=True,
+        secure=is_prod,
+        samesite="lax",
+        max_age=settings.jwt_refresh_ttl_days * 86400,
+        path="/",
+    )
 
 
 def _clear_auth_cookies(response: Response) -> None:
     settings = get_settings()
     is_prod = settings.app_env == "production"
+
     response.delete_cookie(
-        "access_token", path="/", httponly=True, secure=is_prod, samesite="lax"
+        "access_token",
+        path="/",
+        httponly=True,
+        secure=is_prod,
+        samesite="lax",
     )
     response.delete_cookie(
-        "refresh_token", path="/", httponly=True, secure=is_prod, samesite="lax"
+        "refresh_token",
+        path="/",
+        httponly=True,
+        secure=is_prod,
+        samesite="lax",
     )
+    response.delete_cookie(
+        "session_id",
+        path="/",
+        httponly=True,
+        secure=is_prod,
+        samesite="lax",
+    )
+
+
+async def _find_open_session(
+    db: AsyncSession,
+    request: Request,
+    user_id: uuid.UUID,
+) -> UserSession | None:
+    """Find the caller's session, preferring the session_id cookie."""
+
+    cookie = request.cookies.get("session_id")
+    if cookie:
+        try:
+            session_uuid = uuid.UUID(cookie)
+        except ValueError:
+            session_uuid = None
+
+        if session_uuid is not None:
+            result = await db.execute(
+                select(UserSession).where(
+                    UserSession.id == session_uuid,
+                    UserSession.user_id == user_id,
+                )
+            )
+            session = result.scalar_one_or_none()
+            if session is not None:
+                return session
+
+    result = await db.execute(
+        select(UserSession)
+        .where(
+            UserSession.user_id == user_id,
+            UserSession.logout_at.is_(None),
+        )
+        .order_by(UserSession.login_at.desc())
+        .limit(1)
+    )
+    return result.scalar_one_or_none()
 
 
 @router.post("/login", response_model=TokenResponse)
@@ -86,23 +158,58 @@ async def login(
 ) -> TokenResponse:
     email = payload.email.strip().lower()
 
-    result = await db.execute(select(User).where(User.email == email))
+    result = await db.execute(
+        select(User).where(User.email == email)
+    )
     user = result.scalar_one_or_none()
 
-    if user is None or not verify_password(payload.password, user.password_hash):
-        raise HTTPException(status_code=401, detail="Invalid email or password")
+    if user is None or not verify_password(
+        payload.password,
+        user.password_hash,
+    ):
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid email or password",
+        )
 
-    access = create_access_token(user_id=user.id, email=user.email, role=user.role.value)
+    ip = client_ip(request)
+    user_agent = request_user_agent(request)
+
+    access = create_access_token(
+        user_id=user.id,
+        email=user.email,
+        role=user.role.value,
+    )
     refresh = create_refresh_token(user_id=user.id)
-    _set_auth_cookies(response, access, refresh)
+    session_id = uuid.uuid4()
 
+    _set_auth_cookies(
+        response,
+        access,
+        refresh,
+        session_id,
+    )
+
+    db.add(
+        UserSession(
+            id=session_id,
+            user_id=user.id,
+            ip_address=ip,
+            user_agent=user_agent,
+            screen_width=payload.screen_width,
+            screen_height=payload.screen_height,
+        )
+    )
     db.add(
         ActivityLog(
             actor_id=user.id,
             action=ActivityAction.LOGIN,
             entity_type="user",
             entity_id=user.id,
-            payload={"ip": request.client.host if request.client else None},
+            payload={
+                "ip": ip,
+                "user_agent": user_agent,
+            },
         )
     )
     await db.commit()
@@ -116,12 +223,84 @@ async def login(
 
 
 @router.post("/logout")
-async def logout(response: Response, user: User = Depends(get_current_user)) -> dict:
+async def logout(
+    request: Request,
+    response: Response,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> dict:
+    session = await _find_open_session(
+        db,
+        request,
+        user.id,
+    )
+
+    if session is not None and session.logout_at is None:
+        now = datetime.now(timezone.utc)
+        duration_seconds = round(
+            (now - session.login_at).total_seconds()
+        )
+
+        session.logout_at = now
+        session.last_seen_at = now
+
+        db.add(
+            ActivityLog(
+                actor_id=user.id,
+                action=ActivityAction.LOGOUT,
+                entity_type="user",
+                entity_id=user.id,
+                payload={
+                    "ip": client_ip(request),
+                    "duration_seconds": duration_seconds,
+                },
+            )
+        )
+        await db.commit()
+
     _clear_auth_cookies(response)
-    return {"ok": True, "user_id": str(user.id)}
+
+    return {
+        "ok": True,
+        "user_id": str(user.id),
+    }
 
 
-@router.post("/change-password", response_model=ChangePasswordResponse)
+@router.post("/heartbeat")
+async def heartbeat(
+    request: Request,
+    payload: HeartbeatRequest | None = None,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> dict:
+    """Update the current login session while the frontend tab is active."""
+
+    session = await _find_open_session(
+        db,
+        request,
+        user.id,
+    )
+
+    if session is not None and session.logout_at is None:
+        session.last_seen_at = datetime.now(timezone.utc)
+
+        if (
+            payload is not None
+            and payload.screen_width is not None
+            and payload.screen_height is not None
+        ):
+            session.screen_width = payload.screen_width
+            session.screen_height = payload.screen_height
+
+        await db.commit()
+
+    return {"ok": True}
+
+
+@router.post(
+    "/change-password",
+    response_model=ChangePasswordResponse,
+)
 async def change_password(
     payload: ChangePasswordRequest,
     request: Request,
@@ -129,16 +308,29 @@ async def change_password(
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> ChangePasswordResponse:
-    """Change only the authenticated user's password and end the current session."""
+    """Change the authenticated user's password and close the session."""
+
     result = await db.execute(
-        select(User).where(User.id == user.id).with_for_update()
+        select(User)
+        .where(User.id == user.id)
+        .with_for_update()
     )
     locked_user = result.scalar_one_or_none()
-    if locked_user is None:
-        raise HTTPException(status_code=401, detail="User not found")
 
-    if not verify_password(payload.current_password, locked_user.password_hash):
-        raise HTTPException(status_code=400, detail="Current password is incorrect.")
+    if locked_user is None:
+        raise HTTPException(
+            status_code=401,
+            detail="User not found",
+        )
+
+    if not verify_password(
+        payload.current_password,
+        locked_user.password_hash,
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail="Current password is incorrect.",
+        )
 
     if payload.new_password != payload.confirm_password:
         raise HTTPException(
@@ -146,17 +338,41 @@ async def change_password(
             detail="New password and confirmation do not match.",
         )
 
-    if verify_password(payload.new_password, locked_user.password_hash):
+    if verify_password(
+        payload.new_password,
+        locked_user.password_hash,
+    ):
         raise HTTPException(
             status_code=400,
-            detail="New password cannot be the same as the current password.",
+            detail=(
+                "New password cannot be the same as "
+                "the current password."
+            ),
         )
 
-    policy_error = password_policy_error(payload.new_password)
+    policy_error = password_policy_error(
+        payload.new_password
+    )
     if policy_error:
-        raise HTTPException(status_code=400, detail=policy_error)
+        raise HTTPException(
+            status_code=400,
+            detail=policy_error,
+        )
 
-    locked_user.password_hash = hash_password(payload.new_password)
+    locked_user.password_hash = hash_password(
+        payload.new_password
+    )
+
+    session = await _find_open_session(
+        db,
+        request,
+        locked_user.id,
+    )
+    if session is not None and session.logout_at is None:
+        now = datetime.now(timezone.utc)
+        session.logout_at = now
+        session.last_seen_at = now
+
     db.add(
         ActivityLog(
             actor_id=locked_user.id,
@@ -164,22 +380,33 @@ async def change_password(
             entity_type="user",
             entity_id=locked_user.id,
             payload={
-                "ip": request.client.host if request.client else None,
+                "ip": client_ip(request),
                 "scope": "self_service",
             },
         )
     )
+
     await db.commit()
 
     _clear_auth_cookies(response)
-    log.info("Password changed for user %s", locked_user.id)
+
+    log.info(
+        "Password changed for user %s",
+        locked_user.id,
+    )
+
     return ChangePasswordResponse(
-        message="Password changed successfully. Sign in using your new password."
+        message=(
+            "Password changed successfully. "
+            "Sign in using your new password."
+        )
     )
 
 
 @router.get("/me", response_model=UserPublic)
-async def me(user: User = Depends(get_current_user)) -> UserPublic:
+async def me(
+    user: User = Depends(get_current_user),
+) -> UserPublic:
     return UserPublic.model_validate(user)
 
 
@@ -190,27 +417,60 @@ async def refresh_token(
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     token = request.cookies.get("refresh_token")
+
     if not token:
-        raise HTTPException(status_code=401, detail="Missing refresh token")
+        raise HTTPException(
+            status_code=401,
+            detail="Missing refresh token",
+        )
+
     try:
         payload = decode_token(token)
     except jwt.ExpiredSignatureError:
-        raise HTTPException(status_code=401, detail="Refresh token expired")
+        raise HTTPException(
+            status_code=401,
+            detail="Refresh token expired",
+        )
     except jwt.InvalidTokenError:
-        raise HTTPException(status_code=401, detail="Invalid refresh token")
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid refresh token",
+        )
 
     if payload.get("type") != TOKEN_TYPE_REFRESH:
-        raise HTTPException(status_code=401, detail="Invalid token type")
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid token type",
+        )
 
-    user_id = uuid.UUID(str(payload["sub"]))
-    result = await db.execute(select(User).where(User.id == user_id))
+    try:
+        user_id = uuid.UUID(str(payload["sub"]))
+    except (KeyError, ValueError):
+        raise HTTPException(
+            status_code=401,
+            detail="Malformed token subject",
+        )
+
+    result = await db.execute(
+        select(User).where(User.id == user_id)
+    )
     user = result.scalar_one_or_none()
-    if user is None:
-        raise HTTPException(status_code=401, detail="User not found")
 
-    access = create_access_token(user_id=user.id, email=user.email, role=user.role.value)
+    if user is None:
+        raise HTTPException(
+            status_code=401,
+            detail="User not found",
+        )
+
+    access = create_access_token(
+        user_id=user.id,
+        email=user.email,
+        role=user.role.value,
+    )
+
     settings = get_settings()
     is_prod = settings.app_env == "production"
+
     response.set_cookie(
         "access_token",
         access,
@@ -220,4 +480,8 @@ async def refresh_token(
         max_age=settings.jwt_access_ttl_min * 60,
         path="/",
     )
-    return {"access_token": access, "token_type": "bearer"}
+
+    return {
+        "access_token": access,
+        "token_type": "bearer",
+    }

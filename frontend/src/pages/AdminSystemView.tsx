@@ -7,6 +7,10 @@ import type { ServiceMonitoringResponse, ServiceMonitoringStatus } from "../lib/
 import type { SecurityMonitoringResponse, SecurityPosture } from "../lib/adminSecurity";
 import { AdminServicesOverview } from "../components/admin/services/AdminServicesOverview";
 import { AdminSecurityOverview } from "../components/admin/security/AdminSecurityOverview";
+import { AdminUserDetailsDrawer } from "../components/admin/activity/AdminUserDetailsDrawer";
+import { describeUserAgent } from "../lib/userAgent";
+import type { AdminActivity } from "../lib/adminActivity";
+import { formatDuration, relativeTime } from "../lib/adminActivity";
 import "../admin-dashboard.css";
 
 interface ServiceProbe {
@@ -66,24 +70,6 @@ interface AdminWorkflows {
   open_p0_review_items: number;
 }
 
-interface ActivityEntry {
-  id: string;
-  actor_name: string | null;
-  actor_role: string | null;
-  action: string;
-  entity_type: string | null;
-  created_at: string;
-}
-
-interface AdminActivity {
-  total_users: number;
-  active_users: number;
-  active_users_window_minutes: number;
-  users_by_role: { role: string; count: number }[];
-  recent_logins: ActivityEntry[];
-  recent_events: ActivityEntry[];
-}
-
 type AdminTabId = "services" | "security" | "datasets" | "workflows" | "activity";
 
 const WORKFLOW_LABEL_KEY: Record<string, string> = {
@@ -94,20 +80,6 @@ const WORKFLOW_LABEL_KEY: Record<string, string> = {
   AEE_APPROVED: "workflow.status.aeeApproved",
   COMMISSIONER_ACCEPTED: "workflow.status.accepted",
 };
-
-function relativeTime(iso: string, locale: string): string {
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return "—";
-  const diffMs = Date.now() - d.getTime();
-  const mins = Math.round(diffMs / 60000);
-  if (mins < 1) return "just now";
-  if (mins < 60) return `${mins}m ago`;
-  const hrs = Math.round(mins / 60);
-  if (hrs < 24) return `${hrs}h ago`;
-  const days = Math.round(hrs / 24);
-  if (days < 30) return `${days}d ago`;
-  return d.toLocaleDateString(locale, { year: "numeric", month: "short", day: "numeric" });
-}
 
 function formatLastUpdated(date: Date, locale: string): string {
   const time = date.toLocaleTimeString(locale, {
@@ -142,6 +114,7 @@ export function AdminSystemView() {
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
 
   const [activeTab, setActiveTab] = useState<AdminTabId>("services");
+  const [selectedUserId, setSelectedUserId] = useState<string | null>(null);
 
   useEffect(() => {
     if (user?.role !== "admin") return;
@@ -392,13 +365,55 @@ export function AdminSystemView() {
                     </div>
                   </div>
 
+                  <div className="admin-subhead">{t("admin.activeSessions")}</div>
+                  {activity.active_sessions.length > 0 ? (
+                    <ul className="admin-list" data-testid="admin-active-sessions">
+                      {activity.active_sessions.map((s) => (
+                        <li
+                          key={s.id}
+                          className="admin-list__row admin-list__row--clickable"
+                          role="button"
+                          tabIndex={0}
+                          title={t("admin.viewUserDetails")}
+                          onClick={() => setSelectedUserId(s.user_id)}
+                          onKeyDown={(ev) => {
+                            if (ev.key === "Enter" || ev.key === " ") setSelectedUserId(s.user_id);
+                          }}
+                        >
+                          <span className="admin-list__title">
+                            <span className="admin-online-dot" aria-hidden="true" />
+                            {s.user_name}
+                          </span>
+                          <span className="admin-list__meta">{s.ip_address ?? "—"}</span>
+                          <span className="admin-list__meta">{describeUserAgent(s.user_agent)}</span>
+                          <span className="admin-list__time">
+                            {t("admin.onlineFor")} {formatDuration(s.duration_minutes)}
+                          </span>
+                        </li>
+                      ))}
+                    </ul>
+                  ) : (
+                    <div className="admin-empty">{t("admin.noActiveSessions")}</div>
+                  )}
+
                   <div className="admin-subhead">{t("admin.recentLogins")}</div>
                   {activity.recent_logins.length > 0 ? (
                     <ul className="admin-list" data-testid="admin-recent-logins">
                       {activity.recent_logins.slice(0, 5).map((e) => (
-                        <li key={e.id} className="admin-list__row">
+                        <li
+                          key={e.id}
+                          className={`admin-list__row${e.actor_id ? " admin-list__row--clickable" : ""}`}
+                          role={e.actor_id ? "button" : undefined}
+                          tabIndex={e.actor_id ? 0 : undefined}
+                          title={e.actor_id ? t("admin.viewUserDetails") : undefined}
+                          onClick={() => e.actor_id && setSelectedUserId(e.actor_id)}
+                          onKeyDown={(ev) => {
+                            if (e.actor_id && (ev.key === "Enter" || ev.key === " ")) setSelectedUserId(e.actor_id);
+                          }}
+                        >
                           <span className="admin-list__title">{e.actor_name ?? "—"}</span>
                           <span className="admin-list__meta">{e.actor_role ?? ""}</span>
+                          <span className="admin-list__meta">{e.ip_address ?? "—"}</span>
                           <span className="admin-list__time">{relativeTime(e.created_at, lang)}</span>
                         </li>
                       ))}
@@ -407,22 +422,37 @@ export function AdminSystemView() {
                     <div className="admin-empty">{t("admin.noRecentLogins")}</div>
                   )}
 
-                  <div className="admin-subhead">{t("admin.recentEvents")}</div>
-                  {activity.recent_events.length > 0 ? (
-                    <ul className="admin-list">
-                      {activity.recent_events.slice(0, 5).map((e) => (
-                        <li key={e.id} className="admin-list__row">
-                          <span className="admin-list__title">{e.action.replace(/_/g, " ")}</span>
-                          <span className="admin-list__meta">{e.actor_name ?? t("admin.system")}</span>
-                          <span className="admin-list__time">{relativeTime(e.created_at, lang)}</span>
+                  <div className="admin-subhead">{t("admin.sessionHistory")}</div>
+                  {activity.recent_sessions.length > 0 ? (
+                    <ul className="admin-list" data-testid="admin-session-history">
+                      {activity.recent_sessions.map((s) => (
+                        <li
+                          key={s.id}
+                          className="admin-list__row admin-list__row--clickable"
+                          role="button"
+                          tabIndex={0}
+                          title={t("admin.viewUserDetails")}
+                          onClick={() => setSelectedUserId(s.user_id)}
+                          onKeyDown={(ev) => {
+                            if (ev.key === "Enter" || ev.key === " ") setSelectedUserId(s.user_id);
+                          }}
+                        >
+                          <span className="admin-list__title">{s.user_name}</span>
+                          <span className="admin-list__meta">{s.ip_address ?? "—"}</span>
+                          <span className="admin-list__meta">
+                            {s.is_active ? t("admin.online") : relativeTime(s.login_at, lang)}
+                          </span>
+                          <span className="admin-list__time">{formatDuration(s.duration_minutes)}</span>
                         </li>
                       ))}
                     </ul>
                   ) : (
-                    <div className="admin-empty">{t("admin.noRecentEvents")}</div>
+                    <div className="admin-empty">{t("admin.noSessionHistory")}</div>
                   )}
                 </>
               )}
+
+              <AdminUserDetailsDrawer userId={selectedUserId} onClose={() => setSelectedUserId(null)} />
             </>
           )}
         </div>
