@@ -10288,6 +10288,51 @@ function isPoleLayer(layerName: string): boolean {
   return POLE_LAYER_NAMES.has(normalizeLayerName(layerName));
 }
 
+// User customization of the layers-group tree (drag-and-drop moves, renames,
+// deletions, and groups created from scratch). Persisted to localStorage so
+// it survives reloads, since this is explicitly meant to stick around rather
+// than reset like the panel's other, purely-cosmetic UI state.
+const LAYER_GROUP_CUSTOMIZATION_STORAGE_KEY = "davangere.layer-group-customization";
+
+interface LayerGroupCustomization {
+  overrides: Map<string, string>;
+  customGroups: string[];
+  renames: Map<string, string>;
+  deletedGroups: Set<string>;
+}
+
+function loadLayerGroupCustomization(): LayerGroupCustomization {
+  try {
+    const saved = window.localStorage.getItem(LAYER_GROUP_CUSTOMIZATION_STORAGE_KEY);
+    if (saved) {
+      const parsed = JSON.parse(saved) as {
+        overrides?: Record<string, string>;
+        customGroups?: string[];
+        renames?: Record<string, string>;
+        deletedGroups?: string[];
+      };
+      return {
+        overrides: new Map(Object.entries(parsed.overrides ?? {})),
+        customGroups: parsed.customGroups ?? [],
+        renames: new Map(Object.entries(parsed.renames ?? {})),
+        deletedGroups: new Set(parsed.deletedGroups ?? []),
+      };
+    }
+  } catch { /* use empty defaults */ }
+  return { overrides: new Map(), customGroups: [], renames: new Map(), deletedGroups: new Set() };
+}
+
+function saveLayerGroupCustomization(value: LayerGroupCustomization): void {
+  try {
+    window.localStorage.setItem(LAYER_GROUP_CUSTOMIZATION_STORAGE_KEY, JSON.stringify({
+      overrides: Object.fromEntries(value.overrides),
+      customGroups: value.customGroups,
+      renames: Object.fromEntries(value.renames),
+      deletedGroups: Array.from(value.deletedGroups),
+    }));
+  } catch { /* storage unavailable or full; customization just won't persist */ }
+}
+
 function CommandCenter({
   isMobile, open, onRequestClose,
   datasets, activeDatasetIds, flyError, onSelectDataset, onSelectAllDatasets, expandedDatasetId, onToggleDatasetSettings,
@@ -10371,13 +10416,47 @@ function CommandCenter({
   // active dataset exposes a tree (e.g. raster, legacy uploads) this is null
   // and the panel falls back to the classic flat category list.
   const GEOMETRY_ORDER = ["Points", "Lines", "Polygon"] as const;
-  const [expandedCategoryLayers, setExpandedCategoryLayers] = useState<Set<string>>(() => new Set());
   // Geometry-group expansion is independent of each layer's own checkbox.
   // Everything starts collapsed; we only reset on an actual datasource switch.
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(() => new Set());
   useEffect(() => {
     setExpandedGroups(new Set());
   }, [activeDatasetIds]);
+
+  // User-driven customization of the layer tree: which group each category
+  // was drag-and-dropped into (overriding wherever the computed tree would
+  // otherwise place it), groups the user created from scratch, groups the
+  // user renamed (keyed by the group's original/canonical name so renaming
+  // never disturbs the overrides above, which key off that same name), and
+  // groups the user deleted (their layers fall back into "Other"). All of
+  // this is explicitly meant to persist, so it's seeded from and mirrored to
+  // localStorage rather than resetting on dataset switch like expandedGroups.
+  const [layerGroupCustomization, setLayerGroupCustomization] = useState<LayerGroupCustomization>(loadLayerGroupCustomization);
+  useEffect(() => {
+    saveLayerGroupCustomization(layerGroupCustomization);
+  }, [layerGroupCustomization]);
+  const categoryGroupOverrides = layerGroupCustomization.overrides;
+  const customGroups = layerGroupCustomization.customGroups;
+  const groupRenames = layerGroupCustomization.renames;
+  const deletedGroups = layerGroupCustomization.deletedGroups;
+  const setCategoryGroupOverrides = useCallback((updater: (current: Map<string, string>) => Map<string, string>) => {
+    setLayerGroupCustomization((current) => ({ ...current, overrides: updater(current.overrides) }));
+  }, []);
+  const setCustomGroups = useCallback((updater: (current: string[]) => string[]) => {
+    setLayerGroupCustomization((current) => ({ ...current, customGroups: updater(current.customGroups) }));
+  }, []);
+  const setGroupRenames = useCallback((updater: (current: Map<string, string>) => Map<string, string>) => {
+    setLayerGroupCustomization((current) => ({ ...current, renames: updater(current.renames) }));
+  }, []);
+  const setDeletedGroups = useCallback((updater: (current: Set<string>) => Set<string>) => {
+    setLayerGroupCustomization((current) => ({ ...current, deletedGroups: updater(current.deletedGroups) }));
+  }, []);
+  const [draggingCategory, setDraggingCategory] = useState<string | null>(null);
+  const [dragOverGroup, setDragOverGroup] = useState<string | null>(null);
+  const [dragOverNewGroup, setDragOverNewGroup] = useState(false);
+  const [groupMenu, setGroupMenu] = useState<{ groupName: string; x: number; y: number } | null>(null);
+  const [renamingGroupName, setRenamingGroupName] = useState<string | null>(null);
+  const [renameDraft, setRenameDraft] = useState("");
 
   // Active vector (e.g. GDB) datasets — derived from CommandCenter's own
   // props so the tree can be built without reaching into the parent scope.
@@ -10491,8 +10570,169 @@ function CommandCenter({
       });
     }
 
+    // Layer out any user drag-and-drop moves on top of the computed grouping.
+    if (categoryGroupOverrides.size > 0 || customGroups.length > 0) {
+      const byCategory = new Map<string, { node: VisualizationLayerGroupNode; legend?: LegendEntry }>();
+      for (const g of groups) {
+        for (const entry of g.layers) byCategory.set(entry.node.name, entry);
+      }
+      for (const g of groups) {
+        g.layers = g.layers.filter((entry) => {
+          const target = categoryGroupOverrides.get(entry.node.name);
+          return !target || target === g.name;
+        });
+      }
+      for (const [category, targetGroup] of categoryGroupOverrides) {
+        const entry = byCategory.get(category);
+        if (!entry) continue;
+        let target = groups.find((g) => g.name === targetGroup);
+        if (!target) {
+          target = { name: targetGroup, layers: [] };
+          groups.push(target);
+        }
+        if (!target.layers.some((l) => l.node.name === category)) target.layers.push(entry);
+      }
+      for (const groupName of customGroups) {
+        if (!groups.some((g) => g.name === groupName)) groups.push({ name: groupName, layers: [] });
+      }
+      for (let i = groups.length - 1; i >= 0; i -= 1) {
+        if (groups[i].layers.length === 0 && !customGroups.includes(groups[i].name)) groups.splice(i, 1);
+      }
+    }
+
+    // Groups the user deleted never render — whatever currently lands in one
+    // (whether from the base classification or an override above) falls back
+    // into a shared "Other" bucket instead, so the layers stay reachable.
+    if (deletedGroups.size > 0) {
+      for (let i = groups.length - 1; i >= 0; i -= 1) {
+        const group = groups[i];
+        if (!deletedGroups.has(group.name)) continue;
+        groups.splice(i, 1);
+        if (group.layers.length === 0) continue;
+        let fallback = groups.find((g) => g.name === "Other");
+        if (!fallback) {
+          fallback = { name: "Other", layers: [] };
+          groups.push(fallback);
+        }
+        for (const entry of group.layers) {
+          if (!fallback.layers.some((l) => l.node.name === entry.node.name)) fallback.layers.push(entry);
+        }
+      }
+    }
+
     return { groups };
-  }, [activeVectorDatasets, visualization.manifests, categoryStats, normalizedLayerQuery]);
+  }, [activeVectorDatasets, visualization.manifests, categoryStats, normalizedLayerQuery, categoryGroupOverrides, customGroups, deletedGroups]);
+
+  const moveCategoryToGroup = useCallback((category: string, groupName: string) => {
+    setCategoryGroupOverrides((current) => {
+      if (current.get(category) === groupName) return current;
+      const next = new Map(current);
+      next.set(category, groupName);
+      return next;
+    });
+  }, []);
+
+  const createGroupAndMoveCategory = useCallback((category: string) => {
+    const existingNames = new Set([
+      ...(groupedCategoryView?.groups.map((g) => g.name) ?? []),
+      ...customGroups,
+    ]);
+    let suffix = 1;
+    let name = "New Layer Group";
+    while (existingNames.has(name)) {
+      suffix += 1;
+      name = `New Layer Group ${suffix}`;
+    }
+    setCustomGroups((current) => [...current, name]);
+    setCategoryGroupOverrides((current) => {
+      const next = new Map(current);
+      next.set(category, name);
+      return next;
+    });
+    setExpandedGroups((current) => new Set(current).add(name));
+  }, [groupedCategoryView, customGroups]);
+
+  // Groups are identified internally by their canonical (computed or
+  // auto-generated) name everywhere — overrides, customGroups, expandedGroups
+  // — so a rename only ever changes the label shown to the user, never that
+  // identity. That keeps renaming from having to cascade-update every other
+  // piece of state that references the group by name.
+  const groupDisplayName = useCallback(
+    (canonicalName: string) => groupRenames.get(canonicalName) ?? canonicalName,
+    [groupRenames]
+  );
+
+  const startRenamingGroup = useCallback((canonicalName: string) => {
+    setRenamingGroupName(canonicalName);
+    setRenameDraft(groupRenames.get(canonicalName) ?? canonicalName);
+  }, [groupRenames]);
+
+  const commitGroupRename = useCallback(() => {
+    setRenamingGroupName((pendingName) => {
+      if (!pendingName) return null;
+      const trimmed = renameDraft.trim();
+      setGroupRenames((current) => {
+        const next = new Map(current);
+        if (!trimmed || trimmed === pendingName) next.delete(pendingName);
+        else next.set(pendingName, trimmed);
+        return next;
+      });
+      return null;
+    });
+  }, [renameDraft]);
+
+  const deleteGroup = useCallback((groupName: string) => {
+    if (groupName === "Other") return;
+    setCategoryGroupOverrides((current) => {
+      let changed = false;
+      const next = new Map(current);
+      for (const [category, target] of current) {
+        if (target === groupName) { next.delete(category); changed = true; }
+      }
+      return changed ? next : current;
+    });
+    setCustomGroups((current) => current.filter((name) => name !== groupName));
+    setGroupRenames((current) => {
+      if (!current.has(groupName)) return current;
+      const next = new Map(current);
+      next.delete(groupName);
+      return next;
+    });
+    setDeletedGroups((current) => new Set(current).add(groupName));
+  }, []);
+
+  // Deleting an empty group is a no-op for the layers it contains, so it
+  // happens immediately. A group that still has layers in it needs the user
+  // to say where those layers should land first — `deleteGroupPrompt` drives
+  // that "move then delete" confirmation instead of silently dumping them
+  // into "Other".
+  const [deleteGroupPrompt, setDeleteGroupPrompt] = useState<{ groupName: string; targetGroup: string } | null>(null);
+
+  const requestDeleteGroup = useCallback((groupName: string) => {
+    const group = groupedCategoryView?.groups.find((g) => g.name === groupName);
+    if (!group || group.layers.length === 0) {
+      deleteGroup(groupName);
+      return;
+    }
+    const defaultTarget = groupedCategoryView?.groups.find((g) => g.name !== groupName)?.name ?? "Other";
+    setDeleteGroupPrompt({ groupName, targetGroup: defaultTarget });
+  }, [groupedCategoryView, deleteGroup]);
+
+  const confirmMoveAndDeleteGroup = useCallback(() => {
+    setDeleteGroupPrompt((pending) => {
+      if (!pending) return null;
+      const group = groupedCategoryView?.groups.find((g) => g.name === pending.groupName);
+      if (group && group.layers.length > 0) {
+        setCategoryGroupOverrides((current) => {
+          const next = new Map(current);
+          for (const { node } of group.layers) next.set(node.name, pending.targetGroup);
+          return next;
+        });
+      }
+      deleteGroup(pending.groupName);
+      return null;
+    });
+  }, [groupedCategoryView, deleteGroup]);
 
   useEffect(() => {
     if (!layerMenu) return;
@@ -10511,6 +10751,42 @@ function CommandCenter({
       window.removeEventListener("scroll", closeMenu, true);
     };
   }, [layerMenu]);
+
+  useEffect(() => {
+    if (!groupMenu) return;
+    const closeMenu = () => setGroupMenu(null);
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") closeMenu();
+    };
+    document.addEventListener("click", closeMenu);
+    document.addEventListener("keydown", closeOnEscape);
+    window.addEventListener("resize", closeMenu);
+    window.addEventListener("scroll", closeMenu, true);
+    return () => {
+      document.removeEventListener("click", closeMenu);
+      document.removeEventListener("keydown", closeOnEscape);
+      window.removeEventListener("resize", closeMenu);
+      window.removeEventListener("scroll", closeMenu, true);
+    };
+  }, [groupMenu]);
+
+  useEffect(() => {
+    if (!renamingGroupName) return;
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setRenamingGroupName(null);
+    };
+    document.addEventListener("keydown", closeOnEscape);
+    return () => document.removeEventListener("keydown", closeOnEscape);
+  }, [renamingGroupName]);
+
+  useEffect(() => {
+    if (!deleteGroupPrompt) return;
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setDeleteGroupPrompt(null);
+    };
+    document.addEventListener("keydown", closeOnEscape);
+    return () => document.removeEventListener("keydown", closeOnEscape);
+  }, [deleteGroupPrompt]);
 
   const updateVisualizationPopupPosition = useCallback(() => {
     const anchor = visualizationAnchorRef.current;
@@ -10739,8 +11015,7 @@ function CommandCenter({
             <div className="layer-list">
               {groupedCategoryView ? (
                 groupedCategoryView.groups.map((group) => {
-                  const eligible = group.layers.filter((layer) => layer.legend);
-                  const toggleable = eligible.filter((layer) => {
+                  const toggleable = group.layers.filter((layer) => {
                     const inModeFamily = detectionMode
                       ? DETECTION_MODE_TARGET_CLASSES[detectionMode].includes(classMap[layer.node.name])
                       : false;
@@ -10773,12 +11048,52 @@ function CommandCenter({
                   };
 
                   return (
-                  <div key={group.name} className="layer-group">
-                    <div className="layer-group__head" onClick={toggleGroup}>
+                  <div
+                    key={group.name}
+                    className={`layer-group${dragOverGroup === group.name ? " layer-group--drop-target" : ""}`}
+                    onDragOver={(event) => {
+                      if (!draggingCategory) return;
+                      event.preventDefault();
+                      event.dataTransfer.dropEffect = "move";
+                    }}
+                    onDragEnter={(event) => {
+                      if (!draggingCategory) return;
+                      event.preventDefault();
+                      setDragOverGroup(group.name);
+                    }}
+                    onDragLeave={(event) => {
+                      if (event.currentTarget.contains(event.relatedTarget as Node)) return;
+                      setDragOverGroup((current) => (current === group.name ? null : current));
+                    }}
+                    onDrop={(event) => {
+                      event.preventDefault();
+                      const category = event.dataTransfer.getData("text/plain");
+                      setDragOverGroup(null);
+                      // Moving `category` into this group re-parents its row in
+                      // React, which unmounts the original DOM node before the
+                      // browser's native dragend can fire on it — so clear the
+                      // dragging state here too, not just in onDragEnd.
+                      setDraggingCategory(null);
+                      if (category) moveCategoryToGroup(category, group.name);
+                    }}
+                  >
+                    <div
+                      className="layer-group__head"
+                      onClick={toggleGroup}
+                      onContextMenu={(event) => {
+                        event.preventDefault();
+                        event.stopPropagation();
+                        setGroupMenu({
+                          groupName: group.name,
+                          x: Math.max(8, Math.min(event.clientX, window.innerWidth - 224)),
+                          y: Math.max(8, Math.min(event.clientY, window.innerHeight - 96)),
+                        });
+                      }}
+                    >
                       <input
                         type="checkbox"
                         className="layer-group__check"
-                        aria-label={`Select all layers in ${group.name}`}
+                        aria-label={`Select all layers in ${groupDisplayName(group.name)}`}
                         checked={allSelected}
                         ref={(el) => { if (el) el.indeterminate = indeterminate; }}
                         onClick={(event) => event.stopPropagation()}
@@ -10797,7 +11112,7 @@ function CommandCenter({
                           toggleGroup();
                         }}
                       >
-                        <span className="layer-group__name" title={group.name}>{group.name}</span>
+                        <span className="layer-group__name" title={groupDisplayName(group.name)}>{groupDisplayName(group.name)}</span>
                         <span className="layer-group__count">{group.layers.length}</span>
                         <span className="grouped-field-list__chevron layer-group__chevron" aria-hidden="true" />
                       </button>
@@ -10812,8 +11127,6 @@ function CommandCenter({
                         const visible = detectionMode
                           ? inModeFamily || extraVisibleCategories.has(category)
                           : !hiddenCategories.has(category);
-                        const expandKey = `${group.name}::${category}`;
-                        const open = expandedCategoryLayers.has(expandKey);
                         const toggleVisibility = () => {
                           if (detectionMode) {
                             if (!inModeFamily) onToggleExtraVisibleCategory(category);
@@ -10824,26 +11137,20 @@ function CommandCenter({
                         return (
                           <div
                             key={category}
-                            className={`layer-row layer-row--grouped${visible ? "" : " layer-row--hidden"}`}
+                            className={`layer-row layer-row--grouped${visible ? "" : " layer-row--hidden"}${draggingCategory === category ? " layer-row--dragging" : ""}`}
                             data-testid={`layer-row-${category}`}
+                            draggable
+                            onDragStart={(event) => {
+                              event.dataTransfer.setData("text/plain", category);
+                              event.dataTransfer.effectAllowed = "move";
+                              setDraggingCategory(category);
+                            }}
+                            onDragEnd={() => {
+                              setDraggingCategory(null);
+                              setDragOverGroup(null);
+                              setDragOverNewGroup(false);
+                            }}
                           >
-                            <button
-                              type="button"
-                              className="layer-row__chevron"
-                              aria-label={`${open ? "Hide" : "Show"} attributes of ${category}`}
-                              aria-expanded={open}
-                              onClick={(event) => {
-                                event.stopPropagation();
-                                setExpandedCategoryLayers((current) => {
-                                  const next = new Set(current);
-                                  if (next.has(expandKey)) next.delete(expandKey);
-                                  else next.add(expandKey);
-                                  return next;
-                                });
-                              }}
-                            >
-                              <span className="grouped-field-list__chevron" aria-hidden="true" />
-                            </button>
                             <div
                               className={`layer-row__checkbox${visible ? " layer-row__checkbox--checked" : ""}`}
                               onClick={toggleVisibility}
@@ -10876,20 +11183,6 @@ function CommandCenter({
                               {category}
                               <span className="layer-row__count">{legend?.count ?? node.fields.length}</span>
                             </span>
-                            {open && (
-                              <ul className="layer-attributes">
-                                 {node.fields.length === 0 ? (
-                                   <li className="layer-attributes__empty">{t("map.cc.noAttributes")}</li>
-                                 ) : (
-                                  node.fields.map((field) => (
-                                    <li key={field.name} className="layer-attributes__item" title={field.name}>
-                                      <span className="layer-attributes__name">{field.name}</span>
-                                      <span className="layer-attributes__type">{field.detected_type}</span>
-                                    </li>
-                                  ))
-                                )}
-                              </ul>
-                            )}
                           </div>
                         );
                       })}
@@ -10898,7 +11191,34 @@ function CommandCenter({
                   </div>
                 );
               })
-              ) : (
+              ) : null}
+              {groupedCategoryView && draggingCategory && (
+                <div
+                  className={`layer-group__new-drop${dragOverNewGroup ? " layer-group__new-drop--active" : ""}`}
+                  onDragOver={(event) => {
+                    event.preventDefault();
+                    event.dataTransfer.dropEffect = "move";
+                  }}
+                  onDragEnter={(event) => {
+                    event.preventDefault();
+                    setDragOverNewGroup(true);
+                  }}
+                  onDragLeave={(event) => {
+                    if (event.currentTarget.contains(event.relatedTarget as Node)) return;
+                    setDragOverNewGroup(false);
+                  }}
+                  onDrop={(event) => {
+                    event.preventDefault();
+                    const category = event.dataTransfer.getData("text/plain");
+                    setDragOverNewGroup(false);
+                    setDraggingCategory(null);
+                    if (category) createGroupAndMoveCategory(category);
+                  }}
+                >
+                  {t("map.cc.dropToCreateGroup")}
+                </div>
+              )}
+              {!groupedCategoryView && (
                 displayedLayers.map((c) => {
                   // While a detection mode owns the map, a category already in
                   // the mode's own asset family is always shown (its checkbox
@@ -11002,6 +11322,129 @@ function CommandCenter({
             </svg>
             {t("map.cc.openAttributeTable")}
           </button>
+        </div>,
+        document.body
+      )}
+      {groupMenu && createPortal(
+        <div
+          className="layer-context-menu"
+          style={{ left: groupMenu.x, top: groupMenu.y }}
+          role="menu"
+          aria-label={`${groupDisplayName(groupMenu.groupName)} group actions`}
+          data-testid="layer-group-context-menu"
+          onContextMenu={(event) => event.preventDefault()}
+        >
+          <div className="layer-context-menu__title" title={groupDisplayName(groupMenu.groupName)}>
+            {groupDisplayName(groupMenu.groupName)}
+          </div>
+          <button
+            type="button"
+            role="menuitem"
+            onClick={() => {
+              startRenamingGroup(groupMenu.groupName);
+              setGroupMenu(null);
+            }}
+          >
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true">
+              <path d="M12 20h9" />
+              <path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z" />
+            </svg>
+            {t("map.cc.renameGroup")}
+          </button>
+          {groupMenu.groupName !== "Other" && (
+            <button
+              type="button"
+              role="menuitem"
+              className="layer-context-menu__danger"
+              onClick={() => {
+                requestDeleteGroup(groupMenu.groupName);
+                setGroupMenu(null);
+              }}
+            >
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true">
+                <path d="M3 6h18" />
+                <path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2m3 0-1 14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2L4 6" />
+              </svg>
+              {t("map.cc.deleteGroup")}
+            </button>
+          )}
+        </div>,
+        document.body
+      )}
+      {renamingGroupName && createPortal(
+        <div className="layer-rename-backdrop" onClick={() => setRenamingGroupName(null)}>
+          <div
+            className="layer-rename-popover"
+            role="dialog"
+            aria-label={t("map.cc.renameGroup")}
+            data-testid="layer-group-rename-popover"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="layer-context-menu__title">{t("map.cc.renameGroup")}</div>
+            <input
+              type="text"
+              className="layer-rename-popover__input"
+              value={renameDraft}
+              autoFocus
+              onChange={(event) => setRenameDraft(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") commitGroupRename();
+                if (event.key === "Escape") setRenamingGroupName(null);
+              }}
+            />
+            <div className="layer-rename-popover__actions">
+              <button type="button" onClick={() => setRenamingGroupName(null)}>
+                {t("map.cc.cancel")}
+              </button>
+              <button type="button" className="layer-rename-popover__save" onClick={commitGroupRename}>
+                {t("map.cc.save")}
+              </button>
+            </div>
+          </div>
+        </div>,
+        document.body
+      )}
+      {deleteGroupPrompt && createPortal(
+        <div className="layer-rename-backdrop" onClick={() => setDeleteGroupPrompt(null)}>
+          <div
+            className="layer-rename-popover"
+            role="dialog"
+            aria-label={t("map.cc.deleteGroup")}
+            data-testid="layer-group-delete-prompt"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="layer-context-menu__title">{t("map.cc.deleteGroup")}</div>
+            <p className="layer-delete-prompt__warning">{t("map.cc.groupHasLayersWarning")}</p>
+            <select
+              className="layer-rename-popover__input"
+              value={deleteGroupPrompt.targetGroup}
+              onChange={(event) => {
+                const value = event.target.value;
+                setDeleteGroupPrompt((current) => (current ? { ...current, targetGroup: value } : current));
+              }}
+            >
+              {(() => {
+                const names = (groupedCategoryView?.groups ?? [])
+                  .map((g) => g.name)
+                  .filter((name) => name !== deleteGroupPrompt.groupName);
+                // "Other" is always a valid target — the grouping logic
+                // creates it on demand — so offer it even if it isn't
+                // currently a visible group (e.g. nothing has landed there yet).
+                if (!names.includes("Other")) names.push("Other");
+                return names.map((name) => (
+                  <option key={name} value={name}>{groupDisplayName(name)}</option>
+                ));
+              })()}
+            </select>
+            <div className="layer-rename-popover__actions">
+              <button type="button" onClick={() => setDeleteGroupPrompt(null)}>
+                {t("map.cc.cancel")}
+              </button>
+              <button type="button" className="layer-rename-popover__save" onClick={confirmMoveAndDeleteGroup}>
+                {t("map.cc.moveAndDelete")}
+              </button>
+            </div>
+          </div>
         </div>,
         document.body
       )}

@@ -3261,6 +3261,35 @@ body.is-resizing-sidebar {
   flex-direction:column;
   gap:2px;
   border-radius:var(--radius-md);
+  border:1.5px dashed transparent;
+  transition:border-color var(--transition-fast), background var(--transition-fast);
+}
+
+.layer-group--drop-target {
+  border-color:var(--accent, #14b8a6);
+  background:var(--accent-muted, rgba(20, 184, 166, 0.1));
+}
+
+.layer-row--dragging {
+  opacity:0.4;
+}
+
+.layer-group__new-drop {
+  margin:4px 6px 2px;
+  padding:8px;
+  border-radius:var(--radius-md);
+  border:1.5px dashed var(--edge-strong);
+  text-align:center;
+  font-size:10.5px;
+  font-weight:500;
+  color:var(--ink-mute);
+  transition:border-color var(--transition-fast), background var(--transition-fast), color var(--transition-fast);
+}
+
+.layer-group__new-drop--active {
+  border-color:var(--accent, #14b8a6);
+  background:var(--accent-muted, rgba(20, 184, 166, 0.1));
+  color:var(--ink, var(--ink-2));
 }
 
 .layer-group__head {
@@ -3342,65 +3371,41 @@ body.is-resizing-sidebar {
   padding:1px 7px;
 }
 
-.layer-row--grouped {
+.layer-group__body {
+  padding-left:14px;
+}
+
+/* Each row draws its own share of the trunk (top half, to meet the row
+   above) plus its branch to the checkbox — chained together this forms one
+   continuous vertical line with no dependency on row count/height, so the
+   trunk always lines up with every branch including the last row's. */
+.layer-row.layer-row--grouped {
+  position:relative;
   padding-left:6px;
 }
 
-.layer-row__chevron {
-  flex:0 0 auto;
-  width:18px;
-  height:18px;
-  display:flex;
-  align-items:center;
-  justify-content:center;
-  padding:0;
-  background:transparent;
-  border:0;
-  cursor:pointer;
-  color:var(--ink-mute);
+.layer-row.layer-row--grouped::before {
+  content:"";
+  position:absolute;
+  left:-14px;
+  top:0;
+  bottom:0;
+  width:1px;
+  background:var(--edge-strong);
 }
 
-.layer-row__chevron[aria-expanded="true"] .grouped-field-list__chevron {
-  transform:rotate(90deg);
+.layer-row.layer-row--grouped:last-child::before {
+  bottom:50%;
 }
 
-.layer-attributes {
-  list-style:none;
-  margin:2px 0 4px;
-  padding:0 0 0 34px;
-  display:flex;
-  flex-direction:column;
-  gap:1px;
-}
-
-.layer-attributes__item {
-  display:flex;
-  align-items:baseline;
-  justify-content:space-between;
-  gap:8px;
-  padding:4px 8px;
-  font-size:11px;
-  border-left:2px solid var(--line);
-  border-radius:0 4px 4px 0;
-  color:var(--ink-2, var(--ink));
-}
-
-.layer-attributes__item:hover {
-  background:var(--surface-3, rgba(128,128,128,0.12));
-}
-
-.layer-attributes__type {
-  flex:0 0 auto;
-  font-size:10px;
-  color:var(--ink-mute);
-  text-transform:uppercase;
-  letter-spacing:0.03em;
-}
-
-.layer-attributes__empty {
-  padding:4px 8px;
-  font-size:11px;
-  color:var(--ink-mute);
+.layer-row.layer-row--grouped::after {
+  content:"";
+  position:absolute;
+  left:-14px;
+  top:50%;
+  width:14px;
+  height:1px;
+  background:var(--edge-strong);
 }
 
 
@@ -3459,11 +3464,20 @@ body.is-resizing-sidebar {
 }
 
 .layer-row__swatch {
+  display: inline-block;
   width: 9px;
   height: 9px;
   border-radius: var(--radius-full);
   flex-shrink: 0;
   box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.15);
+}
+
+/* Inside the grouped tree view the swatch sits nested inline within
+   .layer-row__name (rather than as its own flex item, which already has the
+   row's flex `gap` for spacing), so it needs its own margin + baseline fix. */
+.layer-row__name .layer-row__swatch {
+  margin-right: 6px;
+  vertical-align: middle;
 }
 
 .layer-row__name {
@@ -3488,6 +3502,7 @@ body.is-resizing-sidebar {
   color: var(--ink-mute);
   font-family: var(--font-mono);
   flex-shrink: 0;
+  margin-left: 6px;
 }
 
 /* â”€â”€ DATASET CARD â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
@@ -3545,6 +3560,92 @@ body.is-resizing-sidebar {
   width: 16px;
   height: 16px;
   flex-shrink: 0;
+}
+
+.layer-context-menu__danger {
+  color: var(--danger);
+}
+
+.layer-context-menu__danger:hover,
+.layer-context-menu__danger:focus-visible {
+  background: var(--danger-muted);
+  color: var(--danger);
+}
+
+.layer-rename-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.35);
+  animation: fadeIn 0.12s ease;
+}
+
+.layer-rename-popover {
+  width: 260px;
+  padding: 6px;
+  background: var(--surface);
+  border: 1px solid var(--edge-strong);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-xl);
+}
+
+.layer-rename-popover__input {
+  width: 100%;
+  margin-top: 8px;
+  padding: 8px 10px;
+  border: 1.5px solid var(--edge-strong);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  color: var(--ink);
+  font: inherit;
+  font-size: 12.5px;
+}
+
+.layer-rename-popover__input:focus-visible {
+  outline: 2px solid var(--accent, #14b8a6);
+  outline-offset: 1px;
+}
+
+.layer-delete-prompt__warning {
+  margin: 8px 2px 0;
+  color: var(--warn);
+  font-size: 11.5px;
+  line-height: 1.4;
+}
+
+.layer-rename-popover__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.layer-rename-popover__actions button {
+  padding: 7px 14px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: var(--surface-3);
+  color: var(--ink);
+  font: inherit;
+  font-size: 11.5px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.layer-rename-popover__actions button:hover {
+  background: var(--surface-4);
+}
+
+.layer-rename-popover__actions button.layer-rename-popover__save {
+  background: var(--accent, #14b8a6);
+  color: var(--accent-ink, #042f2e);
+}
+
+.layer-rename-popover__actions button.layer-rename-popover__save:hover {
+  background: var(--accent-hover, #2dd4bf);
 }
 
 .dataset-card {
