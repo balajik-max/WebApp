@@ -1,18 +1,18 @@
-"""AI Spatial Audit Engine — the three Phase 1 detection goals.
+﻿"""AI Spatial Audit Engine â€” the three Phase 1 detection goals.
 
-ALL geometry math here is deterministic PostGIS/Python — no LLM is ever
+ALL geometry math here is deterministic PostGIS/Python â€” no LLM is ever
 asked to reason about distances, clustering, or overlap. Findings are
 persisted as SpatialAnomaly rows; a separate lazy step (see api/v1/ai.py's
 /explain endpoint) asks Ollama to narrate an already-computed finding's
 `anomaly_metadata`, never to compute it.
 
-Goal 1 — Pole redundancy: DBSCAN-cluster all Illumination_Asset features
+Goal 1 â€” Pole redundancy: DBSCAN-cluster all Illumination_Asset features
 (Power Pole With Light / Light Pole / Solar Light / bare Power Pole treated
 as one family). Within a cluster, one pole is kept (green), the rest are
 flagged redundant (red). Isolated-but-close poles are flagged yellow.
 
-Goal 2 — Building/drain encroachment: whether a row exists at all is
-zero-tolerance, real geometry only — ST_Intersects(building, drain's
+Goal 2 â€” Building/drain encroachment: whether a row exists at all is
+zero-tolerance, real geometry only â€” ST_Intersects(building, drain's
 raw centerline), no buffer, no distance allowance. A building with any
 visible gap to the drain is never flagged, full stop; this also covers
 "Building Extenstions" (mapped to the same canonical_class as Building,
@@ -20,7 +20,7 @@ so a road-side extension that touches/crosses a drain is judged by
 exactly the same rule as the main structure, not skipped).
 
 Once a building genuinely touches a drain, RED vs YELLOW is NOT decided
-by ST_Crosses — that was tried and doesn't work here: ST_Crosses tests
+by ST_Crosses â€” that was tried and doesn't work here: ST_Crosses tests
 the drain's ENTIRE line (which runs on for tens/hundreds of metres past
 many other buildings) against this one polygon, so it reads "has
 interior points and exterior points" as true for nearly any real entry,
@@ -28,40 +28,40 @@ even a shallow corner clip, because the rest of the line far away is
 obviously "outside" this building. That collapsed red/yellow into
 almost all red. Instead:
   - Take just the piece of drain line inside THIS building
-    (ST_Intersection) and measure its length — `chord_len_m`.
+    (ST_Intersection) and measure its length â€” `chord_len_m`.
   - Compare it to the building's OWN size (`perimeter / 4`, its average
-    side length) — never another building's size, so a shared wall in a
+    side length) â€” never another building's size, so a shared wall in a
     row/terrace can't contaminate the measurement the way a shared
     vicinity buffer did in an earlier attempt.
   - `crossing_ratio = chord_len_m / building_span_m`
-  - RED   : crossing_ratio > DRAIN_CROSSING_RED_RATIO — the drain runs
+  - RED   : crossing_ratio > DRAIN_CROSSING_RED_RATIO â€” the drain runs
     most/all of the way across the building's own footprint.
-  - YELLOW: 0 < crossing_ratio <= DRAIN_CROSSING_RED_RATIO — the drain
+  - YELLOW: 0 < crossing_ratio <= DRAIN_CROSSING_RED_RATIO â€” the drain
     only clips a fraction of the building (a corner, an edge).
   - GREEN (no anomaly row): the building never touches any drain.
-DRAIN_BUFFER_M is separate and unrelated — it only estimates a physical
+DRAIN_BUFFER_M is separate and unrelated â€” it only estimates a physical
 channel width for the descriptive `overlap_pct`/`overlap_area_m2`
 figures shown in the tooltip/AI explanation, and plays no part in
 deciding whether a row exists or what color it gets.
 
-Goal 3 — Manhole status: every Access_Point (manhole) was actually
-surveyed with its own Condition ("Good"/"Bad"/"Fair"/"Damage") — that is
+Goal 3 â€” Manhole status: every Access_Point (manhole) was actually
+surveyed with its own Condition ("Good"/"Bad"/"Fair"/"Damage") â€” that is
 the primary, most direct evidence and takes priority over any inferred
 proxy:
   - Condition is a bad-token ("Bad", "Damage", ...) -> RED.
-  - Top_Level is present but unparseable (e.g. "Blocked") -> RED — a
+  - Top_Level is present but unparseable (e.g. "Blocked") -> RED â€” a
     literal recorded blockage, even stronger evidence than Condition.
   - Condition is a good-token ("Good", ...) -> GREEN.
   - Condition is recorded but neither clearly good nor bad (e.g. "Fair")
     -> YELLOW.
 Only when the manhole's own row gives NO signal at all (no Condition, no
-Top_Level entry — true for roughly half of this dataset) does the
+Top_Level entry â€” true for roughly half of this dataset) does the
 detector fall back to secondary real evidence, in order: recorded
 Silt_Level (siltation present -> YELLOW), then nearest-drain proximity
 (the original goal-3 rule: red = directly at a closed drain within
 MANHOLE_RED_DISTANCE_M, yellow = a closed drain nearby but farther off,
 green = nearest drain is open or none found). Every manhole still gets a
-row — there is no "quiet, unflagged" state, since confirming "this one's
+row â€” there is no "quiet, unflagged" state, since confirming "this one's
 fine" is itself useful.
 """
 from __future__ import annotations
@@ -102,12 +102,12 @@ YELLOW_BAND_MULTIPLIER = 1.5  # borderline = between eps and eps * this
 DRAIN_CROSSING_RED_RATIO = 0.5
 
 # Used ONLY to estimate a physical channel width for the descriptive
-# overlap_pct/overlap_area_m2 figures (see module docstring) — never to
+# overlap_pct/overlap_area_m2 figures (see module docstring) â€” never to
 # decide whether a building counts as touching a drain.
 DRAIN_BUFFER_M = 1.5
 
 # ST_ClusterDBSCAN's `eps` is measured in the units of its input geometry's
-# SRID — passing it raw EPSG:4326 geometry means "eps" is degrees (~111km
+# SRID â€” passing it raw EPSG:4326 geometry means "eps" is degrees (~111km
 # each), not meters, silently chaining every feature in the dataset into one
 # giant cluster regardless of the eps value. Must transform to a projected,
 # metric CRS first. UTM zone 43N (EPSG:32643) covers Davangere/Karnataka.
@@ -117,18 +117,18 @@ _METRIC_SRID = 32643
 MANHOLE_DRAIN_MAX_M = 50.0
 # Within this radius of a closed drain, the manhole is directly affected
 # (red). Farther out but still within MANHOLE_DRAIN_MAX_M, a closed drain
-# is a moderate/less certain concern (yellow) rather than a flat red —
+# is a moderate/less certain concern (yellow) rather than a flat red â€”
 # distance is real, measured data, not a guess. Tuned against the real
 # Ghandinagar ward data: distances to the nearest closed drain range
 # ~0.1-23m with a median of ~3m, so 5m gives a meaningful red/yellow split
 # instead of nearly everything landing in red.
 MANHOLE_RED_DISTANCE_M = 5.0
 
-# Powerline proximity — three real distance tiers, not a flat "within X is
+# Powerline proximity â€” three real distance tiers, not a flat "within X is
 # dangerous": RED (critical, essentially touching), YELLOW (marginal, worth
-# reviewing), GREEN (real clearance, confirmed OK) — same "every candidate
+# reviewing), GREEN (real clearance, confirmed OK) â€” same "every candidate
 # gets a row, never a quiet unflagged state" philosophy as manhole_status.
-# Buildings farther than POWERLINE_SEARCH_RADIUS_M aren't reported at all —
+# Buildings farther than POWERLINE_SEARCH_RADIUS_M aren't reported at all â€”
 # clearly not "near" a powerline in any meaningful sense.
 POWERLINE_RED_DISTANCE_M = 0.5
 POWERLINE_YELLOW_DISTANCE_M = 1.0
@@ -138,7 +138,7 @@ POWERLINE_SEARCH_RADIUS_M = 1.5
 POWERLINE_DANGER_DISTANCE_M = POWERLINE_RED_DISTANCE_M
 
 # Fallback pole height when a pole exists nearby but has no real recorded
-# height of its own — matches Map3DViewer.tsx's own DEFAULT_POLE_HEIGHT_M,
+# height of its own â€” matches Map3DViewer.tsx's own DEFAULT_POLE_HEIGHT_M,
 # so the backend's "is this building tall enough to reach the conductor"
 # judgment lines up with what the 3D view actually draws the conductor at
 # (the real nearest pole's height, not an independently-chosen constant).
@@ -191,12 +191,16 @@ async def _detect_pole_redundancy(
     rows = (
         await db.execute(
             text(
-                "SELECT id, category, ST_X(geom) AS x, ST_Y(geom) AS y, "
-                f"ST_ClusterDBSCAN(ST_Transform(geom, {_METRIC_SRID}), eps := :eps, minpoints := 2) "
+                "WITH illumination_assets AS ("
+                "  SELECT id, category, ST_PointOnSurface(geom) AS audit_geom "
+                "  FROM features "
+                "  WHERE dataset_id = :dataset_id "
+                "  AND attributes->>'_canonical_class' = 'Illumination_Asset'"
+                ") "
+                "SELECT id, category, ST_X(audit_geom) AS x, ST_Y(audit_geom) AS y, "
+                f"ST_ClusterDBSCAN(ST_Transform(audit_geom, {_METRIC_SRID}), eps := :eps, minpoints := 2) "
                 "  OVER () AS cluster_id "
-                "FROM features "
-                "WHERE dataset_id = :dataset_id "
-                "AND attributes->>'_canonical_class' = 'Illumination_Asset'"
+                "FROM illumination_assets"
             ),
             {"dataset_id": str(dataset_id), "eps": eps},
         )
@@ -297,11 +301,11 @@ async def _detect_drain_encroachment(
 ) -> dict[str, int]:
     # See module docstring: whether a row exists at all is a strict, real
     # ST_Intersects against the drain's raw centerline (zero buffer, zero
-    # tolerance) — includes Building Extenstions, since it shares the same
+    # tolerance) â€” includes Building Extenstions, since it shares the same
     # canonical_class as Building. RED vs YELLOW is then the length of
     # drain actually inside the building vs. the building's OWN span (not
     # a shared/neighbor-dependent denominator). DRAIN_BUFFER_M is separate
-    # — used only afterwards for the descriptive overlap_pct/area.
+    # â€” used only afterwards for the descriptive overlap_pct/area.
     rows = (
         await db.execute(
             text(
@@ -426,7 +430,7 @@ async def _detect_manhole_status(
         drain_attrs = r["drain_attributes"] or {}
         distance_m = r["distance_m"]
 
-        # Real Sewage Line GIS data lets this be a stated fact, not a guess —
+        # Real Sewage Line GIS data lets this be a stated fact, not a guess â€”
         # try every attribute key seen across survey layers for the drain's
         # own type/use/status text.
         drain_type_raw = (
@@ -463,9 +467,9 @@ async def _detect_manhole_status(
 
         if raw_top_level is not None and parse_level_m(raw_top_level) is None:
             # A recorded-but-unparseable level (e.g. "Blocked") is a literal
-            # reported blockage — stronger evidence than Condition itself.
+            # reported blockage â€” stronger evidence than Condition itself.
             color = AnomalyColor.RED
-            basis = f"Top level recorded as \"{raw_top_level}\" — physically blocked"
+            basis = f"Top level recorded as \"{raw_top_level}\" â€” physically blocked"
         elif is_bad_condition(raw_condition):
             color = AnomalyColor.RED
             basis = f"Surveyed condition: \"{raw_condition}\""
@@ -474,14 +478,14 @@ async def _detect_manhole_status(
             basis = f"Surveyed condition: \"{raw_condition}\""
         elif raw_condition is not None:
             # A condition WAS recorded but isn't clearly good or bad (e.g.
-            # "Fair") — genuinely ambiguous, not a guess either way.
+            # "Fair") â€” genuinely ambiguous, not a guess either way.
             color = AnomalyColor.YELLOW
             basis = f"Surveyed condition: \"{raw_condition}\" (neither clearly good nor bad)"
         elif raw_silt is not None and raw_silt.lower() != "no":
             color = AnomalyColor.YELLOW
-            basis = f"No condition recorded; silt level recorded at {raw_silt} — siltation present"
+            basis = f"No condition recorded; silt level recorded at {raw_silt} â€” siltation present"
         elif "closed" in drain_category:
-            # No direct signal on the manhole itself — fall back to the
+            # No direct signal on the manhole itself â€” fall back to the
             # original proxy: directly at/near a closed drain -> red,
             # nearby but farther off -> yellow (less certain this manhole
             # is the one affected).
@@ -551,7 +555,7 @@ _FLOOR_LEVEL_RE = re.compile(r"^G(?:\+(\d+))?$", re.IGNORECASE)
 
 def _parse_floor_level_string(raw: str) -> int | None:
     """This survey records storeys as "G" (ground only, 1 storey) or "G+N"
-    (ground + N upper storeys, N+1 total) under a "Floor" field — a real
+    (ground + N upper storeys, N+1 total) under a "Floor" field â€” a real
     surveyed storey count under a different naming/format convention than
     the plain numeric floors/no_of_floors attributes handled below."""
     m = _FLOOR_LEVEL_RE.match(raw.strip())
@@ -562,7 +566,7 @@ def _parse_floor_level_string(raw: str) -> int | None:
 
 def _extract_building_height_m(attributes: dict[str, Any] | None) -> float | None:
     """Case-insensitive scan for a real surveyed height/floor-count
-    attribute — same convention the 3D viewer uses for its own building
+    attribute â€” same convention the 3D viewer uses for its own building
     heights (Map3DViewer.tsx's readAttr/parseFloorLevelString), kept
     consistent here so a building this detector judges "too short to reach
     a conductor" matches what a user would actually see rendered in 3D."""
@@ -596,14 +600,14 @@ async def _detect_powerline_proximity(
     dataset_id: uuid.UUID, ward: str | None, db: AsyncSession
 ) -> dict[str, int]:
     """Detect buildings within POWERLINE_SEARCH_RADIUS_M of REAL OVERHEAD
-    power lines — but ONLY when the building is real tall enough to
+    power lines â€” but ONLY when the building is real tall enough to
     physically reach the nearest real pole's own conductor height in the
     first place. A single-storey building standing right under a 7 m
     overhead line has a genuine large vertical gap regardless of how close
     their footprints sit horizontally; flagging it as "dangerous" purely on
     2D distance would be a false positive. Only once the building's own
     real height reaches (or exceeds) the REAL nearest pole's own surveyed
-    height (not a flat assumption — see _nearest_pole_height_m) does
+    height (not a flat assumption â€” see _nearest_pole_height_m) does
     horizontal proximity become a real contact risk.
 
     The Power_Line canonical class also absorbs "Water Line" for layer
@@ -615,7 +619,7 @@ async def _detect_powerline_proximity(
 
     Every building that passes the height gate gets a row, colored by real
     distance tier (RED <= 0.5 m, YELLOW <= 1.0 m, GREEN beyond that but
-    still within the search radius) — same "every candidate is reported,
+    still within the search radius) â€” same "every candidate is reported,
     never a quiet unflagged state" philosophy as manhole_status, instead of
     a flat "dangerous or not shown at all" rule.
 
@@ -642,7 +646,7 @@ async def _detect_powerline_proximity(
         )
     ).mappings().all()
 
-    # Real pole positions + their own real height — used to judge each
+    # Real pole positions + their own real height â€” used to judge each
     # candidate building against the REAL support nearest to it, instead of
     # one flat assumed conductor height. Matches the same convention
     # Map3DViewer.tsx uses to draw the conductor at the real pole's height.
@@ -685,7 +689,7 @@ async def _detect_powerline_proximity(
 
         building_height_m = _extract_building_height_m(r["building_attributes"])
         # Only skip when there's REAL surveyed evidence this building is
-        # shorter than the REAL nearest pole's conductor height — no
+        # shorter than the REAL nearest pole's conductor height â€” no
         # height/floor-count attribute at all (true for every building in
         # some surveys) means genuinely unknown, not "safe". Treating
         # unknown as safe would silently turn this detector into a no-op on
@@ -705,12 +709,12 @@ async def _detect_powerline_proximity(
             color = AnomalyColor.YELLOW
             counts["yellow"] += 1
             severity = 40.0 + (POWERLINE_YELLOW_DISTANCE_M - distance_m) * 40.0
-            tier_label = "marginal — worth reviewing"
+            tier_label = "marginal â€” worth reviewing"
         else:
             color = AnomalyColor.GREEN
             counts["green"] += 1
             severity = 10.0
-            tier_label = "real clearance — confirmed OK"
+            tier_label = "real clearance â€” confirmed OK"
 
         height_note = (
             f"Building ({building_height_m:.1f} m tall) is"
@@ -740,7 +744,7 @@ async def _detect_powerline_proximity(
                     "powerline_categories": r["powerline_categories"],
                     "basis": (
                         f"{height_note} {distance_m:.2f} m from a power line "
-                        f"(~{conductor_height_m:.1f} m conductor height, nearest real pole) — {tier_label}{height_suffix}"
+                        f"(~{conductor_height_m:.1f} m conductor height, nearest real pole) â€” {tier_label}{height_suffix}"
                     ),
                 },
             )
