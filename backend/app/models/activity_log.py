@@ -18,6 +18,7 @@ class ActivityAction(str, enum.Enum):
     LOGIN = "login"
     LOGOUT = "logout"
     USER_CREATED = "user_created"
+    PASSWORD_CHANGED = "password_changed"
 
     DATASET_UPLOADED = "dataset_uploaded"
     DATASET_STATUS_CHANGED = "dataset_status_changed"

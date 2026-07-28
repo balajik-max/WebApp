@@ -2,10 +2,11 @@
 Authentication endpoints.
 
 Endpoints:
-  POST /api/auth/login    – email + password → access/refresh tokens (cookies + JSON)
-  POST /api/auth/logout   – clears auth cookies
-  GET  /api/auth/me       – returns current user (requires access token)
-  POST /api/auth/refresh  – rotates access token using refresh cookie
+  POST /api/auth/login            – email + password → access/refresh tokens
+  POST /api/auth/logout           – clears auth cookies
+  GET  /api/auth/me               – returns current user
+  POST /api/auth/refresh          – rotates access token using refresh cookie
+  POST /api/auth/change-password  – changes the current user's password
 """
 from __future__ import annotations
 
@@ -24,11 +25,18 @@ from app.core.security import (
     create_access_token,
     create_refresh_token,
     decode_token,
+    hash_password,
+    password_policy_error,
     verify_password,
 )
 from app.db.session import get_db
 from app.models import ActivityAction, ActivityLog, User
-from app.schemas.auth import LoginRequest, TokenResponse
+from app.schemas.auth import (
+    ChangePasswordRequest,
+    ChangePasswordResponse,
+    LoginRequest,
+    TokenResponse,
+)
 from app.schemas.user import UserPublic
 
 log = logging.getLogger("davangere.auth")
@@ -55,6 +63,17 @@ def _set_auth_cookies(response: Response, access: str, refresh: str) -> None:
         samesite="lax",
         max_age=settings.jwt_refresh_ttl_days * 86400,
         path="/",
+    )
+
+
+def _clear_auth_cookies(response: Response) -> None:
+    settings = get_settings()
+    is_prod = settings.app_env == "production"
+    response.delete_cookie(
+        "access_token", path="/", httponly=True, secure=is_prod, samesite="lax"
+    )
+    response.delete_cookie(
+        "refresh_token", path="/", httponly=True, secure=is_prod, samesite="lax"
     )
 
 
@@ -98,9 +117,65 @@ async def login(
 
 @router.post("/logout")
 async def logout(response: Response, user: User = Depends(get_current_user)) -> dict:
-    response.delete_cookie("access_token", path="/")
-    response.delete_cookie("refresh_token", path="/")
+    _clear_auth_cookies(response)
     return {"ok": True, "user_id": str(user.id)}
+
+
+@router.post("/change-password", response_model=ChangePasswordResponse)
+async def change_password(
+    payload: ChangePasswordRequest,
+    request: Request,
+    response: Response,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> ChangePasswordResponse:
+    """Change only the authenticated user's password and end the current session."""
+    result = await db.execute(
+        select(User).where(User.id == user.id).with_for_update()
+    )
+    locked_user = result.scalar_one_or_none()
+    if locked_user is None:
+        raise HTTPException(status_code=401, detail="User not found")
+
+    if not verify_password(payload.current_password, locked_user.password_hash):
+        raise HTTPException(status_code=400, detail="Current password is incorrect.")
+
+    if payload.new_password != payload.confirm_password:
+        raise HTTPException(
+            status_code=400,
+            detail="New password and confirmation do not match.",
+        )
+
+    if verify_password(payload.new_password, locked_user.password_hash):
+        raise HTTPException(
+            status_code=400,
+            detail="New password cannot be the same as the current password.",
+        )
+
+    policy_error = password_policy_error(payload.new_password)
+    if policy_error:
+        raise HTTPException(status_code=400, detail=policy_error)
+
+    locked_user.password_hash = hash_password(payload.new_password)
+    db.add(
+        ActivityLog(
+            actor_id=locked_user.id,
+            action=ActivityAction.PASSWORD_CHANGED,
+            entity_type="user",
+            entity_id=locked_user.id,
+            payload={
+                "ip": request.client.host if request.client else None,
+                "scope": "self_service",
+            },
+        )
+    )
+    await db.commit()
+
+    _clear_auth_cookies(response)
+    log.info("Password changed for user %s", locked_user.id)
+    return ChangePasswordResponse(
+        message="Password changed successfully. Sign in using your new password."
+    )
 
 
 @router.get("/me", response_model=UserPublic)

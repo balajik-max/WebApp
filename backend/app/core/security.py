@@ -30,6 +30,23 @@ def verify_password(plain: str, hashed: str) -> bool:
         return False
 
 
+def password_policy_error(plain: str) -> str | None:
+    """Return a user-safe policy error, or ``None`` when the password is valid."""
+    if len(plain) < 8:
+        return "New password must be at least 8 characters."
+    if len(plain) > 128:
+        return "New password must be 128 characters or fewer."
+    if not any(ch.islower() for ch in plain):
+        return "New password must include a lowercase letter."
+    if not any(ch.isupper() for ch in plain):
+        return "New password must include an uppercase letter."
+    if not any(ch.isdigit() for ch in plain):
+        return "New password must include a number."
+    if not any(not ch.isalnum() for ch in plain):
+        return "New password must include a special character."
+    return None
+
+
 # ----------------------------------------------------------------------- jwt
 def _encode(payload: dict[str, Any]) -> str:
     settings = get_settings()

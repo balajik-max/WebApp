@@ -56,7 +56,7 @@ async def get_current_user(
     if (
         user.role == UserRole.MLA
         and request.method not in {"GET", "HEAD", "OPTIONS"}
-        and request.url.path != "/api/auth/logout"
+        and request.url.path not in {"/api/auth/logout", "/api/auth/change-password"}
     ):
         raise HTTPException(status_code=403, detail="MLA access is strictly read-only")
     return user
