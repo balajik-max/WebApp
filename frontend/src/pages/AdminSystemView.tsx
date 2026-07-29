@@ -1,5 +1,5 @@
 import { Link, Navigate } from "react-router-dom";
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useAuth } from "../context/AuthContext";
 import { useLanguage } from "../context/LanguageContext";
 import { apiGet } from "../lib/api";
@@ -8,6 +8,7 @@ import type { SecurityMonitoringResponse, SecurityPosture } from "../lib/adminSe
 import { AdminServicesOverview } from "../components/admin/services/AdminServicesOverview";
 import { AdminSecurityOverview } from "../components/admin/security/AdminSecurityOverview";
 import { AdminUserDetailsDrawer } from "../components/admin/activity/AdminUserDetailsDrawer";
+import { AdminSessionHistoryModal } from "../components/admin/activity/AdminSessionHistoryModal";
 import { describeUserAgent } from "../lib/userAgent";
 import type { AdminActivity } from "../lib/adminActivity";
 import { formatDuration, relativeTime } from "../lib/adminActivity";
@@ -115,40 +116,71 @@ export function AdminSystemView() {
 
   const [activeTab, setActiveTab] = useState<AdminTabId>("services");
   const [selectedUserId, setSelectedUserId] = useState<string | null>(null);
+  const [sessionHistoryOpen, setSessionHistoryOpen] = useState(false);
 
+  const fetchOne = useCallback(async <T,>(
+    path: string,
+    setData: (v: T) => void,
+    setErr: (v: boolean) => void,
+    signal: AbortSignal
+  ) => {
+    try {
+      const data = await apiGet<T>(path, signal);
+      if (signal.aborted) return;
+      setData(data);
+      setErr(false);
+    } catch (e) {
+      if (signal.aborted || (e instanceof DOMException && e.name === "AbortError")) return;
+      setErr(true);
+    }
+  }, []);
+
+  // Services/Security/Datasets/Workflows poll every 15s — these reflect
+  // infrastructure health and don't need sub-second updates. The interval
+  // balances freshness with reduced load on AI engine/storage probes.
   useEffect(() => {
     if (user?.role !== "admin") return;
-    const ctrl = new AbortController();
-
-    const fetchOne = async <T,>(
-      path: string,
-      setData: (v: T) => void,
-      setErr: (v: boolean) => void
-    ) => {
-      try {
-        const data = await apiGet<T>(path, ctrl.signal);
-        if (ctrl.signal.aborted) return;
-        setData(data);
-      } catch (e) {
-        if (ctrl.signal.aborted || (e instanceof DOMException && e.name === "AbortError")) return;
-        setErr(true);
-      }
+    let ctrl = new AbortController();
+    const runFetch = () => {
+      ctrl.abort();
+      ctrl = new AbortController();
+      void Promise.allSettled([
+        fetchOne<AdminServices>("/api/v1/admin/services/legacy", setServices, setServicesError, ctrl.signal),
+        fetchOne<AdminDatasets>("/api/v1/admin/datasets", setDatasets, setDatasetsError, ctrl.signal),
+        fetchOne<AdminWorkflows>("/api/v1/admin/workflows", setWorkflows, setWorkflowsError, ctrl.signal),
+      ]).then(() => {
+        if (!ctrl.signal.aborted) {
+          setLoaded(true);
+          setLastUpdated(new Date());
+        }
+      });
     };
+    runFetch();
+    const id = window.setInterval(runFetch, 15_000);
+    return () => {
+      ctrl.abort();
+      window.clearInterval(id);
+    };
+  }, [user?.role, fetchOne]);
 
-    void Promise.allSettled([
-      fetchOne<AdminServices>("/api/v1/admin/services/legacy", setServices, setServicesError),
-      fetchOne<AdminDatasets>("/api/v1/admin/datasets", setDatasets, setDatasetsError),
-      fetchOne<AdminWorkflows>("/api/v1/admin/workflows", setWorkflows, setWorkflowsError),
-      fetchOne<AdminActivity>("/api/v1/admin/activity", setActivity, setActivityError),
-    ]).then(() => {
-      if (!ctrl.signal.aborted) {
-        setLoaded(true);
-        setLastUpdated(new Date());
-      }
-    });
-
-    return () => ctrl.abort();
-  }, [user?.role]);
+  // Users & Activity polls EVERY SECOND for true real-time monitoring.
+  // This ensures online users, login events, and the activity log update
+  // instantly without manual refresh — critical for live admin monitoring.
+  useEffect(() => {
+    if (user?.role !== "admin") return;
+    let ctrl = new AbortController();
+    const runFetch = () => {
+      ctrl.abort();
+      ctrl = new AbortController();
+      void fetchOne<AdminActivity>("/api/v1/admin/activity", setActivity, setActivityError, ctrl.signal);
+    };
+    runFetch();
+    const id = window.setInterval(runFetch, 1_000); // Live updates every 1 second
+    return () => {
+      ctrl.abort();
+      window.clearInterval(id);
+    };
+  }, [user?.role, fetchOne]);
 
   const overall = useMemo<{ level: "ok" | "warning" | "critical" | "checking"; label: string }>(() => {
     if (!loaded) return { level: "checking", label: t("admin.checking") };
@@ -352,17 +384,27 @@ export function AdminSystemView() {
               {activityError && <div className="admin-empty">{t("admin.loadFailed")}</div>}
               {activity && (
                 <>
-                  <div className="admin-grid admin-grid--users">
-                    <div className="admin-tile" data-testid="admin-tile-total-users">
-                      <span className="admin-tile__label">{t("admin.totalUsers")}</span>
-                      <span className="admin-tile__value">{activity.total_users}</span>
-                      <span className="admin-tile__detail">{t("admin.totalUsersSubtitle")}</span>
+                  <div className="admin-users-header">
+                    <div className="admin-grid admin-grid--users">
+                      <div className="admin-tile" data-testid="admin-tile-total-users">
+                        <span className="admin-tile__label">{t("admin.totalUsers")}</span>
+                        <span className="admin-tile__value">{activity.total_users}</span>
+                        <span className="admin-tile__detail">{t("admin.totalUsersSubtitle")}</span>
+                      </div>
+                      <div className="admin-tile" data-testid="admin-tile-active-users">
+                        <span className="admin-tile__label">{t("admin.activeUsers")}</span>
+                        <span className="admin-tile__value">{activity.active_users}</span>
+                        <span className="admin-tile__detail">{t("admin.activeUsersSubtitle")}</span>
+                      </div>
                     </div>
-                    <div className="admin-tile" data-testid="admin-tile-active-users">
-                      <span className="admin-tile__label">{t("admin.activeUsers")}</span>
-                      <span className="admin-tile__value">{activity.active_users}</span>
-                      <span className="admin-tile__detail">{t("admin.activeUsersSubtitle")}</span>
-                    </div>
+                    <button
+                      type="button"
+                      className="admin-subhead admin-subhead--inline"
+                      data-testid="admin-session-history-open"
+                      onClick={() => setSessionHistoryOpen(true)}
+                    >
+                      {t("admin.sessionHistory")}
+                    </button>
                   </div>
 
                   <div className="admin-subhead">{t("admin.activeSessions")}</div>
@@ -399,7 +441,7 @@ export function AdminSystemView() {
                   <div className="admin-subhead">{t("admin.recentLogins")}</div>
                   {activity.recent_logins.length > 0 ? (
                     <ul className="admin-list" data-testid="admin-recent-logins">
-                      {activity.recent_logins.slice(0, 5).map((e) => (
+                      {activity.recent_logins.slice(0, 10).map((e) => (
                         <li
                           key={e.id}
                           className={`admin-list__row${e.actor_id ? " admin-list__row--clickable" : ""}`}
@@ -422,37 +464,18 @@ export function AdminSystemView() {
                     <div className="admin-empty">{t("admin.noRecentLogins")}</div>
                   )}
 
-                  <div className="admin-subhead">{t("admin.sessionHistory")}</div>
-                  {activity.recent_sessions.length > 0 ? (
-                    <ul className="admin-list" data-testid="admin-session-history">
-                      {activity.recent_sessions.map((s) => (
-                        <li
-                          key={s.id}
-                          className="admin-list__row admin-list__row--clickable"
-                          role="button"
-                          tabIndex={0}
-                          title={t("admin.viewUserDetails")}
-                          onClick={() => setSelectedUserId(s.user_id)}
-                          onKeyDown={(ev) => {
-                            if (ev.key === "Enter" || ev.key === " ") setSelectedUserId(s.user_id);
-                          }}
-                        >
-                          <span className="admin-list__title">{s.user_name}</span>
-                          <span className="admin-list__meta">{s.ip_address ?? "—"}</span>
-                          <span className="admin-list__meta">
-                            {s.is_active ? t("admin.online") : relativeTime(s.login_at, lang)}
-                          </span>
-                          <span className="admin-list__time">{formatDuration(s.duration_minutes)}</span>
-                        </li>
-                      ))}
-                    </ul>
-                  ) : (
-                    <div className="admin-empty">{t("admin.noSessionHistory")}</div>
-                  )}
                 </>
               )}
 
               <AdminUserDetailsDrawer userId={selectedUserId} onClose={() => setSelectedUserId(null)} />
+              <AdminSessionHistoryModal
+                open={sessionHistoryOpen}
+                onClose={() => setSessionHistoryOpen(false)}
+                onSelectUser={(id) => {
+                  setSessionHistoryOpen(false);
+                  setSelectedUserId(id);
+                }}
+              />
             </>
           )}
         </div>

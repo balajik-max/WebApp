@@ -16,6 +16,44 @@ export interface ActivityEntry {
   created_at: string;
   ip_address: string | null;
   user_agent: string | null;
+  payload: Record<string, string | number | boolean | null>;
+}
+
+function titleCaseAction(action: string): string {
+  const words = action.replace(/_/g, " ");
+  return words.charAt(0).toUpperCase() + words.slice(1);
+}
+
+/**
+ * Human-readable, step-by-step narrative label for one activity-log entry
+ * — e.g. "Logged in", "Loaded survey.tif from the data source", "Selected
+ * AI Detection: Manholes". Actions logged by the client (see
+ * lib/activityLog.ts) get a dedicated template that reads payload fields;
+ * every other (server-written) action falls back to a title-cased version
+ * of its raw name, same as before this narrative view existed.
+ */
+export function describeActivityEntry(entry: ActivityEntry): string {
+  const p = entry.payload ?? {};
+  switch (entry.action) {
+    case "login":
+      return "Logged in";
+    case "logout":
+      return "Logged out";
+    case "page_viewed":
+      return `Viewing the ${p.page_label ?? p.page ?? "app"} page`;
+    case "map_interacted":
+      return "Did zooming and panning on Map Canvas";
+    case "data_layers_opened":
+      return "Performed select data layers action";
+    case "dataset_loaded":
+      return p.filename ? `Loaded ${p.filename} from the data source` : "Loaded a dataset from the data source";
+    case "ai_detection_selected":
+      return p.mode ? `Selected AI Detection: ${p.mode}` : "Selected an AI Detection layer";
+    case "map_3d_viewed":
+      return "Selected 3D Map View";
+    default:
+      return titleCaseAction(entry.action);
+  }
 }
 
 export type DeviceCategory = "desktop" | "mobile" | "tablet" | "unknown";
@@ -46,7 +84,6 @@ export interface AdminActivity {
   users_by_role: { role: string; count: number }[];
   recent_logins: ActivityEntry[];
   active_sessions: SessionEntry[];
-  recent_sessions: SessionEntry[];
 }
 
 export interface UserSummary {

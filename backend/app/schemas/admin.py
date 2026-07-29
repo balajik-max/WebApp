@@ -74,6 +74,7 @@ class ActivityEntryOut(BaseModel):
     created_at: datetime
     ip_address: str | None = None
     user_agent: str | None = None
+    payload: dict = {}
 
 
 class UserRoleCount(BaseModel):
@@ -109,7 +110,10 @@ class AdminActivityOut(BaseModel):
     users_by_role: list[UserRoleCount]
     recent_logins: list[ActivityEntryOut]
     active_sessions: list[SessionOut] = []
-    recent_sessions: list[SessionOut] = []
+
+
+class AdminSessionsOut(BaseModel):
+    sessions: list[SessionOut]
 
 
 class UserSummaryOut(BaseModel):

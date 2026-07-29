@@ -85,8 +85,13 @@ async def get_current_user(
     if (
         user.role == UserRole.MLA
         and request.method not in {"GET", "HEAD", "OPTIONS"}
-        and request.url.path not in _mla_exempt_paths
-        and not request.url.path.startswith(_mla_exempt_prefixes)
+        and request.url.path
+        not in {
+            "/api/auth/logout",
+            "/api/auth/heartbeat",
+            "/api/auth/change-password",
+            "/api/v1/activity/log",
+        }
     ):
         raise HTTPException(
             status_code=403,

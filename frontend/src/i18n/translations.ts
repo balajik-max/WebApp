@@ -197,6 +197,10 @@ export const STRINGS: Dict = {
   "admin.offline": { en: "Offline", kn: "ಆಫ್‌ಲೈನ್" },
   "admin.sessionHistory": { en: "Session History", kn: "ಸೆಷನ್ ಇತಿಹಾಸ" },
   "admin.noSessionHistory": { en: "No sessions recorded yet", kn: "ಇನ್ನೂ ಯಾವುದೇ ಸೆಷನ್‌ಗಳು ದಾಖಲಾಗಿಲ್ಲ" },
+  "admin.exportCsv": { en: "Export CSV", kn: "CSV ರಫ್ತು ಮಾಡಿ" },
+  "admin.tableUser": { en: "User", kn: "ಬಳಕೆದಾರ" },
+  "admin.tableStatus": { en: "Status", kn: "ಸ್ಥಿತಿ" },
+  "admin.loadingSessions": { en: "Loading sessions…", kn: "ಸೆಷನ್‌ಗಳನ್ನು ಲೋಡ್ ಮಾಡಲಾಗುತ್ತಿದೆ…" },
   "admin.viewUserDetails": { en: "View full activity", kn: "ಸಂಪೂರ್ಣ ಚಟುವಟಿಕೆ ವೀಕ್ಷಿಸಿ" },
   "admin.userProfile": { en: "Profile", kn: "ಪ್ರೊಫೈಲ್" },
   "admin.userEmail": { en: "Email", kn: "ಇಮೇಲ್" },
@@ -222,7 +226,6 @@ export const STRINGS: Dict = {
   "admin.userLoginTime": { en: "Login time", kn: "ಲಾಗಿನ್ ಸಮಯ" },
   "admin.userLogoutTime": { en: "Logout time", kn: "ಲಾಗ್‌ಔಟ್ ಸಮಯ" },
   "admin.userSessionDuration": { en: "Session duration", kn: "ಸೆಷನ್ ಅವಧಿ" },
-  "admin.userSessionHistory": { en: "Full Session History", kn: "ಸಂಪೂರ್ಣ ಸೆಷನ್ ಇತಿಹಾಸ" },
   "admin.userEventLog": { en: "Full Activity / Event Log", kn: "ಸಂಪೂರ್ಣ ಚಟುವಟಿಕೆ ದಾಖಲೆ" },
   "admin.userNoEvents": { en: "No actions recorded yet", kn: "ಇನ್ನೂ ಯಾವುದೇ ಕ್ರಿಯೆಗಳು ದಾಖಲಾಗಿಲ್ಲ" },
 

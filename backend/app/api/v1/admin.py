@@ -52,6 +52,7 @@ from app.schemas.admin import (
     AdminActivityOut,
     AdminDatasetsOut,
     AdminServicesOut,
+    AdminSessionsOut,
     AdminUserActivityOut,
     AdminWorkflowsOut,
     DatasetStatusCounts,
@@ -1222,6 +1223,7 @@ def _entry(row: ActivityLog) -> ActivityEntryOut:
         created_at=row.created_at,
         ip_address=payload.get("ip"),
         user_agent=payload.get("user_agent"),
+        payload=payload,
     )
 
 
@@ -1283,16 +1285,6 @@ async def admin_activity(db: AsyncSession = Depends(get_db)) -> AdminActivityOut
     ).all()
     active_users = len({row[0].user_id for row in active_session_rows})
 
-    recent_session_rows = (
-        await db.execute(
-            select(UserSession, User.name, User.role)
-            .join(User, User.id == UserSession.user_id)
-            .where(not_admin)
-            .order_by(UserSession.login_at.desc())
-            .limit(15)
-        )
-    ).all()
-
     recent_logins = (
         await db.execute(
             select(ActivityLog)
@@ -1313,10 +1305,31 @@ async def admin_activity(db: AsyncSession = Depends(get_db)) -> AdminActivityOut
             _session_entry(session, name, role.value, cutoff)
             for session, name, role in active_session_rows
         ],
-        recent_sessions=[
-            _session_entry(session, name, role.value, cutoff)
-            for session, name, role in recent_session_rows
-        ],
+    )
+
+
+@router.get("/sessions", response_model=AdminSessionsOut, dependencies=[Depends(require_admin)])
+async def admin_sessions(db: AsyncSession = Depends(get_db)) -> AdminSessionsOut:
+    """Every login session on record, newest first — backs the Users &
+    Activity "Session History" table (with CSV export). Same admin-role
+    exclusion as the rest of this dashboard.
+    """
+    active_window_minutes = 15
+    cutoff = datetime.now(timezone.utc) - timedelta(minutes=active_window_minutes)
+    not_admin = User.role != UserRole.ADMIN
+
+    session_rows = (
+        await db.execute(
+            select(UserSession, User.name, User.role)
+            .join(User, User.id == UserSession.user_id)
+            .where(not_admin)
+            .order_by(UserSession.login_at.desc())
+            .limit(5000)
+        )
+    ).all()
+
+    return AdminSessionsOut(
+        sessions=[_session_entry(session, name, role.value, cutoff) for session, name, role in session_rows]
     )
 
 
@@ -1339,11 +1352,12 @@ async def admin_user_activity(user_id: uuid.UUID, db: AsyncSession = Depends(get
 
     active_window_minutes = 15
     cutoff = datetime.now(timezone.utc) - timedelta(minutes=active_window_minutes)
-    # LOGIN/LOGOUT are self-referential (entity_type "user") and already
-    # fully covered by the session history below — the event log below
-    # should only show what this user actually *did*, not their comings
-    # and goings.
-    non_session_actions = ActivityAction.LOGIN, ActivityAction.LOGOUT
+    # LOGOUT is redundant with the session history below (every session row
+    # already shows its own logout time) and rarely fires anyway since most
+    # sessions end by tab-close, not an explicit click. LOGIN is kept in —
+    # it's the natural opening step of the per-user activity narrative this
+    # event log renders ("Logged in" followed by what they did next).
+    non_session_actions = (ActivityAction.LOGOUT,)
 
     sessions = (
         await db.execute(
@@ -1436,10 +1450,21 @@ def _is_internal_ip(ip: str) -> bool:
 
 
 async def _approximate_location(ip: str | None) -> str | None:
-    """Best-effort "City, Region, Country" label for a public IP address,
-    via a free reverse-geocoding lookup. Internal/private addresses
-    (docker network, localhost, LAN) never leave the box and are labeled
-    directly. Results are cached per-IP for the life of the process.
+    """Best-effort "City, State, Country" label for a public IP address.
+    Internal/private addresses (docker network, localhost, LAN) never leave
+    the box and are labeled directly. Results are cached per-IP for the
+    life of the process.
+
+    IP geolocation only ever resolves to wherever the ISP registered that
+    address block — never the device's physical address — so this is
+    deliberately kept at city/state/country granularity; nothing more
+    precise is meaningful from an IP alone.
+
+    Uses ipwho.is rather than ipapi.co: spot-checking against a second
+    independent provider (ip-api.com) and a manual browser lookup showed
+    ipapi.co returning a materially wrong city for multiple real IPs in
+    this deployment (e.g. Chennai/Yelahanka for IPs that are actually in
+    Bengaluru), while ipwho.is agreed with the independent check.
 
     Never raises — an unreachable or rate-limited lookup service just
     means the field comes back empty; it must never fail the drawer
@@ -1456,11 +1481,11 @@ async def _approximate_location(ip: str | None) -> str | None:
     label: str | None = None
     try:
         async with httpx.AsyncClient(timeout=_GEO_LOOKUP_TIMEOUT) as client:
-            resp = await client.get(f"https://ipapi.co/{ip}/json/")
+            resp = await client.get(f"https://ipwho.is/{ip}")
         if resp.status_code == 200:
             data = resp.json()
-            if not data.get("error"):
-                parts = [p for p in (data.get("city"), data.get("region"), data.get("country_name")) if p]
+            if data.get("success", True):
+                parts = [p for p in (data.get("city"), data.get("region"), data.get("country")) if p]
                 label = ", ".join(parts) or None
     except Exception:  # noqa: BLE001 - any network/parsing failure just yields "unknown"
         label = None
