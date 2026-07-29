@@ -4,10 +4,10 @@ import type { AdminUserActivity } from "../../../lib/adminActivity";
 import {
   DEVICE_CATEGORY_LABEL,
   ORIENTATION_LABEL,
+  describeActivityEntry,
   formatAbsolute,
   formatDuration,
   formatResolution,
-  relativeTime,
 } from "../../../lib/adminActivity";
 import { describeUserAgent } from "../../../lib/userAgent";
 import { useLanguage } from "../../../context/LanguageContext";
@@ -35,29 +35,41 @@ export function AdminUserDetailsDrawer({ userId, onClose }: AdminUserDetailsDraw
   // + Duration in Activity Summary and IP Address in Profile.
   const latestSession = detail?.sessions[0] ?? null;
 
+  // Polls every second while open so the event log, online status, and
+  // session duration reflect what this user is doing right now instead of
+  // only whatever was true the moment the drawer was opened.
   useEffect(() => {
     if (!userId) {
       setDetail(null);
       setError(null);
       return;
     }
-    const ctrl = new AbortController();
-    setLoading(true);
-    setError(null);
-    apiGet<AdminUserActivity>(`/api/v1/admin/users/${userId}/activity`, ctrl.signal)
-      .then((data) => {
-        if (ctrl.signal.aborted) return;
-        setDetail(data);
-      })
-      .catch((e) => {
-        if (ctrl.signal.aborted || (e instanceof DOMException && e.name === "AbortError")) return;
-        const msg = e instanceof ApiError ? `${e.status} ${e.message}` : (e as Error).message;
-        setError(msg || "Failed to load user activity");
-      })
-      .finally(() => {
-        if (!ctrl.signal.aborted) setLoading(false);
-      });
-    return () => ctrl.abort();
+    let ctrl = new AbortController();
+    const load = (isFirst: boolean) => {
+      ctrl.abort();
+      ctrl = new AbortController();
+      if (isFirst) setLoading(true);
+      apiGet<AdminUserActivity>(`/api/v1/admin/users/${userId}/activity`, ctrl.signal)
+        .then((data) => {
+          if (ctrl.signal.aborted) return;
+          setDetail(data);
+          setError(null);
+        })
+        .catch((e) => {
+          if (ctrl.signal.aborted || (e instanceof DOMException && e.name === "AbortError")) return;
+          const msg = e instanceof ApiError ? `${e.status} ${e.message}` : (e as Error).message;
+          setError(msg || "Failed to load user activity");
+        })
+        .finally(() => {
+          if (!ctrl.signal.aborted && isFirst) setLoading(false);
+        });
+    };
+    load(true);
+    const id = window.setInterval(() => load(false), 1_000);
+    return () => {
+      ctrl.abort();
+      window.clearInterval(id);
+    };
   }, [userId]);
 
   useEffect(() => {
@@ -210,39 +222,18 @@ export function AdminUserDetailsDrawer({ userId, onClose }: AdminUserDetailsDraw
               </section>
             )}
 
-            <section className="usr-drawer__section">
-              <h3 className="usr-drawer__section-title">{t("admin.userSessionHistory")}</h3>
-              {detail.sessions.length > 0 ? (
-                <ul className="usr-drawer__list">
-                  {detail.sessions.map((s) => (
-                    <li key={s.id} className="usr-drawer__row">
-                      <span className="usr-drawer__row-main">
-                        {s.is_active && <span className="admin-online-dot" aria-hidden="true" />}
-                        {DEVICE_CATEGORY_LABEL[s.device_category]} · {describeUserAgent(s.user_agent)}
-                      </span>
-                      <span className="usr-drawer__row-meta">{s.ip_address ?? "—"}</span>
-                      <span className="usr-drawer__row-meta">
-                        {s.is_active ? t("admin.online") : relativeTime(s.login_at, lang)}
-                      </span>
-                      <span className="usr-drawer__row-time">{formatDuration(s.duration_minutes)}</span>
-                    </li>
-                  ))}
-                </ul>
-              ) : (
-                <div className="admin-empty">{t("admin.noSessionHistory")}</div>
-              )}
-            </section>
-
             <section className="usr-drawer__section usr-drawer__section--last">
               <h3 className="usr-drawer__section-title">{t("admin.userEventLog")}</h3>
               {detail.events.length > 0 ? (
-                <ul className="usr-drawer__list">
+                <ul className="usr-drawer__list" data-testid="usr-drawer-event-log">
                   {detail.events.map((e) => (
-                    <li key={e.id} className="usr-drawer__row">
-                      <span className="usr-drawer__row-main">{e.action.replace(/_/g, " ")}</span>
-                      <span className="usr-drawer__row-meta">{e.entity_type ?? ""}</span>
-                      <span className="usr-drawer__row-meta">{e.ip_address ?? ""}</span>
-                      <span className="usr-drawer__row-time">{relativeTime(e.created_at, lang)}</span>
+                    <li
+                      key={e.id}
+                      className="usr-drawer__row usr-drawer__row--event"
+                      title={[e.entity_type, e.ip_address].filter(Boolean).join(" · ") || undefined}
+                    >
+                      <span className="usr-drawer__event-label">{describeActivityEntry(e)}</span>
+                      <span className="usr-drawer__row-time">{formatAbsolute(e.created_at, lang) ?? "—"}</span>
                     </li>
                   ))}
                 </ul>

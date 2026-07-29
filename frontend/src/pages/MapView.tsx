@@ -17,6 +17,7 @@ import type { AiHighlight, FeatureFilter, UrbanFeature } from "../lib/types";
 import type { DatasetRow } from "../lib/workflow";
 import { useIsMobile } from "../lib/useIsMobile";
 import type { QuickAnalysisViewState } from "../lib/quickAnalysisViewState";
+import { logActivity } from "../lib/activityLog";
 
 type SpatialAuditStatus = "idle" | "running" | "success" | "error";
 
@@ -105,6 +106,10 @@ export function MapView() {
     quickAnalysisViewState.sidebarPanel === "analysis"
   );
   const [pointVerificationRefresh, setPointVerificationRefresh] = useState(0);
+
+  useEffect(() => {
+    logActivity("page_viewed", undefined, { page: "map", page_label: "Map" });
+  }, []);
 
   const isMobile = useIsMobile();
   

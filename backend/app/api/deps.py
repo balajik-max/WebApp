@@ -76,6 +76,7 @@ async def get_current_user(
             "/api/auth/logout",
             "/api/auth/heartbeat",
             "/api/auth/change-password",
+            "/api/v1/activity/log",
         }
     ):
         raise HTTPException(

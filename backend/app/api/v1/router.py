@@ -2,6 +2,7 @@
 from fastapi import APIRouter
 
 from app.api.v1 import (
+    activity,
     admin,
     ai,
     analytics,
@@ -39,3 +40,4 @@ api_router.include_router(placemarks.router, prefix="/v1/placemarks", tags=["pla
 api_router.include_router(point_verifications.router, prefix="/v1/point-verifications", tags=["point-verifications"])
 api_router.include_router(legacy_point_verifications.router, prefix="/v1/point-verifications", tags=["point-verifications-legacy"])
 api_router.include_router(map_context.router, prefix="/v1/map-context", tags=["map-context"])
+api_router.include_router(activity.router, prefix="/v1/activity", tags=["activity"])

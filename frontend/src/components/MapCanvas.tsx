@@ -6,6 +6,7 @@ import "maplibre-gl/dist/maplibre-gl.css";
 import { fetchFeatureById, fetchFeaturesInViewport, fetchVisualizationLayerFeatures } from "../lib/features";
 import type { AiHighlight, FeatureFilter, UrbanFeature, FeatureCollectionResponse } from "../lib/types";
 import { ApiError } from "../lib/api";
+import { logActivity } from "../lib/activityLog";
 import { colorForCategory, UNCATEGORIZED_COLOR } from "../lib/categoryColors";
 import {
   type DetectionMode,
@@ -3471,6 +3472,10 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
   // zoom, or programmatic camera animation (flyTo/easeTo/fitBounds), so
   // that's what re-syncs the preview instead of relying on move/zoom end.
   const latestPointerPointRef = useRef<{ x: number; y: number } | null>(null);
+  // Throttles the "Did zooming and panning on Map Canvas" activity log so a
+  // continuous drag/scroll session logs one entry per burst of interaction
+  // rather than one per moveend event.
+  const lastMapInteractionLogRef = useRef(0);
   const measureRafRef = useRef<number | null>(null);
   const [measureUnit, setMeasureUnit] = useState<DistanceUnit>("kilometers");
   const [measureAreaUnit, setMeasureAreaUnit] = useState<AreaUnit>("sq_kilometers");
@@ -6405,6 +6410,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     setRoadInspectionLoading(false);
     const nextMode = detectionMode === mode ? null : mode;
     setDetectionMode(nextMode);
+    if (nextMode) logActivity("ai_detection_selected", undefined, { mode: DETECTION_MODE_LABEL[nextMode] });
     // Every AI Detection family, including Potholes and Standing Water,
     // starts with its severity overlay OFF. The selected GDB asset family stays
     // visible, and the shared ON/OFF control enables or disables only the
@@ -7541,6 +7547,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
       return;
     }
     addRasterOverlay(dataset);
+    logActivity("dataset_loaded", "dataset", { filename: dataset.name });
     // Load the complete updated dataset selection immediately. fitBounds
     // below changes only the camera and deliberately does not trigger a
     // second data request.
@@ -7737,13 +7744,24 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     // This fires after all camera changes (pan, zoom, rotate, pitch, and
     // programmatic flyTo/fitBounds/easeTo), allowing the parent layout to
     // restore the exact camera state when returning to the Map page.
-    const persistCameraState = () => {
+    const persistCameraState = (e: { originalEvent?: unknown }) => {
       onCameraChange?.({
         zoom: map.getZoom(),
         center: map.getCenter().toArray() as [number, number],
         pitch: map.getPitch(),
         bearing: map.getBearing(),
       });
+      // originalEvent is only set when a real mouse/touch/keyboard gesture
+      // drove this moveend — it's absent for programmatic camera changes
+      // (initial load, restoring saved mapState, dataset fitBounds,
+      // flyTo/easeTo/jumpTo), which must never be logged as the user
+      // having "zoomed and panned" when they did nothing of the sort.
+      if (!e.originalEvent) return;
+      const now = Date.now();
+      if (now - lastMapInteractionLogRef.current > 4000) {
+        lastMapInteractionLogRef.current = now;
+        logActivity("map_interacted");
+      }
     };
     map.on("moveend", persistCameraState);
 
@@ -10123,7 +10141,10 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
           <button
             type="button"
             className="map-side-btn"
-            onClick={() => setShow3DPlan(true)}
+            onClick={() => {
+              setShow3DPlan(true);
+              logActivity("map_3d_viewed");
+            }}
             title={t("map.view.3dViewer")}
             aria-label={t("map.view.3dViewer")}
             data-testid="topbar-3d-viewer"
@@ -10396,7 +10417,13 @@ function CommandCenter({
   });
   const normalizedLayerQuery = layerQuery.trim().toLocaleLowerCase();
   const toggleSection = useCallback((section: "dataSources" | "spatialAudit" | "categoryVisibility") => {
-    setOpenSections((current) => ({ ...current, [section]: !current[section] }));
+    setOpenSections((current) => {
+      const next = { ...current, [section]: !current[section] };
+      if (section === "dataSources" && next.dataSources && !current.dataSources) {
+        logActivity("data_layers_opened");
+      }
+      return next;
+    });
   }, []);
 
   useEffect(() => {

@@ -42,6 +42,16 @@ class ActivityAction(str, enum.Enum):
     ARCHITECT_REMEDIATION_SUBMITTED = "architect_remediation_submitted"
     ADMIN_REMEDIATION_DECIDED = "admin_remediation_decided"
 
+    # Client-reported interaction events (see api/v1/activity.py) — feed the
+    # step-by-step narrative in the admin Users & Activity event log. Never
+    # written by trusted server-side business logic, only by that endpoint.
+    PAGE_VIEWED = "page_viewed"
+    MAP_INTERACTED = "map_interacted"
+    DATA_LAYERS_OPENED = "data_layers_opened"
+    DATASET_LOADED = "dataset_loaded"
+    AI_DETECTION_SELECTED = "ai_detection_selected"
+    MAP_3D_VIEWED = "map_3d_viewed"
+
 
 class ActivityLog(Base):
     __tablename__ = "activity_log"
