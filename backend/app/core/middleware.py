@@ -109,12 +109,12 @@ class SecurityMiddleware(BaseHTTPMiddleware):
                 # origin for that request. A fixed allow-list would otherwise
                 # need updating every time the public URL changes.
                 request_host = request.headers.get("host", "")
-                allowed_hosts = {request_host, settings.frontend_url.rstrip("/")}
-                # settings.frontend_url may be a bare origin like
-                # "http://localhost:3000" — also allow just its host part.
-                fu_host = urlsplit(settings.frontend_url).netloc
-                if fu_host:
-                    allowed_hosts.add(fu_host)
+                allowed_hosts = {request_host}
+                for configured_origin in settings.frontend_origins:
+                    allowed_hosts.add(configured_origin)
+                    configured_host = urlsplit(configured_origin).netloc
+                    if configured_host:
+                        allowed_hosts.add(configured_host)
 
                 valid = False
                 for source in (origin, referer):

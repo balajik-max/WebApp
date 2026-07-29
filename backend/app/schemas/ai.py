@@ -174,6 +174,10 @@ class RoadAssetCounts(BaseModel):
     poles: int = 0
     drains: int = 0
     manholes: int = 0
+    potholes: int = 0
+    standing_water: int = 0
+    power_lines: int = 0
+    utility_poles: int = 0
 
 
 class RoadInspectionFeatureOut(BaseModel):
@@ -188,6 +192,30 @@ class RoadInspectionFeatureOut(BaseModel):
     attributes: dict[str, Any]
     geometry: dict[str, Any]
     audit_color: str | None = None
+    evidence_for_class: str | None = None
+
+
+class RoadProfileOut(BaseModel):
+    """Width/material profile sampled along the centerline — same station
+    probe road_width.py's narrowing detector runs, reduced to a summary."""
+
+    stations_sampled: int
+    stations_with_width: int
+    min_width_m: float | None
+    mean_width_m: float | None
+    dominant_edge_material: str | None
+    edge_material_consistent: bool
+    edge_material_counts: dict[str, int]
+
+
+class RoadDrainageProfileOut(BaseModel):
+    """Manhole condition + surveyed invert-level gradient along this road."""
+
+    condition_counts: dict[str, int]
+    pipe_type_counts: dict[str, int]
+    manholes_with_level: int
+    net_fall_m: float | None
+    reversed_segments: int
 
 
 class RoadInspectionOut(BaseModel):
@@ -198,10 +226,14 @@ class RoadInspectionOut(BaseModel):
     road_label: str | None
     road_category: str | None
     road_length_m: float
+    road_geometry: dict[str, Any] | None = None
     roadside_corridor_m: float
     assets: RoadAssetCounts
     features: list[RoadInspectionFeatureOut]
     issues: list[SpatialAnomalyOut]
+    road_profile: RoadProfileOut | None = None
+    pothole_cost_total_inr: float | None = None
+    drainage_profile: RoadDrainageProfileOut | None = None
 
 
 class AnomalyExplainResponse(BaseModel):
@@ -209,6 +241,12 @@ class AnomalyExplainResponse(BaseModel):
     explanation_text: str
     explanation_model: str
     cached: bool
+
+
+class RoadInspectionExplainResponse(BaseModel):
+    road_id: uuid.UUID
+    explanation_text: str
+    explanation_model: str
 
 
 class AnomalyStatusUpdate(BaseModel):

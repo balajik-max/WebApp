@@ -1,6 +1,6 @@
 """
 Typed settings loaded from environment variables via pydantic-settings.
-Zero defaults are provided for secrets/URLs — the process fails fast if
+Zero defaults are provided for secrets/URLs - the process fails fast if
 they are missing so that no fallback string is ever silently used.
 
 Every field accepts BOTH the canonical name from the production
@@ -12,10 +12,10 @@ from __future__ import annotations
 
 from functools import lru_cache
 
-from pydantic import AliasChoices, Field
+from pydantic import AliasChoices, Field, computed_field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-# Single source of truth for the upload size cap — shared by the
+# Single source of truth for the upload size cap - shared by the
 # SecurityMiddleware body-size check (rejects before the body is fully
 # read) and the datasets upload route (rejects after buffering). Real-world
 # GIS rasters/point clouds routinely run several hundred MB, so this is set
@@ -37,6 +37,18 @@ class Settings(BaseSettings):
     app_name: str = Field(default="Davangere Urban Survey", validation_alias="APP_NAME")
     log_level: str = Field(default="INFO", validation_alias="LOG_LEVEL")
     frontend_url: str = Field(validation_alias="FRONTEND_URL")
+    extra_frontend_urls_raw: str = Field(default="", validation_alias="EXTRA_FRONTEND_URLS")
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def frontend_origins(self) -> list[str]:
+        values = [self.frontend_url, *self.extra_frontend_urls_raw.split(",")]
+        seen: list[str] = []
+        for value in values:
+            origin = value.strip().rstrip("/")
+            if origin and origin not in seen:
+                seen.append(origin)
+        return seen
 
     # --- Rate limiting ---------------------------------------------------
     rate_limit_max: int = Field(default=10, validation_alias="RATE_LIMIT_MAX")
@@ -74,6 +86,12 @@ class Settings(BaseSettings):
     ai_max_context_tokens: int = Field(default=4096, validation_alias="AI_MAX_CONTEXT_TOKENS")
     ai_max_features: int = Field(default=30, validation_alias="AI_MAX_FEATURES")
 
+    # Optional fast path: Gemini Flash tried first when a key is set, local
+    # Ollama is the automatic fallback on any Gemini error/timeout or when
+    # no key is configured. Empty default keeps Ollama-only setups working.
+    gemini_api_key: str = Field(default="", validation_alias="GEMINI_API_KEY")
+    gemini_model: str = Field(default="gemini-flash-lite-latest", validation_alias="GEMINI_MODEL")
+
     # --- AI remediation evidence ----------------------------------------
     remediation_pole_buffer_m: float = Field(default=15.0, validation_alias="REMEDIATION_POLE_BUFFER_M")
     remediation_manhole_buffer_m: float = Field(default=15.0, validation_alias="REMEDIATION_MANHOLE_BUFFER_M")
@@ -83,9 +101,6 @@ class Settings(BaseSettings):
     remediation_max_image_mb: int = Field(default=12, validation_alias="REMEDIATION_MAX_IMAGE_MB")
 
     # --- Pothole repair-cost estimate -----------------------------------
-    # The configured value is the current 40 mm BC reference rate. Runtime
-    # estimates use the verified 2026-27 Document 152 rate table and permit
-    # a selected-pothole manual override plus additional labour/mobilisation.
     pothole_sr_rate_per_sqm: float = Field(default=631.0, validation_alias="POTHOLE_SR_RATE_PER_SQM")
     pothole_sr_rate_source: str = Field(default="Karnataka PWD Roads & Bridges SR", validation_alias="POTHOLE_SR_RATE_SOURCE")
     pothole_sr_rate_year: str = Field(default="2026-27", validation_alias="POTHOLE_SR_RATE_YEAR")
@@ -107,7 +122,6 @@ class Settings(BaseSettings):
     architect_password: str = Field(validation_alias="ARCHITECT_PASSWORD")
     architect_name: str = Field(default="City Architect", validation_alias="ARCHITECT_NAME")
 
-    # --- Additional civic-engineering roles (R&D) -----------------------
     commissioner_email: str = Field(default="commissioner@davangere.gov.in", validation_alias="COMMISSIONER_EMAIL")
     commissioner_password: str = Field(validation_alias="COMMISSIONER_PASSWORD")
     commissioner_name: str = Field(default="City Commissioner", validation_alias="COMMISSIONER_NAME")
