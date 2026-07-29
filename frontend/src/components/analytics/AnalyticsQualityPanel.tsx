@@ -116,7 +116,6 @@ export function AnalyticsQualityPanel({ datasetIds, categories, filters, onCateg
     <section className="chart-card analytics-quality-card" data-testid="analytics-quality-intelligence">
       <div className="chart-card__header">
         <div>
-          <div className="analytics-card-eyebrow">Verified intelligence</div>
           <h3 className="chart-card__title">Data Quality & Priority Findings</h3>
         </div>
         {report && (

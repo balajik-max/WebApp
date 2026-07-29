@@ -67,7 +67,6 @@ export function AnalyticsManholeReadiness({
     <section className="chart-card analytics-readiness-card" data-testid="manhole-data-readiness">
       <div className="chart-card__header analytics-readiness-card__header">
         <div>
-          <div className="analytics-card-eyebrow">Field verification</div>
           <h3 className="chart-card__title">Manhole Data Readiness</h3>
           <p className="analytics-readiness-card__intro">
             Click a card to compare all Manholes in green and red, or choose Available or Missing to isolate one status.
