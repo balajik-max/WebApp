@@ -75,7 +75,6 @@ export function AnalyticsAiSummary({
     <section className="chart-card analytics-ai-card" data-testid="analytics-ai-summary">
       <div className="chart-card__header">
         <div>
-          <div className="analytics-card-eyebrow">Grounded AI</div>
           <h3 className="chart-card__title">Applied-Scope Planning Summary</h3>
         </div>
         {answer && (

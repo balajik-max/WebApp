@@ -292,7 +292,6 @@ export function AnalyticsCategoryMap({ datasetIds, categories, filters = {}, onC
     <article className="chart-card analytics-map-card" data-testid="analytics-map-card">
       <div className="chart-card__header">
         <div>
-          <div className="analytics-card-eyebrow">Spatial view</div>
           <h3 className="chart-card__title">Applied-Scope Feature Map</h3>
         </div>
         <span className="chart-card__badge">{result.count.toLocaleString()} loaded</span>

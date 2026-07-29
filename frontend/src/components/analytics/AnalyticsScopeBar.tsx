@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { DatasetRow } from "../../lib/workflow";
 
 interface Props {
@@ -9,6 +9,9 @@ interface Props {
   analyzing: boolean;
   onDatasetChange: (values: string[]) => void;
   onAnalyze: () => void;
+  /** Rendered at the far right of the search/Analyze row (e.g. the
+   * section-1/section-2 view toggle) via margin-left: auto. */
+  rightSlot?: ReactNode;
 }
 
 function sameValues(a: string[], b: string[]) {
@@ -23,6 +26,7 @@ export function AnalyticsScopeBar({
   analyzing,
   onDatasetChange,
   onAnalyze,
+  rightSlot,
 }: Props) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
@@ -141,6 +145,7 @@ export function AnalyticsScopeBar({
       >
         {analyzing ? "Analyzing…" : dirty ? "Analyze changes" : "Analyze"}
       </button>
+      {rightSlot && <div className="analytics-search-scope__right">{rightSlot}</div>}
     </section>
   );
 }

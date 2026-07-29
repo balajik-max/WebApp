@@ -4,7 +4,6 @@ import { apiDelete, apiDownload, apiGet, apiPatch, apiPost } from "./api";
 import type { FeatureCollectionResponse, FeatureGeometry } from "./types";
 
 export type AnalyticsSeverityBucket = "low" | "medium" | "high";
-export type SeverityVisualizationType = "bar" | "pie" | "treemap";
 export type ManholeReadinessStatus = "all" | "available" | "missing";
 export type ManholeReadinessFieldKey =
   | "depth"

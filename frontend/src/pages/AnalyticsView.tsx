@@ -1,15 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useOutletContext } from "react-router-dom";
 import {
-  Area,
-  AreaChart,
   Bar,
   BarChart,
   CartesianGrid,
   Cell,
-  Legend,
-  Pie,
-  PieChart,
   ResponsiveContainer,
   Tooltip,
   XAxis,
@@ -24,7 +19,6 @@ import {
   type AnalyticsSeverityBucket,
   type CategoryOption,
   type DatasetRow,
-  type IngestionTrendPoint,
   type ManholeReadinessFieldKey,
   type ManholeReadinessStatus,
 } from "../lib/workflow";
@@ -40,14 +34,6 @@ import { AnalyticsSeverityVisualization } from "../components/analytics/Analytic
 import { AnalyticsWaterDemandPanel } from "../components/analytics/AnalyticsWaterDemandPanel";
 import { useLanguage } from "../context/LanguageContext";
 
-const STATUS_COLORS: Record<string, string> = {
-  open: "#3b82f6",
-  reviewing: "#f59e0b",
-  in_progress: "#a855f7",
-  blocked: "#6b7280",
-  resolved: "#22c55e",
-  rejected: "#ef4444",
-};
 const SEVERITY_COLORS: Record<string, string> = {
   low: "#22c55e",
   medium: "#f59e0b",
@@ -183,6 +169,7 @@ export function AnalyticsView() {
   const [analyzing, setAnalyzing] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [analysisVersion, setAnalysisVersion] = useState(0);
+  const [activeSection, setActiveSection] = useState<"section1" | "section2">("section1");
   const spatialSectionRef = useRef<HTMLElement | null>(null);
 
   const draftDatasetKey = useMemo(
@@ -388,23 +375,6 @@ export function AnalyticsView() {
     }));
   }, [overview]);
 
-  const trendData = useMemo(() => {
-    if (!overview) return [];
-    return overview.ingestion_trend.map((point: IngestionTrendPoint) => ({
-      date: point.date,
-      cumulative: point.cumulative_features,
-      added: point.features_added,
-    }));
-  }, [overview]);
-
-  const reviewStatusData = useMemo(() => {
-    if (!overview) return [];
-    return overview.status_breakdown.map((item) => ({
-      name: item.status.charAt(0).toUpperCase() + item.status.slice(1).replace("_", " "),
-      value: item.count,
-      color: STATUS_COLORS[item.status] || "#6b7280",
-    }));
-  }, [overview]);
 
   return (
     <div className="analytics-page" data-testid="analytics-page">
@@ -430,39 +400,67 @@ export function AnalyticsView() {
         analyzing={analyzing}
         onDatasetChange={setDraftDatasetIds}
         onAnalyze={analyze}
+        rightSlot={
+          <div className="analytics-section-toggle" role="tablist" aria-label="Analytics sections">
+            <button
+              type="button"
+              role="tab"
+              aria-selected={activeSection === "section1"}
+              className={`analytics-section-toggle__btn${activeSection === "section1" ? " is-active" : ""}`}
+              onClick={() => setActiveSection("section1")}
+              data-testid="analytics-section-1-btn"
+            >
+              Section1
+            </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={activeSection === "section2"}
+              className={`analytics-section-toggle__btn${activeSection === "section2" ? " is-active" : ""}`}
+              onClick={() => setActiveSection("section2")}
+              data-testid="analytics-section-2-btn"
+            >
+              Section2
+            </button>
+          </div>
+        }
       />
 
       {error && <div className="analytics-page__error">{error}</div>}
       {analyzing && <div className="analytics-page__loading">Calculating the applied scope from PostGIS…</div>}
 
-      <section className="chart-grid chart-grid--2">
-        <article className="chart-card" data-testid="chart-trend-card">
+      {activeSection === "section1" && (
+      <>
+      <section className="chart-card" data-testid="chart-insights-card">
+        <div className="chart-card__header">
+          <div>
+              <h3 className="chart-card__title">{t("analytics.verifiedScope")}</h3>
+            </div>
+          </div>
+          <div className="analytics-insight-grid">
+            <InsightCard title={t("analytics.insightMostCommon")} value={topCategories[0]?.category || t("analytics.na")} subtitle={`${topCategories[0]?.count ?? 0} ${t("analytics.matchingFeatures")}`} />
+            <InsightCard title={t("analytics.insightHighestWard")} value={wardData[0]?.ward || t("analytics.na")} subtitle={`${wardData[0]?.feature_count ?? 0} ${t("analytics.matchingFeatures")}`} />
+            <InsightCard title={t("analytics.insightResolutionRate")} value={healthScore == null ? t("analytics.na") : `${healthScore}%`} subtitle={`${overview?.resolved_reviews ?? 0} ${t("analytics.of")} ${overview?.total_review_items ?? 0} resolved`} />
+            <InsightCard title={t("analytics.insightUrgent")} value={String(overview?.severity_breakdown.find((item) => item.bucket === "high")?.count ?? 0)} subtitle={t("analytics.highSeverityFeatures")} />
+          </div>
+      </section>
+
+      <section className="chart-grid chart-grid--3">
+        <article className="chart-card" data-testid="chart-severity-card">
           <div className="chart-card__header">
             <div>
-              <div className="analytics-card-eyebrow">{t("analytics.trend")}</div>
-              <h3 className="chart-card__title">{t("analytics.scopeGrowth")}</h3>
+              <h3 className="chart-card__title">{t("analytics.featuresBySeverity")}</h3>
             </div>
           </div>
           <div className="chart-card__body">
-            {trendData.length > 0 ? (
-              <ResponsiveContainer width="100%" height={280}>
-                <AreaChart data={trendData} margin={{ top: 10, right: 10, left: 0, bottom: 0 }}>
-                  <defs>
-                    <linearGradient id="colorCumulative" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="5%" stopColor="#3b82f6" stopOpacity={0.3} />
-                      <stop offset="95%" stopColor="#3b82f6" stopOpacity={0} />
-                    </linearGradient>
-                  </defs>
-                  <CartesianGrid strokeDasharray="3 3" stroke="var(--edge)" vertical={false} />
-                  <XAxis dataKey="date" tick={{ fill: "var(--ink-mute)", fontSize: 11 }} axisLine={false} tickLine={false} />
-                  <YAxis tick={{ fill: "var(--ink-mute)", fontSize: 11 }} axisLine={false} tickLine={false} width={44} />
-                  <Tooltip contentStyle={{ background: "var(--surface-2)", border: "1px solid var(--edge)", borderRadius: 8, fontSize: 12, color: "var(--ink)" }} />
-                  <Legend wrapperStyle={{ fontSize: 11, color: "var(--ink-mute)" }} />
-                  <Area type="monotone" dataKey="cumulative" stroke="#3b82f6" strokeWidth={2} fillOpacity={1} fill="url(#colorCumulative)" name="Matching features" />
-                </AreaChart>
-              </ResponsiveContainer>
+            {totalSeverity > 0 ? (
+              <AnalyticsSeverityVisualization
+                data={severityData}
+                activeBucket={activeSeverityBucket}
+                onToggleBucket={toggleSeverityFilter}
+              />
             ) : (
-              <EmptyState text={t("analytics.emptyIngestion")} />
+              <EmptyState text={t("analytics.emptySeverity")} />
             )}
           </div>
         </article>
@@ -470,7 +468,6 @@ export function AnalyticsView() {
         <article className="chart-card" data-testid="chart-categories-card">
           <div className="chart-card__header">
             <div>
-              <div className="analytics-card-eyebrow">{t("analytics.breakdown")}</div>
               <h3 className="chart-card__title">{t("analytics.topCategories")}</h3>
             </div>
             <span className="chart-card__badge">
@@ -485,7 +482,7 @@ export function AnalyticsView() {
                     <CartesianGrid strokeDasharray="3 3" stroke="var(--edge)" horizontal={false} />
                     <XAxis type="number" tick={{ fill: "var(--ink-mute)", fontSize: 11 }} axisLine={false} tickLine={false} />
                     <YAxis type="category" dataKey="category" width={130} tick={{ fill: "var(--ink-dim)", fontSize: 10 }} axisLine={false} tickLine={false} />
-                    <Tooltip contentStyle={{ background: "var(--surface-2)", border: "1px solid var(--edge)", borderRadius: 8, fontSize: 12, color: "var(--ink)" }} />
+                    <Tooltip cursor={false} contentStyle={{ background: "var(--surface-2)", border: "1px solid var(--edge)", borderRadius: 8, fontSize: 12, color: "var(--ink)" }} />
                      <Bar dataKey="count" name={t("analytics.features")} radius={[0, 6, 6, 0]}>
                       {topCategories.map((category) => (
                         <Cell
@@ -504,75 +501,10 @@ export function AnalyticsView() {
             )}
           </div>
         </article>
-      </section>
 
-      <section className="chart-grid chart-grid--2">
-        <article className="chart-card" data-testid="chart-severity-card">
-          <div className="chart-card__header">
-            <div>
-              <div className="analytics-card-eyebrow">{t("analytics.priorityOverview")}</div>
-              <h3 className="chart-card__title">{t("analytics.featuresBySeverity")}</h3>
-            </div>
-          </div>
-          <div className="chart-card__body">
-            {totalSeverity > 0 ? (
-              <AnalyticsSeverityVisualization
-                data={severityData}
-                activeBucket={activeSeverityBucket}
-                onToggleBucket={toggleSeverityFilter}
-              />
-            ) : (
-              <EmptyState text={t("analytics.emptySeverity")} />
-            )}
-          </div>
-        </article>
-
-        <article className="chart-card" data-testid="chart-status-card">
-          <div className="chart-card__header">
-            <div>
-              <div className="analytics-card-eyebrow">{t("analytics.status")}</div>
-              <h3 className="chart-card__title">{t("analytics.reviewProgress")}</h3>
-            </div>
-          </div>
-          <div className="chart-card__body">
-            {reviewStatusData.length > 0 ? (
-              <div className="analytics-review-layout">
-                <div className="analytics-review-donut">
-                  <ResponsiveContainer width={200} height={200}>
-                    <PieChart>
-                      <Pie data={reviewStatusData} dataKey="value" nameKey="name" cx="50%" cy="50%" innerRadius={60} outerRadius={90} stroke="var(--surface)" strokeWidth={3} paddingAngle={2}>
-                        {reviewStatusData.map((entry) => <Cell key={entry.name} fill={entry.color} />)}
-                      </Pie>
-                      <Tooltip contentStyle={{ background: "var(--surface-2)", border: "1px solid var(--edge)", borderRadius: 8, fontSize: 12, color: "var(--ink)" }} />
-                    </PieChart>
-                  </ResponsiveContainer>
-                  <div className="analytics-review-donut__center">
-                    <strong>{overview?.total_review_items ?? 0}</strong>
-                    <span>{t("analytics.total")}</span>
-                  </div>
-                </div>
-                <div className="analytics-review-legend">
-                  {reviewStatusData.map((item) => (
-                    <div key={item.name}>
-                      <i style={{ background: item.color }} />
-                      <span>{item.name}</span>
-                      <b>{item.value.toLocaleString()}</b>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            ) : (
-              <EmptyState text={t("analytics.emptyReview")} />
-            )}
-          </div>
-        </article>
-      </section>
-
-      <section className="chart-grid chart-grid--2">
         <article className="chart-card" data-testid="chart-wards-card">
           <div className="chart-card__header">
             <div>
-              <div className="analytics-card-eyebrow">{t("analytics.geographic")}</div>
               <h3 className="chart-card__title">{t("analytics.featuresByWard")}</h3>
             </div>
             <span className="chart-card__badge">{wardData.length} {t("analytics.shown")}</span>
@@ -601,52 +533,40 @@ export function AnalyticsView() {
             )}
           </div>
         </article>
-
-        <article className="chart-card" data-testid="chart-heatmap-card">
-          <div className="chart-card__header">
-            <div>
-              <div className="analytics-card-eyebrow">{t("analytics.riskTiles")}</div>
-              <h3 className="chart-card__title">{t("analytics.categorySeverity")}</h3>
-            </div>
-          </div>
-          <div className="chart-card__body">
-            {heatmapData.length > 0 ? (
-              <div className="analytics-risk-grid">
-                {heatmapData.map((item) => (
-                  <button
-                    type="button"
-                    key={item.category}
-                    style={{ background: `${item.color}15`, borderColor: `${item.color}55` }}
-                    onClick={() => toggleCategoryFilter(item.category)}
-                  >
-                    <span title={item.category}>{item.category}</span>
-                    <strong style={{ color: item.color }}>{item.avgSeverity.toFixed(2)}</strong>
-                    <small>{item.severityLevel} · {item.count.toLocaleString()} {t("analytics.features")}</small>
-                  </button>
-                ))}
-              </div>
-            ) : (
-              <EmptyState text={t("analytics.emptyCategorySeverity")} />
-            )}
-          </div>
-        </article>
       </section>
 
-      <section className="chart-card" data-testid="chart-insights-card">
+      <section className="chart-card" data-testid="chart-heatmap-card">
         <div className="chart-card__header">
           <div>
-              <div className="analytics-card-eyebrow">{t("analytics.summary")}</div>
-              <h3 className="chart-card__title">{t("analytics.verifiedScope")}</h3>
+            <h3 className="chart-card__title">{t("analytics.categorySeverity")}</h3>
+          </div>
+        </div>
+        <div className="chart-card__body">
+          {heatmapData.length > 0 ? (
+            <div className="analytics-risk-grid">
+              {heatmapData.map((item) => (
+                <button
+                  type="button"
+                  key={item.category}
+                  style={{ background: `${item.color}15`, borderColor: `${item.color}55` }}
+                  onClick={() => toggleCategoryFilter(item.category)}
+                >
+                  <span title={item.category}>{item.category}</span>
+                  <strong style={{ color: item.color }}>{item.avgSeverity.toFixed(2)}</strong>
+                  <small>{item.severityLevel} · {item.count.toLocaleString()} {t("analytics.features")}</small>
+                </button>
+              ))}
             </div>
-          </div>
-          <div className="analytics-insight-grid">
-            <InsightCard title={t("analytics.insightMostCommon")} value={topCategories[0]?.category || t("analytics.na")} subtitle={`${topCategories[0]?.count ?? 0} ${t("analytics.matchingFeatures")}`} color="var(--blue)" />
-            <InsightCard title={t("analytics.insightHighestWard")} value={wardData[0]?.ward || t("analytics.na")} subtitle={`${wardData[0]?.feature_count ?? 0} ${t("analytics.matchingFeatures")}`} color="var(--danger)" />
-            <InsightCard title={t("analytics.insightResolutionRate")} value={healthScore == null ? t("analytics.na") : `${healthScore}%`} subtitle={`${overview?.resolved_reviews ?? 0} ${t("analytics.of")} ${overview?.total_review_items ?? 0} resolved`} color="var(--ok)" />
-            <InsightCard title={t("analytics.insightUrgent")} value={String(overview?.severity_breakdown.find((item) => item.bucket === "high")?.count ?? 0)} subtitle={t("analytics.highSeverityFeatures")} color="var(--warn)" />
-          </div>
+          ) : (
+            <EmptyState text={t("analytics.emptyCategorySeverity")} />
+          )}
+        </div>
       </section>
+      </>
+      )}
 
+      {activeSection === "section2" && (
+      <>
       <AnalyticsManholeReadiness
         datasetIds={appliedDatasetIds}
         filters={{
@@ -696,7 +616,6 @@ export function AnalyticsView() {
         <section className="chart-card" data-testid="category-table-card">
           <div className="chart-card__header">
             <div>
-              <div className="analytics-card-eyebrow">{t("analytics.detailed")}</div>
               <h3 className="chart-card__title">{t("analytics.categoryBreakdown")}</h3>
             </div>
             <span className="chart-card__badge">{overview.category_breakdown.length} {t("analytics.categoriesCount")}</span>
@@ -766,6 +685,8 @@ export function AnalyticsView() {
               : null
         }
       />
+      </>
+      )}
     </div>
   );
 }
@@ -801,9 +722,9 @@ function KpiCard({ label, value, icon, tone, accent, testid }: {
   );
 }
 
-function InsightCard({ title, value, subtitle, color }: { title: string; value: string; subtitle: string; color: string }) {
+function InsightCard({ title, value, subtitle }: { title: string; value: string; subtitle: string }) {
   return (
-    <div className="analytics-insight-card" style={{ borderLeftColor: color }}>
+    <div className="analytics-insight-card">
       <div>{title}</div>
       <strong>{value}</strong>
       <span>{subtitle}</span>

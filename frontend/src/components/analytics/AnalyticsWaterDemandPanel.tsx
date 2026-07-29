@@ -155,7 +155,6 @@ export function AnalyticsWaterDemandPanel({ datasetIds, ward }: Props) {
       <section className="chart-card analytics-water-demand-card" data-testid="analytics-water-demand">
         <div className="chart-card__header">
           <div>
-            <div className="analytics-card-eyebrow">Automatic on ward load</div>
             <h3 className="chart-card__title">Ward Water Demand</h3>
           </div>
         </div>
@@ -172,7 +171,6 @@ export function AnalyticsWaterDemandPanel({ datasetIds, ward }: Props) {
     <section className="chart-card analytics-water-demand-card" data-testid="analytics-water-demand">
       <div className="chart-card__header">
         <div>
-          <div className="analytics-card-eyebrow">Automatic on ward load</div>
           <h3 className="chart-card__title">Ward Water Demand</h3>
         </div>
         <div className="analytics-water-demand-header-actions">
