@@ -36,6 +36,7 @@ from app.schemas.ai import (
     PipeSpecOut,
     RecommendRequest,
     ReportRequest,
+    RoadInspectionExplainResponse,
     RoadInspectionOut,
     SpacingRequest,
     SpatialAnomalyOut,
@@ -145,6 +146,17 @@ def _build_road_inspection_context(report: dict) -> str:
     """
     assets = report.get("assets") or {}
     issues = report.get("issues") or []
+    asset_summary = ", ".join(
+        [
+            f"poles={assets.get('poles', 0)}",
+            f"drains={assets.get('drains', 0)}",
+            f"manholes={assets.get('manholes', 0)}",
+            f"potholes={assets.get('potholes', 0)}",
+            f"standing_water={assets.get('standing_water', 0)}",
+            f"power_lines={assets.get('power_lines', 0)}",
+            f"utility_poles={assets.get('utility_poles', 0)}",
+        ]
+    )
     lines = [
         "=== ROAD INSPECTION DATA ===",
         f"Road ID: {report.get('road_id')}",
@@ -152,7 +164,7 @@ def _build_road_inspection_context(report: dict) -> str:
         f"Road category: {report.get('road_category') or 'not recorded'}",
         f"Surveyed centerline length: {report.get('road_length_m')} m",
         f"Roadside audit corridor: {report.get('roadside_corridor_m')} m",
-        f"Assigned roadside assets: poles={assets.get('poles', 0)}, drains={assets.get('drains', 0)}, manholes={assets.get('manholes', 0)}",
+        f"Assigned roadside/on-road assets: {asset_summary}",
         f"Unresolved red/yellow findings: {len(issues)}",
     ]
     if not issues:
@@ -1141,15 +1153,25 @@ def _anomaly_fact_sheet(row: SpatialAnomaly) -> str:
 
     if row.anomaly_type.value == "drain_encroachment":
         crosses = bool(m.get("drain_crosses_building"))
-        lines += [
-            "The building genuinely touches the drain's raw centerline (verified geometrically — a real shared point, not an estimate or a buffer)."
-            ,
-            f"The drain runs {m.get('drain_chord_length_m')} m through this building's interior, which is {m.get('crossing_ratio_pct')}% of the building's own average width ({m.get('building_span_m')} m) — "
-            + ("this is a FULL CROSSING: the drain runs most/all of the way across the building, entering one side and exiting the other." if crosses
-               else "this is a PARTIAL CLIP: the drain only cuts through a fraction of the building (a corner or an edge), not the whole structure."),
-            f"Estimated encroached area, assuming a {m.get('drain_buffer_m')} m channel half-width either side of the drain centerline: {m.get('overlap_area_m2')} m^2 ({m.get('overlap_pct')}% of this building's {m.get('building_area_m2')} m^2 footprint) — this area figure is illustrative of scale, the chord length/ratio above is the exact finding",
-            f"Drain category/categories involved: {m.get('drain_categories')}",
-        ]
+        near_miss_gap_m = m.get("near_miss_gap_m")
+        if near_miss_gap_m is not None:
+            lines += [
+                f"The building does NOT touch the drain — there is a real, measured gap of {near_miss_gap_m} m "
+                f"(within the {m.get('snap_tolerance_m')} m survey-precision tolerance, so treated as effectively "
+                "touching, not a genuine physical crossing).",
+                "There is no measurable crossing length or interior overlap — this finding is proximity only.",
+                f"Drain category/categories involved: {m.get('drain_categories')}",
+            ]
+        else:
+            lines += [
+                "The building genuinely touches the drain's raw centerline (verified geometrically — a real shared point, not an estimate or a buffer)."
+                ,
+                f"The drain runs {m.get('drain_chord_length_m')} m through this building's interior, which is {m.get('crossing_ratio_pct')}% of the building's own average width ({m.get('building_span_m')} m) — "
+                + ("this is a FULL CROSSING: the drain runs most/all of the way across the building, entering one side and exiting the other." if crosses
+                   else "this is a PARTIAL CLIP: the drain only cuts through a fraction of the building (a corner or an edge), not the whole structure."),
+                f"Estimated encroached area, assuming a {m.get('drain_buffer_m')} m channel half-width either side of the drain centerline: {m.get('overlap_area_m2')} m^2 ({m.get('overlap_pct')}% of this building's {m.get('building_area_m2')} m^2 footprint) — this area figure is illustrative of scale, the chord length/ratio above is the exact finding",
+                f"Drain category/categories involved: {m.get('drain_categories')}",
+            ]
     elif row.anomaly_type.value == "pole_redundancy":
         if row.color.value == "green":
             lines += [
@@ -1296,6 +1318,154 @@ async def inspect_road(
     if report is None:
         raise HTTPException(status_code=404, detail="Road centerline not found")
     return RoadInspectionOut.model_validate(report)
+
+
+# A road can genuinely have dozens of real findings once every canonical
+# class is counted (see road_inspection.py) — cap what reaches the LLM so
+# the completion doesn't cut off mid-list; the frontend issue list itself
+# is unaffected and still shows all of them.
+_ROAD_FACT_SHEET_MAX_ISSUES = 15
+
+
+def _road_issue_line(issue: dict) -> str:
+    """Same per-type fact selection as the frontend's issueDetail() —
+    the LLM gets the identical numbers the engineer sees on the issue chip."""
+    m = issue["anomaly_metadata"]
+    kind = issue["anomaly_type"]
+    if kind == "road_width_narrowing":
+        detail = f"{m.get('width_m', '?')} m wide, {m.get('drop_pct', '?')}% below local average"
+    elif kind == "pole_redundancy":
+        detail = (
+            f"redundant pole in a cluster of {m.get('cluster_size', '?')}"
+            if issue["color"] == "red"
+            else f"pole spacing needs review, {m.get('nearest_neighbor_m', '?')} m to nearest"
+        )
+    elif kind == "drain_encroachment":
+        if m.get("drain_crosses_building"):
+            detail = f"drain crosses building footprint ({m.get('crossing_ratio_pct', '?')}% span)"
+        elif m.get("near_miss_gap_m") is not None:
+            detail = f"building {m['near_miss_gap_m'] * 100:.1f} cm from a drain, effectively touching"
+        else:
+            detail = "drain partially clips a building footprint"
+    elif kind == "powerline_proximity":
+        detail = f"building {m.get('nearest_powerline_distance_m', '?')} m from power line (threshold {m.get('danger_threshold_m', '?')} m)"
+    elif kind == "pothole_status":
+        depth = m.get("depth_cm")
+        detail = f"{m.get('area_sqm', '?')} m2" + (f", {depth} cm deep" if depth is not None else "")
+        cost = m.get("estimated_repair_cost_inr")
+        if cost is not None:
+            detail += f", est. repair INR {cost:.2f}"
+    elif kind == "standing_water_status":
+        detail = f"{m.get('area_sqm', '?')} m2 affected, {'on road' if m.get('intersects_road') else 'near road'}"
+    else:
+        detail = str(m.get("basis") or "condition needs review")
+    return f"- [{issue['color'].upper()}] {kind}: {detail}"
+
+
+def _road_fact_sheet(report: dict) -> str:
+    profile = report.get("road_profile") or {}
+    lines = [
+        f"ROAD_LABEL: {report.get('road_label') or 'unnamed road'}",
+        f"SURVEYED_LENGTH_M: {report['road_length_m']}",
+        f"ROADSIDE_CORRIDOR_M: {report['roadside_corridor_m']}",
+        "",
+        "ASSET_COUNTS: " + ", ".join(f"{k}={v}" for k, v in report["assets"].items()),
+    ]
+    if profile:
+        lines += [
+            "",
+            f"WIDTH_PROFILE: sampled {profile['stations_with_width']}/{profile['stations_sampled']} stations, "
+            f"min {profile.get('min_width_m', 'unknown')} m, mean {profile.get('mean_width_m', 'unknown')} m",
+            f"EDGE_MATERIAL: dominant={profile.get('dominant_edge_material') or 'unknown'}, "
+            f"consistent_both_sides={profile['edge_material_consistent']}, "
+            f"breakdown={profile['edge_material_counts']}",
+        ]
+    else:
+        lines.append("\nWIDTH_PROFILE: not available (centerline too short to sample)")
+
+    if report.get("pothole_cost_total_inr") is not None:
+        lines.append(f"POTHOLE_REPAIR_COST_TOTAL_INR: {report['pothole_cost_total_inr']:.2f}")
+
+    drainage = report.get("drainage_profile")
+    if drainage:
+        lines.append(
+            "\nDRAINAGE_CONDITION: manhole condition tally="
+            f"{drainage['condition_counts']}, pipe types={drainage['pipe_type_counts']}"
+        )
+        if drainage["net_fall_m"] is not None:
+            direction = "falls" if drainage["net_fall_m"] > 0 else "rises"
+            lines.append(
+                f"DRAINAGE_GRADIENT: surveyed invert level {direction} {abs(drainage['net_fall_m'])} m "
+                f"across {drainage['manholes_with_level']} manholes along this road"
+                + (
+                    f", but {drainage['reversed_segments']} segment(s) go against that overall direction — "
+                    "possible reversed-gradient/blockage risk"
+                    if drainage["reversed_segments"] > 0
+                    else " with no reversed segments"
+                )
+            )
+
+    issues = report["issues"]
+    if issues:
+        # Already ordered red-before-yellow, most-severe-first by the SQL
+        # (road_inspection.py). A road with dozens of real findings would
+        # blow past the completion's token budget and cut off mid-list —
+        # cap what the LLM sees, and say plainly that more exist, rather
+        # than silently truncating the prompt.
+        shown = issues[:_ROAD_FACT_SHEET_MAX_ISSUES]
+        lines.append(f"\nUNRESOLVED_FINDINGS (most severe first, {len(shown)} of {len(issues)} shown):")
+        lines += [_road_issue_line(issue) for issue in shown]
+        if len(issues) > len(shown):
+            lines.append(f"...{len(issues) - len(shown)} more unresolved finding(s) not shown, all lower severity than above.")
+    else:
+        lines.append("\nUNRESOLVED_FINDINGS: none open on this road")
+
+    return "\n".join(lines)
+
+
+@router.post(
+    "/audit/roads/{road_id}/explain",
+    response_model=RoadInspectionExplainResponse,
+    dependencies=[Depends(require_any)],
+    summary="Generate one AI narrative summarizing every surveyed category for this road together",
+)
+async def explain_road(
+    road_id: uuid.UUID, db: AsyncSession = Depends(get_db)
+) -> RoadInspectionExplainResponse:
+    report = await build_road_inspection(road_id, db)
+    if report is None:
+        raise HTTPException(status_code=404, detail="Road centerline not found")
+
+    crib = _road_fact_sheet(report)
+    prompt = (
+        "You are a senior municipal infrastructure auditor writing one combined "
+        "road inspection summary for a civil engineer, covering every surveyed "
+        "category together — not a single finding. Using ONLY the FACTS below, "
+        "write five short sections with these exact Markdown headers, in this "
+        "order: '### Road profile' (surface material and width, one or two "
+        "sentences), '### Assets surveyed' (counts, one sentence), "
+        "'### Drainage condition' (only if DRAINAGE_CONDITION/DRAINAGE_GRADIENT "
+        "are present in FACTS — state the condition tally and, if reversed "
+        "segments are reported, call out the gradient risk explicitly since "
+        "that indicates a real blockage/backflow risk, not just a data note; "
+        "omit this whole section if neither fact is present), '### Issues, "
+        "ranked' (a bullet list, most severe first, only if any are listed in "
+        "FACTS), '### Actionable recommendation' (one or two sentences, "
+        "combine issues that share a location or crew into one dispatch where "
+        "the FACTS support it — a reversed drainage gradient is itself worth "
+        "recommending a jetting/re-survey crew for, even with zero open "
+        "findings). If FACTS says more findings exist beyond the ones listed, "
+        "say so as a plain count in the Issues section, don't ignore it and "
+        "don't invent what they are. Never state a number not present in "
+        "FACTS, never invent an issue not listed, and never mention that you "
+        "were given 'facts' or metadata. If UNRESOLVED_FINDINGS says none are "
+        "open, say so plainly instead of writing a bullet list.\n\n"
+        f"FACTS:\n{crib}"
+    )
+    reply = await run_grounded_completion(context=crib, user_prompt=prompt, num_predict=700, num_ctx=2048)
+    return RoadInspectionExplainResponse(
+        road_id=report["road_id"], explanation_text=reply.text, explanation_model=reply.model
+    )
 
 
 async def _manhole_pipe_suggestion_facts(row: SpatialAnomaly, db: AsyncSession) -> str | None:

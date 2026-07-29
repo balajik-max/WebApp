@@ -1,5 +1,6 @@
 ﻿import ReactMarkdown from "react-markdown";
 import type { AiAnswer } from "../lib/ai";
+import { useTypewriter } from "../lib/useTypewriter";
 
 interface Props {
   answer: AiAnswer | null;
@@ -63,6 +64,7 @@ function toGeoJSON(answer: AiAnswer): string {
 export function ManholeAnswerBody({ answer, loading, error, onView3D }: BodyProps) {
   const dbg = (answer?.debug ?? {}) as Record<string, unknown>;
   const isArea = "bad" in dbg || "disconnected" in dbg || "gaps" in dbg;
+  const typedAnswer = useTypewriter(answer?.answer_markdown ?? "");
 
   const handleExport = () => {
     if (!answer) return;
@@ -90,7 +92,7 @@ export function ManholeAnswerBody({ answer, loading, error, onView3D }: BodyProp
             </div>
           )}
           <p className="anomaly-card__explanation">
-            <ReactMarkdown>{answer.answer_markdown}</ReactMarkdown>
+            <ReactMarkdown>{typedAnswer}</ReactMarkdown>
           </p>
           {answer.routes.length > 0 && (
             <>

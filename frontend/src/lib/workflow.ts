@@ -951,6 +951,10 @@ export interface RoadAssetCounts {
   poles: number;
   drains: number;
   manholes: number;
+  potholes: number;
+  standing_water: number;
+  power_lines: number;
+  utility_poles: number;
 }
 
 export interface RoadInspectionFeature {
@@ -963,6 +967,25 @@ export interface RoadInspectionFeature {
   attributes: Record<string, unknown>;
   geometry: FeatureGeometry;
   audit_color: "red" | "yellow" | "green" | null;
+  evidence_for_class?: string | null;
+}
+
+export interface RoadProfile {
+  stations_sampled: number;
+  stations_with_width: number;
+  min_width_m: number | null;
+  mean_width_m: number | null;
+  dominant_edge_material: string | null;
+  edge_material_consistent: boolean;
+  edge_material_counts: Record<string, number>;
+}
+
+export interface RoadDrainageProfile {
+  condition_counts: Record<string, number>;
+  pipe_type_counts: Record<string, number>;
+  manholes_with_level: number;
+  net_fall_m: number | null;
+  reversed_segments: number;
 }
 
 export interface RoadInspection {
@@ -971,10 +994,14 @@ export interface RoadInspection {
   road_label: string | null;
   road_category: string | null;
   road_length_m: number;
+  road_geometry: FeatureGeometry | null;
   roadside_corridor_m: number;
   assets: RoadAssetCounts;
   features: RoadInspectionFeature[];
   issues: SpatialAnomaly[];
+  road_profile: RoadProfile | null;
+  pothole_cost_total_inr: number | null;
+  drainage_profile: RoadDrainageProfile | null;
 }
 
 export interface AnomalyExplanation {
@@ -982,6 +1009,12 @@ export interface AnomalyExplanation {
   explanation_text: string;
   explanation_model: string;
   cached: boolean;
+}
+
+export interface RoadExplanation {
+  road_id: string;
+  explanation_text: string;
+  explanation_model: string;
 }
 
 export const runSpatialAudit = (datasetId: string, signal?: AbortSignal) =>
@@ -998,6 +1031,9 @@ export const fetchRoadInspection = (roadId: string, signal?: AbortSignal) =>
 
 export const explainAnomaly = (anomalyId: string, signal?: AbortSignal) =>
   apiPost<AnomalyExplanation>(`/api/v1/ai/audit/anomalies/${anomalyId}/explain`, {}, signal);
+
+export const explainRoad = (roadId: string, signal?: AbortSignal) =>
+  apiPost<RoadExplanation>(`/api/v1/ai/audit/roads/${encodeURIComponent(roadId)}/explain`, {}, signal);
 
 export const updateAnomalyStatus = (anomalyId: string, status: AnomalyStatus) =>
   apiPatch<SpatialAnomaly>(`/api/v1/ai/audit/anomalies/${anomalyId}`, { status });

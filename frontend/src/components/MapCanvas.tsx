@@ -35,7 +35,7 @@ import { LookAroundCompass, DEFAULT_MAP_PITCH, MAX_MAP_PITCH } from "./LookAroun
 import { DataSourceSelector } from "./DataSourceSelector";
 import { SupportingFilesImport } from "./WardReportPanel";
 import { AnomalyAlertCard } from "./AnomalyAlertCard";
-import { RoadInspectionCard } from "./RoadInspectionCard";
+import { ASSET_KEY_TO_CANONICAL_CLASS, RoadInspectionCard } from "./RoadInspectionCard";
 import { QuickAnalysisPanel } from "./QuickAnalysisPanel";
 import { QuickAnalysisMapDashboard, type ManholeConnectionDetail, type QuickAnalysisTool } from "./QuickAnalysisMapDashboard";
 import { PlacemarkEditor } from "./map/PlacemarkEditor";
@@ -711,6 +711,13 @@ const LAYER_ROAD_INSPECTION_ASSETS_LINE = "road-inspection-assets-line";
 const LAYER_ROAD_INSPECTION_ASSETS_POINT = "road-inspection-assets-point";
 const ROAD_INSPECTION_WIDTH_SOURCE = "road-inspection-width";
 const LAYER_ROAD_INSPECTION_WIDTH = "road-inspection-width-line";
+// A bright ring around whichever single finding is currently open in its
+// detail card — with dozens of same-colored red/yellow dots on screen at
+// once, nothing otherwise marks out which one the open card is talking about.
+const SELECTED_ISSUE_SOURCE = "selected-issue-highlight";
+const LAYER_SELECTED_ISSUE = "selected-issue-highlight-ring";
+const CLICK_HIT_PADDING_PX = 4;
+const ROAD_INSPECTION_CLICK_HIT_PADDING_PX = 12;
 
 // Base (category-agnostic) filters for the layers above — kept as named
 // constants so the category-visibility checklist can AND a hidden-category
@@ -2507,6 +2514,7 @@ function roadInspectionFeatureToGeoJson(feature: RoadInspectionFeature): GeoJSON
       canonical_class: feature.canonical_class,
       attributes: feature.attributes,
       audit_color: feature.audit_color,
+      evidence_for_class: feature.evidence_for_class ?? null,
     },
   };
 }
@@ -3258,6 +3266,8 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
   const [roadInspectionLoading, setRoadInspectionLoading] = useState(false);
   const [roadInspectionError, setRoadInspectionError] = useState<string | null>(null);
   const roadInspectionAbortRef = useRef<AbortController | null>(null);
+  const [roadInspectionCategoryFilter, setRoadInspectionCategoryFilter] =
+    useState<keyof RoadInspection["assets"] | null>(null);
   // Selecting a mode only isolates the map to that asset family (plain
   // category colors) — the actual AI red/yellow/green overlay is a
   // separate, explicit step, so a fresh mode selection always starts with
@@ -3278,6 +3288,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
   // is registered once at map load and would otherwise close over stale
   // state — same pattern as the other mode-driven refs above).
   const buildingAnomalyIdMapRef = useRef<Record<string, string>>({});
+  const roadInspectionAnomalyIdMapRef = useRef<Record<string, string>>({});
   // raw_category -> canonical_class, fetched once, used to compute which
   // categories a detection mode should hide (e.g. Poles mode hides
   // everything except Illumination_Asset categories).
@@ -5890,17 +5901,27 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     source.setData({ type: "FeatureCollection", features });
   }, [mapReady, anomalies]);
 
-  // Keep the clicked road visible as the report card is read, even though
-  // Road Inspection intentionally hides all non-road map categories.
+  // Keep the clicked road visible while loading, then replace the clicked
+  // rendered feature with the full DB geometry from the report. Rendered map
+  // features can be tile-clipped, which made the teal road highlight stop
+  // short on some roads.
   useEffect(() => {
     const map = mapRef.current;
     if (!mapReady || !map) return;
     const source = map.getSource(ROAD_INSPECTION_SOURCE) as GeoJSONSource | undefined;
+    const focusFeature = roadInspectionReport?.road_geometry && roadInspectionRoad
+      ? {
+          type: "Feature" as const,
+          id: roadInspectionRoad.properties.id,
+          geometry: roadInspectionReport.road_geometry,
+          properties: roadInspectionRoad.properties,
+        }
+      : roadInspectionRoad;
     source?.setData({
       type: "FeatureCollection",
-      features: roadInspectionRoad ? [roadInspectionRoad as unknown as GeoJSON.Feature] : [],
+      features: focusFeature ? [focusFeature as unknown as GeoJSON.Feature] : [],
     });
-  }, [mapReady, roadInspectionRoad]);
+  }, [mapReady, roadInspectionRoad, roadInspectionReport]);
 
   // The server returns the actual geometry and attributes for every asset
   // assigned to the selected road. Keep these in a dedicated source so the
@@ -5933,6 +5954,37 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
         .filter((feature): feature is NonNullable<typeof feature> => feature !== null),
     });
   }, [mapReady, roadInspectionReport]);
+
+  useEffect(() => {
+    const byFeature: Record<string, string> = {};
+    for (const issue of roadInspectionReport?.issues ?? []) {
+      for (const featureId of issue.feature_ids) byFeature[featureId] = issue.id;
+    }
+    roadInspectionAnomalyIdMapRef.current = byFeature;
+  }, [roadInspectionReport]);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!mapReady || !map) return;
+    const canonicalClass = roadInspectionCategoryFilter
+      ? ASSET_KEY_TO_CANONICAL_CLASS[roadInspectionCategoryFilter]
+      : null;
+    const categoryFilter = canonicalClass
+      ? ([
+          "any",
+          ["==", ["coalesce", ["get", "canonical_class"], ""], canonicalClass],
+          ["==", ["coalesce", ["get", "evidence_for_class"], ""], canonicalClass],
+        ] as unknown as maplibregl.FilterSpecification)
+      : null;
+    const withCategory = (base: maplibregl.FilterSpecification) =>
+      categoryFilter ? (["all", base, categoryFilter] as unknown as maplibregl.FilterSpecification) : base;
+    const noWidth = ["==", ["get", "id"], "__none__"] as unknown as maplibregl.FilterSpecification;
+    const widthOnly = ["==", ["coalesce", ["get", "anomaly_type"], ""], "road_width_narrowing"] as unknown as maplibregl.FilterSpecification;
+    if (map.getLayer(LAYER_ROAD_INSPECTION_ASSETS_FILL)) map.setFilter(LAYER_ROAD_INSPECTION_ASSETS_FILL, withCategory(POLY_BASE_FILTER));
+    if (map.getLayer(LAYER_ROAD_INSPECTION_ASSETS_LINE)) map.setFilter(LAYER_ROAD_INSPECTION_ASSETS_LINE, withCategory(LINE_BASE_FILTER));
+    if (map.getLayer(LAYER_ROAD_INSPECTION_ASSETS_POINT)) map.setFilter(LAYER_ROAD_INSPECTION_ASSETS_POINT, withCategory(POINT_BASE_FILTER));
+    if (map.getLayer(LAYER_ROAD_INSPECTION_WIDTH)) map.setFilter(LAYER_ROAD_INSPECTION_WIDTH, roadInspectionCategoryFilter ? noWidth : widthOnly);
+  }, [mapReady, roadInspectionCategoryFilter]);
 
   useEffect(() => () => roadInspectionAbortRef.current?.abort(), []);
 
@@ -6418,6 +6470,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     setRoadInspectionReport(null);
     setRoadInspectionError(null);
     setRoadInspectionLoading(false);
+    setRoadInspectionCategoryFilter(null);
   }, []);
 
   const toggleRoadInspection = useCallback(() => {
@@ -6444,6 +6497,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     setRoadInspectionReport(null);
     setRoadInspectionError(null);
     setRoadInspectionLoading(true);
+    setRoadInspectionCategoryFilter(null);
     fetchRoadInspection(road.properties.id, controller.signal)
       .then((report) => {
         if (!controller.signal.aborted) setRoadInspectionReport(report);
@@ -7225,6 +7279,37 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
   }, [quickAnalysisManholeNetwork]);
 
   const selectedAnomaly = anomalies.find((a) => a.id === selectedAnomalyId) ?? null;
+
+  // Selecting an issue from the Road Inspection list only opened its card —
+  // the map viewport never moved, so behind a card opened while still
+  // zoomed out to the whole road, the actual finding could be off-screen.
+  // A same-colored dot among dozens of others also doesn't say "this one" on
+  // its own, so a dedicated ring marks it explicitly, not just the camera move.
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+    const source = map.getSource(SELECTED_ISSUE_SOURCE) as GeoJSONSource | undefined;
+    if (!source) return;
+    if (!selectedAnomaly) {
+      source.setData({ type: "FeatureCollection", features: [] });
+      return;
+    }
+    source.setData({
+      type: "FeatureCollection",
+      features: [
+        {
+          type: "Feature",
+          geometry: { type: "Point", coordinates: [selectedAnomaly.lon, selectedAnomaly.lat] },
+          properties: {},
+        },
+      ],
+    });
+    map.easeTo({
+      center: [selectedAnomaly.lon, selectedAnomaly.lat],
+      zoom: Math.max(map.getZoom(), 19),
+      duration: 700,
+    });
+  }, [selectedAnomaly]);
 
   const handleAnomalyStatusChange = useCallback(async (anomalyId: string, next: AnomalyStatus) => {
     const updated = await updateAnomalyStatus(anomalyId, next);
@@ -8757,8 +8842,22 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
         layout: { "line-cap": "round", "line-join": "round" },
         paint: {
           "line-color": [
-            "match", ["get", "canonical_class"],
-            "Drainage_Asset", "#a78bfa",
+            "case",
+            ["==", ["get", "audit_color"], "red"], "#ef4444",
+            ["==", ["get", "audit_color"], "yellow"], "#f59e0b",
+            ["==", ["get", "audit_color"], "green"], "#22c55e",
+            ["==", ["get", "canonical_class"], "Drainage_Asset"], "#a78bfa",
+            // Power_Line absorbs raw "Water Line" categories for detector
+            // grouping (see spatial_audit.py), but a water pipe rendered in
+            // the same hazard pink as a live overhead conductor reads as a
+            // false electrical-danger signal — split the display color only.
+            [
+              "all",
+              ["==", ["get", "canonical_class"], "Power_Line"],
+              ["in", "water", ["downcase", ["to-string", ["get", "category"]]]],
+            ],
+            "#0284c7",
+            ["==", ["get", "canonical_class"], "Power_Line"], "#fb7185",
             "#38bdf8",
           ],
           "line-width": ["interpolate", ["linear"], ["zoom"], 12, 3, 16, 5, 19, 7],
@@ -8780,6 +8879,9 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
             "Illumination_Asset", "#fbbf24",
             "Drainage_Asset", "#a78bfa",
             "Access_Point", "#2dd4bf",
+            "Utility_Pole", "#f97316",
+            "Pothole", "#fb7185",
+            "Standing_Water", "#22d3ee",
             "#38bdf8",
           ],
           "circle-opacity": 0.96,
@@ -8808,12 +8910,34 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
         },
       });
       map.on("click", LAYER_ROAD_INSPECTION_WIDTH, (e: MapMouseEvent) => {
-        const hit = map.queryRenderedFeatures(e.point, { layers: [LAYER_ROAD_INSPECTION_WIDTH] });
+        const box: [[number, number], [number, number]] = [
+          [e.point.x - ROAD_INSPECTION_CLICK_HIT_PADDING_PX, e.point.y - ROAD_INSPECTION_CLICK_HIT_PADDING_PX],
+          [e.point.x + ROAD_INSPECTION_CLICK_HIT_PADDING_PX, e.point.y + ROAD_INSPECTION_CLICK_HIT_PADDING_PX],
+        ];
+        const hit = map.queryRenderedFeatures(box, { layers: [LAYER_ROAD_INSPECTION_WIDTH] });
         const id = hit[0]?.properties?.id as string | undefined;
         if (id) setSelectedAnomalyId(id);
       });
       map.on("mouseenter", LAYER_ROAD_INSPECTION_WIDTH, () => (map.getCanvas().style.cursor = "pointer"));
       map.on("mouseleave", LAYER_ROAD_INSPECTION_WIDTH, () => (map.getCanvas().style.cursor = ""));
+
+      map.addSource(SELECTED_ISSUE_SOURCE, {
+        type: "geojson",
+        data: { type: "FeatureCollection", features: [] },
+      });
+      map.addLayer({
+        id: LAYER_SELECTED_ISSUE,
+        type: "circle",
+        source: SELECTED_ISSUE_SOURCE,
+        paint: {
+          // Ring only, no fill — sits around the finding's own colored dot
+          // instead of covering it.
+          "circle-radius": ["interpolate", ["linear"], ["zoom"], 10, 16, 16, 24, 20, 30],
+          "circle-opacity": 0,
+          "circle-stroke-color": "#fde047",
+          "circle-stroke-width": 4,
+        },
+      });
 
       // A separate, top-most source keeps an attribute-table selection
       // visible even while the regular dataset source is being refreshed.
@@ -8866,7 +8990,14 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
         // same click. Once Escape deactivates the tool (panel still open),
         // this must stop applying so ordinary feature clicks work again.
         if (placemarkModeRef.current || streetPickModeRef.current || streetPickConsumedRef.current || aiAnomalyClickConsumedRef.current || isMeasureInputActive()) return;
-        const hit = map.queryRenderedFeatures(e.point, { layers: ALL_CLICKABLE });
+        const hitPadding = roadInspectionActiveRef.current
+          ? ROAD_INSPECTION_CLICK_HIT_PADDING_PX
+          : CLICK_HIT_PADDING_PX;
+        const clickBox: [[number, number], [number, number]] = [
+          [e.point.x - hitPadding, e.point.y - hitPadding],
+          [e.point.x + hitPadding, e.point.y + hitPadding],
+        ];
+        const hit = map.queryRenderedFeatures(clickBox, { layers: ALL_CLICKABLE });
         if (!hit.length) return;
         const isAi = AI_CLICKABLE.includes(hit[0].layer?.id as string);
         const base = isAi ? hit.find((f) => BASE_CLICKABLE.includes(f.layer?.id as string)) : hit[0];
@@ -8885,7 +9016,12 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
           return;
         }
         if (roadInspectionActiveRef.current) {
-          if (isRoadCenterlineFeature(selected)) void openRoadInspection(selected);
+          if (isRoadCenterlineFeature(selected)) {
+            void openRoadInspection(selected);
+            return;
+          }
+          const anomalyId = roadInspectionAnomalyIdMapRef.current[selected.properties.id];
+          if (anomalyId) setSelectedAnomalyId(anomalyId);
           else onFeatureSelect(selected);
           return;
         }
@@ -10020,19 +10156,19 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
             onClose={() => setSelectedAnomalyId(null)}
             onStatusChange={handleAnomalyStatusChange}
             onStale={handleAnomalyStale}
+            backToRoadLabel={roadInspectionRoad ? roadInspectionRoad.properties.label || "road inspection" : undefined}
           />
         )}
-        {layersWorkspaceActive && roadInspectionRoad && (
+        {layersWorkspaceActive && roadInspectionRoad && !selectedAnomaly && (
           <RoadInspectionCard
             roadLabel={roadInspectionRoad.properties.label}
             report={roadInspectionReport}
             loading={roadInspectionLoading}
             error={roadInspectionError}
             onClose={closeRoadInspection}
-            onSelectIssue={(issueId) => {
-              closeRoadInspection();
-              setSelectedAnomalyId(issueId);
-            }}
+            onSelectIssue={(issueId) => setSelectedAnomalyId(issueId)}
+            categoryFilter={roadInspectionCategoryFilter}
+            onCategoryFilterChange={setRoadInspectionCategoryFilter}
           />
         )}
         {placemarkMode && !placemarkDraft && (
