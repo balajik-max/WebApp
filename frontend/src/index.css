@@ -1702,6 +1702,94 @@ body {
   grid-template-columns: 48px 1fr;
 }
 
+/* Shown while an external file is dragged anywhere over the Map page — see
+   MapView.tsx's page-level drag handlers. `pointer-events: none` so it
+   never itself becomes a second drop target competing with the listeners
+   on .map-page (which is where onDrop/onDragLeave actually live). */
+.map-drop-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(4, 12, 16, 0.55);
+  backdrop-filter: blur(3px);
+  pointer-events: none;
+  animation: map-drop-overlay-in 120ms ease-out;
+}
+@keyframes map-drop-overlay-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+.map-drop-overlay__card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  padding: 32px 40px;
+  border: 2px dashed var(--accent);
+  border-radius: var(--radius-md);
+  background: var(--surface-elev);
+  box-shadow: var(--shadow-lg);
+  color: var(--ink);
+  text-align: center;
+  max-width: 360px;
+}
+.map-drop-overlay__icon {
+  color: var(--accent);
+}
+.map-drop-overlay__icon--spin {
+  animation: map-drop-overlay-spin 900ms linear infinite;
+}
+@keyframes map-drop-overlay-spin {
+  to { transform: rotate(360deg); }
+}
+.map-drop-overlay__title {
+  font-size: 1.05rem;
+  font-weight: 600;
+}
+.map-drop-overlay__sub {
+  font-size: 0.85rem;
+  color: var(--text-secondary);
+}
+
+/* Transient error toast for a dropped folder the intake helpers rejected
+   (wrong folder type, etc.) — dismissible, and MapView also auto-clears it
+   after a few seconds. */
+.map-drop-error {
+  position: fixed;
+  left: 50%;
+  bottom: 28px;
+  transform: translateX(-50%);
+  z-index: 1001;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  max-width: min(480px, calc(100vw - 32px));
+  padding: 12px 14px;
+  background: var(--surface-elev);
+  border: 1px solid var(--danger);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-lg);
+  color: var(--ink);
+  font-size: 0.85rem;
+  animation: map-drop-overlay-in 120ms ease-out;
+}
+.map-drop-error__icon {
+  flex-shrink: 0;
+  color: var(--danger);
+}
+.map-drop-error__dismiss {
+  flex-shrink: 0;
+  margin-left: auto;
+  background: none;
+  border: none;
+  color: var(--text-secondary);
+  cursor: pointer;
+  padding: 2px;
+}
+
 /* Thin drag handle straddling the sidebar/map boundary — desktop only (see
    the `!isMobile` guard in MapView.tsx; mobile keeps its fixed-width
    off-canvas drawer, untouched by this). The visible divider stays a plain
@@ -7504,83 +7592,7 @@ body.is-resizing-sidebar {
 }
 
 /* â”€â”€ UNCLASSIFIED CATEGORIES (spatial audit classifier review) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
-.classify-panel {
-  margin-top: 20px;
-  padding: 18px 20px;
-  background: var(--surface);
-  border: 1px solid var(--edge);
-  border-radius: var(--radius-lg);
-}
-
-.classify-panel__head {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  margin-bottom: 6px;
-}
-
-.classify-panel__title {
-  font-size: 15px;
-  font-weight: 700;
-  color: var(--ink);
-}
-
-.classify-panel__count {
-  font-size: 11px;
-  font-weight: 700;
-  color: var(--warn);
-  background: var(--warn-muted);
-  padding: 2px 9px;
-  border-radius: var(--radius-full);
-}
-
-.classify-panel__sub {
-  font-size: 12px;
-  color: var(--ink-mute);
-  line-height: 1.5;
-  margin-bottom: 14px;
-  max-width: 720px;
-}
-
-.classify-panel__error {
-  font-size: 11.5px;
-  color: var(--danger);
-  margin-bottom: 10px;
-}
-
-.classify-panel__list {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-
-.classify-panel__row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 9px 12px;
-  background: var(--surface-2);
-  border: 1px solid var(--edge);
-  border-radius: var(--radius-md);
-}
-
-.classify-panel__raw {
-  font-size: 12.5px;
-  font-weight: 600;
-  color: var(--ink);
-}
-
-.classify-panel__select {
-  font-size: 11.5px;
-  font-weight: 600;
-  color: var(--ink-dim);
-  background: var(--surface-3);
-  border: 1px solid var(--edge-strong);
-  border-radius: var(--radius-sm);
-  padding: 6px 8px;
-  cursor: pointer;
-}
+/* ── ATTRIBUTE TABLE ────────────────────────────────────────────────────── */
 
 /* â”€â”€ ATTRIBUTE TABLE â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 .attr-table-wrap {

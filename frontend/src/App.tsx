@@ -3,6 +3,7 @@ import { lazy, Suspense } from "react";
 import { AuthProvider } from "./context/AuthContext";
 import { ThemeProvider } from "./context/ThemeContext";
 import { LanguageProvider } from "./context/LanguageContext";
+import { UploadTransferProvider } from "./context/UploadTransferContext";
 import { AuthShield } from "./components/AuthShield";
 import { WorkspaceLayout } from "./components/WorkspaceLayout";
 import { LoginPage } from "./pages/Login";
@@ -26,8 +27,9 @@ export default function App() {
     <ThemeProvider>
       <LanguageProvider>
         <AuthProvider>
+          <UploadTransferProvider>
           <BrowserRouter>
-          <Routes>
+            <Routes>
             <Route
               path="/"
               element={
@@ -75,6 +77,7 @@ export default function App() {
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>
         </BrowserRouter>
+          </UploadTransferProvider>
         </AuthProvider>
       </LanguageProvider>
     </ThemeProvider>
