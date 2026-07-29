@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from "react";
+import ReactMarkdown from "react-markdown";
 import { ApiError, apiAssetUrl } from "../lib/api";
 import { useAuth } from "../context/AuthContext";
+import { useTypewriter } from "../lib/useTypewriter";
 import { explainAnomaly, type AnomalyStatus, type SpatialAnomaly } from "../lib/workflow";
 import {
   fetchPotholeCostEstimate,
@@ -20,6 +22,11 @@ interface Props {
    * exists) — remove it from the map/local state instead of showing a raw
    * fetch error, since re-running the audit is a normal, expected action. */
   onStale: (anomalyId: string) => void;
+  /** Set when this card was opened from Road Inspection's issue list — `onClose`
+   * already returns there (its state was never torn down), but the "×" alone
+   * reads as "dismiss", not "go back". Shows an explicit back affordance so
+   * that's obvious instead of implicit. */
+  backToRoadLabel?: string;
 }
 
 const TYPE_LABEL: Record<SpatialAnomaly["anomaly_type"], string> = {
@@ -103,7 +110,7 @@ const MIN_HEIGHT = 220;
 
 type ResizeEdge = "right" | "bottom" | "corner";
 
-export function AnomalyAlertCard({ anomaly, onClose, onStatusChange, onStale }: Props) {
+export function AnomalyAlertCard({ anomaly, onClose, onStatusChange, onStale, backToRoadLabel }: Props) {
   const { user } = useAuth();
   const isAdmin = user?.role === "admin";
   const canEditCost = user?.role !== "mla";
@@ -127,6 +134,7 @@ export function AnomalyAlertCard({ anomaly, onClose, onStatusChange, onStale }: 
   const [explanation, setExplanation] = useState<string | null>(anomaly.explanation_text);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const typedExplanation = useTypewriter(explanation ?? "");
 
   // Draggable (header) + resizable (right/bottom/corner handles), so a long
   // AI explanation or a wide metrics table (e.g. Road Width Narrowing) isn't
@@ -434,6 +442,11 @@ export function AnomalyAlertCard({ anomaly, onClose, onStatusChange, onStale }: 
         data-testid="anomaly-card-head"
       >
         <div>
+          {backToRoadLabel && (
+            <button type="button" className="anomaly-card__back" onClick={onClose}>
+              ← Back to {backToRoadLabel}
+            </button>
+          )}
           <span className={`anomaly-card__badge anomaly-card__badge--${anomaly.color}`}>
             {COLOR_LABEL[anomaly.color]}
           </span>
@@ -445,7 +458,11 @@ export function AnomalyAlertCard({ anomaly, onClose, onStatusChange, onStale }: 
       <div className="anomaly-card__body">
         {loading && <div className="anomaly-card__loading">Generating explanation…</div>}
         {error && <div className="anomaly-card__error">{error}</div>}
-        {explanation && <p className="anomaly-card__explanation">{explanation}</p>}
+        {explanation && (
+          <div className="anomaly-card__explanation">
+            <ReactMarkdown>{typedExplanation}</ReactMarkdown>
+          </div>
+        )}
 
         <div className="anomaly-card__facts">
           {metadataEntries(anomaly.anomaly_metadata).map(([k, v]) => (

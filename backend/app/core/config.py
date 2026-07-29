@@ -86,6 +86,12 @@ class Settings(BaseSettings):
     ai_max_context_tokens: int = Field(default=4096, validation_alias="AI_MAX_CONTEXT_TOKENS")
     ai_max_features: int = Field(default=30, validation_alias="AI_MAX_FEATURES")
 
+    # Optional fast path: Gemini Flash tried first when a key is set, local
+    # Ollama is the automatic fallback on any Gemini error/timeout or when
+    # no key is configured. Empty default keeps Ollama-only setups working.
+    gemini_api_key: str = Field(default="", validation_alias="GEMINI_API_KEY")
+    gemini_model: str = Field(default="gemini-flash-lite-latest", validation_alias="GEMINI_MODEL")
+
     # --- AI remediation evidence ----------------------------------------
     remediation_pole_buffer_m: float = Field(default=15.0, validation_alias="REMEDIATION_POLE_BUFFER_M")
     remediation_manhole_buffer_m: float = Field(default=15.0, validation_alias="REMEDIATION_MANHOLE_BUFFER_M")

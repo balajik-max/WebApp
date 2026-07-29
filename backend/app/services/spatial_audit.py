@@ -106,6 +106,18 @@ DRAIN_CROSSING_RED_RATIO = 0.5
 # decide whether a building counts as touching a drain.
 DRAIN_BUFFER_M = 1.5
 
+# A building/drain gap this small or smaller is digitizing noise, not real
+# clearance — treated as touching. Grounded in the real gap distribution
+# across this dataset: 429 buildings sit within 2m of a drain without
+# ST_Intersects'ing it, smoothly spread from a few mm up through 2m (most
+# of that is genuinely tight urban plots, not encroachment — flagging all
+# 429 would flood the audit with noise). But the tightest slice is
+# different in kind: 34 buildings sit within 5cm, clustered from ~3mm,
+# consistent with survey/digitizing snap error rather than a real physical
+# gap a person could see. 5cm is the cutoff between "measurement noise" and
+# "genuinely close but clear" — not the same knob as DRAIN_BUFFER_M above.
+DRAIN_SNAP_TOLERANCE_M = 0.05
+
 # ST_ClusterDBSCAN's `eps` is measured in the units of its input geometry's
 # SRID â€” passing it raw EPSG:4326 geometry means "eps" is degrees (~111km
 # each), not meters, silently chaining every feature in the dataset into one
@@ -313,6 +325,7 @@ async def _detect_drain_encroachment(
                 "  SELECT b.id AS building_id, "
                 "         ST_Union(ST_Buffer(d.geom::geography, :buffer_m)::geometry) AS drain_footprint, "
                 "         sum(ST_Length(ST_Intersection(d.geom::geography, b.geom::geography))) AS chord_len_m, "
+                "         MIN(ST_Distance(b.geom::geography, d.geom::geography)) AS gap_m, "
                 "         array_agg(DISTINCT d.id) AS drain_ids, "
                 "         array_agg(DISTINCT d.category) AS drain_categories, "
                 "         array_agg(DISTINCT d.attributes->>'LAYER') AS drain_layers "
@@ -321,18 +334,19 @@ async def _detect_drain_encroachment(
                 "    AND d.attributes->>'_canonical_class' = 'Drainage_Asset' "
                 "  WHERE b.dataset_id = :dataset_id "
                 "    AND b.attributes->>'_canonical_class' = 'Building' "
-                "    AND ST_Intersects(b.geom, d.geom) "
+                "    AND (ST_Intersects(b.geom, d.geom) "
+                "         OR ST_DWithin(b.geom::geography, d.geom::geography, :snap_tolerance_m)) "
                 "  GROUP BY b.id "
                 ") "
                 "SELECT b.id AS building_id, "
                 "       ST_X(ST_Centroid(b.geom)) AS x, ST_Y(ST_Centroid(b.geom)) AS y, "
-                "       nd.chord_len_m, nd.drain_ids, nd.drain_categories, nd.drain_layers, "
+                "       nd.chord_len_m, nd.gap_m, nd.drain_ids, nd.drain_categories, nd.drain_layers, "
                 "       ST_Area(b.geom::geography) AS building_area_m2, "
                 "       ST_Perimeter(b.geom::geography) AS building_perim_m, "
                 "       ST_Area(ST_Intersection(b.geom::geography, nd.drain_footprint::geography)) AS overlap_area_m2 "
                 "FROM features b JOIN near_drains nd ON nd.building_id = b.id"
             ),
-            {"dataset_id": str(dataset_id), "buffer_m": DRAIN_BUFFER_M},
+            {"dataset_id": str(dataset_id), "buffer_m": DRAIN_BUFFER_M, "snap_tolerance_m": DRAIN_SNAP_TOLERANCE_M},
         )
     ).mappings().all()
 
@@ -341,6 +355,12 @@ async def _detect_drain_encroachment(
 
     for r in rows:
         chord_len_m = float(r["chord_len_m"] or 0.0)
+        gap_m = float(r["gap_m"] or 0.0)
+        # A near-miss (gap within snap tolerance, zero real intersection) has
+        # no chord to measure — it's flagged on proximity alone, always
+        # yellow via the ratio-0 path below, never red (a genuine full
+        # crossing is worse than an extremely tight but clear gap).
+        near_miss = chord_len_m == 0.0 and gap_m > 0.0
         building_perim_m = float(r["building_perim_m"] or 0.0)
         building_span_m = building_perim_m / 4.0
         crossing_ratio = min(1.0, chord_len_m / building_span_m) if building_span_m > 0 else 0.0
@@ -377,6 +397,8 @@ async def _detect_drain_encroachment(
                     "overlap_area_m2": round(overlap_area_m2, 2),
                     "building_area_m2": round(building_area_m2, 2),
                     "drain_buffer_m": DRAIN_BUFFER_M,
+                    "near_miss_gap_m": round(gap_m, 3) if near_miss else None,
+                    "snap_tolerance_m": DRAIN_SNAP_TOLERANCE_M,
                     "drain_ids": [str(d) for d in r["drain_ids"]],
                     "drain_categories": r["drain_categories"],
                     "drain_layers": r["drain_layers"],
