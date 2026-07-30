@@ -1045,5 +1045,17 @@ export interface CategoryClassMapping {
   confidence: number;
 }
 
+export const fetchCanonicalClasses = (signal?: AbortSignal) =>
+  apiGet<string[]>("/api/v1/classification/classes", signal);
+
+export const fetchUnclassifiedCategories = (signal?: AbortSignal) =>
+  apiGet<CategoryClassMapping[]>("/api/v1/classification/unclassified", signal);
+
 export const fetchAllClassMappings = (signal?: AbortSignal) =>
   apiGet<CategoryClassMapping[]>("/api/v1/classification", signal);
+
+export const assignCanonicalClass = (rawCategory: string, canonicalClass: string) =>
+  apiPatch<CategoryClassMapping>(
+    `/api/v1/classification/${encodeURIComponent(rawCategory)}`,
+    { canonical_class: canonicalClass },
+  );
