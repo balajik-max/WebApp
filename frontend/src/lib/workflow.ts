@@ -132,6 +132,7 @@ export function fetchOverview(
   const params = analyticsScopeParams(datasetIds, categories, filters);
   const actualSignal = signal;
   const query = params.toString();
+  console.log('[API] fetchOverview called with:', { datasetIds, categories, filters, query });
   return apiGet<AnalyticsOverview>(
     `/api/v1/analytics/overview${query ? `?${query}` : ""}`,
     actualSignal

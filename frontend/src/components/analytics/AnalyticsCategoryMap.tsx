@@ -133,9 +133,8 @@ export function AnalyticsCategoryMap({ datasetIds, categories, filters = {}, onC
       zoom: 11,
       minZoom: 2,
       maxZoom: 24,
-      attributionControl: { compact: true },
+      attributionControl: false,
     });
-    map.addControl(new maplibregl.NavigationControl({ showCompass: false }), "top-right");
     map.on("load", () => {
       loadedRef.current = true;
       map.addSource(SOURCE_ID, { type: "geojson", data: dataRef.current });
@@ -312,18 +311,11 @@ export function AnalyticsCategoryMap({ datasetIds, categories, filters = {}, onC
         {loading && <div className="analytics-map__overlay">Loading scoped features…</div>}
         {error && <div className="analytics-map__overlay analytics-map__overlay--error">Map unavailable: {error}</div>}
       </div>
-      <div className="analytics-map__footer">
-        <span>
-          {activeReadinessField
-            ? activeReadinessStatus === "available"
-              ? "Green markers show Manholes with the selected field available."
-              : activeReadinessStatus === "missing"
-                ? "Red markers show Manholes missing the selected field."
-                : "Green markers are available; red markers are missing for the selected field."
-            : "Read-only preview. Colours match the main Map category palette."}
-        </span>
-        {result.truncated && <b>Showing the first {result.limit.toLocaleString()} features; KPIs still use all matching rows.</b>}
-      </div>
+      {result.truncated && (
+        <div className="analytics-map__footer">
+          <b>Showing the first {result.limit.toLocaleString()} features; KPIs still use all matching rows.</b>
+        </div>
+      )}
     </article>
   );
 }

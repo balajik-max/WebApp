@@ -162,10 +162,6 @@ export function AnalyticsManholeReadiness({
                 );
               })}
             </div>
-            <details className="analytics-methodology analytics-readiness-methodology">
-              <summary>How missing values are identified</summary>
-              <p>{report.methodology}</p>
-            </details>
           </>
         )}
       </div>
