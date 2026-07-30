@@ -1,6 +1,8 @@
 """Focused regression tests for staged email OTP registration contracts."""
 from __future__ import annotations
 
+from datetime import date
+
 from app.schemas.public_portal import (
     PublicOtpRequest,
     PublicOtpVerifyRequest,
@@ -30,6 +32,7 @@ def test_registration_requires_verified_token_and_not_raw_otp_or_gps() -> None:
         registration_token="x" * 64,
         first_name="Citizen",
         last_name="User",
+        date_of_birth=date(1990, 1, 1),
         username="citizen.user",
         password="Strong@123",
         confirm_password="Strong@123",
@@ -37,7 +40,6 @@ def test_registration_requires_verified_token_and_not_raw_otp_or_gps() -> None:
     assert not hasattr(payload, "otp")
     assert not hasattr(payload, "latitude")
     assert not hasattr(payload, "longitude")
-    assert not hasattr(payload, "date_of_birth")
 
 
 def test_mask_email_does_not_reveal_full_mailbox() -> None:

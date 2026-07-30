@@ -40,7 +40,7 @@ export default function PublicLogin() {
       setError(
         reason instanceof PublicApiError
           ? reason.message
-          : "Unable to sign in. Please check your username/email and password.",
+          : "Unable to sign in. Please check your username and password.",
       );
     } finally {
       setSubmitting(false);
@@ -50,7 +50,7 @@ export default function PublicLogin() {
   return (
     <PublicPageFrame
       title="Public Login"
-      description="Sign in with your public username or registered email address and password."
+      description="Sign in with the username and password created during public registration."
     >
       <section className="citizen-auth-layout" aria-label="Public login">
         <div className="citizen-auth-card">
@@ -64,12 +64,12 @@ export default function PublicLogin() {
 
           <form className="citizen-form" onSubmit={submit}>
             <label>
-              <span>Username or Email Address</span>
+              <span>Username</span>
               <input
                 autoComplete="username"
                 value={username}
                 onChange={(event) => setUsername(event.target.value)}
-                placeholder="Enter your username or registered email"
+                placeholder="Enter your public username"
                 required
               />
             </label>

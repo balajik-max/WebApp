@@ -41,6 +41,7 @@ export default function CreateAccountView() {
   const [step, setStep] = useState<RegistrationStep>("details");
   const [firstName, setFirstName] = useState("");
   const [lastName, setLastName] = useState("");
+  const [dob, setDob] = useState("");
   const [phone, setPhone] = useState("");
   const [email, setEmail] = useState("");
   const [maskedEmail, setMaskedEmail] = useState("");
@@ -185,6 +186,7 @@ export default function CreateAccountView() {
         registration_token: registrationToken,
         first_name: firstName,
         last_name: lastName,
+        date_of_birth: dob,
         username,
         password,
         confirm_password: confirmPassword,
@@ -226,6 +228,10 @@ export default function CreateAccountView() {
             <label>
               <span>Last Name</span>
               <input value={lastName} onChange={(event) => setLastName(event.target.value)} required maxLength={120} autoComplete="family-name" />
+            </label>
+            <label>
+              <span>Date of Birth</span>
+              <input type="date" value={dob} onChange={(event) => setDob(event.target.value)} required max={new Date().toISOString().slice(0, 10)} autoComplete="bday" />
             </label>
             <label>
               <span>Phone Number</span>

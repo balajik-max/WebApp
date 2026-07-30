@@ -1,9 +1,9 @@
 import { Link } from "react-router-dom";
-import chiefMinisterPhoto from "../../assets/chief-minister-dk-shivakumar.png";
+import cmPhoto from "../../assets/cm.jpeg";
 import corporationLogo from "../../assets/davanagere-corporation-logo.png";
-import urbanDevelopmentMinisterPhoto from "../../assets/urban-development-minister-yathindra-siddaramaiah.png";
+import deputyCmPhoto from "../../assets/deputy-cm.jpg";
 import karnatakaLogo from "../../assets/government-karnataka-logo.png";
-import deputyCommissionerPhoto from "../../assets/deputy-commissioner-gangadharaswamy-gm.png";
+import mlaPhoto from "../../assets/mla.jpg";
 
 type PublicPortalHeaderProps = {
   showLoginAction?: boolean;
@@ -19,24 +19,9 @@ function LoginGlyph() {
 }
 
 const OFFICIALS = [
-  {
-    name: "Shri. D.K. Shivakumar",
-    designation: "Hon'ble Chief Minister",
-    photo: chiefMinisterPhoto,
-    alt: "Shri D.K. Shivakumar, Hon'ble Chief Minister of Karnataka",
-  },
-  {
-    name: "Shri Yathindra Siddaramaiah",
-    designation: "Minister for Urban Development",
-    photo: urbanDevelopmentMinisterPhoto,
-    alt: "Shri Yathindra Siddaramaiah, Minister for Urban Development, Government of Karnataka",
-  },
-  {
-    name: "Shri Gangadharaswamy G. M.",
-    designation: "Deputy Commissioner, Davanagere",
-    photo: deputyCommissionerPhoto,
-    alt: "Shri Gangadharaswamy G. M., Deputy Commissioner, Davanagere",
-  },
+  { label: "CM", photo: cmPhoto, alt: "CM" },
+  { label: "DCM", photo: deputyCmPhoto, alt: "Deputy CM" },
+  { label: "MLA", photo: mlaPhoto, alt: "MLA" },
 ] as const;
 
 export function PublicPortalHeader({ showLoginAction = false }: PublicPortalHeaderProps) {
@@ -71,12 +56,11 @@ export function PublicPortalHeader({ showLoginAction = false }: PublicPortalHead
         <div className="public-portal-header__right">
           <div className="portal-officials" aria-label="Government leadership">
             {OFFICIALS.map((official) => (
-              <div className="portal-official" key={official.name}>
+              <div className="portal-official" key={official.label}>
                 <span className="portal-official__avatar">
                   <img src={official.photo} alt={official.alt} />
                 </span>
-                <span className="portal-official__name">{official.name}</span>
-                <span className="portal-official__designation">{official.designation}</span>
+                <span>{official.label}</span>
               </div>
             ))}
           </div>
