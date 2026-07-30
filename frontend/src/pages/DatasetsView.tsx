@@ -1,8 +1,10 @@
-﻿import React, { useCallback, useEffect, useRef, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import JSZip from "jszip";
 import { deleteDataset, fetchDatasets, updateDataset, assignSourceCrs, type DatasetRow } from "../lib/workflow";
 import { AttributeTable } from "../components/AttributeTable";
+import { UnclassifiedCategoriesPanel } from "../components/UnclassifiedCategoriesPanel";
 import { useLanguage } from "../context/LanguageContext";
+import { useAuth } from "../context/AuthContext";
 import { useUploadTransfer } from "../context/UploadTransferContext";
 import {
   ACCEPTED_EXTENSIONS,
@@ -89,6 +91,7 @@ function getFileIcon(type: string): React.ReactNode {
 
 export function DatasetsView() {
   const { t } = useLanguage();
+  const { user } = useAuth();
   const [rows, setRows] = useState<DatasetRow[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [mounted, setMounted] = useState(false);
@@ -994,6 +997,10 @@ export function DatasetsView() {
           </div>
         </div>
       </section>
+
+      {(user?.role === "admin" || user?.role === "architect") && (
+        <UnclassifiedCategoriesPanel />
+      )}
 
       </div>
       </div>

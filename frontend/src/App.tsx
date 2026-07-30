@@ -3,8 +3,10 @@ import { lazy, Suspense } from "react";
 import { AuthProvider } from "./context/AuthContext";
 import { ThemeProvider } from "./context/ThemeContext";
 import { LanguageProvider } from "./context/LanguageContext";
+import { PublicAuthProvider } from "./context/PublicAuthContext";
 import { UploadTransferProvider } from "./context/UploadTransferContext";
 import { AuthShield } from "./components/AuthShield";
+import { PublicAuthShield } from "./components/PublicAuthShield";
 import { WorkspaceLayout } from "./components/WorkspaceLayout";
 import { LoginPage } from "./pages/Login";
 import { MapView } from "./pages/MapView";
@@ -21,6 +23,11 @@ import { ActivityView } from "./pages/ActivityView";
 // authenticated application bundle never pays for it.
 const WelcomeView = lazy(() => import("./pages/WelcomeView"));
 const CreateAccountView = lazy(() => import("./pages/CreateAccount"));
+const PublicLogin = lazy(() => import("./pages/PublicLogin"));
+const PublicDashboard = lazy(() => import("./pages/PublicDashboard"));
+const PublicMap = lazy(() => import("./pages/PublicMap"));
+const PublicDatasets = lazy(() => import("./pages/PublicDatasets"));
+const OfficerPublicComplaintView = lazy(() => import("./pages/OfficerPublicComplaintView"));
 
 export default function App() {
   return (
@@ -29,6 +36,7 @@ export default function App() {
         <AuthProvider>
           <UploadTransferProvider>
           <BrowserRouter>
+            <PublicAuthProvider>
             <Routes>
             <Route
               path="/"
@@ -55,6 +63,52 @@ export default function App() {
                 </Suspense>
               }
             />
+            <Route
+              path="/public/login"
+              element={
+                <Suspense fallback={null}>
+                  <PublicLogin />
+                </Suspense>
+              }
+            />
+            <Route
+              path="/public/register"
+              element={
+                <Suspense fallback={null}>
+                  <CreateAccountView />
+                </Suspense>
+              }
+            />
+            <Route
+              path="/public/dashboard"
+              element={
+                <PublicAuthShield>
+                  <Suspense fallback={null}>
+                    <PublicDashboard />
+                  </Suspense>
+                </PublicAuthShield>
+              }
+            />
+            <Route
+              path="/public/map"
+              element={
+                <PublicAuthShield>
+                  <Suspense fallback={null}>
+                    <PublicMap />
+                  </Suspense>
+                </PublicAuthShield>
+              }
+            />
+            <Route
+              path="/public/datasets"
+              element={
+                <PublicAuthShield>
+                  <Suspense fallback={null}>
+                    <PublicDatasets />
+                  </Suspense>
+                </PublicAuthShield>
+              }
+            />
 
             <Route
               element={
@@ -72,10 +126,19 @@ export default function App() {
               <Route path="/grievance" element={<GrievanceView />} />
               <Route path="/profile" element={<ProfileView />} />
               <Route path="/admin/system" element={<AdminSystemView />} />
+              <Route
+                path="/public-complaints/:complaintId"
+                element={
+                  <Suspense fallback={null}>
+                    <OfficerPublicComplaintView />
+                  </Suspense>
+                }
+              />
             </Route>
 
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>
+            </PublicAuthProvider>
         </BrowserRouter>
           </UploadTransferProvider>
         </AuthProvider>
