@@ -1,0 +1,52 @@
+DAVANAGERE PUBLIC EMAIL OTP + REGISTRATION LOCATION UPDATE
+Validation date: 2026-07-29
+
+IMPLEMENTED
+- Public registration OTP delivery changed from phone/webhook flow to email SMTP flow.
+- Contact phone number remains stored but is not falsely marked as phone-verified.
+- Verified email and email_verified_at added to public users.
+- Registration GPS consent, capture button, coordinates, and location validation removed.
+- Registration continues to record server-visible IP, timestamp, browser/user-agent, and reported screen size.
+- Complaint GPS remains separate; opening Report a Problem automatically requests browser geolocation permission and retains retry/refresh controls.
+- Existing officer authentication and AE/AEE/Commissioner/MLA/Admin/Architect workflow source files were not modified.
+- Exposed SMTP credential and scratch token files were removed from the deliverable.
+
+VALIDATION PASSED
+1. Python compileall: backend/app and backend/tests passed.
+2. TypeScript/TSX syntax transpilation passed for:
+   - frontend/src/pages/CreateAccount.tsx
+   - frontend/src/pages/PublicDashboard.tsx
+   - frontend/src/lib/publicPortal.ts
+3. SMTP mock test passed:
+   - STARTTLS used
+   - Gmail SMTP port 587 supported
+   - App Password whitespace removed before login
+   - From/To/Subject and OTP body generated correctly
+4. Pydantic contract test passed:
+   - valid email accepted
+   - PublicRegisterRequest does not contain latitude/longitude
+   - email OTP response includes masked_email
+5. Config alias test passed:
+   - PUBLIC_OTP_DELIVERY takes precedence over legacy PUBLIC_OTP_MODE
+6. Static registration audit passed:
+   - no registration captureLocation/locationConsent fields
+   - email address and Send Email OTP UI present
+7. Protected officer files SHA-256 unchanged:
+   - backend/app/api/v1/auth.py
+   - backend/app/api/v1/point_verifications.py
+   - frontend/src/pages/Login.tsx
+   - frontend/src/context/AuthContext.tsx
+8. Secret scan passed:
+   - no real SMTP App Password included
+   - no .env included
+   - no scratch_pw token directory included
+   - no integration backup directory included
+
+DATABASE SAFETY
+- Additive ALTER TABLE ... ADD COLUMN IF NOT EXISTS operations only.
+- Legacy public users and complaints are preserved.
+- Existing officer users, notifications, PostGIS data, MinIO objects, and workflow tables are not deleted or recreated.
+- Do not run docker compose down -v.
+
+ENVIRONMENT LIMITATION
+A live Docker/PostGIS/MinIO/Gmail end-to-end run was not possible in this execution environment because no Docker daemon is available. Run the included EMAIL_OTP_APPLY_AND_TEST.md checklist on the Windows host before production approval.

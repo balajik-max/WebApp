@@ -1,33 +1,65 @@
-import { Suspense, lazy, useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
+import { PublicPortalHeader } from "../components/public/PublicPortalHeader";
 import { useAuth } from "../context/AuthContext";
 import { ApiError } from "../lib/api";
 import { resolvePostLoginPath, debugAuthRedirect } from "../lib/authRedirect";
-import { UrbanPlanningFallback } from "../components/auth/UrbanPlanningFallback";
-
-// The 3D visual pulls in three.js, so it is lazy-loaded: the login form
-// renders immediately and stays fully usable while the scene loads.
-const UrbanPlanningVisual = lazy(() => import("../components/auth/UrbanPlanningVisual"));
+import smartCityArtwork from "../assets/smart-city-portal.png";
 
 interface FieldState {
   touched: boolean;
   error: string | null;
 }
 
-function validEmail(v: string): boolean {
-  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v.trim());
+function validEmail(value: string): boolean {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value.trim());
 }
 
-function isWebGLAvailable(): boolean {
-  try {
-    const canvas = document.createElement("canvas");
-    return !!(
-      window.WebGLRenderingContext &&
-      (canvas.getContext("webgl") || canvas.getContext("experimental-webgl"))
-    );
-  } catch {
-    return false;
-  }
+function LoginGlyph() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M14 8V5.75A2.75 2.75 0 0 0 11.25 3H5.75A2.75 2.75 0 0 0 3 5.75v12.5A2.75 2.75 0 0 0 5.75 21h5.5A2.75 2.75 0 0 0 14 18.25V16" />
+      <path d="M10 12h11m-4-4 4 4-4 4" />
+    </svg>
+  );
+}
+
+function LockGlyph() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <rect x="4" y="10" width="16" height="11" rx="2" />
+      <path d="M8 10V7a4 4 0 0 1 8 0v3M12 14v3" />
+    </svg>
+  );
+}
+
+function MailGlyph() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <rect x="3" y="5" width="18" height="14" rx="2" />
+      <path d="m4 7 8 6 8-6" />
+    </svg>
+  );
+}
+
+function ShieldGlyph() {
+  return (
+    <svg viewBox="0 0 48 48" aria-hidden="true">
+      <path d="M24 5 39 11v11c0 10-6 17-15 21C15 39 9 32 9 22V11Z" />
+      <path d="m17 24 5 5 10-11" />
+    </svg>
+  );
+}
+
+function HeadsetGlyph() {
+  return (
+    <svg viewBox="0 0 48 48" aria-hidden="true">
+      <path d="M10 27v-4a14 14 0 0 1 28 0v4" />
+      <rect x="7" y="25" width="8" height="13" rx="3" />
+      <rect x="33" y="25" width="8" height="13" rx="3" />
+      <path d="M37 38c-2 4-6 5-11 5h-3" />
+    </svg>
+  );
 }
 
 export function LoginPage() {
@@ -44,7 +76,6 @@ export function LoginPage() {
   const [busy, setBusy] = useState(false);
   const [serverError, setServerError] = useState<string | null>(null);
   const [mounted, setMounted] = useState(false);
-  const [webgl] = useState(isWebGLAvailable);
 
   useEffect(() => {
     setMounted(true);
@@ -65,32 +96,40 @@ export function LoginPage() {
   }, [user, navigate]);
 
   function validate(): boolean {
-    const e = validEmail(email) ? null : "Enter a valid email address.";
-    const p = password.length >= 4 ? null : "Password must be at least 4 characters.";
-    setEmailState({ touched: true, error: e });
-    setPwState({ touched: true, error: p });
-    return e === null && p === null;
+    const emailError = validEmail(email) ? null : "Enter a valid email address.";
+    const passwordError = password.length >= 4 ? null : "Password must be at least 4 characters.";
+    setEmailState({ touched: true, error: emailError });
+    setPwState({ touched: true, error: passwordError });
+    return emailError === null && passwordError === null;
   }
 
-  async function submit(evt: React.FormEvent) {
-    evt.preventDefault();
+  async function submit(event: React.FormEvent) {
+    event.preventDefault();
     setServerError(null);
     if (!validate()) return;
     setBusy(true);
     try {
-      const u = await login(email.trim().toLowerCase(), password);
-      void u;
-    } catch (err) {
-      const msg =
-        err instanceof ApiError
-          ? err.status === 401
+      const loggedInUser = await login(email.trim().toLowerCase(), password);
+      void loggedInUser;
+    } catch (error) {
+      const message =
+        error instanceof ApiError
+          ? error.status === 401
             ? "Invalid email or password."
-            : `${err.status} — ${err.message}`
-          : (err as Error).message;
-      setServerError(msg);
+            : `${error.status} — ${error.message}`
+          : (error as Error).message;
+      setServerError(message);
     } finally {
       setBusy(false);
     }
+  }
+
+  function selectDemoAccount(demoEmail: string) {
+    setEmail(demoEmail);
+    setPassword("");
+    setEmailState({ touched: false, error: null });
+    setPwState({ touched: false, error: null });
+    setServerError(null);
   }
 
   return (
@@ -98,182 +137,194 @@ export function LoginPage() {
       className={`login-split-page ${mounted ? "login-split-page--mounted" : ""}`}
       data-testid="login-page"
     >
-      <section className="login-split-page__auth">
-        <div className="auth-card">
-          <div className="auth-card__header">
-            <h1 className="auth-title">Welcome back</h1>
-            <p className="auth-lead">Sign in to continue to your workspace</p>
-          </div>
+      <PublicPortalHeader />
 
-          <form onSubmit={submit} className="auth-form" data-testid="login-form" noValidate autoComplete="off">
-            <div className="auth-field">
-              <label className="auth-label" htmlFor="email">
-                Email address
-              </label>
-              <input
-                id="email"
-                data-testid="input-email"
-                type="email"
-                autoComplete="email"
-                placeholder="admin@davangere.gov.in"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                onBlur={() =>
-                  setEmailState({
-                    touched: true,
-                    error: validEmail(email) ? null : "Enter a valid email address.",
-                  })
-                }
-                disabled={busy}
-                className={`auth-input ${emailState.touched ? (emailState.error ? "auth-input--error" : "auth-input--success") : ""}`}
-                aria-invalid={!!emailState.error}
-              />
-              {emailState.touched && emailState.error && (
-                <span className="auth-error" data-testid="err-email">{emailState.error}</span>
-              )}
+      <main className="login-portal-body">
+        <section className="login-portal-auth" aria-labelledby="login-title">
+          <div className="auth-card">
+            <div className="auth-card__header">
+              <span className="auth-card__lock"><LockGlyph /></span>
+              <h1 className="auth-title" id="login-title">Welcome Back</h1>
+              <p className="auth-lead">Sign in to continue to your workspace</p>
             </div>
 
-            <div className="auth-field">
-              <label className="auth-label" htmlFor="password">
-                Password
-              </label>
-              <div className="auth-password-wrap">
-                <input
-                  id="password"
-                  data-testid="input-password"
-                  type={showPw ? "text" : "password"}
-                  autoComplete="off"
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  onBlur={() =>
-                    setPwState({
-                      touched: true,
-                      error: password.length >= 4 ? null : "Password must be at least 4 characters.",
-                    })
-                  }
-                  disabled={busy}
-                  className={`auth-input ${pwState.touched ? (pwState.error ? "auth-input--error" : "auth-input--success") : ""}`}
-                  aria-invalid={!!pwState.error}
-                />
-                <button
-                  type="button"
-                  className="auth-eye-btn"
-                  onClick={() => setShowPw((v) => !v)}
-                  data-testid="toggle-password-visibility"
-                  aria-label={showPw ? "Hide password" : "Show password"}
-                  aria-pressed={showPw}
-                >
-                  {showPw ? (
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" width="18" height="18">
-                      <path d="M13.875 18.825A10.05 10.05 0 0112 19c-4.478 0-8.268-2.943-9.543-7a9.97 9.97 0 011.563-3.029m5.858.908a3 3 0 114.243 4.243M9.878 9.878l4.242 4.242M9.88 9.88l-3.29-3.29m7.532 7.532l3.29 3.29M3 3l3.59 3.59m0 0A9.953 9.953 0 0112 5c4.478 0 8.268 2.943 9.543 7a10.025 10.025 0 01-4.132 5.411m0 0L21 21" strokeLinecap="round" strokeLinejoin="round" />
-                    </svg>
-                  ) : (
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" width="18" height="18">
-                      <path d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" strokeLinecap="round" strokeLinejoin="round" />
-                      <path d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" strokeLinecap="round" strokeLinejoin="round" />
-                    </svg>
-                  )}
+            <form onSubmit={submit} className="auth-form" data-testid="login-form" noValidate autoComplete="off">
+              <div className="auth-field">
+                <label className="auth-label" htmlFor="email">Email address</label>
+                <div className="auth-input-shell">
+                  <span className="auth-input-shell__icon"><MailGlyph /></span>
+                  <input
+                    id="email"
+                    data-testid="input-email"
+                    type="email"
+                    autoComplete="email"
+                    placeholder="admin@davangere.gov.in"
+                    value={email}
+                    onChange={(event) => setEmail(event.target.value)}
+                    onBlur={() =>
+                      setEmailState({
+                        touched: true,
+                        error: validEmail(email) ? null : "Enter a valid email address.",
+                      })
+                    }
+                    disabled={busy}
+                    className={`auth-input ${emailState.touched ? (emailState.error ? "auth-input--error" : "auth-input--success") : ""}`}
+                    aria-invalid={!!emailState.error}
+                    aria-describedby={emailState.error ? "email-error" : undefined}
+                  />
+                </div>
+                {emailState.touched && emailState.error && (
+                  <span className="auth-error" id="email-error" data-testid="err-email">{emailState.error}</span>
+                )}
+              </div>
+
+              <div className="auth-field">
+                <label className="auth-label" htmlFor="password">Password</label>
+                <div className="auth-input-shell auth-password-wrap">
+                  <span className="auth-input-shell__icon"><LockGlyph /></span>
+                  <input
+                    id="password"
+                    data-testid="input-password"
+                    type={showPw ? "text" : "password"}
+                    autoComplete="off"
+                    value={password}
+                    onChange={(event) => setPassword(event.target.value)}
+                    onBlur={() =>
+                      setPwState({
+                        touched: true,
+                        error: password.length >= 4 ? null : "Password must be at least 4 characters.",
+                      })
+                    }
+                    disabled={busy}
+                    className={`auth-input ${pwState.touched ? (pwState.error ? "auth-input--error" : "auth-input--success") : ""}`}
+                    aria-invalid={!!pwState.error}
+                    aria-describedby={pwState.error ? "password-error" : undefined}
+                  />
+                  <button
+                    type="button"
+                    className="auth-eye-btn"
+                    onClick={() => setShowPw((visible) => !visible)}
+                    data-testid="toggle-password-visibility"
+                    aria-label={showPw ? "Hide password" : "Show password"}
+                    aria-pressed={showPw}
+                  >
+                    {showPw ? (
+                      <svg viewBox="0 0 24 24" aria-hidden="true">
+                        <path d="M3 3l18 18M10.6 10.6a2 2 0 0 0 2.8 2.8M9.9 5.2A10.5 10.5 0 0 1 12 5c4.5 0 8.3 2.9 9.5 7a10.5 10.5 0 0 1-2.2 3.8M6.6 6.6A10 10 0 0 0 2.5 12c1.2 4.1 5 7 9.5 7 1 0 2-.1 2.9-.4" />
+                      </svg>
+                    ) : (
+                      <svg viewBox="0 0 24 24" aria-hidden="true">
+                        <path d="M2.5 12C3.7 7.9 7.5 5 12 5s8.3 2.9 9.5 7c-1.2 4.1-5 7-9.5 7S3.7 16.1 2.5 12Z" />
+                        <circle cx="12" cy="12" r="3" />
+                      </svg>
+                    )}
+                  </button>
+                </div>
+                {pwState.touched && pwState.error && (
+                  <span className="auth-error" id="password-error" data-testid="err-password">{pwState.error}</span>
+                )}
+              </div>
+
+              {passwordChanged && (
+                <div className="auth-alert auth-alert--success" data-testid="password-changed-message" role="status">
+                  Password changed successfully. Sign in using your new password.
+                </div>
+              )}
+
+              {serverError && (
+                <div className="auth-alert" data-testid="login-error" role="alert">
+                  <svg viewBox="0 0 24 24" aria-hidden="true">
+                    <circle cx="12" cy="12" r="9" />
+                    <path d="M12 7v6M12 17h.01" />
+                  </svg>
+                  {serverError}
+                </div>
+              )}
+
+              <button type="submit" className="auth-submit" disabled={busy} data-testid="submit-login">
+                {busy ? (
+                  <span className="auth-spinner-wrap">
+                    <span className="auth-spinner" />
+                    Signing in...
+                  </span>
+                ) : (
+                  <>
+                    <LoginGlyph />
+                    <span>Sign In</span>
+                  </>
+                )}
+              </button>
+            </form>
+
+            <div className="auth-divider" aria-hidden="true"><span>or</span></div>
+
+            <div className="auth-demo">
+              <h2>Demo Accounts</h2>
+              <p>Use any demo account below to explore the platform</p>
+              <div className="auth-demo-accounts">
+                <button type="button" onClick={() => selectDemoAccount("admin@davangere.gov.in")}>
+                  <span className="auth-demo-badge auth-demo-badge--admin">ADMIN</span>
+                  <span>admin@davangere.gov.in</span>
+                </button>
+                <button type="button" onClick={() => selectDemoAccount("commissioner@davangere.gov.in")}>
+                  <span className="auth-demo-badge auth-demo-badge--commissioner">Commissioner</span>
+                  <span>commissioner@davangere.gov.in</span>
+                </button>
+                <button type="button" onClick={() => selectDemoAccount("aee@davangere.gov.in")}>
+                  <span className="auth-demo-badge auth-demo-badge--aee">AEE</span>
+                  <span>aee@davangere.gov.in</span>
+                </button>
+                <button type="button" onClick={() => selectDemoAccount("ae@davangere.gov.in")}>
+                  <span className="auth-demo-badge auth-demo-badge--ae">AE</span>
+                  <span>ae@davangere.gov.in</span>
+                </button>
+                <button type="button" onClick={() => selectDemoAccount("mla@davangere.gov.in")}>
+                  <span className="auth-demo-badge auth-demo-badge--mla">MLA</span>
+                  <span>mla@davangere.gov.in</span>
                 </button>
               </div>
-              {pwState.touched && pwState.error && (
-                <span className="auth-error" data-testid="err-password">{pwState.error}</span>
-              )}
             </div>
 
-            {passwordChanged && (
-              <div className="auth-alert auth-alert--success" data-testid="password-changed-message" role="status">
-                Password changed successfully. Sign in using your new password.
-              </div>
-            )}
-
-            {serverError && (
-              <div className="auth-alert" data-testid="login-error" role="alert">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="16" height="16">
-                  <path d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" strokeLinecap="round" strokeLinejoin="round" />
-                </svg>
-                {serverError}
-              </div>
-            )}
-
-            <button type="submit" className="auth-submit" disabled={busy} data-testid="submit-login">
-              {busy ? (
-                <span className="auth-spinner-wrap">
-                  <span className="auth-spinner" />
-                  Signing in...
-                </span>
-              ) : (
-                <>
-                  Sign in
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="16" height="16">
-                    <path d="M14 5l7 7m0 0l-7 7m7-7H3" strokeLinecap="round" strokeLinejoin="round" />
-                  </svg>
-                </>
-              )}
-            </button>
-          </form>
-
-          <div className="auth-demo">
-            <p>Demo accounts — select an email, then type the password manually:</p>
-            <div className="auth-demo-accounts">
-              <button type="button" onClick={() => { setEmail("admin@davangere.gov.in"); setPassword(""); setPwState({ touched: false, error: null }); }}>
-                <span className="auth-demo-badge auth-demo-badge--admin">ADMIN</span>
-                admin@davangere.gov.in
-              </button>
-              <button type="button" onClick={() => { setEmail("commissioner@davangere.gov.in"); setPassword(""); setPwState({ touched: false, error: null }); }}>
-                <span className="auth-demo-badge auth-demo-badge--commissioner">Commissioner</span>
-                commissioner@davangere.gov.in
-              </button>
-              <button type="button" onClick={() => { setEmail("aee@davangere.gov.in"); setPassword(""); setPwState({ touched: false, error: null }); }}>
-                <span className="auth-demo-badge auth-demo-badge--aee">AEE</span>
-                aee@davangere.gov.in
-              </button>
-              <button type="button" onClick={() => { setEmail("ae@davangere.gov.in"); setPassword(""); setPwState({ touched: false, error: null }); }}>
-                <span className="auth-demo-badge auth-demo-badge--ae">AE</span>
-                ae@davangere.gov.in
-              </button>
-              <button type="button" onClick={() => { setEmail("mla@davangere.gov.in"); setPassword(""); setPwState({ touched: false, error: null }); }}>
-                <span className="auth-demo-badge auth-demo-badge--mla">MLA</span>
-                mla@davangere.gov.in
-              </button>
-            </div>
+            <Link to="/" className="auth-back">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m15 18-6-6 6-6M9 12h11" /></svg>
+              <span>Back to Home</span>
+            </Link>
           </div>
+        </section>
 
-          <Link to="/" className="auth-back">
-            ← Back to Welcome
-          </Link>
-        </div>
-      </section>
-
-      <section className="login-split-page__visual" aria-label="Urban planning visualization">
-        {webgl ? (
-          <Suspense
-            fallback={
-              <div className="urban-planning-visual__loading">Preparing urban planning view…</div>
-            }
-          >
-            <UrbanPlanningVisual />
-          </Suspense>
-        ) : (
-          <UrbanPlanningFallback />
-        )}
-
-        <div className="urban-planning-visual__overlay">
-          <div className="urban-planning-visual__caption">
-            <p className="urban-planning-visual__title">
-              Plan smarter cities with connected geospatial intelligence.
-            </p>
-            <p className="urban-planning-visual__sub">
-              Visualize infrastructure, monitor assets, and understand urban systems in one place.
+        <section className="login-portal-visual" aria-label="Smart city platform overview">
+          <img src={smartCityArtwork} alt="" aria-hidden="true" />
+          <div className="login-portal-visual__copy">
+            <h2>Smarter Decisions.<br />Stronger Cities.</h2>
+            <p>
+              An integrated platform for urban survey,<br />
+              infrastructure monitoring, and work-progress<br />
+              management — enabling connected governance<br />
+              and better outcomes for every citizen.
             </p>
           </div>
-          <ul className="urban-planning-visual__tags" aria-hidden="true">
-            <li>Urban Planning</li>
-            <li>Infrastructure</li>
-            <li>GIS Intelligence</li>
-            <li>City Systems</li>
-          </ul>
+        </section>
+      </main>
+
+      <footer className="login-assurance-strip">
+        <div className="login-assurance-strip__inner">
+          <div className="login-assurance-item">
+            <span className="login-assurance-icon"><ShieldGlyph /></span>
+            <span>
+              <strong>Secure. Reliable. Government Approved.</strong>
+              <small>Your data is protected with enterprise-grade security and privacy.</small>
+            </span>
+          </div>
+          <div className="login-assurance-divider" aria-hidden="true" />
+          <div className="login-assurance-item">
+            <span className="login-assurance-icon"><HeadsetGlyph /></span>
+            <span>
+              <strong>Need Help?</strong>
+              <small>Contact support@davanagere.gov.in</small>
+            </span>
+          </div>
         </div>
-      </section>
+      </footer>
     </div>
   );
 }

@@ -27,6 +27,11 @@ import {
   markRemediationUpdateRead,
   type RemediationUpdateItem,
 } from "../lib/pointVerifications";
+import {
+  fetchOfficerPublicComplaintNotifications,
+  markOfficerPublicComplaintNotificationRead,
+  type OfficerPublicComplaintNotification,
+} from "../lib/publicPortal";
 
 type ClearButtonPhase = "hidden" | "detaching" | "visible" | "reattaching";
 
@@ -445,25 +450,43 @@ export function WorkspaceLayout() {
       : "";
 
   const [workflowUpdates, setWorkflowUpdates] = useState<RemediationUpdateItem[]>([]);
+  const [publicComplaintUpdates, setPublicComplaintUpdates] = useState<OfficerPublicComplaintNotification[]>([]);
   const [notificationsLoading, setNotificationsLoading] = useState(false);
 
   const loadWorkflowNotifications = useCallback(async () => {
     if (!user) {
       setWorkflowUpdates([]);
+      setPublicComplaintUpdates([]);
       return;
     }
     const controller = new AbortController();
     setNotificationsLoading(true);
     try {
-      setWorkflowUpdates(await fetchRemediationUpdates(controller.signal));
-    } catch (reason) {
-      if ((reason as Error).name !== "AbortError") {
-        console.error("Unable to load workflow notifications", reason);
+      const canReceivePublicComplaints = ["ae", "aee", "commissioner"].includes(user.role);
+      const [workflowResult, publicResult] = await Promise.allSettled([
+        fetchRemediationUpdates(controller.signal),
+        canReceivePublicComplaints
+          ? fetchOfficerPublicComplaintNotifications(controller.signal)
+          : Promise.resolve([] as OfficerPublicComplaintNotification[]),
+      ]);
+
+      // Preserve the existing remediation notification workflow even when the
+      // optional public-complaint endpoint is unavailable or still bootstrapping.
+      if (workflowResult.status === "fulfilled") {
+        setWorkflowUpdates(workflowResult.value);
+      } else if ((workflowResult.reason as Error).name !== "AbortError") {
+        console.error("Unable to load workflow notifications", workflowResult.reason);
+      }
+
+      if (publicResult.status === "fulfilled") {
+        setPublicComplaintUpdates(publicResult.value);
+      } else if ((publicResult.reason as Error).name !== "AbortError") {
+        console.error("Unable to load public complaint notifications", publicResult.reason);
       }
     } finally {
       setNotificationsLoading(false);
     }
-  }, [user?.id]);
+  }, [user?.id, user?.role]);
 
   useEffect(() => {
     void loadWorkflowNotifications();
@@ -476,8 +499,8 @@ export function WorkspaceLayout() {
     };
   }, [loadWorkflowNotifications]);
 
-  const workflowNotifications = useMemo<NotificationItem[]>(() =>
-    workflowUpdates.map((item) => {
+  const workflowNotifications = useMemo<NotificationItem[]>(() => {
+    const remediationItems = workflowUpdates.map((item) => {
       const title =
         item.source === "remediation_submitted"
           ? user?.role === "admin"
@@ -501,15 +524,46 @@ export function WorkspaceLayout() {
         timestamp: new Date(item.created_at).toLocaleString(),
         read: Boolean(item.read_at),
         workflowVerificationId: item.verification_id,
-      };
-    }), [workflowUpdates, user?.role]);
+      } satisfies NotificationItem;
+    });
+
+    const publicItems = publicComplaintUpdates.map((item) => ({
+      id: item.notification_id,
+      title: item.title,
+      body: item.message,
+      timestamp: new Date(item.created_at).toLocaleString(),
+      read: Boolean(item.read_at),
+      publicComplaintId: item.complaint_id,
+    } satisfies NotificationItem));
+
+    return [...publicItems, ...remediationItems].sort((left, right) =>
+      new Date(right.timestamp ?? 0).getTime() - new Date(left.timestamp ?? 0).getTime()
+    );
+  }, [workflowUpdates, publicComplaintUpdates, user?.role]);
 
   const unreadWorkflowCount = useMemo(
-    () => workflowUpdates.filter((item) => !item.read_at).length,
-    [workflowUpdates],
+    () =>
+      workflowUpdates.filter((item) => !item.read_at).length +
+      publicComplaintUpdates.filter((item) => !item.read_at).length,
+    [workflowUpdates, publicComplaintUpdates],
   );
 
   const openWorkflowNotification = useCallback(async (item: NotificationItem) => {
+    if (item.publicComplaintId) {
+      setPublicComplaintUpdates((current) => current.map((update) =>
+        update.notification_id === item.id
+          ? { ...update, read_at: update.read_at ?? new Date().toISOString() }
+          : update
+      ));
+      try {
+        await markOfficerPublicComplaintNotificationRead(item.id);
+      } catch (reason) {
+        console.error("Unable to mark public complaint notification as read", reason);
+      }
+      navigate(`/public-complaints/${encodeURIComponent(item.publicComplaintId)}`);
+      return;
+    }
+
     if (!item.workflowVerificationId) return;
     setWorkflowUpdates((current) => current.map((update) =>
       update.notification_id === item.id

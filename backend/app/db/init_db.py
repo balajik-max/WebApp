@@ -28,6 +28,13 @@ from app.models import (  # noqa: F401
     FeatureVersion,
     Placemark,
     PointVerification,
+    PublicComplaint,
+    PublicDataset,
+    PublicDatasetFeature,
+    PublicNotification,
+    PublicOtpChallenge,
+    PublicSession,
+    PublicUser,
     ReviewItem,
     SpatialAnomaly,
     SurveyRequest,
@@ -80,6 +87,74 @@ async def _ensure_spatial_index() -> None:
             text(
                 "CREATE INDEX IF NOT EXISTS idx_placemarks_owner_updated "
                 "ON placemarks (owner_id, updated_at DESC);"
+            )
+        )
+        # Public registration moved from phone OTP + mandatory registration
+        # GPS to email OTP. These changes are additive: legacy public users and
+        # complaints remain valid, while new accounts receive a verified email.
+        await conn.execute(text("ALTER TABLE public_users ADD COLUMN IF NOT EXISTS email VARCHAR(320);"))
+        await conn.execute(text("ALTER TABLE public_users ADD COLUMN IF NOT EXISTS email_verified_at TIMESTAMPTZ;"))
+        await conn.execute(text("ALTER TABLE public_users ALTER COLUMN phone_verified_at DROP NOT NULL;"))
+        await conn.execute(text("ALTER TABLE public_otp_challenges ADD COLUMN IF NOT EXISTS email VARCHAR(320);"))
+        await conn.execute(text("ALTER TABLE public_otp_challenges ADD COLUMN IF NOT EXISTS verified_at TIMESTAMPTZ;"))
+        await conn.execute(text("ALTER TABLE public_otp_challenges ADD COLUMN IF NOT EXISTS registration_token_hash VARCHAR(128);"))
+        await conn.execute(text("ALTER TABLE public_otp_challenges ADD COLUMN IF NOT EXISTS registration_token_expires_at TIMESTAMPTZ;"))
+        await conn.execute(text("ALTER TABLE public_complaints ADD COLUMN IF NOT EXISTS location_source VARCHAR(32);"))
+        await conn.execute(
+            text(
+                "CREATE UNIQUE INDEX IF NOT EXISTS ux_public_users_email_lower "
+                "ON public_users (LOWER(email)) WHERE email IS NOT NULL;"
+            )
+        )
+        await conn.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS ix_public_otp_challenges_email_created "
+                "ON public_otp_challenges (LOWER(email), created_at DESC) WHERE email IS NOT NULL;"
+            )
+        )
+
+        # Public/citizen portal indexes are additive and do not alter the
+        # existing officer workflow tables. The partial unique index provides
+        # a database-level guarantee that a Commissioner-viewed notification
+        # can be emitted only once per complaint.
+        await conn.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS idx_public_complaints_owner_created "
+                "ON public_complaints (public_user_id, created_at DESC);"
+            )
+        )
+        await conn.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS idx_public_notifications_owner_created "
+                "ON public_notifications (public_user_id, created_at DESC);"
+            )
+        )
+        await conn.execute(
+            text(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_public_notification_commissioner_once "
+                "ON public_notifications (complaint_id, kind) "
+                "WHERE kind = 'COMMISSIONER_VIEWED';"
+            )
+        )
+        # Public dataset storage uses separate tables from officer datasets/features.
+        # This prevents citizen uploads from changing officer maps, analytics,
+        # layer review, AI findings, or remediation workflows.
+        await conn.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS idx_public_datasets_owner_created "
+                "ON public_datasets (public_user_id, created_at DESC);"
+            )
+        )
+        await conn.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS idx_public_dataset_features_dataset "
+                "ON public_dataset_features (public_dataset_id);"
+            )
+        )
+        await conn.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS idx_public_dataset_features_geom "
+                "ON public_dataset_features USING GIST (geom);"
             )
         )
         await conn.execute(

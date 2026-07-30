@@ -15,6 +15,9 @@ from app.api.v1 import (
     map_context,
     placemarks,
     point_verifications,
+    public_auth,
+    public_complaints,
+    public_datasets,
     pothole_cost,
     review_items,
     survey_requests,
@@ -25,6 +28,9 @@ from app.api.v1 import (
 api_router = APIRouter()
 api_router.include_router(health.router, tags=["health"])
 api_router.include_router(auth.router, prefix="/auth", tags=["auth"])
+api_router.include_router(public_auth.router, prefix="/public/auth", tags=["public-auth"])
+api_router.include_router(public_complaints.router, prefix="/public", tags=["public-complaints"])
+api_router.include_router(public_datasets.router, prefix="/public", tags=["public-datasets"])
 api_router.include_router(system.router, tags=["system"])
 api_router.include_router(admin.router, prefix="/v1/admin", tags=["admin"])
 api_router.include_router(datasets.router, prefix="/v1/datasets", tags=["datasets"])

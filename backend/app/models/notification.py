@@ -25,6 +25,7 @@ class NotificationSource(str, enum.Enum):
     # Legacy values retained so historical notification rows still decode.
     REMEDIATION_APPROVED = "remediation_approved"
     REMEDIATION_REJECTED = "remediation_rejected"
+    PUBLIC_COMPLAINT_SUBMITTED = "public_complaint_submitted"
 
 
 class Notification(Base):

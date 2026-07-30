@@ -10,6 +10,18 @@ from app.models.feature import Feature  # noqa: F401
 from app.models.feature_version import FeatureVersion  # noqa: F401
 from app.models.notification import Notification, NotificationSource  # noqa: F401
 from app.models.placemark import Placemark  # noqa: F401
+from app.models.public_portal import (  # noqa: F401
+    PublicComplaint,
+    PublicDataset,
+    PublicDatasetFeature,
+    PublicComplaintStatus,
+    PublicNotification,
+    PublicNotificationKind,
+    PublicOtpChallenge,
+    PublicOtpPurpose,
+    PublicSession,
+    PublicUser,
+)
 from app.models.point_verification import (  # noqa: F401
     PointVerification,
     PointVerificationStatus,

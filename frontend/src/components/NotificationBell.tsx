@@ -18,6 +18,7 @@ export interface NotificationItem {
   timestamp?: string;
   read?: boolean;
   workflowVerificationId?: string | null;
+  publicComplaintId?: string | null;
 }
 
 export interface NotificationBellProps {
@@ -122,7 +123,7 @@ export function NotificationBell({
                     <button
                       type="button"
                       className="notif__item-button"
-                      disabled={!item.workflowVerificationId}
+                      disabled={!item.workflowVerificationId && !item.publicComplaintId}
                       onClick={() => {
                         setOpen(false);
                         void onNotificationClick?.(item);
