@@ -221,11 +221,6 @@
     display: none;
   }
 
-  .ai-overlay-toggle {
-    padding: 9px 10px;
-    min-height: 44px;
-  }
-
   .feature-count {
     display: none;
   }
@@ -236,7 +231,6 @@
   .placemark-details-panel,
   .my-places-panel,
   .reference-layers-menu,
-  .ai-detection-menu,
   .visualization-popup,
   .ruler-panel {
     position: fixed !important;
@@ -256,7 +250,6 @@
   .placemark-details-panel__head,
   .my-places-panel__head,
   .reference-layers-menu__head,
-  .ai-detection-menu__dragbar,
   .floating-map-panel__dragbar,
   .ruler-panel__titlebar {
     cursor: default;

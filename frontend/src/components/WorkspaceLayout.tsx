@@ -18,6 +18,7 @@ import { searchFeatureFids, type FidSearchResult } from "../lib/features";
 import type { DatasetRow } from "../lib/workflow";
 import type { Basemap, RasterDisplaySettings } from "./MapCanvas";
 import type { MapState } from "../pages/MapView";
+import type { DetectionMode } from "../lib/detectionMode";
 import {
   DEFAULT_QUICK_ANALYSIS_VIEW_STATE,
   type QuickAnalysisViewState,
@@ -587,6 +588,14 @@ export function WorkspaceLayout() {
     bearing: 0,
   });
 
+  // AI Detection mode/overlay/Road Inspection — lifted up for the same
+  // reason as basemap/mapState above: MapCanvas unmounts on every tab
+  // switch, so these were silently resetting when the user left the Map
+  // tab and came back mid-analysis.
+  const [detectionMode, setDetectionMode] = useState<DetectionMode>(null);
+  const [aiOverlayEnabled, setAiOverlayEnabled] = useState(false);
+  const [roadInspectionActive, setRoadInspectionActive] = useState(false);
+
   const outletContext = useMemo(
     () => ({
       filter: EMPTY_FILTER,
@@ -609,6 +618,12 @@ export function WorkspaceLayout() {
       setSpatialAuditStatus,
       mapState,
       setMapState,
+      detectionMode,
+      setDetectionMode,
+      aiOverlayEnabled,
+      setAiOverlayEnabled,
+      roadInspectionActive,
+      setRoadInspectionActive,
     }),
     [
       selectedDatasets,
@@ -620,6 +635,9 @@ export function WorkspaceLayout() {
       spatialAuditStatus,
       spatialAuditRequested,
       mapState,
+      detectionMode,
+      aiOverlayEnabled,
+      roadInspectionActive,
     ]
   );
 

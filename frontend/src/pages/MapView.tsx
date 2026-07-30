@@ -22,6 +22,7 @@ import type { QuickAnalysisViewState } from "../lib/quickAnalysisViewState";
 import { logActivity } from "../lib/activityLog";
 import { useUploadTransfer } from "../context/UploadTransferContext";
 import { collectDroppedFolder, classifyAndZipFolder, type WebkitEntry } from "../lib/datasetFileIntake";
+import type { DetectionMode } from "../lib/detectionMode";
 
 type SpatialAuditStatus = "idle" | "running" | "success" | "error";
 
@@ -75,6 +76,12 @@ interface LayoutCtx {
   setSpatialAuditStatus: (status: SpatialAuditStatus) => void;
   mapState: MapState;
   setMapState: (state: MapState) => void;
+  detectionMode: DetectionMode;
+  setDetectionMode: (mode: DetectionMode) => void;
+  aiOverlayEnabled: boolean;
+  setAiOverlayEnabled: (enabled: boolean) => void;
+  roadInspectionActive: boolean;
+  setRoadInspectionActive: (active: boolean) => void;
 }
 
 export function MapView() {
@@ -98,6 +105,12 @@ export function MapView() {
     setSpatialAuditStatus,
     mapState,
     setMapState,
+    detectionMode,
+    setDetectionMode,
+    aiOverlayEnabled,
+    setAiOverlayEnabled,
+    roadInspectionActive,
+    setRoadInspectionActive,
   } = useOutletContext<LayoutCtx>();
   const [selected, setSelected] = useState<UrbanFeature | null>(null);
   const [verificationTarget, setVerificationTarget] = useState<{
@@ -353,6 +366,12 @@ export function MapView() {
         onRasterSettingsChange={setRasterSettingsById}
         initialBasemap={basemap}
         onBasemapChange={setBasemap}
+        initialDetectionMode={detectionMode}
+        onDetectionModeChange={setDetectionMode}
+        initialAiOverlayEnabled={aiOverlayEnabled}
+        onAiOverlayEnabledChange={setAiOverlayEnabled}
+        initialRoadInspectionActive={roadInspectionActive}
+        onRoadInspectionActiveChange={setRoadInspectionActive}
         aiHighlights={aiHighlights}
         focusFeatureId={locateFeatureId}
         isolateFocusFeature={isolateFocusFeature}
