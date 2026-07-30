@@ -34,6 +34,7 @@ const DETECTION_MODE_LABEL: Record<AiDetectionMode, string> = {
   powerlines: "Powerlines",
   potholes: "Potholes",
   standing_water: "Standing Water",
+  road_inspection: "Road Inspection",
 };
 
 const DETECTION_MODE_OPTIONS: AiDetectionMode[] = [

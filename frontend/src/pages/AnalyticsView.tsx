@@ -26,13 +26,22 @@ import { colorForCategory } from "../lib/categoryColors";
 import { AnalyticsScopeBar } from "../components/analytics/AnalyticsScopeBar";
 import { AnalyticsCategoryMap } from "../components/analytics/AnalyticsCategoryMap";
 import { AnalyticsFeatureTable } from "../components/analytics/AnalyticsFeatureTable";
-import { AnalyticsAiSummary } from "../components/analytics/AnalyticsAiSummary";
-import { AnalyticsQualityPanel } from "../components/analytics/AnalyticsQualityPanel";
 import { AnalyticsExportPanel } from "../components/analytics/AnalyticsExportPanel";
 import { AnalyticsManholeReadiness } from "../components/analytics/AnalyticsManholeReadiness";
 import { AnalyticsSeverityVisualization } from "../components/analytics/AnalyticsSeverityVisualization";
 import { AnalyticsWaterDemandPanel } from "../components/analytics/AnalyticsWaterDemandPanel";
 import { useLanguage } from "../context/LanguageContext";
+
+const ANALYTICS_ATTRIBUTE_MAP: Record<string, string[]> = {
+  poles: ["Illumination_Asset", "Utility_Pole"],
+  drains: ["Drainage_Asset"],
+  manholes: ["Access_Point"],
+  roads: ["Road_Centerline", "Road_Surface"],
+  powerlines: ["Power_Line"],
+  potholes: ["Pothole"],
+  standing_water: ["Standing_Water"],
+  road_inspection: ["Road_Centerline", "Road_Surface"],
+};
 
 const SEVERITY_COLORS: Record<string, string> = {
   low: "#22c55e",
@@ -73,9 +82,13 @@ interface StoredAnalyticsScope {
   activeSeverityBucket: AnalyticsSeverityBucket | null;
   activeReadinessField: ManholeReadinessFieldKey | null;
   activeReadinessStatus: ManholeReadinessStatus | null;
+  draftAttributeKey: string | null;
+  appliedAttributeKey: string | null;
   /** Phase 4 persisted key retained for one-time migration. */
   activeMissingField?: ManholeReadinessFieldKey | null;
 }
+
+type AttributeKey = keyof typeof ANALYTICS_ATTRIBUTE_MAP;
 
 function stringArray(value: unknown): string[] {
   if (!Array.isArray(value)) return [];
@@ -115,6 +128,8 @@ function readStoredAnalyticsScope(fallbackDatasetIds: string[]): StoredAnalytics
           : parsed.activeMissingField
             ? "missing"
             : null,
+      draftAttributeKey: typeof parsed.draftAttributeKey === "string" ? parsed.draftAttributeKey : null,
+      appliedAttributeKey: typeof parsed.appliedAttributeKey === "string" ? parsed.appliedAttributeKey : null,
     };
   } catch {
     const datasets = stableValues(fallbackDatasetIds);
@@ -126,6 +141,8 @@ function readStoredAnalyticsScope(fallbackDatasetIds: string[]): StoredAnalytics
       activeSeverityBucket: null,
       activeReadinessField: null,
       activeReadinessStatus: null,
+      draftAttributeKey: null,
+      appliedAttributeKey: null,
     };
   }
 }
@@ -153,6 +170,8 @@ export function AnalyticsView() {
   const [categoryOptions, setCategoryOptions] = useState<CategoryOption[]>([]);
   const [draftDatasetIds, setDraftDatasetIds] = useState<string[]>(initialScope.draftDatasetIds);
   const [appliedDatasetIds, setAppliedDatasetIds] = useState<string[]>(initialScope.appliedDatasetIds);
+  const [draftAttributeKey, setDraftAttributeKey] = useState<string | null>(initialScope.draftAttributeKey);
+  const [appliedAttributeKey, setAppliedAttributeKey] = useState<string | null>(initialScope.appliedAttributeKey);
   const [activeCategory, setActiveCategory] = useState<string | null>(initialScope.activeCategory);
   const [activeWard, setActiveWard] = useState<string | null>(initialScope.activeWard);
   const [activeSeverityBucket, setActiveSeverityBucket] = useState<AnalyticsSeverityBucket | null>(
@@ -176,10 +195,18 @@ export function AnalyticsView() {
     () => stableValues(draftDatasetIds).join(","),
     [draftDatasetIds]
   );
-  const effectiveCategories = useMemo(
-    () => activeCategory ? [activeCategory] : [],
-    [activeCategory]
-  );
+  const effectiveCategories = useMemo(() => {
+    // If an attribute is applied, use its mapped categories
+    if (appliedAttributeKey && ANALYTICS_ATTRIBUTE_MAP[appliedAttributeKey as AttributeKey]) {
+      const categories = ANALYTICS_ATTRIBUTE_MAP[appliedAttributeKey as AttributeKey];
+      console.log('[Analytics] Applied attribute:', appliedAttributeKey, 'Mapped categories:', categories);
+      return categories;
+    }
+    // Otherwise use the active category filter if set
+    const categories = activeCategory ? [activeCategory] : [];
+    console.log('[Analytics] No attribute applied, using activeCategory:', activeCategory, 'Categories:', categories);
+    return categories;
+  }, [appliedAttributeKey, activeCategory]);
   const effectiveSeverityBuckets = useMemo<AnalyticsSeverityBucket[]>(
     () => activeSeverityBucket ? [activeSeverityBucket] : [],
     [activeSeverityBucket]
@@ -213,6 +240,8 @@ export function AnalyticsView() {
         JSON.stringify({
           draftDatasetIds: stableValues(draftDatasetIds),
           appliedDatasetIds: stableValues(appliedDatasetIds),
+          draftAttributeKey,
+          appliedAttributeKey,
           activeCategory,
           activeWard,
           activeSeverityBucket,
@@ -231,6 +260,8 @@ export function AnalyticsView() {
     activeSeverityBucket,
     activeWard,
     appliedDatasetIds,
+    appliedAttributeKey,
+    draftAttributeKey,
     draftDatasetIds,
   ]);
 
@@ -261,6 +292,12 @@ export function AnalyticsView() {
 
   useEffect(() => {
     const controller = new AbortController();
+    console.log('[Analytics] useEffect triggered - fetching overview with:', {
+      appliedDatasetIds,
+      effectiveCategories,
+      crossFilters,
+      appliedScopeKey
+    });
     setAnalyzing(true);
     setError(null);
     fetchOverview(appliedDatasetIds, effectiveCategories, controller.signal, crossFilters)
@@ -276,7 +313,10 @@ export function AnalyticsView() {
   }, [appliedScopeKey, analysisVersion]);
 
   function analyze() {
+    console.log('[Analytics] Analyze clicked - draftAttributeKey:', draftAttributeKey);
     setAppliedDatasetIds(stableValues(draftDatasetIds));
+    setAppliedAttributeKey(draftAttributeKey);
+    console.log('[Analytics] Set appliedAttributeKey to:', draftAttributeKey);
     setActiveCategory(null);
     setActiveWard(null);
     setActiveSeverityBucket(null);
@@ -314,11 +354,6 @@ export function AnalyticsView() {
       spatialSectionRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
     });
   }, [categoryOptions]);
-
-  const appliedDatasetNames = useMemo(() => {
-    const byId = new Map(datasets.map((dataset) => [dataset.id, dataset.name]));
-    return appliedDatasetIds.map((id) => byId.get(id) ?? id);
-  }, [appliedDatasetIds, datasets]);
 
   const totalSeverity = overview
     ? overview.severity_breakdown.reduce((sum, bucket) => sum + bucket.count, 0)
@@ -396,6 +431,9 @@ export function AnalyticsView() {
         datasets={datasets}
         draftDatasetIds={draftDatasetIds}
         appliedDatasetIds={appliedDatasetIds}
+        attributeKey={draftAttributeKey}
+        appliedAttributeKey={appliedAttributeKey}
+        onAttributeChange={setDraftAttributeKey}
         loadingDatasets={loadingDatasets}
         analyzing={analyzing}
         onDatasetChange={setDraftDatasetIds}
@@ -430,7 +468,7 @@ export function AnalyticsView() {
       {analyzing && <div className="analytics-page__loading">Calculating the applied scope from PostGIS…</div>}
 
       {activeSection === "section1" && (
-      <>
+      <div className="analytics-section-panel" key="section1">
       <section className="chart-card" data-testid="chart-insights-card">
         <div className="chart-card__header">
           <div>
@@ -562,55 +600,50 @@ export function AnalyticsView() {
           )}
         </div>
       </section>
-      </>
+      </div>
       )}
 
       {activeSection === "section2" && (
-      <>
-      <AnalyticsManholeReadiness
-        datasetIds={appliedDatasetIds}
-        filters={{
-          wards: activeWard ? [activeWard] : [],
-          severityBuckets: effectiveSeverityBuckets,
-        }}
-        activeField={activeReadinessField}
-        activeStatus={activeReadinessStatus}
-        onSelect={selectManholeReadiness}
-        onClear={() => {
-          setActiveReadinessField(null);
-          setActiveReadinessStatus(null);
-        }}
-      />
-
-      <AnalyticsWaterDemandPanel datasetIds={appliedDatasetIds} ward={activeWard} />
-
-      <section ref={spatialSectionRef} className="chart-grid chart-grid--2 analytics-spatial-grid">
+      <div className="analytics-section-panel" key="section2">
+      <section ref={spatialSectionRef} className="chart-grid analytics-section2-top-grid">
+        <AnalyticsManholeReadiness
+          datasetIds={appliedDatasetIds}
+          filters={{
+            wards: activeWard ? [activeWard] : [],
+            severityBuckets: effectiveSeverityBuckets,
+          }}
+          activeField={activeReadinessField}
+          activeStatus={activeReadinessStatus}
+          onSelect={selectManholeReadiness}
+          onClear={() => {
+            setActiveReadinessField(null);
+            setActiveReadinessStatus(null);
+          }}
+        />
         <AnalyticsCategoryMap
           datasetIds={appliedDatasetIds}
           categories={effectiveCategories}
           filters={crossFilters}
           onCategoryFilter={toggleCategoryFilter}
         />
+      </section>
+
+      <AnalyticsWaterDemandPanel datasetIds={appliedDatasetIds} ward={activeWard} />
+
+      <section className="chart-grid analytics-export-feature-grid">
+        <AnalyticsExportPanel
+          datasetIds={appliedDatasetIds}
+          categories={effectiveCategories}
+          filters={crossFilters}
+          disabledReason={scopeDirty ? t("analytics.exportDisabled") : null}
+        />
+
         <AnalyticsFeatureTable
           datasetIds={appliedDatasetIds}
           categories={effectiveCategories}
           filters={crossFilters}
         />
       </section>
-
-      <AnalyticsQualityPanel
-        datasetIds={appliedDatasetIds}
-        categories={effectiveCategories}
-        filters={crossFilters}
-        onCategoryFilter={toggleCategoryFilter}
-      />
-
-      <AnalyticsExportPanel
-        datasetIds={appliedDatasetIds}
-        categories={effectiveCategories}
-        filters={crossFilters}
-        disabledReason={scopeDirty ? t("analytics.exportDisabled") : null}
-      />
 
       {overview && overview.category_breakdown.length > 0 && (
         <section className="chart-card" data-testid="category-table-card">
@@ -671,21 +704,7 @@ export function AnalyticsView() {
         </section>
       )}
 
-      <AnalyticsAiSummary
-        datasetIds={appliedDatasetIds}
-        datasetNames={appliedDatasetNames}
-        categories={effectiveCategories}
-        ward={activeWard}
-        severityBuckets={effectiveSeverityBuckets}
-        disabledReason={
-          scopeDirty
-            ? t("analytics.aiSummaryDisabled")
-            : activeReadinessField
-              ? t("analytics.aiSummaryDisabledReadiness")
-              : null
-        }
-      />
-      </>
+      </div>
       )}
     </div>
   );

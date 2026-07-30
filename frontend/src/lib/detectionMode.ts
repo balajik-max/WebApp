@@ -10,6 +10,7 @@ export type DetectionMode =
   | "powerlines"
   | "potholes"
   | "standing_water"
+  | "road_inspection"
   | null;
 
 export const DETECTION_MODE_TARGET_CLASSES: Record<Exclude<DetectionMode, null>, string[]> = {
@@ -27,6 +28,7 @@ export const DETECTION_MODE_TARGET_CLASSES: Record<Exclude<DetectionMode, null>,
   powerlines: ["Power_Line", "Building", "Illumination_Asset", "Utility_Pole"],
   potholes: ["Pothole"],
   standing_water: ["Standing_Water"],
+  road_inspection: ["Road_Centerline", "Road_Surface"],
 };
 
 export const DETECTION_MODE_ANOMALY_TYPE: Record<Exclude<DetectionMode, null>, string> = {
@@ -37,6 +39,7 @@ export const DETECTION_MODE_ANOMALY_TYPE: Record<Exclude<DetectionMode, null>, s
   powerlines: "powerline_proximity",
   potholes: "pothole_status",
   standing_water: "standing_water_status",
+  road_inspection: "road_inspection",
 };
 
 export const DETECTION_MODE_LABEL: Record<Exclude<DetectionMode, null>, string> = {
@@ -47,4 +50,5 @@ export const DETECTION_MODE_LABEL: Record<Exclude<DetectionMode, null>, string> 
   powerlines: "Powerlines",
   potholes: "Potholes",
   standing_water: "Standing Water",
+  road_inspection: "Road Inspection",
 };

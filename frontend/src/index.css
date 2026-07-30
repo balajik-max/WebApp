@@ -11002,10 +11002,14 @@ body.is-resizing-sidebar {
 .analytics-search-scope {
   position: relative;
   z-index: 30;
+  margin-bottom: 18px;
+}
+
+.analytics-controls {
   display: flex;
   align-items: center;
   gap: 10px;
-  margin-bottom: 18px;
+  flex-wrap: wrap;
 }
 
 .analytics-search-bar {
@@ -11136,6 +11140,47 @@ body.is-resizing-sidebar {
 
 .analytics-search-scope__analyze:disabled { opacity: 0.65; cursor: wait; }
 
+.analytics-dataset-select {
+  position: relative;
+  flex-shrink: 0;
+}
+
+.analytics-dataset-select__trigger {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 42px;
+  padding: 0 14px;
+  background: var(--surface);
+  border: 1px solid var(--edge);
+  border-radius: var(--radius-full);
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.analytics-dataset-select__trigger:hover {
+  border-color: var(--accent);
+  background: var(--surface-2);
+}
+
+.analytics-dataset-select__trigger:disabled {
+  opacity: 0.65;
+  cursor: wait;
+}
+
+.analytics-dataset-select__chevron {
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+}
+
+.analytics-dataset-select__menu {
+  min-width: 280px;
+}
+
 .analytics-search-scope__right {
   margin-left: auto;
   flex-shrink: 0;
@@ -11170,6 +11215,19 @@ body.is-resizing-sidebar {
 .analytics-section-toggle__btn.is-active {
   background: var(--accent);
   color: var(--accent-ink);
+}
+
+@keyframes analytics-section-fade {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.analytics-section-panel {
+  animation: analytics-section-fade 0.32s ease both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .analytics-section-panel { animation: none; }
 }
 
 .analytics-page .kpi-grid {
@@ -11248,13 +11306,23 @@ body.is-resizing-sidebar {
 .analytics-insight-card strong { display: block; overflow: hidden; margin-bottom: 3px; color: var(--ink); font-weight: 700; font-family: var(--font-mono); font-size: 17px; text-overflow: ellipsis; white-space: nowrap; }
 .analytics-insight-card span { color: var(--ink-mute); font-size: 11px; }
 
-.analytics-spatial-grid > .chart-card { margin-bottom: 0; }
-.analytics-map-card,
+.analytics-section2-top-grid {
+  grid-template-columns: 1.6fr 1fr;
+  align-items: stretch;
+}
+.analytics-section2-top-grid > .chart-card { margin-bottom: 0; }
 .analytics-feature-card { min-height: 480px; }
+
+.analytics-section2-top-grid > .analytics-map-card {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
 
 .analytics-map-wrap {
   position: relative;
-  height: 400px;
+  flex: 1;
+  min-height: 400px;
   background: var(--surface-2);
 }
 .analytics-map { position: absolute; inset: 0; }
@@ -11596,6 +11664,8 @@ body.is-resizing-sidebar {
 @media (max-width: 820px) {
   .analytics-page .chart-grid--2,
   .analytics-page .chart-grid--3,
+  .analytics-page .analytics-section2-top-grid,
+  .analytics-page .analytics-export-feature-grid,
   .analytics-insight-grid,
   .analytics-risk-grid { grid-template-columns: 1fr; }
   /* A single-column stack reads better as horizontal dividers than
@@ -11640,9 +11710,24 @@ body.is-resizing-sidebar {
   line-height: 1.4;
 }
 
+.analytics-export-feature-grid {
+  grid-template-columns: 1fr 1.3fr;
+  align-items: stretch;
+}
+.analytics-export-feature-grid > .chart-card {
+  margin-bottom: 0;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.analytics-export-feature-grid > .chart-card > .chart-card__body {
+  flex: 1;
+  min-height: 0;
+}
+
 .analytics-export-grid {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
   gap: 12px;
 }
 
@@ -11799,7 +11884,7 @@ body.is-resizing-sidebar {
   margin: 6px 0 0;
   max-width: 720px;
   color: var(--ink-mute);
-  font-size: 0.86rem;
+  font-size: 11px;
   line-height: 1.5;
 }
 
@@ -11829,34 +11914,21 @@ body.is-resizing-sidebar {
 
 .analytics-readiness-grid {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
   gap: 12px;
 }
 
 .analytics-readiness-row {
   border: 1px solid var(--edge);
-  border-left: 4px solid var(--edge);
   border-radius: 12px;
   background: var(--surface-2);
   padding: 14px;
   transition: border-color 0.18s ease, box-shadow 0.18s ease, transform 0.18s ease;
 }
 
-.analytics-readiness-row--good {
-  border-left-color: var(--ok);
-}
-
-.analytics-readiness-row--warn {
-  border-left-color: var(--warn);
-}
-
-.analytics-readiness-row--danger {
-  border-left-color: var(--danger);
-}
-
 .analytics-readiness-row.is-active {
-  border-color: var(--danger);
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--danger) 18%, transparent);
+  border-color: var(--blue);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--blue) 18%, transparent);
   transform: translateY(-1px);
 }
 
@@ -11961,10 +12033,6 @@ button.analytics-readiness-count--missing:disabled {
   opacity: 0.55;
 }
 
-.analytics-readiness-methodology {
-  margin-top: 14px;
-}
-
 .analytics-water-demand-card { margin-top: 14px; }
 
 .analytics-water-demand-badge {
@@ -12043,10 +12111,18 @@ button.analytics-readiness-count--missing:disabled {
   font-size: 10.5px;
 }
 
+.analytics-water-demand-split {
+  display: grid;
+  grid-template-columns: 1.3fr 1fr;
+  gap: 24px;
+  align-items: start;
+}
+.analytics-water-demand-main { min-width: 0; }
+
 .analytics-water-demand-supply {
-  margin-top: 14px;
-  padding-top: 14px;
-  border-top: 1px solid var(--edge);
+  min-width: 0;
+  padding-left: 24px;
+  border-left: 1px solid var(--edge);
 }
 
 .analytics-water-demand-supply > h4 {
@@ -12059,7 +12135,7 @@ button.analytics-readiness-count--missing:disabled {
 
 .analytics-water-demand-supply-grid {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
   gap: 10px;
   margin-bottom: 12px;
 }
@@ -12085,6 +12161,18 @@ button.analytics-readiness-count--missing:disabled {
   font-size: 15px;
   font-family: var(--font-mono);
   color: var(--ink);
+}
+
+.analytics-water-demand-chart {
+  margin: 14px 0;
+}
+
+.analytics-water-demand-chart-title {
+  display: block;
+  margin-bottom: 6px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--ink-dim);
 }
 
 .analytics-water-demand-insight {
@@ -12201,6 +12289,17 @@ button.analytics-readiness-count--missing:disabled {
     grid-template-columns: 1fr;
     gap: 4px;
   }
+
+  .analytics-water-demand-split {
+    grid-template-columns: 1fr;
+  }
+
+  .analytics-water-demand-supply {
+    padding-left: 0;
+    border-left: 0;
+    padding-top: 14px;
+    border-top: 1px solid var(--edge);
+  }
 }
 
 /* Analytics visualization: interactive severity pie + readiness mapping */
@@ -12265,16 +12364,16 @@ button.analytics-readiness-count--missing.is-active { box-shadow: inset 0 0 0 1p
   gap: 5px;
   min-width: 145px;
   padding: 9px 11px;
-  border: 1px solid rgba(255,255,255,.24);
+  border: 1px solid var(--edge);
   border-radius: 9px;
-  background: rgba(10, 18, 32, .88);
-  color: #e8f1ff;
-  box-shadow: 0 8px 24px rgba(0,0,0,.24);
+  background: color-mix(in srgb, var(--surface) 92%, transparent);
+  color: var(--ink);
+  box-shadow: 0 8px 24px rgba(0,0,0,.18);
   backdrop-filter: blur(6px);
 }
-.analytics-map-readiness-legend strong { font-size: 10px; text-transform: uppercase; letter-spacing: .08em; }
-.analytics-map-readiness-legend span { display: flex; align-items: center; gap: 7px; font-size: 11px; }
-.analytics-map-readiness-legend i { width: 10px; height: 10px; border-radius: 50%; border: 1px solid #fff; }
+.analytics-map-readiness-legend strong { font-size: 10px; text-transform: uppercase; letter-spacing: .08em; color: var(--ink-mute); }
+.analytics-map-readiness-legend span { display: flex; align-items: center; gap: 7px; font-size: 11px; color: var(--ink-dim); }
+.analytics-map-readiness-legend i { width: 10px; height: 10px; border-radius: 50%; border: 1px solid var(--surface); }
 .analytics-map-readiness-legend i.is-available { background: #22c55e; }
 .analytics-map-readiness-legend i.is-missing { background: #ef4444; }
 .analytics-map-popup__issue--available { color: #22c55e; }
