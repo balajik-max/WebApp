@@ -729,7 +729,7 @@ const LAYER_ROAD_INSPECTION_WIDTH = "road-inspection-width-line";
 const SELECTED_ISSUE_SOURCE = "selected-issue-highlight";
 const LAYER_SELECTED_ISSUE = "selected-issue-highlight-ring";
 const CLICK_HIT_PADDING_PX = 4;
-const ROAD_INSPECTION_CLICK_HIT_PADDING_PX = 12;
+const ROAD_INSPECTION_CLICK_HIT_PADDING_PX = 20;
 
 // Base (category-agnostic) filters for the layers above — kept as named
 // constants so the category-visibility checklist can AND a hidden-category
@@ -9041,8 +9041,13 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
           return;
         }
         if (roadInspectionActiveRef.current) {
-          if (isRoadCenterlineFeature(selected)) {
-            void openRoadInspection(selected);
+          // Don't trust hit[0]: a pole/manhole/photo marker within the same
+          // padded click box renders above the road line and would otherwise
+          // win by stack order alone, making road selection fail depending
+          // on how much clutter happens to sit near the cursor at that zoom.
+          const roadHit = hit.map(decodeFeature).find(isRoadCenterlineFeature);
+          if (roadHit) {
+            void openRoadInspection(roadHit);
             return;
           }
           const anomalyId = roadInspectionAnomalyIdMapRef.current[selected.properties.id];
