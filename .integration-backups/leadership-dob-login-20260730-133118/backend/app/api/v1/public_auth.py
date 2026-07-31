@@ -6,7 +6,7 @@ import hmac
 import re
 import secrets
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 
 import jwt
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
@@ -143,10 +143,7 @@ async def request_otp(
         )
     )
     if existing_user is not None:
-        raise HTTPException(
-            status_code=409,
-            detail="A public account already exists with this email address or phone number. Use Public Login to sign in.",
-        )
+        raise HTTPException(status_code=409, detail="A public account already exists with these contact details")
 
     now = datetime.now(timezone.utc)
     latest = (
@@ -274,6 +271,8 @@ async def register(
     ):
         raise HTTPException(status_code=403, detail="Invalid verified registration session")
 
+    if payload.date_of_birth >= date.today():
+        raise HTTPException(status_code=422, detail="Date of birth must be in the past")
     if payload.password != payload.confirm_password:
         raise HTTPException(status_code=400, detail="Password and confirmation do not match")
     policy_error = password_policy_error(payload.password)
@@ -293,14 +292,12 @@ async def register(
         )
     )
     if collision:
-        raise HTTPException(
-            status_code=409,
-            detail="An account already exists with this username, email address, or phone number. Use Public Login to sign in.",
-        )
+        raise HTTPException(status_code=409, detail="Username, email, or phone number is already registered")
 
     user = PublicUser(
         first_name=payload.first_name,
         last_name=payload.last_name,
+        date_of_birth=payload.date_of_birth,
         phone=challenge.phone,
         email=email,
         username=username,
@@ -327,7 +324,7 @@ async def register(
         await db.rollback()
         raise HTTPException(
             status_code=409,
-            detail="An account already exists with this username, email address, or phone number. Use Public Login to sign in.",
+            detail="Username, email, or phone number is already registered",
         ) from exc
 
     session, access, refresh = await create_session(
@@ -348,16 +345,12 @@ async def login(
     response: Response,
     db: AsyncSession = Depends(get_db),
 ) -> PublicTokenResponse:
-    identifier = payload.username.strip().lower()
+    username = payload.username.strip().lower()
     user = (
-        await db.execute(
-            select(PublicUser).where(
-                (PublicUser.username == identifier) | (func.lower(PublicUser.email) == identifier)
-            )
-        )
+        await db.execute(select(PublicUser).where(PublicUser.username == username))
     ).scalar_one_or_none()
     if user is None or not user.is_active or not verify_password(payload.password, user.password_hash):
-        raise HTTPException(status_code=401, detail="Invalid public username/email or password")
+        raise HTTPException(status_code=401, detail="Invalid public username or password")
 
     session, access, refresh = await create_session(
         db=db,

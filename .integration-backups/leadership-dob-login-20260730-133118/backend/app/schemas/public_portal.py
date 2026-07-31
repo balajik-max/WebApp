@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime
+from datetime import date, datetime
 
 from pydantic import BaseModel, EmailStr, Field, field_validator
 
@@ -57,6 +57,7 @@ class PublicRegisterRequest(BaseModel):
     registration_token: str = Field(min_length=32, max_length=512)
     first_name: str = Field(min_length=1, max_length=120)
     last_name: str = Field(min_length=1, max_length=120)
+    date_of_birth: date
     username: str = Field(min_length=4, max_length=64)
     password: str = Field(min_length=1, max_length=128)
     confirm_password: str = Field(min_length=1, max_length=128)

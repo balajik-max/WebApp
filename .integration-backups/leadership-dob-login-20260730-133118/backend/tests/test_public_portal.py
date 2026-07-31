@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import uuid
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 
 from app.api.v1.public_auth import normalize_email, normalize_phone, normalize_username
 from app.api.v1.public_complaints import officer_complaint_detail
@@ -49,6 +49,7 @@ def _public_user() -> PublicUser:
         id=uuid.uuid4(),
         first_name="Public",
         last_name="User",
+        date_of_birth=date(1990, 1, 1),
         phone="+919999999999",
         email="public.user@example.com",
         username="public.user",

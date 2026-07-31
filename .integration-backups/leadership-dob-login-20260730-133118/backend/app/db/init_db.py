@@ -94,7 +94,6 @@ async def _ensure_spatial_index() -> None:
         # complaints remain valid, while new accounts receive a verified email.
         await conn.execute(text("ALTER TABLE public_users ADD COLUMN IF NOT EXISTS email VARCHAR(320);"))
         await conn.execute(text("ALTER TABLE public_users ADD COLUMN IF NOT EXISTS email_verified_at TIMESTAMPTZ;"))
-        await conn.execute(text("ALTER TABLE public_users ALTER COLUMN date_of_birth DROP NOT NULL;"))
         await conn.execute(text("ALTER TABLE public_users ALTER COLUMN phone_verified_at DROP NOT NULL;"))
         await conn.execute(text("ALTER TABLE public_otp_challenges ADD COLUMN IF NOT EXISTS email VARCHAR(320);"))
         await conn.execute(text("ALTER TABLE public_otp_challenges ADD COLUMN IF NOT EXISTS verified_at TIMESTAMPTZ;"))

@@ -46,7 +46,7 @@ class PublicUser(Base):
     id: Mapped[uuid.UUID] = uuid_pk()
     first_name: Mapped[str] = mapped_column(String(120), nullable=False)
     last_name: Mapped[str] = mapped_column(String(120), nullable=False)
-    date_of_birth: Mapped[date | None] = mapped_column(Date, nullable=True)
+    date_of_birth: Mapped[date] = mapped_column(Date, nullable=False)
     phone: Mapped[str] = mapped_column(String(20), nullable=False, unique=True, index=True)
     email: Mapped[str | None] = mapped_column(String(320), nullable=True, unique=True, index=True)
     username: Mapped[str] = mapped_column(String(64), nullable=False, unique=True, index=True)
