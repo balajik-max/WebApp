@@ -28,6 +28,10 @@ from app.models import (  # noqa: F401
     FeatureVersion,
     Placemark,
     PointVerification,
+    PropertyTaxAssessment,
+    PropertyTaxAssessmentRevision,
+    PropertyTaxMunicipalRecord,
+    PropertyTaxDemand,
     ReviewItem,
     SpatialAnomaly,
     SurveyRequest,
@@ -82,6 +86,36 @@ async def _ensure_spatial_index() -> None:
                 "ON placemarks (owner_id, updated_at DESC);"
             )
         )
+        await conn.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS idx_property_tax_assessments_dataset_status "
+                "ON property_tax_assessments (dataset_id, status);"
+            )
+        )
+        await conn.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS idx_property_tax_assessments_property_id "
+                "ON property_tax_assessments (property_id);"
+            )
+        )
+        # Phase 3 is additive: existing Phase 2 databases receive the new
+        # assessment columns without deleting or recreating any user data.
+        await conn.execute(text("ALTER TABLE property_tax_assessments ADD COLUMN IF NOT EXISTS municipal_record_id UUID REFERENCES property_tax_municipal_records(id) ON DELETE SET NULL;"))
+        await conn.execute(text("ALTER TABLE property_tax_assessments ADD COLUMN IF NOT EXISTS financial_year VARCHAR(16) NOT NULL DEFAULT '2026-27';"))
+        await conn.execute(text("ALTER TABLE property_tax_assessments ADD COLUMN IF NOT EXISTS discrepancy_status VARCHAR(32) NOT NULL DEFAULT 'not_reviewed';"))
+        await conn.execute(text("ALTER TABLE property_tax_assessments ADD COLUMN IF NOT EXISTS floor_assessments JSONB NOT NULL DEFAULT '[]'::jsonb;"))
+        await conn.execute(text("ALTER TABLE property_tax_assessments ADD COLUMN IF NOT EXISTS cess_percent DOUBLE PRECISION NOT NULL DEFAULT 0;"))
+        await conn.execute(text("ALTER TABLE property_tax_assessments ADD COLUMN IF NOT EXISTS service_charge DOUBLE PRECISION NOT NULL DEFAULT 0;"))
+        await conn.execute(text("ALTER TABLE property_tax_assessments ADD COLUMN IF NOT EXISTS rebate_amount DOUBLE PRECISION NOT NULL DEFAULT 0;"))
+        await conn.execute(text("ALTER TABLE property_tax_assessments ADD COLUMN IF NOT EXISTS exemption_amount DOUBLE PRECISION NOT NULL DEFAULT 0;"))
+        await conn.execute(text("ALTER TABLE property_tax_assessments ADD COLUMN IF NOT EXISTS base_annual_tax DOUBLE PRECISION;"))
+        await conn.execute(text("CREATE INDEX IF NOT EXISTS idx_property_tax_assessments_municipal_record ON property_tax_assessments (municipal_record_id);"))
+        await conn.execute(text("ALTER TABLE property_tax_municipal_records ADD COLUMN IF NOT EXISTS source_latitude DOUBLE PRECISION;"))
+        await conn.execute(text("ALTER TABLE property_tax_municipal_records ADD COLUMN IF NOT EXISTS source_longitude DOUBLE PRECISION;"))
+        await conn.execute(text("CREATE INDEX IF NOT EXISTS idx_property_tax_assessment_revisions_feature_version ON property_tax_assessment_revisions (feature_id, version DESC);"))
+        await conn.execute(text("CREATE INDEX IF NOT EXISTS idx_property_tax_municipal_records_dataset_link ON property_tax_municipal_records (dataset_id, feature_id);"))
+        await conn.execute(text("CREATE INDEX IF NOT EXISTS idx_property_tax_municipal_records_owner ON property_tax_municipal_records (owner_name);"))
+        await conn.execute(text("CREATE INDEX IF NOT EXISTS idx_property_tax_demands_dataset_year ON property_tax_demands (dataset_id, financial_year);"))
         await conn.execute(
             text(
                 """

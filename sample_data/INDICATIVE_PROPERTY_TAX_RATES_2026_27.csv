@@ -1,0 +1,10 @@
+property_use,indicative_annual_rate_per_sqm_inr,status
+Residential,12,Editable demonstration rate - not official
+Commercial,30,Editable demonstration rate - not official
+Mixed Use,22,Whole-building fallback; floor-wise uses each floor class
+Industrial,24,Editable demonstration rate - not official
+Public & Semi Public,8,Editable demonstration rate - not official
+Dilapidated,5,Editable demonstration rate - not official
+Under Construction,6,Editable demonstration rate - not official
+Other,10,Editable demonstration rate - not official
+Unclassified,10,Editable demonstration rate - not official
