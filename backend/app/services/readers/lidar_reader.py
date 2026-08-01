@@ -42,7 +42,8 @@ import numpy as np
 from geoalchemy2.shape import from_shape
 from shapely.geometry import Point
 
-from app.db.session import SessionLocal
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
 from app.models import Feature
 from app.services.readers.base import ReaderResult
 from app.services.storage import upload_stream
@@ -203,9 +204,9 @@ class LidarReader:
     def can_handle(self, filename: str) -> bool:
         return Path(filename).suffix.lower() in _LIDAR_SUFFIXES
 
-    async def read(self, file_path: Path, dataset_id: str) -> ReaderResult:
+    async def read(self, file_path: Path, dataset_id: str, db_engine) -> ReaderResult:
         parsed = await asyncio.to_thread(self._parse_sync, file_path)
-        return await self._persist(parsed, dataset_id=dataset_id)
+        return await self._persist(parsed, dataset_id=dataset_id, db_engine=db_engine)
 
     def _parse_sync(self, file_path: Path) -> _ParsedLidar:
         try:
@@ -584,7 +585,7 @@ class LidarReader:
         bounds = (x_min + cx, y_min + cy, x_max + cx, y_max + cy)
         return png_bytes, bounds
 
-    async def _persist(self, parsed: _ParsedLidar, *, dataset_id: str) -> ReaderResult:
+    async def _persist(self, parsed: _ParsedLidar, *, dataset_id: str, db_engine) -> ReaderResult:
         dataset_uuid = uuid.UUID(dataset_id)
         inserted = 0
         skipped = parsed.skipped
@@ -605,7 +606,7 @@ class LidarReader:
         z_range = (parsed.z_max - parsed.z_min) or 1.0
 
         batch: list[Feature] = []
-        async with SessionLocal() as session:
+        async with async_sessionmaker(bind=db_engine, expire_on_commit=False, class_=AsyncSession)() as session:
             for i, pt in enumerate(parsed.points):
                 attrs = {
                     "lidar_file": parsed.filename,

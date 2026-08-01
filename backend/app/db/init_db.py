@@ -16,7 +16,7 @@ from sqlalchemy import select, text
 from app.core.config import get_settings
 from app.core.security import hash_password
 from app.db.base import Base
-from app.db.session import SessionLocal, engine
+from app.db.session import AuthSessionLocal as SessionLocal, auth_engine as engine
 from app.models import User, UserRole  # noqa: F401  (import to register all models)
 from app.models import (  # noqa: F401
     ActivityLog,

@@ -27,7 +27,8 @@ from geoalchemy2.shape import from_shape
 from pyproj import CRS, Transformer
 from shapely.geometry import Point
 
-from app.db.session import SessionLocal
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
 from app.models import Feature
 from app.services.readers.base import ReaderResult
 
@@ -158,15 +159,15 @@ class ObjReader:
     def can_handle(self, filename: str) -> bool:
         return Path(filename).suffix.lower() in _OBJ_SUFFIXES
 
-    async def read(self, file_path: Path, dataset_id: str) -> ReaderResult:
+    async def read(self, file_path: Path, dataset_id: str, db_engine) -> ReaderResult:
         if file_path.suffix.lower() == ".zip":
-            return await self._read_zip(file_path, dataset_id)
+            return await self._read_zip(file_path, dataset_id, db_engine=db_engine)
         parsed = await asyncio.to_thread(self._parse_sync, file_path)
         if not parsed.vertices:
             return ReaderResult(inserted=0, skipped=parsed.skipped, source_crs=None, notes="No valid vertices found")
-        return await self._persist(parsed, dataset_id=dataset_id)
+        return await self._persist(parsed, dataset_id=dataset_id, db_engine=db_engine)
 
-    async def _read_zip(self, zip_path: Path, dataset_id: str) -> ReaderResult:
+    async def _read_zip(self, zip_path: Path, dataset_id: str, db_engine) -> ReaderResult:
         import tempfile
         import zipfile
 
@@ -191,7 +192,7 @@ class ObjReader:
                 return ReaderResult(inserted=0, skipped=parsed.skipped, source_crs=None, notes="No valid vertices found")
 
             model_assets = await self._upload_model_assets(dataset_id, obj_file, mtl_files, texture_files)
-            result = await self._persist(parsed, dataset_id=dataset_id, geo_origin=geo_origin)
+            result = await self._persist(parsed, dataset_id=dataset_id, geo_origin=geo_origin, db_engine=db_engine)
 
             dataset_metadata = dict(result.dataset_metadata or {})
             model_3d = dict(dataset_metadata.get("model_3d") or {})
@@ -307,7 +308,7 @@ class ObjReader:
         )
 
     async def _persist(
-        self, parsed: _ParsedObj, *, dataset_id: str, geo_origin: _GeoOrigin | None = None
+        self, parsed: _ParsedObj, *, dataset_id: str, geo_origin: _GeoOrigin | None = None, db_engine
     ) -> ReaderResult:
         dataset_uuid = uuid.UUID(dataset_id)
         inserted = 0
@@ -351,7 +352,7 @@ class ObjReader:
         log.info("OBJ %s: position source = %s", parsed.filename, position_source)
 
         batch: list[Feature] = []
-        async with SessionLocal() as session:
+        async with async_sessionmaker(bind=db_engine, expire_on_commit=False, class_=AsyncSession)() as session:
             for idx, (x, y, z) in enumerate(parsed.vertices):
                 if transformer is not None:
                     lon, lat = transformer.transform(geo_origin.x + x, geo_origin.y + y)  # type: ignore[union-attr]

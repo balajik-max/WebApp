@@ -1,0 +1,10 @@
+# docker-compose.lb.yml - Load Balancer with host networking
+
+services:
+  haproxy:
+    image: haproxy:2.8-alpine
+    container_name: loadbalancer
+    network_mode: host
+    volumes:
+      - ./haproxy/haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro
+    restart: always

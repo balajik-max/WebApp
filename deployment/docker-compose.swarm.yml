@@ -1,0 +1,108 @@
+# docker-compose.swarm.yml
+# Usage: docker stack deploy -c docker-compose.swarm.yml davangere
+
+version: '3.8'
+
+services:
+  # ==========================================
+  # FRONTEND - Runs on all app servers
+  # ==========================================
+  frontend:
+    image: ${DOCKER_REGISTRY:-192.168.10.94:5000}/davangere-frontend:latest
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    ports:
+      - "80:80"
+    networks:
+      - davangere-net
+    deploy:
+      replicas: 4
+      placement:
+        constraints:
+          - node.role == worker
+      restart_policy:
+        condition: on-failure
+        delay: 5s
+
+  # ==========================================
+  # BACKEND - Runs on all app servers
+  # ==========================================
+  backend:
+    image: ${DOCKER_REGISTRY:-192.168.10.94:5000}/davangere-backend:latest
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    env_file: .env
+    ports:
+      - "8000:8000"
+    networks:
+      - davangere-net
+    deploy:
+      replicas: 4
+      placement:
+        constraints:
+          - node.role == worker
+      restart_policy:
+        condition: on-failure
+        delay: 5s
+
+  # ==========================================
+  # POSTGRESQL - Only on DB server (PC6)
+  # ==========================================
+  db:
+    image: postgres:15-alpine
+    env_file: .env
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    networks:
+      - davangere-net
+    deploy:
+      replicas: 1
+      placement:
+        constraints:
+          - node.labels.db == true
+      restart_policy:
+        condition: on-failure
+
+  # ==========================================
+  # GRAFANA - Only on DB server (PC6)
+  # ==========================================
+  grafana:
+    image: grafana/grafana:latest
+    ports:
+      - "3001:3000"
+    volumes:
+      - grafana-data:/var/lib/grafana
+    networks:
+      - davangere-net
+    deploy:
+      replicas: 1
+      placement:
+        constraints:
+          - node.labels.db == true
+
+  # ==========================================
+  # PROMETHEUS - Only on DB server (PC6)
+  # ==========================================
+  prometheus:
+    image: prom/prometheus:latest
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
+    networks:
+      - davangere-net
+    deploy:
+      replicas: 1
+      placement:
+        constraints:
+          - node.labels.db == true
+
+volumes:
+  pgdata:
+  grafana-data:
+
+networks:
+  davangere-net:
+    external: true

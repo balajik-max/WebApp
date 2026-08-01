@@ -13,11 +13,14 @@ volumes:
   postgis_data:
   minio_data:
   ollama_data:
+  prometheus_data:
+  grafana_data:
 
 services:
 
   # =========================================================================
-  # PostgreSQL 16 + PostGIS 3.4
+  # PostgreSQL 16 + PostGIS 3.4 (LOCAL - for backward compatibility)
+  # Main database now runs on 192.168.10.81
   # =========================================================================
   db:
     image: postgis/postgis:16-3.4
@@ -32,6 +35,7 @@ services:
     volumes:
       - postgis_data:/var/lib/postgresql/data
       - ./backend/init.sql:/docker-entrypoint-initdb.d/00_init_postgis.sql:ro
+      - ./scripts/init-role-databases.sql:/docker-entrypoint-initdb.d/01_init_role_databases.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB} -h 127.0.0.1"]
       interval: 5s
@@ -119,9 +123,16 @@ services:
       # Compose-scoped overrides so in-network hostnames win regardless of
       # what the operator set in `.env` (which may target localhost for
       # bare-metal runs).
-      DATABASE_URL:    postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
+      DATABASE_URL:    postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@192.168.10.81:4594/davangere_auth
       MINIO_ENDPOINT:  http://storage:9000
-      OLLAMA_BASE_URL: http://ai_engine:11434
+      OLLAMA_BASE_URL: http://host.docker.internal:11435
+      # Multi-database: Role-specific databases on 192.168.10.81:4594
+      DB_ADMIN:        postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@192.168.10.81:4594/davangere_admin
+      DB_ARCHITECT:    postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@192.168.10.81:4594/davangere_architect
+      DB_COMMISSIONER: postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@192.168.10.81:4594/davangere_commissioner
+      DB_AEE:          postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@192.168.10.81:4594/davangere_aee
+      DB_AE:           postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@192.168.10.81:4594/davangere_ae
+      DB_MLA:          postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@192.168.10.81:4594/davangere_mla
     ports:
       - "${BACKEND_PORT:-8001}:8001"
     volumes:
@@ -143,6 +154,53 @@ services:
       timeout: 5s
       retries: 20
       start_period: 20s
+    networks: [urban_net]
+
+  # =========================================================================
+  # Ollama Prometheus Exporter — probes remote AI engines for metrics
+  # =========================================================================
+  ollama_exporter:
+    build:
+      context: ./monitoring/ollama-exporter
+      dockerfile: Dockerfile
+    container_name: davangere_ollama_exporter
+    restart: unless-stopped
+    ports:
+      - "9320:9320"
+    networks: [urban_net]
+
+  # =========================================================================
+  # Prometheus — metrics collection
+  # =========================================================================
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: davangere_prometheus
+    restart: unless-stopped
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    ports:
+      - "9090:9090"
+    networks: [urban_net]
+
+  # =========================================================================
+  # Grafana — dashboards & visualization
+  # =========================================================================
+  grafana:
+    image: grafana/grafana:latest
+    container_name: davangere_grafana
+    restart: unless-stopped
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: JSHCWe6Qz9xuyv4KUsqZIWvQ
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    ports:
+      - "3000:3000"
+    depends_on:
+      - prometheus
     networks: [urban_net]
 
   # =========================================================================

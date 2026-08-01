@@ -25,7 +25,8 @@ from geoalchemy2.shape import from_shape
 from shapely import force_2d
 from shapely.geometry.base import BaseGeometry
 
-from app.db.session import SessionLocal
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
 from app.models import Feature
 from app.services.classification import resolve_canonical_classes_bulk
 from app.services.readers.base import ReaderResult
@@ -104,19 +105,19 @@ class GISReader:
     def can_handle(self, filename: str) -> bool:
         return Path(filename).suffix.lower() in _VECTOR_SUFFIXES
 
-    async def read(self, file_path: Path, dataset_id: str) -> ReaderResult:
-        return await self._read_sync_bridge(file_path, dataset_id)
+    async def read(self, file_path: Path, dataset_id: str, db_engine) -> ReaderResult:
+        return await self._read_sync_bridge(file_path, dataset_id, db_engine)
 
     # ------------------------------------------------------------------
     # Implementation
     # ------------------------------------------------------------------
-    async def _read_sync_bridge(self, file_path: Path, dataset_id: str) -> ReaderResult:
+    async def _read_sync_bridge(self, file_path: Path, dataset_id: str, db_engine) -> ReaderResult:
         import asyncio
 
         # geopandas I/O is CPU-bound → offload to a worker thread so we
         # never stall the FastAPI event loop.
         gdf, source_crs = await asyncio.to_thread(self._load_geodataframe, file_path)
-        return await self._persist(gdf, dataset_id=dataset_id, source_crs=source_crs)
+        return await self._persist(gdf, dataset_id=dataset_id, source_crs=source_crs, db_engine=db_engine)
 
     def _load_geodataframe(self, file_path: Path) -> tuple[gpd.GeoDataFrame, str | None]:
         gdb_entry = _find_gdb_entry(file_path) if file_path.suffix.lower() == ".zip" else None
@@ -260,6 +261,7 @@ class GISReader:
         *,
         dataset_id: str,
         source_crs: str | None,
+        db_engine,
     ) -> ReaderResult:
         dataset_uuid = uuid.UUID(dataset_id)
         inserted = 0
@@ -348,7 +350,7 @@ class GISReader:
         # this is what keeps semantic classification cheap regardless of
         # how many feature rows share that category.
         canonical_by_category: dict[str, str] = {}
-        async with SessionLocal() as classify_session:
+        async with async_sessionmaker(bind=db_engine, expire_on_commit=False, class_=AsyncSession)() as classify_session:
             if category_col is not None or gdb_layer_col is not None:
                 distinct_categories = {
                     _effective_category(row) for _, row in gdf.iterrows()
@@ -361,7 +363,7 @@ class GISReader:
                     raw: res.canonical_class for raw, res in resolutions.items()
                 }
 
-        async with SessionLocal() as session:
+        async with async_sessionmaker(bind=db_engine, expire_on_commit=False, class_=AsyncSession)() as session:
             for _, row in gdf.iterrows():
                 geom: BaseGeometry | None = row.get("geometry")
                 if geom is None or geom.is_empty:

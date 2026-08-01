@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import uuid
+from typing import AsyncGenerator
 
 import jwt
 from fastapi import Depends, HTTPException, Request, status
@@ -9,7 +10,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.security import TOKEN_TYPE_ACCESS, decode_token
-from app.db.session import get_db
+from app.db.session import get_db, get_auth_db, get_db_by_role
 from app.models import User, UserRole
 
 
@@ -30,8 +31,9 @@ def _extract_token(request: Request) -> str:
 
 async def get_current_user(
     request: Request,
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_auth_db),
 ) -> User:
+    """Get the current user from the auth database."""
     token = _extract_token(request)
 
     try:
@@ -60,45 +62,26 @@ async def get_current_user(
     if user is None:
         raise HTTPException(status_code=401, detail="User not found")
 
-    # MLA can inspect all map, layer, analytics, and workflow data but cannot
-    # mutate application state. This global guard prevents accidental writes
-    # even if a future endpoint forgets a role-specific dependency.
-    # Two actions are exempted as non-destructive, MLA-appropriate oversight:
-    # running the spatial audit engine (recomputes findings from already-
-    # surveyed data, doesn't let MLA edit anything) and marking a finding as
-    # Open/Reviewing (the route itself still blocks Resolved for every role
-    # — that requires Architect evidence + Admin approval regardless).
-    _mla_exempt_paths = {"/api/auth/logout", "/api/v1/ai/audit"}
-    _mla_exempt_prefixes = ("/api/v1/ai/audit/anomalies/",)
-    if (
-        user.role == UserRole.MLA
-        and request.method not in {"GET", "HEAD", "OPTIONS"}
-        and request.url.path not in _mla_exempt_paths
-        and not request.url.path.startswith(_mla_exempt_prefixes)
     if not user.is_active:
         raise HTTPException(
             status_code=403,
             detail="Account is inactive",
         )
 
-    # MLA remains read-only for application data, but may maintain its own
-    # authentication session and change its own password.
-    if (
-        user.role == UserRole.MLA
-        and request.method not in {"GET", "HEAD", "OPTIONS"}
-        and request.url.path
-        not in {
-            "/api/auth/logout",
-            "/api/auth/heartbeat",
-            "/api/auth/change-password",
-        }
-    ):
-        raise HTTPException(
-            status_code=403,
-            detail="MLA access is strictly read-only",
-        )
+    return user
 
     return user
+
+
+async def get_role_db_session(
+    user: User = Depends(get_current_user),
+) -> AsyncGenerator[AsyncSession, None]:
+    """Get a database session for the current user's role-specific database.
+
+    This provides data isolation between roles - each role has its own database.
+    """
+    async for session in get_db_by_role(user.role.value):
+        yield session
 
 
 def require_roles(*allowed: UserRole):
@@ -129,6 +112,7 @@ require_operational = require_roles(
     UserRole.COMMISSIONER,
     UserRole.AEE,
     UserRole.AE,
+    UserRole.MLA,
 )
 
 # All authenticated roles remain able to use existing read endpoints.

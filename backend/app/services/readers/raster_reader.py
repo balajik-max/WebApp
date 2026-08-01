@@ -35,7 +35,8 @@ import numpy as np
 from geoalchemy2.shape import from_shape
 from shapely.geometry import Point
 
-from app.db.session import SessionLocal
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
 from app.models import Feature
 from app.services.readers.base import ReaderResult
 from app.services.storage import upload_stream
@@ -93,9 +94,9 @@ class RasterReader:
     def can_handle(self, filename: str) -> bool:
         return Path(filename).suffix.lower() in _RASTER_SUFFIXES
 
-    async def read(self, file_path: Path, dataset_id: str) -> ReaderResult:
+    async def read(self, file_path: Path, dataset_id: str, db_engine) -> ReaderResult:
         parsed = await asyncio.to_thread(self._parse_sync, file_path)
-        return await self._persist(parsed, dataset_id=dataset_id)
+        return await self._persist(parsed, dataset_id=dataset_id, db_engine=db_engine)
 
     def _parse_sync(self, file_path: Path) -> _ParsedRaster:
         try:
@@ -290,7 +291,7 @@ class RasterReader:
 
         return png_bytes, tuple(bounds)
 
-    async def _persist(self, parsed: _ParsedRaster, *, dataset_id: str) -> ReaderResult:
+    async def _persist(self, parsed: _ParsedRaster, *, dataset_id: str, db_engine) -> ReaderResult:
         dataset_uuid = uuid.UUID(dataset_id)
         inserted = 0
         skipped = parsed.skipped
@@ -316,7 +317,7 @@ class RasterReader:
                 log.exception("Failed to upload raster preview for dataset %s", dataset_id)
 
         batch: list[Feature] = []
-        async with SessionLocal() as session:
+        async with async_sessionmaker(bind=db_engine, expire_on_commit=False, class_=AsyncSession)() as session:
             for pt in parsed.points:
                 attrs = {
                     "raster_file": parsed.filename,

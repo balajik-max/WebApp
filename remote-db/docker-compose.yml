@@ -1,0 +1,34 @@
+name: davangere-db
+
+# PostgreSQL + PostGIS for multi-role database isolation
+# Run this on 192.168.10.81
+
+services:
+  db:
+    image: postgis/postgis:16-3.4
+    container_name: davangere_role_db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB:       davangere_auth
+      POSTGRES_USER:     postgres_admin
+      POSTGRES_PASSWORD: jvpiLtvqdqqSZ1HdBVEgokQk8Bzww
+    ports:
+      - "5432:5432"
+    volumes:
+      - role_db_data:/var/lib/postgresql/data
+      - ./init-databases.sql:/docker-entrypoint-initdb.d/01_init_databases.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres_admin -d davangere_auth -h 127.0.0.1"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 15s
+    networks:
+      - db_net
+
+volumes:
+  role_db_data:
+
+networks:
+  db_net:
+    driver: bridge

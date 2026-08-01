@@ -61,3 +61,6 @@ sample_data/extracted_gdb/
 Davangere_Ghandinagar Ward/
 graphify-out/
 .claude/
+
+# Vendored nginx build artifact (binaries, logs, temp)
+deployment/nginx-lb/

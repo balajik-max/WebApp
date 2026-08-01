@@ -67,6 +67,13 @@ class Settings(BaseSettings):
 
     # --- Database --------------------------------------------------------
     database_url: str = Field(validation_alias="DATABASE_URL")
+    # Multi-database: role-specific databases (Option 1 - separate databases)
+    db_admin: str = Field(default="", validation_alias="DB_ADMIN")
+    db_architect: str = Field(default="", validation_alias="DB_ARCHITECT")
+    db_commissioner: str = Field(default="", validation_alias="DB_COMMISSIONER")
+    db_aee: str = Field(default="", validation_alias="DB_AEE")
+    db_ae: str = Field(default="", validation_alias="DB_AE")
+    db_mla: str = Field(default="", validation_alias="DB_MLA")
 
     # --- Storage (MinIO / S3) -------------------------------------------
     s3_endpoint_url: str = Field(

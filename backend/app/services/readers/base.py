@@ -45,5 +45,5 @@ class DatasetReader(Protocol):
     def can_handle(self, filename: str) -> bool:  # pragma: no cover - protocol
         ...
 
-    async def read(self, file_path: Path, dataset_id: str) -> ReaderResult:  # pragma: no cover
+    async def read(self, file_path: Path, dataset_id: str, db_engine) -> ReaderResult:  # pragma: no cover
         ...

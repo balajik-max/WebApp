@@ -1,0 +1,64 @@
+# docker-compose.appserver.yml
+# Run this on App Server PCs (PC2-PC5)
+# Each PC runs: Backend + Frontend + AI Engine
+
+version: '3.8'
+
+services:
+  # Ollama AI Engine - Local on each PC
+  ai_engine:
+    image: ollama/ollama:latest
+    container_name: davangere_ai
+    restart: unless-stopped
+    environment:
+      OLLAMA_KEEP_ALIVE: 24h
+      OLLAMA_MODEL: llama3.2
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    healthcheck:
+      test: ["CMD-SHELL", "ollama list || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 40
+      start_period: 30s
+
+  # FastAPI Backend
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: davangere_backend
+    restart: unless-stopped
+    depends_on:
+      ai_engine:
+        condition: service_started
+    environment:
+      # Connect to DB Server (192.168.10.81)
+      DATABASE_URL:    postgresql+asyncpg://postgres:jvpiLtvqdqqSZ1HdBVEgokQk8Bzww@192.168.10.81:5432/davangere_urban
+      MINIO_ENDPOINT:  http://192.168.10.81:9000
+      # Connect to LOCAL AI engine
+      OLLAMA_BASE_URL: http://ai_engine:11434
+    ports:
+      - "8001:8001"
+
+  # React Frontend
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      target: production
+      args:
+        # Use relative URL - frontend makes API calls to same host (HAProxy)
+        VITE_API_BASE_URL: ""
+    container_name: davangere_frontend
+    restart: unless-stopped
+    depends_on:
+      backend:
+        condition: service_healthy
+    ports:
+      - "3000:3000"
+
+volumes:
+  ollama_data:

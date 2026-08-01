@@ -8014,10 +8014,10 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
         paint: {
           "line-color": roadIssueColor,
           "line-width": [
-            "case",
-            ["==", ["get", "selected"], true],
-            ["interpolate", ["linear"], ["zoom"], 12, 5, 16, 8, 20, 12],
-            ["interpolate", ["linear"], ["zoom"], 12, 3, 16, 5, 20, 8],
+            "interpolate", ["linear"], ["zoom"],
+            12, ["case", ["==", ["get", "selected"], true], 5, 3],
+            16, ["case", ["==", ["get", "selected"], true], 8, 5],
+            20, ["case", ["==", ["get", "selected"], true], 12, 8],
           ],
           "line-opacity": 0.94,
         },
@@ -8029,10 +8029,10 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
         filter: POINT_BASE_FILTER,
         paint: {
           "circle-radius": [
-            "case",
-            ["==", ["get", "selected"], true],
-            ["interpolate", ["linear"], ["zoom"], 12, 10, 16, 15, 20, 20],
-            ["interpolate", ["linear"], ["zoom"], 12, 6, 16, 10, 20, 14],
+            "interpolate", ["linear"], ["zoom"],
+            12, ["case", ["==", ["get", "selected"], true], 10, 6],
+            16, ["case", ["==", ["get", "selected"], true], 15, 10],
+            20, ["case", ["==", ["get", "selected"], true], 20, 14],
           ],
           "circle-color": roadIssueColor,
           "circle-opacity": 0.94,

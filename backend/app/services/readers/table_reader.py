@@ -19,7 +19,8 @@ import pandas as pd
 from geoalchemy2.shape import from_shape
 from shapely.geometry import Point
 
-from app.db.session import SessionLocal
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
 from app.models import Feature
 from app.services.classification import resolve_canonical_classes_bulk
 from app.services.readers.base import ReaderResult
@@ -86,11 +87,11 @@ class TableReader:
     def can_handle(self, filename: str) -> bool:
         return Path(filename).suffix.lower() in _TABULAR_SUFFIXES
 
-    async def read(self, file_path: Path, dataset_id: str) -> ReaderResult:
+    async def read(self, file_path: Path, dataset_id: str, db_engine) -> ReaderResult:
         import asyncio
 
         df = await asyncio.to_thread(self._load_dataframe, file_path)
-        return await self._persist(df, dataset_id=dataset_id)
+        return await self._persist(df, dataset_id=dataset_id, db_engine=db_engine)
 
     # ------------------------------------------------------------------
     def _load_dataframe(self, file_path: Path) -> pd.DataFrame:
@@ -103,7 +104,7 @@ class TableReader:
             return pd.read_excel(file_path)
         raise ValueError(f"TableReader cannot open suffix {suffix}")
 
-    async def _persist(self, df: pd.DataFrame, *, dataset_id: str) -> ReaderResult:
+    async def _persist(self, df: pd.DataFrame, *, dataset_id: str, db_engine) -> ReaderResult:
         columns = list(df.columns.astype(str))
         lat_col = _detect_column(columns, _LAT_ALIASES)
         lon_col = _detect_column(columns, _LON_ALIASES)
@@ -136,7 +137,7 @@ class TableReader:
         # See gis_reader.py for the rationale — resolve every distinct raw
         # category string in this batch to a canonical asset class ONCE.
         canonical_by_category: dict[str, str] = {}
-        async with SessionLocal() as classify_session:
+        async with async_sessionmaker(bind=db_engine, expire_on_commit=False, class_=AsyncSession)() as classify_session:
             if category_col is not None:
                 distinct_categories = {
                     c for c in df[category_col].dropna().unique().tolist()
@@ -149,7 +150,7 @@ class TableReader:
                     raw: res.canonical_class for raw, res in resolutions.items()
                 }
 
-        async with SessionLocal() as session:
+        async with async_sessionmaker(bind=db_engine, expire_on_commit=False, class_=AsyncSession)() as session:
             for _, row in df.iterrows():
                 lat_raw = row.get(lat_col)
                 lon_raw = row.get(lon_col)

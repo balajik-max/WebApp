@@ -15,8 +15,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.db.session import SessionLocal
 from app.models import (
     ActivityAction,
     ActivityLog,
@@ -64,11 +64,12 @@ def _pick_zip_reader(local_path: Path) -> DatasetReader:
 async def _set_status(
     dataset_id: uuid.UUID,
     status: DatasetStatus,
+    db_engine,
     *,
     error: str | None = None,
     result_payload: dict | None = None,
 ) -> None:
-    async with SessionLocal() as session:
+    async with async_sessionmaker(bind=db_engine, expire_on_commit=False, class_=AsyncSession)() as session:
         result = await session.execute(select(Dataset).where(Dataset.id == dataset_id))
         ds = result.scalar_one_or_none()
         if ds is None:
@@ -107,7 +108,13 @@ async def _set_status(
         await session.commit()
 
 
-async def ingest_dataset(*, dataset_id: uuid.UUID, storage_key: str, filename: str) -> None:
+async def ingest_dataset(
+    *,
+    dataset_id: uuid.UUID,
+    storage_key: str,
+    filename: str,
+    role: str,
+) -> None:
     """Background pipeline: MinIO → local tmp → strategy reader → DB rows.
 
     This runs fire-and-forget via `BackgroundTasks` after the HTTP response
@@ -119,17 +126,21 @@ async def ingest_dataset(*, dataset_id: uuid.UUID, storage_key: str, filename: s
     a successful reader run. The outer handler guarantees a FAILED status
     is always attempted as a last resort.
     """
+    from app.db.session import _get_role_engine
+
+    db_engine = _get_role_engine(role)
     try:
         reader = get_reader_for(filename)
         if reader is None:
             await _set_status(
                 dataset_id,
                 DatasetStatus.FAILED,
+                db_engine,
                 error=f"No reader can handle file '{filename}'",
             )
             return
 
-        await _set_status(dataset_id, DatasetStatus.PROCESSING)
+        await _set_status(dataset_id, DatasetStatus.PROCESSING, db_engine)
 
         with tempfile.TemporaryDirectory(prefix="ingest_") as tmpdir:
             local = Path(tmpdir) / filename
@@ -140,6 +151,7 @@ async def ingest_dataset(*, dataset_id: uuid.UUID, storage_key: str, filename: s
                 await _set_status(
                     dataset_id,
                     DatasetStatus.FAILED,
+                    db_engine,
                     error=f"storage_fetch_error: {exc}",
                 )
                 return
@@ -148,12 +160,13 @@ async def ingest_dataset(*, dataset_id: uuid.UUID, storage_key: str, filename: s
                 reader = _pick_zip_reader(local)
 
             try:
-                result = await reader.read(local, str(dataset_id))
+                result = await reader.read(local, str(dataset_id), db_engine)
             except Exception as exc:  # noqa: BLE001
                 log.exception("Reader failed for dataset %s", dataset_id)
                 await _set_status(
                     dataset_id,
                     DatasetStatus.FAILED,
+                    db_engine,
                     error=f"reader_error: {exc}",
                 )
                 return
@@ -161,6 +174,7 @@ async def ingest_dataset(*, dataset_id: uuid.UUID, storage_key: str, filename: s
         await _set_status(
             dataset_id,
             DatasetStatus.READY,
+            db_engine,
             result_payload={
                 "reader": reader.__class__.__name__,
                 "inserted": result.inserted,
@@ -184,8 +198,10 @@ async def ingest_dataset(*, dataset_id: uuid.UUID, storage_key: str, filename: s
         # them rather than paying for a no-op audit run.
         if isinstance(reader, GISReader):
             try:
-                async with SessionLocal() as session:
-                    await run_spatial_audit(dataset_id, session)
+                async with async_sessionmaker(
+                    bind=db_engine, expire_on_commit=False, class_=AsyncSession
+                )() as audit_session:
+                    await run_spatial_audit(dataset_id, audit_session)
             except Exception:  # noqa: BLE001 — an audit failure must never
                 # undo the READY status just written above; the dataset's
                 # features are real and usable even if AI Detection isn't.
@@ -196,6 +212,7 @@ async def ingest_dataset(*, dataset_id: uuid.UUID, storage_key: str, filename: s
             await _set_status(
                 dataset_id,
                 DatasetStatus.FAILED,
+                db_engine,
                 error=f"unexpected_error: {exc}",
             )
         except Exception:  # noqa: BLE001

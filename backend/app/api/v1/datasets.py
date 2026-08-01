@@ -341,12 +341,15 @@ async def upload_dataset(
     )
     await db.flush()  # ensure row is visible to the background task
 
-    # 4. Fire-and-forget the ingestion pipeline.
+    # 4. Fire-and-forget the ingestion pipeline.  Run it against
+    #    the same role-database bind so reads/writes go to the
+    #    user's isolated DB, not the shared auth database.
     background_tasks.add_task(
         ingest_dataset,
         dataset_id=dataset_id,
         storage_key=storage_key,
         filename=file.filename,
+        role=current_user.role.value,
     )
 
     poll_url = f"/api/v1/datasets/{dataset_id}"

@@ -29,7 +29,8 @@ from geoalchemy2.shape import from_shape
 from PIL import Image
 from shapely.geometry import Point
 
-from app.db.session import SessionLocal
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
 from app.models import Feature
 from app.services.readers.base import ReaderResult
 from app.services.storage import upload_stream
@@ -183,12 +184,12 @@ class ImageReader:
     def can_handle(self, filename: str) -> bool:
         return Path(filename).suffix.lower() in _IMAGE_SUFFIXES
 
-    async def read(self, file_path: Path, dataset_id: str) -> ReaderResult:
+    async def read(self, file_path: Path, dataset_id: str, db_engine) -> ReaderResult:
         parsed = await asyncio.to_thread(self._parse_sync, file_path)
         if not parsed.photos:
             notes = "; ".join(parsed.skip_reasons[:5]) or "No geo-tagged photos found"
             return ReaderResult(inserted=0, skipped=parsed.skipped, source_crs=None, notes=notes)
-        return await self._persist(parsed, dataset_id=dataset_id)
+        return await self._persist(parsed, dataset_id=dataset_id, db_engine=db_engine)
 
     def _parse_sync(self, file_path: Path) -> _ParsedBatch:
         photos: list[_ParsedPhoto] = []
@@ -242,13 +243,13 @@ class ImageReader:
 
         return _ParsedBatch(photos=photos, skipped=skipped, skip_reasons=skip_reasons)
 
-    async def _persist(self, parsed: _ParsedBatch, *, dataset_id: str) -> ReaderResult:
+    async def _persist(self, parsed: _ParsedBatch, *, dataset_id: str, db_engine) -> ReaderResult:
         dataset_uuid = uuid.UUID(dataset_id)
         inserted = 0
         skipped = parsed.skipped
         batch: list[Feature] = []
 
-        async with SessionLocal() as session:
+        async with async_sessionmaker(bind=db_engine, expire_on_commit=False, class_=AsyncSession)() as session:
             for photo in parsed.photos:
                 photo_key = f"datasets/{dataset_id}/photos/{uuid.uuid4()}{Path(photo.filename).suffix.lower()}"
                 try:
