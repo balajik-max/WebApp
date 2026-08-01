@@ -145,7 +145,6 @@ export function AnalyticsFeatureTable({ datasetIds, categories, filters = {} }: 
     <article className="chart-card analytics-feature-card" data-testid="analytics-feature-table">
       <div className="chart-card__header">
         <div>
-          <div className="analytics-card-eyebrow">Feature rows</div>
           <h3 className="chart-card__title">Scoped Feature Table</h3>
           <small className="analytics-feature-table__hint">Right-click any feature row and choose “Show on map”.</small>
         </div>

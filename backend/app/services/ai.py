@@ -19,6 +19,7 @@ import asyncio
 import logging
 from dataclasses import dataclass
 
+import httpx
 import ollama
 
 from app.core.config import get_settings
@@ -148,6 +149,38 @@ async def embed_texts(texts: list[str]) -> list[list[float]]:
         raise RuntimeError(f"ollama_embed_error: {exc}") from exc
 
 
+GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+
+
+async def _gemini_chat(*, system: str, user: str, model: str, api_key: str, num_predict: int) -> str:
+    """Single-shot Gemini call. Raises on any error/empty/blocked response so
+    the caller's except-and-fallback-to-Ollama logic is the only place that
+    has to reason about "did the fast path work"."""
+    async with httpx.AsyncClient(timeout=30) as client:
+        resp = await client.post(
+            GEMINI_URL.format(model=model),
+            params={"key": api_key},
+            json={
+                "systemInstruction": {"parts": [{"text": system}]},
+                "contents": [{"role": "user", "parts": [{"text": user}]}],
+                "generationConfig": {
+                    "temperature": 0.1,
+                    "topP": 0.85,
+                    "maxOutputTokens": num_predict,
+                },
+            },
+        )
+        resp.raise_for_status()
+        data = resp.json()
+
+    candidates = data.get("candidates") or []
+    parts = candidates[0].get("content", {}).get("parts", []) if candidates else []
+    text = "".join(p.get("text", "") for p in parts).strip()
+    if not text:
+        raise RuntimeError(f"gemini_empty_response: {data.get('promptFeedback')}")
+    return text
+
+
 async def run_grounded_completion(
     *,
     context: str,
@@ -164,6 +197,21 @@ async def run_grounded_completion(
     # actually write in. Default to the configured cap; long-form callers
     # pass an explicit, larger value.
     num_ctx = min(num_ctx or settings.ai_max_context_tokens, 8192)
+    # Cheap approximation for the token count — good enough for observability.
+    approx_tokens = int(len(system) / 4) + int(len(user_prompt) / 4)
+
+    if settings.gemini_api_key:
+        try:
+            text_out = await _gemini_chat(
+                system=system,
+                user=user_prompt,
+                model=settings.gemini_model,
+                api_key=settings.gemini_api_key,
+                num_predict=num_predict,
+            )
+            return LlmReply(text=text_out, model=settings.gemini_model, prompt_tokens_hint=approx_tokens)
+        except Exception:  # noqa: BLE001
+            log.warning("Gemini call failed, falling back to local Ollama", exc_info=True)
 
     def _do() -> str:
         return _blocking_chat(
@@ -176,8 +224,6 @@ async def run_grounded_completion(
         log.exception("Ollama call failed")
         raise RuntimeError(f"ollama_error: {exc}") from exc
 
-    # Cheap approximation for the token count — good enough for observability.
-    approx_tokens = int(len(system) / 4) + int(len(user_prompt) / 4)
     return LlmReply(
         text=text_out or INSUFFICIENT_ANSWER,
         model=settings.ollama_model,

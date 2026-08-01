@@ -2,6 +2,7 @@ import {
   useState, useCallback, useRef, useEffect,
   type MutableRefObject, type CSSProperties,
   type PointerEvent as ReactPointerEvent, type KeyboardEvent as ReactKeyboardEvent,
+  type DragEvent as ReactDragEvent,
 } from "react";
 import {
   MapCanvas,
@@ -12,11 +13,16 @@ import {
 import { ReportGenerator } from "../components/WardReportPanel";
 import { AiAssistant } from "../components/AiAssistant";
 import { PointVerificationPanel } from "../components/PointVerificationPanel";
-import { useOutletContext, useSearchParams } from "react-router-dom";
+import { DropOverlay } from "../components/DropOverlay";
+import { useNavigate, useOutletContext, useSearchParams } from "react-router-dom";
 import type { AiHighlight, FeatureFilter, UrbanFeature } from "../lib/types";
 import type { DatasetRow } from "../lib/workflow";
 import { useIsMobile } from "../lib/useIsMobile";
 import type { QuickAnalysisViewState } from "../lib/quickAnalysisViewState";
+import { logActivity } from "../lib/activityLog";
+import { useUploadTransfer } from "../context/UploadTransferContext";
+import { collectDroppedFolder, classifyAndZipFolder, type WebkitEntry } from "../lib/datasetFileIntake";
+import type { DetectionMode } from "../lib/detectionMode";
 
 type SpatialAuditStatus = "idle" | "running" | "success" | "error";
 
@@ -70,6 +76,12 @@ interface LayoutCtx {
   setSpatialAuditStatus: (status: SpatialAuditStatus) => void;
   mapState: MapState;
   setMapState: (state: MapState) => void;
+  detectionMode: DetectionMode;
+  setDetectionMode: (mode: DetectionMode) => void;
+  aiOverlayEnabled: boolean;
+  setAiOverlayEnabled: (enabled: boolean) => void;
+  roadInspectionActive: boolean;
+  setRoadInspectionActive: (active: boolean) => void;
 }
 
 export function MapView() {
@@ -93,6 +105,12 @@ export function MapView() {
     setSpatialAuditStatus,
     mapState,
     setMapState,
+    detectionMode,
+    setDetectionMode,
+    aiOverlayEnabled,
+    setAiOverlayEnabled,
+    roadInspectionActive,
+    setRoadInspectionActive,
   } = useOutletContext<LayoutCtx>();
   const [selected, setSelected] = useState<UrbanFeature | null>(null);
   const [verificationTarget, setVerificationTarget] = useState<{
@@ -105,6 +123,10 @@ export function MapView() {
     quickAnalysisViewState.sidebarPanel === "analysis"
   );
   const [pointVerificationRefresh, setPointVerificationRefresh] = useState(0);
+
+  useEffect(() => {
+    logActivity("page_viewed", undefined, { page: "map", page_label: "Map" });
+  }, []);
 
   const isMobile = useIsMobile();
   
@@ -219,12 +241,122 @@ export function MapView() {
     setSelectedDatasets(rows);
   }, [setMapSelectedDatasets, setSelectedDatasets]);
 
+  // ── Drag a file in from outside the browser -> hand off to Datasets ──────
+  // Dropping an external file anywhere on the Map page stages it in
+  // UploadTransferContext and redirects to /datasets, where the existing
+  // dropzone flow (name/ward fields, shapefile-bundle/photo-batch/OBJ
+  // detection) picks it up and finishes the job. A drag counter tracks
+  // nested dragenter/dragleave pairs so the overlay doesn't flicker while
+  // the pointer crosses child elements. Checking `types.includes("Files")`
+  // is what keeps this from reacting to the map's own internal
+  // drag-and-drop (layer-group reordering), which never carries a "Files"
+  // type.
+  const navigate = useNavigate();
+  const { stageFilesForUpload } = useUploadTransfer();
+  const dragDepthRef = useRef(0);
+  const [isDraggingFile, setIsDraggingFile] = useState(false);
+  const [folderDropStatus, setFolderDropStatus] = useState<"idle" | "processing">("idle");
+  const [dropError, setDropError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!dropError) return;
+    const timer = window.setTimeout(() => setDropError(null), 6000);
+    return () => window.clearTimeout(timer);
+  }, [dropError]);
+
+  const isExternalFileDrag = (event: ReactDragEvent<HTMLDivElement>) =>
+    Array.from(event.dataTransfer?.types ?? []).includes("Files");
+
+  const handleDragEnter = useCallback((event: ReactDragEvent<HTMLDivElement>) => {
+    if (!isExternalFileDrag(event)) return;
+    event.preventDefault();
+    dragDepthRef.current += 1;
+    setIsDraggingFile(true);
+  }, []);
+
+  const handleDragOver = useCallback((event: ReactDragEvent<HTMLDivElement>) => {
+    if (!isExternalFileDrag(event)) return;
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "copy";
+  }, []);
+
+  const handleDragLeave = useCallback((event: ReactDragEvent<HTMLDivElement>) => {
+    if (!isExternalFileDrag(event)) return;
+    dragDepthRef.current = Math.max(0, dragDepthRef.current - 1);
+    if (dragDepthRef.current === 0) setIsDraggingFile(false);
+  }, []);
+
+  const handleDrop = useCallback((event: ReactDragEvent<HTMLDivElement>) => {
+    if (!isExternalFileDrag(event)) return;
+    event.preventDefault();
+    dragDepthRef.current = 0;
+    setIsDraggingFile(false);
+
+    // A dropped folder (e.g. an unzipped .gdb) arrives as a
+    // FileSystemEntry via dataTransfer.items, not as a normal File — must
+    // be read via webkitGetAsEntry() synchronously, here in the drop
+    // handler, before any await (same constraint the Datasets page's own
+    // dropzone already works around).
+    const item = event.dataTransfer.items?.[0];
+    const entry = (item as unknown as { webkitGetAsEntry?: () => WebkitEntry | null })
+      ?.webkitGetAsEntry?.();
+    if (entry && !entry.isFile) {
+      setFolderDropStatus("processing");
+      void (async () => {
+        try {
+          const collected = await collectDroppedFolder(entry);
+          const { file } = await classifyAndZipFolder(entry.name, collected);
+          stageFilesForUpload([file]);
+          navigate("/datasets");
+        } catch (err) {
+          setDropError((err as Error).message || "Couldn't read that folder.");
+        } finally {
+          setFolderDropStatus("idle");
+        }
+      })();
+      return;
+    }
+
+    const files = Array.from(event.dataTransfer.files ?? []);
+    if (files.length === 0) return;
+    stageFilesForUpload(files);
+    navigate("/datasets");
+  }, [navigate, stageFilesForUpload]);
+
   return (
     <div
       className={`map-page map-page--dual${sidebarCollapsed ? " map-page--sidebar-collapsed" : ""}`}
       data-testid="map-page"
       style={!isMobile ? ({ "--map-sidebar-width": `${sidebarWidth}px` } as CSSProperties) : undefined}
+      onDragEnter={handleDragEnter}
+      onDragOver={handleDragOver}
+      onDragLeave={handleDragLeave}
+      onDrop={handleDrop}
     >
+      <DropOverlay
+        visible={isDraggingFile || folderDropStatus === "processing"}
+        state={folderDropStatus === "processing" ? "processing" : "hover"}
+      />
+      {dropError && (
+        <div className="map-drop-error" data-testid="map-drop-error">
+          <svg className="map-drop-error__icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="16" height="16">
+            <circle cx="12" cy="12" r="10" />
+            <path d="M12 8v4m0 4h.01" strokeLinecap="round" />
+          </svg>
+          <span>{dropError}</span>
+          <button
+            type="button"
+            className="map-drop-error__dismiss"
+            aria-label="Dismiss"
+            onClick={() => setDropError(null)}
+          >
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="14" height="14">
+              <path d="M6 18L18 6M6 6l12 12" strokeLinecap="round" strokeLinejoin="round" />
+            </svg>
+          </button>
+        </div>
+      )}
+
       <MapCanvas
         filter={filter}
         onFeatureSelect={handleSelect}
@@ -234,6 +366,12 @@ export function MapView() {
         onRasterSettingsChange={setRasterSettingsById}
         initialBasemap={basemap}
         onBasemapChange={setBasemap}
+        initialDetectionMode={detectionMode}
+        onDetectionModeChange={setDetectionMode}
+        initialAiOverlayEnabled={aiOverlayEnabled}
+        onAiOverlayEnabledChange={setAiOverlayEnabled}
+        initialRoadInspectionActive={roadInspectionActive}
+        onRoadInspectionActiveChange={setRoadInspectionActive}
         aiHighlights={aiHighlights}
         focusFeatureId={locateFeatureId}
         isolateFocusFeature={isolateFocusFeature}

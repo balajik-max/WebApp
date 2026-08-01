@@ -68,7 +68,37 @@ async def get_current_user(
             detail="Account is inactive",
         )
 
-    return user
+    # MLA can inspect all map, layer, analytics, and workflow data but cannot
+    # mutate application state. This global guard prevents accidental writes
+    # even if a future endpoint forgets a role-specific dependency.
+    # Exempted as non-destructive, MLA-appropriate oversight: its own auth
+    # session (logout/heartbeat/change-password), running the spatial audit
+    # engine (recomputes findings from already-surveyed data, doesn't let
+    # MLA edit anything), and marking a finding as Open/Reviewing (the route
+    # itself still blocks Resolved for every role — that requires Architect
+    # evidence + Admin approval regardless).
+    _mla_exempt_paths = {
+        "/api/auth/logout",
+        "/api/auth/heartbeat",
+        "/api/auth/change-password",
+        "/api/v1/ai/audit",
+    }
+    _mla_exempt_prefixes = ("/api/v1/ai/audit/anomalies/",)
+    if (
+        user.role == UserRole.MLA
+        and request.method not in {"GET", "HEAD", "OPTIONS"}
+        and request.url.path
+        not in {
+            "/api/auth/logout",
+            "/api/auth/heartbeat",
+            "/api/auth/change-password",
+            "/api/v1/activity/log",
+        }
+    ):
+        raise HTTPException(
+            status_code=403,
+            detail="MLA access is strictly read-only",
+        )
 
     return user
 

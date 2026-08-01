@@ -13,7 +13,8 @@ export type AiDetectionMode =
   | "manholes"
   | "powerlines"
   | "potholes"
-  | "standing_water";
+  | "standing_water"
+  | "road_inspection";
 export type AiAnomalyType =
   | "pole_redundancy"
   | "drain_encroachment"

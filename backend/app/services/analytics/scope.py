@@ -72,12 +72,21 @@ def feature_conditions(
 
     ``missing_field`` remains accepted for backwards compatibility and resolves
     to ``readiness_status=missing``.
+    
+    Categories can match either the Feature.category field OR the 
+    attributes->>'_canonical_class' field to support both raw category
+    names and standardized canonical classes.
     """
     conditions: list[object] = [NOT_RASTER_SAMPLE]
     if dataset_ids:
         conditions.append(Feature.dataset_id.in_(dataset_ids))
     if categories:
-        conditions.append(CATEGORY_EXPR.in_(categories))
+        # Match either category field OR _canonical_class in attributes
+        category_conditions = or_(
+            CATEGORY_EXPR.in_(categories),
+            Feature.attributes["_canonical_class"].astext.in_(categories)
+        )
+        conditions.append(category_conditions)
     if wards:
         dataset_scope = select(Dataset.id).where(Dataset.ward.in_(wards))
         conditions.append(Feature.dataset_id.in_(dataset_scope))

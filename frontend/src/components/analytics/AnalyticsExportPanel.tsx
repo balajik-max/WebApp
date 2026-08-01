@@ -114,7 +114,6 @@ export function AnalyticsExportPanel({
     <section className="chart-card analytics-export-panel" data-testid="analytics-export-panel">
       <div className="chart-card__header analytics-export-panel__header">
         <div>
-          <div className="analytics-card-eyebrow">Use the results</div>
           <h3 className="chart-card__title">Export Applied Analysis</h3>
           <p className="analytics-export-panel__intro">
             Download exactly what is currently analyzed - not the entire database.

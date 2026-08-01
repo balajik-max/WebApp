@@ -82,7 +82,9 @@ class _FlaggedStation:
     severity: float
 
 
-async def _fetch_stations(dataset_id: uuid.UUID, db: AsyncSession) -> list[_StationRow]:
+async def _fetch_stations(
+    dataset_id: uuid.UUID, db: AsyncSession, *, line_id: uuid.UUID | None = None
+) -> list[_StationRow]:
     rows = (
         await db.execute(
             text(
@@ -91,6 +93,7 @@ async def _fetch_stations(dataset_id: uuid.UUID, db: AsyncSession) -> list[_Stat
                 "  FROM features f "
                 "  WHERE f.dataset_id = :dataset_id "
                 f"    AND {road_class_predicate('f', ROAD_CENTERLINE_CLASS, 'road_centerline_categories')} "
+                "    AND (CAST(:line_id AS uuid) IS NULL OR f.id = CAST(:line_id AS uuid)) "
                 "), sized AS ( "
                 "  SELECT line_id, geom, "
                 "         ST_Length(geom::geography) AS len_m, "
@@ -148,6 +151,7 @@ async def _fetch_stations(dataset_id: uuid.UUID, db: AsyncSession) -> list[_Stat
             ),
             {
                 "dataset_id": str(dataset_id),
+                "line_id": str(line_id) if line_id else None,
                 "interval_m": SAMPLE_INTERVAL_M,
                 "probe_m": PROBE_LENGTH_M,
                 "road_centerline_categories": list(ROAD_CENTERLINE_CATEGORY_KEYS),
@@ -170,6 +174,34 @@ async def _fetch_stations(dataset_id: uuid.UUID, db: AsyncSession) -> list[_Stat
         )
         for r in rows
     ]
+
+
+async def fetch_road_profile(dataset_id: uuid.UUID, line_id: uuid.UUID, db: AsyncSession) -> dict | None:
+    """One road's width/material profile, reusing the same station probe the
+    narrowing detector runs — real geometry, not a cheaper buffer guess.
+    Returns None if the road is too short to sample (mirrors _fetch_stations'
+    own `len_m >= interval_m * 2` floor)."""
+    stations = await _fetch_stations(dataset_id, db, line_id=line_id)
+    if not stations:
+        return None
+
+    widths = [s.width_m for s in stations if s.width_m is not None]
+    material_counts: dict[str, int] = {}
+    for s in stations:
+        for category in (s.left_edge_category, s.right_edge_category):
+            if category:
+                material_counts[category] = material_counts.get(category, 0) + 1
+
+    dominant_material = max(material_counts, key=material_counts.get) if material_counts else None
+    return {
+        "stations_sampled": len(stations),
+        "stations_with_width": len(widths),
+        "min_width_m": round(min(widths), 2) if widths else None,
+        "mean_width_m": round(sum(widths) / len(widths), 2) if widths else None,
+        "dominant_edge_material": dominant_material,
+        "edge_material_consistent": len(material_counts) <= 1,
+        "edge_material_counts": material_counts,
+    }
 
 
 # A narrowing "block" is a run of consecutive flagged stations along a

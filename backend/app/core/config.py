@@ -65,6 +65,33 @@ class Settings(BaseSettings):
     )
     jwt_refresh_ttl_days: int = Field(default=7, validation_alias="JWT_REFRESH_TTL_DAYS")
 
+    # --- Public/citizen portal -------------------------------------------
+    public_otp_mode: str = Field(
+        default="development",
+        validation_alias=AliasChoices("PUBLIC_OTP_DELIVERY", "PUBLIC_OTP_MODE"),
+    )
+    public_otp_webhook_url: str = Field(default="", validation_alias="PUBLIC_OTP_WEBHOOK_URL")
+    public_otp_webhook_token: str = Field(default="", validation_alias="PUBLIC_OTP_WEBHOOK_TOKEN")
+    email_provider: str = Field(default="smtp", validation_alias="EMAIL_PROVIDER")
+    smtp_host: str = Field(default="smtp.gmail.com", validation_alias="SMTP_HOST")
+    smtp_port: int = Field(default=587, validation_alias="SMTP_PORT")
+    smtp_username: str = Field(default="", validation_alias="SMTP_USERNAME")
+    smtp_app_password: str = Field(default="", validation_alias="SMTP_APP_PASSWORD")
+    smtp_from_email: str = Field(default="", validation_alias="SMTP_FROM_EMAIL")
+    smtp_from_name: str = Field(
+        default="Davanagere Smart Urban Survey",
+        validation_alias="SMTP_FROM_NAME",
+    )
+    smtp_use_starttls: bool = Field(default=True, validation_alias="SMTP_USE_STARTTLS")
+    smtp_timeout_seconds: float = Field(default=15.0, validation_alias="SMTP_TIMEOUT_SECONDS")
+    public_otp_ttl_minutes: int = Field(default=5, validation_alias="PUBLIC_OTP_TTL_MINUTES")
+    public_otp_resend_seconds: int = Field(default=60, validation_alias="PUBLIC_OTP_RESEND_SECONDS")
+    public_otp_max_attempts: int = Field(default=5, validation_alias="PUBLIC_OTP_MAX_ATTEMPTS")
+    public_registration_token_ttl_minutes: int = Field(
+        default=10, validation_alias="PUBLIC_REGISTRATION_TOKEN_TTL_MINUTES"
+    )
+    public_complaint_max_image_mb: int = Field(default=12, validation_alias="PUBLIC_COMPLAINT_MAX_IMAGE_MB")
+
     # --- Database --------------------------------------------------------
     database_url: str = Field(validation_alias="DATABASE_URL")
     # Multi-database: role-specific databases (Option 1 - separate databases)
@@ -92,6 +119,12 @@ class Settings(BaseSettings):
     ollama_embed_model: str = Field(default="nomic-embed-text", validation_alias="OLLAMA_EMBED_MODEL")
     ai_max_context_tokens: int = Field(default=4096, validation_alias="AI_MAX_CONTEXT_TOKENS")
     ai_max_features: int = Field(default=30, validation_alias="AI_MAX_FEATURES")
+
+    # Optional fast path: Gemini Flash tried first when a key is set, local
+    # Ollama is the automatic fallback on any Gemini error/timeout or when
+    # no key is configured. Empty default keeps Ollama-only setups working.
+    gemini_api_key: str = Field(default="", validation_alias="GEMINI_API_KEY")
+    gemini_model: str = Field(default="gemini-flash-lite-latest", validation_alias="GEMINI_MODEL")
 
     # --- AI remediation evidence ----------------------------------------
     remediation_pole_buffer_m: float = Field(default=15.0, validation_alias="REMEDIATION_POLE_BUFFER_M")

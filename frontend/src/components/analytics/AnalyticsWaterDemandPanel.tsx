@@ -99,13 +99,12 @@ export function AnalyticsWaterDemandPanel({ datasetIds, ward }: Props) {
   const [report, setReport] = useState<WardWaterDemandReport | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [floatingPopulation, setFloatingPopulation] = useState<number>(0);
   const [manualPopulation, setManualPopulation] = useState<string>("");
   const [refreshNonce, setRefreshNonce] = useState(0);
 
   const scopeKey = useMemo(
-    () => JSON.stringify({ datasetIds: [...datasetIds].sort(), ward, floatingPopulation, refreshNonce }),
-    [datasetIds, ward, floatingPopulation, refreshNonce]
+    () => JSON.stringify({ datasetIds: [...datasetIds].sort(), ward, refreshNonce }),
+    [datasetIds, ward, refreshNonce]
   );
 
   useEffect(() => {
@@ -117,7 +116,7 @@ export function AnalyticsWaterDemandPanel({ datasetIds, ward }: Props) {
     const controller = new AbortController();
     setLoading(true);
     setError(null);
-    fetchWardWaterDemand(ward, datasetIds, controller.signal, { floatingPopulation })
+    fetchWardWaterDemand(ward, datasetIds, controller.signal)
       .then(setReport)
       .catch((caught: Error) => {
         if (caught.name !== "AbortError") setError(caught.message);
@@ -126,7 +125,7 @@ export function AnalyticsWaterDemandPanel({ datasetIds, ward }: Props) {
         if (!controller.signal.aborted) setLoading(false);
       });
     return () => controller.abort();
-    // scopeKey captures the normalized ward/dataset/floating-population/refresh scope.
+    // scopeKey captures the normalized ward/dataset/refresh scope.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [scopeKey]);
 
@@ -142,7 +141,6 @@ export function AnalyticsWaterDemandPanel({ datasetIds, ward }: Props) {
     setLoading(true);
     setError(null);
     fetchWardWaterDemand(ward, datasetIds, controller.signal, {
-      floatingPopulation,
       populationOverride: Math.round(value),
     })
       .then(setReport)
@@ -155,7 +153,6 @@ export function AnalyticsWaterDemandPanel({ datasetIds, ward }: Props) {
       <section className="chart-card analytics-water-demand-card" data-testid="analytics-water-demand">
         <div className="chart-card__header">
           <div>
-            <div className="analytics-card-eyebrow">Automatic on ward load</div>
             <h3 className="chart-card__title">Ward Water Demand</h3>
           </div>
         </div>
@@ -172,7 +169,6 @@ export function AnalyticsWaterDemandPanel({ datasetIds, ward }: Props) {
     <section className="chart-card analytics-water-demand-card" data-testid="analytics-water-demand">
       <div className="chart-card__header">
         <div>
-          <div className="analytics-card-eyebrow">Automatic on ward load</div>
           <h3 className="chart-card__title">Ward Water Demand</h3>
         </div>
         <div className="analytics-water-demand-header-actions">
@@ -245,33 +241,62 @@ export function AnalyticsWaterDemandPanel({ datasetIds, ward }: Props) {
             </div>
 
             {report.total_mld != null ? (
-              <>
-                <div className="analytics-water-demand-total">
-                  <span>Total estimated water demand</span>
-                  <b>{report.total_mld.toLocaleString()} MLD</b>
-                  <small>{report.total_liters_per_day?.toLocaleString()} litres/day</small>
-                </div>
-
-                <div className="analytics-water-demand-bars">
-                  {report.line_items.map((item) => {
-                    const max = Math.max(...report.line_items.map((i) => i.liters_per_day), 1);
-                    return (
-                      <div key={item.key} className="analytics-water-demand-bar-row" title={item.explanation}>
-                        <span>{item.label}</span>
-                        <div className="analytics-readiness-track" aria-hidden="true">
-                          <i style={{ width: `${Math.max(2, (item.liters_per_day / max) * 100)}%` }} />
-                        </div>
-                        <b>{Math.round(item.liters_per_day).toLocaleString()} L</b>
-                      </div>
-                    );
-                  })}
-                </div>
-
-                {report.fire_demand_liters != null && (
-                  <div className="analytics-water-demand-fire">
-                    Fire-fighting provision (not in daily total): {Math.round(report.fire_demand_liters).toLocaleString()} L
+              <div className="analytics-water-demand-split">
+                <div className="analytics-water-demand-main">
+                  <div className="analytics-water-demand-total">
+                    <span>Total estimated water demand</span>
+                    <b>{report.total_mld.toLocaleString()} MLD</b>
+                    <small>{report.total_liters_per_day?.toLocaleString()} litres/day</small>
                   </div>
-                )}
+
+                  <div className="analytics-water-demand-bars">
+                    {report.line_items.map((item) => {
+                      const max = Math.max(...report.line_items.map((i) => i.liters_per_day), 1);
+                      return (
+                        <div key={item.key} className="analytics-water-demand-bar-row" title={item.explanation}>
+                          <span>{item.label}</span>
+                          <div className="analytics-readiness-track" aria-hidden="true">
+                            <i style={{ width: `${Math.max(2, (item.liters_per_day / max) * 100)}%` }} />
+                          </div>
+                          <b>{Math.round(item.liters_per_day).toLocaleString()} L</b>
+                        </div>
+                      );
+                    })}
+                  </div>
+
+                  {report.fire_demand_liters != null && (
+                    <div className="analytics-water-demand-fire">
+                      Fire-fighting provision (not in daily total): {Math.round(report.fire_demand_liters).toLocaleString()} L
+                    </div>
+                  )}
+
+                  {report.supply_comparison && (
+                    <div className="analytics-water-demand-chart">
+                      <span className="analytics-water-demand-chart-title">Where the demand comes from</span>
+                      <ResponsiveContainer width="100%" height={180}>
+                        <PieChart>
+                          <Pie
+                            data={report.line_items.map((i) => ({ name: i.label, value: Math.round(i.liters_per_day) }))}
+                            dataKey="value"
+                            nameKey="name"
+                            outerRadius={60}
+                            innerRadius={20}
+                            label={(e: { name?: string; percent?: number }) => `${e.name} ${((e.percent ?? 0) * 100).toFixed(0)}%`}
+                            labelLine={false}
+                            isAnimationActive={true}
+                            animationDuration={800}
+                            animationEasing="ease-out"
+                          >
+                            {report.line_items.map((_, i) => (
+                              <Cell key={i} fill={`hsl(${(i * 47) % 360} 70% 55%)`} />
+                            ))}
+                          </Pie>
+                          <Tooltip content={<DarkPieTooltip />} />
+                        </PieChart>
+                      </ResponsiveContainer>
+                    </div>
+                  )}
+                </div>
 
                 {report.supply_comparison && (
                   <div className="analytics-water-demand-supply">
@@ -299,46 +324,20 @@ export function AnalyticsWaterDemandPanel({ datasetIds, ward }: Props) {
                       </div>
                     </div>
 
-                    <div className="analytics-water-demand-charts">
-                      <div className="analytics-water-demand-chart">
-                        <span className="analytics-water-demand-chart-title">Demand vs fair-share supply</span>
-                        <ResponsiveContainer width="100%" height={180}>
-                          <BarChart data={supplyChartData(report.supply_comparison)} margin={{ top: 8, right: 8, left: 0, bottom: 0 }} barCategoryGap="30%">
-                            <XAxis dataKey="name" tick={{ fontSize: 10, fill: "#9ca3af" }} axisLine={false} tickLine={false} />
-                            <YAxis tick={{ fontSize: 10, fill: "#9ca3af" }} axisLine={false} tickLine={false} width={44} tickFormatter={(v) => `${v}`} />
-                            <Tooltip content={<DarkTooltip />} cursor={{ fill: "rgba(255,255,255,0.04)" }} />
-                            <Bar dataKey="value" radius={[3, 3, 0, 0]} isAnimationActive={true} animationDuration={800} animationEasing="ease-out">
-                              {supplyChartData(report.supply_comparison).map((entry, i) => (
-                                <Cell key={i} fill={entry.fill} />
-                              ))}
-                            </Bar>
-                          </BarChart>
-                        </ResponsiveContainer>
-                      </div>
-                      <div className="analytics-water-demand-chart">
-                        <span className="analytics-water-demand-chart-title">Where the demand comes from</span>
-                        <ResponsiveContainer width="100%" height={180}>
-                          <PieChart>
-                            <Pie
-                              data={report.line_items.map((i) => ({ name: i.label, value: Math.round(i.liters_per_day) }))}
-                              dataKey="value"
-                              nameKey="name"
-                              outerRadius={60}
-                              innerRadius={20}
-                              label={(e: { name?: string; percent?: number }) => `${e.name} ${((e.percent ?? 0) * 100).toFixed(0)}%`}
-                              labelLine={false}
-                              isAnimationActive={true}
-                              animationDuration={800}
-                              animationEasing="ease-out"
-                            >
-                              {report.line_items.map((_, i) => (
-                                <Cell key={i} fill={`hsl(${(i * 47) % 360} 70% 55%)`} />
-                              ))}
-                            </Pie>
-                            <Tooltip content={<DarkPieTooltip />} />
-                          </PieChart>
-                        </ResponsiveContainer>
-                      </div>
+                    <div className="analytics-water-demand-chart">
+                      <span className="analytics-water-demand-chart-title">Demand vs fair-share supply</span>
+                      <ResponsiveContainer width="100%" height={180}>
+                        <BarChart data={supplyChartData(report.supply_comparison)} margin={{ top: 8, right: 8, left: 0, bottom: 0 }} barCategoryGap="30%">
+                          <XAxis dataKey="name" tick={{ fontSize: 10, fill: "#9ca3af" }} axisLine={false} tickLine={false} />
+                          <YAxis tick={{ fontSize: 10, fill: "#9ca3af" }} axisLine={false} tickLine={false} width={44} tickFormatter={(v) => `${v}`} />
+                          <Tooltip content={<DarkTooltip />} cursor={{ fill: "rgba(255,255,255,0.04)" }} />
+                          <Bar dataKey="value" radius={[3, 3, 0, 0]} isAnimationActive={true} animationDuration={800} animationEasing="ease-out">
+                            {supplyChartData(report.supply_comparison).map((entry, i) => (
+                              <Cell key={i} fill={entry.fill} />
+                            ))}
+                          </Bar>
+                        </BarChart>
+                      </ResponsiveContainer>
                     </div>
 
                     {(() => {
@@ -383,25 +382,15 @@ export function AnalyticsWaterDemandPanel({ datasetIds, ward }: Props) {
                     <p className="analytics-water-demand-supply-note">{report.supply_comparison.note}</p>
                   </div>
                 )}
-              </>
+              </div>
             ) : (
               <div className="analytics-quality-empty-state">
                 No population is available yet for this ward. Enter one manually to generate a demand estimate.
               </div>
             )}
 
-            <div className="analytics-water-demand-override">
-              <label>
-                Floating population (markets, festivals, transient)
-                <input
-                  type="number"
-                  min={0}
-                  value={floatingPopulation || ""}
-                  placeholder="0"
-                  onChange={(e) => setFloatingPopulation(Number(e.target.value) || 0)}
-                />
-              </label>
-              {report.census.data_source === "unavailable" || report.census.match_method === "none" ? (
+            {(report.census.data_source === "unavailable" || report.census.match_method === "none") && (
+              <div className="analytics-water-demand-override">
                 <label>
                   Manual population correction
                   <span className="analytics-water-demand-manual-input">
@@ -417,22 +406,8 @@ export function AnalyticsWaterDemandPanel({ datasetIds, ward }: Props) {
                     </button>
                   </span>
                 </label>
-              ) : null}
-            </div>
-
-            <details className="analytics-methodology">
-              <summary>How this demand estimate is worked out</summary>
-              <p>{report.methodology}</p>
-              {report.line_items.length > 0 && (
-                <ul className="analytics-methodology-breakdown">
-                  {report.line_items.map((item) => (
-                    <li key={item.key}>
-                      <strong>{item.label}:</strong> {item.explanation}
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </details>
+              </div>
+            )}
           </>
         )}
       </div>

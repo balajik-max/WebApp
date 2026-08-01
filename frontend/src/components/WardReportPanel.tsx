@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import { aiReport, type AiAnswer } from "../lib/ai";
 import type { DatasetRow } from "../lib/workflow";
 
@@ -7,9 +8,7 @@ interface ReportGeneratorProps {
   datasets: DatasetRow[];
 }
 
-/** Picks the scope for the report: prefer the ward of the first selected
- * dataset that has one (several datasets over the same neighbourhood
- * usually share a ward), otherwise fall back to that single dataset. */
+/** Picks the scope for the report */
 function reportScope(datasets: DatasetRow[]): { ward?: string; dataset_id?: string; label: string; wardName?: string } | null {
   if (datasets.length === 0) return null;
   const withWard = datasets.find((d) => d.ward);
@@ -18,12 +17,8 @@ function reportScope(datasets: DatasetRow[]): { ward?: string; dataset_id?: stri
   return { dataset_id: first.id, label: first.name };
 }
 
-/** Floating "Generate Report" trigger + popup, mirroring the AiAssistant
- * fab/panel pattern (button bottom-right, panel opens above it) — kept as
- * a corner control rather than a fixed side panel now that the map no
- * longer reserves a right-hand column for it. */
-export function ReportGenerator({ datasets }: ReportGeneratorProps) {
-  const [open, setOpen] = useState(false);
+/** Inline report panel — used inside the topbar dropdown */
+export function ReportPanel({ datasets }: { datasets: DatasetRow[] }) {
   const [report, setReport] = useState<AiAnswer | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -46,136 +41,126 @@ export function ReportGenerator({ datasets }: ReportGeneratorProps) {
       setLoading(false);
       if (timerRef.current) { clearInterval(timerRef.current); timerRef.current = null; }
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [scope?.ward, scope?.dataset_id]);
 
-  // Reset when the selected scope actually changes (not on every re-render).
   const scopeKey = scope ? `${scope.ward ?? ""}:${scope.dataset_id ?? ""}` : "";
-  useEffect(() => {
-    setReport(null);
-    setError(null);
-  }, [scopeKey]);
-
+  useEffect(() => { setReport(null); setError(null); }, [scopeKey]);
   useEffect(() => () => { if (timerRef.current) clearInterval(timerRef.current); }, []);
 
+  const doExport = () => {
+    if (!report) return;
+    const title = scope?.label ?? "Neighbourhood Report";
+    // Escape the markdown for safe injection into a script tag
+    const escapedMd = JSON.stringify(report.answer_markdown);
+    const html = `<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8"/>
+  <title>${title}</title>
+  <style>
+    body { font-family: Georgia, serif; font-size: 13px; line-height: 1.75; color: #111; max-width: 820px; margin: 40px auto; padding: 0 32px; }
+    h1 { font-size: 24px; font-weight: 800; margin: 1.4em 0 0.4em; }
+    h2 { font-size: 18px; font-weight: 700; margin: 1.2em 0 0.35em; border-bottom: 1px solid #ddd; padding-bottom: 5px; }
+    h3 { font-size: 14px; font-weight: 700; margin: 1em 0 0.25em; }
+    p  { margin: 0.5em 0; }
+    ul, ol { padding-left: 1.6em; margin: 0.4em 0; }
+    li { margin-bottom: 0.25em; }
+    strong { font-weight: 700; }
+    table { border-collapse: collapse; width: 100%; margin: 1em 0; font-size: 12px; page-break-inside: avoid; }
+    thead { background: #f0f0f0; }
+    th { padding: 6px 10px; border: 1px solid #bbb; font-weight: 700; text-align: left; white-space: nowrap; }
+    td { padding: 5px 10px; border: 1px solid #ccc; vertical-align: top; }
+    tr:nth-child(even) td { background: #f9f9f9; }
+    code { background: #f4f4f4; padding: 1px 4px; border-radius: 3px; font-size: 11px; }
+    pre  { background: #f4f4f4; padding: 10px; border-radius: 4px; overflow-x: auto; font-size: 11px; }
+    @media print {
+      body { margin: 0; }
+      h2 { page-break-after: avoid; }
+    }
+  </style>
+  <script src="https://cdn.jsdelivr.net/npm/marked@12/marked.min.js"><\/script>
+</head>
+<body>
+  <h1>${title}</h1>
+  <div id="content"></div>
+  <script>
+    const md = ${escapedMd};
+    marked.setOptions({ gfm: true, breaks: false });
+    document.getElementById('content').innerHTML = marked.parse(md);
+    window.onload = function() {
+      // Small delay lets the browser finish layout before print dialog
+      setTimeout(function() { window.print(); }, 300);
+    };
+  <\/script>
+</body>
+</html>`;
+    const win = window.open("", "_blank");
+    if (!win) return;
+    win.document.write(html);
+    win.document.close();
+  };
+
   return (
-    <>
-      <button
-        type="button"
-        className={`report-fab${open ? " report-fab--open" : ""}`}
-        onClick={() => setOpen((v) => !v)}
-        data-testid="report-fab"
-        aria-label="Toggle neighbourhood report"
-      >
-        {open ? "×" : (
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-            <path d="M7 3h8l4 4v14a1 1 0 01-1 1H7a1 1 0 01-1-1V4a1 1 0 011-1z" />
-            <path d="M9 12h6M9 16h6M9 8h2" />
-          </svg>
+    <div className="report-panel-inline">
+      {/* Header */}
+      <div className="report-panel-inline__head">
+        <span className="report-panel-inline__eyebrow">Neighbourhood Report</span>
+        {scope?.wardName && <span className="report-panel-inline__ward">Ward {scope.wardName}</span>}
+        <span className="report-panel-inline__title">{scope?.label ?? "No dataset selected"}</span>
+      </div>
+
+      {/* Body */}
+      <div className="report-panel-inline__body">
+        {!scope && <p className="report-panel-inline__empty">Select a dataset to generate a report.</p>}
+
+        {scope && !report && !loading && !error && (
+          <button className="report-panel-inline__action-btn report-panel-inline__action-btn--primary" onClick={() => void run()} data-testid="ward-report-generate">
+            Generate Report
+          </button>
         )}
-      </button>
 
-      {open && (
-        <section className="report-panel" data-testid="report-panel">
-          <header className="ai-panel__head">
-            <div>
-              <div className="ai-panel__eyebrow">Neighbourhood Report</div>
-              {scope?.wardName && (
-                <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: "0.06em", textTransform: "uppercase", color: "var(--accent)", marginBottom: 2 }}>
-                  Ward {scope.wardName}
-                </div>
-              )}
-              <h3 className="ai-panel__title" data-testid="ward-report-title">{scope?.label ?? "No dataset selected"}</h3>
-              {scope && (
-                <div className="ai-panel__sub">
-                  {datasets.length} dataset{datasets.length === 1 ? "" : "s"} selected · grounded in real survey data
-                </div>
-              )}
+        {loading && (
+          <div className="report-panel-inline__loading">
+            <div style={{ display: "flex", gap: 4 }}>
+              <div className="ai-turn__dot" /><div className="ai-turn__dot" /><div className="ai-turn__dot" />
             </div>
-          </header>
-
-          <div style={{ flex: 1, overflowY: "auto", padding: 16 }}>
-            {!scope && (
-              <div style={{ color: "var(--ink-mute)", fontSize: 12 }}>
-                Select a dataset to generate a neighbourhood report.
-              </div>
-            )}
-
-            {scope && !report && !loading && !error && (
-              <button
-                type="button"
-                onClick={() => void run()}
-                style={{
-                  width: "100%", padding: "12px 16px", background: "var(--accent-muted)", border: "1px solid var(--accent)",
-                  borderRadius: "var(--radius-sm)", color: "var(--accent)", fontSize: 12, fontWeight: 600, cursor: "pointer",
-                }}
-                data-testid="ward-report-generate"
-              >
-                Generate Report
-              </button>
-            )}
-
-            {loading && (
-              <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 10, padding: 24, color: "var(--ink-mute)", fontSize: 12 }}>
-                <div style={{ display: "flex", gap: 4 }}>
-                  <div className="ai-turn__dot" />
-                  <div className="ai-turn__dot" />
-                  <div className="ai-turn__dot" />
-                </div>
-                <span>Generating full report from local AI — this covers Executive Summary, Findings, Strategy, and Outcomes in three passes, so it can take a few minutes ({elapsed}s so far)…</span>
-              </div>
-            )}
-
-            {error && (
-              <div style={{ padding: 12, background: "var(--danger-muted)", border: "1px solid var(--danger)", borderRadius: "var(--radius-sm)", color: "var(--danger)", fontSize: 11, marginBottom: 12 }}>
-                {error}
-              </div>
-            )}
-
-            {report && (
-              <div>
-                <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 12, fontSize: 10, color: "var(--ink-mute)" }}>
-                  <span style={{ padding: "3px 8px", background: "var(--surface-2)", borderRadius: "var(--radius-full)" }}>
-                    Model: <b style={{ color: "var(--ink-dim)" }}>{report.model}</b>
-                  </span>
-                  <span style={{ padding: "3px 8px", background: "var(--surface-2)", borderRadius: "var(--radius-full)" }}>
-                    Context: <b style={{ color: "var(--ink-dim)" }}>{report.context_rows} rows</b>
-                  </span>
-                  <span style={{
-                    padding: "3px 8px", borderRadius: "var(--radius-full)",
-                    background: report.grounded ? "var(--ok-muted)" : "var(--warn-muted)",
-                    color: report.grounded ? "var(--ok)" : "var(--warn)", fontWeight: 600,
-                  }}>
-                    {report.grounded ? "✓ Grounded" : "⚠ Insufficient data"}
-                  </span>
-                </div>
-
-                <div style={{
-                  padding: 16, background: "var(--surface-2)", border: "1px solid var(--edge)",
-                  borderRadius: "var(--radius-md)", fontSize: 12, lineHeight: 1.6, color: "var(--ink)",
-                }}>
-                  <ReactMarkdown>{report.answer_markdown}</ReactMarkdown>
-                </div>
-
-                <button
-                  type="button"
-                  onClick={() => void run()}
-                  style={{
-                    marginTop: 12, width: "100%", padding: "8px 12px", background: "var(--surface-3)",
-                    border: "1px solid var(--edge)", borderRadius: "var(--radius-sm)", color: "var(--ink-dim)",
-                    fontSize: 11, fontWeight: 600, cursor: "pointer",
-                  }}
-                  data-testid="ward-report-refresh"
-                >
-                  Regenerate Report
-                </button>
-              </div>
-            )}
+            <span>Generating report… ({elapsed}s)</span>
           </div>
-        </section>
-      )}
-    </>
+        )}
+
+        {error && <div className="report-panel-inline__error">{error}</div>}
+
+        {report && (
+          <>
+            {/* Markdown content */}
+            <div className="report-panel-inline__content">
+              <ReactMarkdown remarkPlugins={[remarkGfm]}>{report.answer_markdown}</ReactMarkdown>
+            </div>
+
+            {/* Actions */}
+            <div className="report-panel-inline__actions">
+              <button className="report-panel-inline__action-btn report-panel-inline__action-btn--primary" onClick={doExport} data-testid="ward-report-export">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" width="13" height="13" aria-hidden="true">
+                  <path d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+                </svg>
+                Export PDF
+              </button>
+              <button className="report-panel-inline__action-btn" onClick={() => void run()} data-testid="ward-report-refresh">
+                Regenerate
+              </button>
+            </div>
+          </>
+        )}
+      </div>
+    </div>
   );
+}
+
+/** Legacy floating FAB — kept so MapView.tsx import still compiles,
+ *  but rendered as null so the old corner button is gone. */
+export function ReportGenerator(_props: ReportGeneratorProps) {
+  return null;
 }
 
 const SUPPORTING_FILE_ACCEPT = ".pdf,.txt,.csv";

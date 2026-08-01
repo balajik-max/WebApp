@@ -20,8 +20,8 @@ import math
 import uuid
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
-from pathlib import Path
-from typing import Any
+from pathlib import Path, PurePosixPath
+from typing import Any, Callable
 
 from geoalchemy2.shape import from_shape
 from pyproj import CRS, Transformer
@@ -64,6 +64,9 @@ class _ParsedObj:
     filename: str
     skipped: int = 0
     bbox: dict[str, float] = field(default_factory=dict)
+    material_libraries: dict[str, list[str]] = field(default_factory=dict)
+    texture_count: int = 0
+    georef: _GeoOrigin | None = None
 
 
 _MTL_SUFFIXES = {".mtl"}
@@ -72,14 +75,20 @@ _TEXTURE_SUFFIXES = {".jpg", ".jpeg", ".png", ".bmp", ".webp", ".gif"}
 
 @dataclass(slots=True, frozen=True)
 class _GeoOrigin:
-    """The real-world anchor for an OBJ's local vertex coordinates, as
-    declared by a ContextCapture/Bentley-style `metadata.xml` sibling —
-    every vertex (x, y, z) in the mesh is a metre offset from this point,
-    in this CRS."""
+    """Real-world anchor declared by a ContextCapture/Bentley metadata file."""
+
     crs: str
     x: float
     y: float
     z: float
+
+    @property
+    def source_crs(self) -> str:
+        return self.crs
+
+    @property
+    def origin(self) -> tuple[float, float, float]:
+        return (self.x, self.y, self.z)
 
 
 def _sample_vertices(
@@ -99,32 +108,54 @@ def _sample_vertices(
     return [vertices[int(i * step)] for i in range(max_count)]
 
 
+def _parse_geo_origin_xml(payload: bytes, source: str) -> _GeoOrigin | None:
+    try:
+        tree_root = ET.fromstring(payload)
+    except ET.ParseError:
+        return None
+    srs_el = tree_root.find(".//SRS")
+    origin_el = tree_root.find(".//SRSOrigin")
+    if srs_el is None or origin_el is None or not srs_el.text or not origin_el.text:
+        return None
+    try:
+        ox, oy, oz = (float(value) for value in origin_el.text.strip().split(","))
+    except ValueError:
+        log.warning("Malformed <SRSOrigin> in %s: %r", source, origin_el.text)
+        return None
+    return _GeoOrigin(crs=srs_el.text.strip(), x=ox, y=oy, z=oz)
+
+
+def _single_geo_origin(origins: list[tuple[str, _GeoOrigin]]) -> _GeoOrigin | None:
+    if not origins:
+        return None
+    first_source, first = origins[0]
+    for source, candidate in origins[1:]:
+        if candidate != first:
+            raise ValueError(
+                "Archive contains conflicting CRS/origin metadata: "
+                f"{first_source}={first.source_crs}/{first.origin}, "
+                f"{source}={candidate.source_crs}/{candidate.origin}"
+            )
+    return first
+
+
 def _find_geo_origin(root: Path) -> _GeoOrigin | None:
-    """Scans a bundle (already-extracted zip) for a tiled-mesh metadata.xml
-    giving the OBJ's real-world anchor. Without this, a photogrammetry
-    export's local meter offsets carry no absolute position at all — the
-    caller falls back to guessing, which is exactly the "wrong location"
-    bug this fixes. The file conventionally sits *above* the model's own
-    folder (sibling to it, not inside it), so this always searches the
-    whole extracted tree rather than just the .obj's own directory.
-    """
+    """Return one consistent metadata.xml anchor from an extracted bundle."""
+    origins: list[tuple[str, _GeoOrigin]] = []
     for xml_file in root.rglob("*.xml"):
         try:
-            tree_root = ET.parse(xml_file).getroot()
-        except ET.ParseError:
+            origin = _parse_geo_origin_xml(xml_file.read_bytes(), str(xml_file))
+        except OSError:
             continue
-        srs_el = tree_root.find(".//SRS")
-        origin_el = tree_root.find(".//SRSOrigin")
-        if srs_el is None or origin_el is None or not srs_el.text or not origin_el.text:
-            continue
-        try:
-            ox, oy, oz = (float(v) for v in origin_el.text.strip().split(","))
-        except ValueError:
-            log.warning("Malformed <SRSOrigin> in %s: %r", xml_file, origin_el.text)
-            continue
-        crs = srs_el.text.strip()
-        log.info("Found geo-reference in %s: crs=%s origin=(%s, %s, %s)", xml_file.name, crs, ox, oy, oz)
-        return _GeoOrigin(crs=crs, x=ox, y=oy, z=oz)
+        if origin is not None:
+            origins.append((str(xml_file), origin))
+    consistent = _single_geo_origin(origins)
+    if consistent is not None:
+        log.info(
+            "Found geo-reference: crs=%s origin=(%s, %s, %s)",
+            consistent.crs, consistent.x, consistent.y, consistent.z,
+        )
+        return consistent
     return _find_prj_origin(root)
 
 
@@ -152,9 +183,29 @@ def _find_prj_origin(root: Path) -> _GeoOrigin | None:
 
 
 class ObjReader:
-    """Handles Wavefront OBJ 3D model inputs — a bare `.obj`, or a zip
-    bundle containing the `.obj` plus its `.mtl` and texture images
-    (routed here by `ingestion._pick_zip_reader` peeking the zip contents)."""
+    """Handles Wavefront OBJ 3D model inputs — standalone or ZIP bundles."""
+
+    @staticmethod
+    def _safe_asset_path(raw_path: str) -> str | None:
+        """Return a normalized archive-relative path, rejecting traversal."""
+        normalized = raw_path.replace("\\", "/").strip()
+        if not normalized or normalized.startswith("/"):
+            return None
+        path = PurePosixPath(normalized)
+        if any(part in {"", ".", ".."} for part in path.parts):
+            return None
+        if path.parts and ":" in path.parts[0]:
+            return None
+        return path.as_posix()
+
+    @staticmethod
+    def _resolve_asset_reference(obj_path: str, reference: str) -> str | None:
+        safe_obj = ObjReader._safe_asset_path(obj_path)
+        safe_reference = ObjReader._safe_asset_path(reference)
+        if safe_obj is None or safe_reference is None:
+            return None
+        combined = PurePosixPath(safe_obj).parent / PurePosixPath(safe_reference)
+        return ObjReader._safe_asset_path(combined.as_posix())
 
     def can_handle(self, filename: str) -> bool:
         return Path(filename).suffix.lower() in _OBJ_SUFFIXES
@@ -171,28 +222,42 @@ class ObjReader:
         import tempfile
         import zipfile
 
+        parsed = await asyncio.to_thread(self._parse_sync, zip_path)
+        if not parsed.vertices:
+            return ReaderResult(
+                inserted=0,
+                skipped=parsed.skipped,
+                source_crs=None,
+                notes="Zip contained no valid OBJ vertices",
+            )
+
         with tempfile.TemporaryDirectory(prefix="obj_bundle_") as tmpdir:
             tmp = Path(tmpdir)
-            with zipfile.ZipFile(zip_path) as zf:
-                zf.extractall(tmp)
+            with zipfile.ZipFile(zip_path) as archive:
+                for info in archive.infolist():
+                    safe_name = self._safe_asset_path(info.filename)
+                    if safe_name is None or info.is_dir():
+                        continue
+                    target = tmp / safe_name
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    target.write_bytes(archive.read(info))
 
-            obj_files = list(tmp.rglob("*.obj"))
+            obj_files = sorted(tmp.rglob("*.obj"))
             if not obj_files:
                 return ReaderResult(inserted=0, skipped=0, source_crs=None, notes="Zip contained no .obj file")
-            obj_file = obj_files[0]
-            mtl_files = list(tmp.rglob("*.mtl"))
-            texture_files = [
-                p for p in tmp.rglob("*")
-                if p.is_file() and p.suffix.lower() in _TEXTURE_SUFFIXES
-            ]
-            geo_origin = _find_geo_origin(tmp)
+            mtl_files = sorted(tmp.rglob("*.mtl"))
+            texture_files = sorted(
+                path for path in tmp.rglob("*")
+                if path.is_file() and path.suffix.lower() in _TEXTURE_SUFFIXES
+            )
 
-            parsed = await asyncio.to_thread(self._parse_sync, obj_file)
-            if not parsed.vertices:
-                return ReaderResult(inserted=0, skipped=parsed.skipped, source_crs=None, notes="No valid vertices found")
-
-            model_assets = await self._upload_model_assets(dataset_id, obj_file, mtl_files, texture_files)
-            result = await self._persist(parsed, dataset_id=dataset_id, geo_origin=geo_origin, db_engine=db_engine)
+            # The current viewer accepts one primary OBJ/MTL entry. Parsing and
+            # persistence still cover every OBJ in the bundle, while the first
+            # model remains the viewer entry point for backward compatibility.
+            model_assets = await self._upload_model_assets(
+                dataset_id, obj_files[0], mtl_files, texture_files
+            )
+            result = await self._persist(parsed, dataset_id=dataset_id, geo_origin=parsed.georef, db_engine=db_engine)
 
             dataset_metadata = dict(result.dataset_metadata or {})
             model_3d = dict(dataset_metadata.get("model_3d") or {})
@@ -201,6 +266,7 @@ class ObjReader:
                 asset_keys[model_assets["mtl_filename"]] = model_assets["mtl_key"]
             asset_keys.update(model_assets.get("textures") or {})
             model_3d["asset_keys"] = asset_keys
+            model_3d["bundle_obj_count"] = len(obj_files)
             dataset_metadata["model_3d"] = model_3d
 
             return ReaderResult(
@@ -245,56 +311,94 @@ class ObjReader:
 
         return assets
 
-    def _parse_sync(self, file_path: Path) -> _ParsedObj:
+    @staticmethod
+    def _parse_obj_text(text: str) -> tuple[
+        list[tuple[float, float, float]], list[str], list[str], int, int, int
+    ]:
         vertices: list[tuple[float, float, float]] = []
         groups: list[str] = []
         materials: list[str] = []
-        current_group: str | None = None
         vertex_count = 0
         face_count = 0
         skipped = 0
 
-        with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
-            for line in f:
-                line = line.strip()
-                if not line or line.startswith("#"):
+        for raw_line in text.splitlines():
+            line = raw_line.strip()
+            if not line or line.startswith("#"):
+                continue
+            parts = line.split(None, 1)
+            if len(parts) < 2:
+                continue
+            prefix, data = parts
+            if prefix == "v":
+                try:
+                    coords = data.split()[:3]
+                    x, y, z = float(coords[0]), float(coords[1]), float(coords[2])
+                    vertices.append((x, y, z))
+                    vertex_count += 1
+                except (ValueError, IndexError):
+                    skipped += 1
+            elif prefix == "f":
+                face_count += 1
+            elif prefix == "g":
+                groups.append(data.strip())
+            elif prefix == "mtllib":
+                materials.extend(part for part in data.split() if part)
+
+        return vertices, groups, materials, vertex_count, face_count, skipped
+
+    @staticmethod
+    def _bbox(vertices: list[tuple[float, float, float]]) -> dict[str, float]:
+        if not vertices:
+            return {}
+        xs = [vertex[0] for vertex in vertices]
+        ys = [vertex[1] for vertex in vertices]
+        zs = [vertex[2] for vertex in vertices]
+        return {
+            "min_x": min(xs), "max_x": max(xs),
+            "min_y": min(ys), "max_y": max(ys),
+            "min_z": min(zs), "max_z": max(zs),
+        }
+
+    def _parse_zip_sync(self, file_path: Path) -> _ParsedObj:
+        import zipfile
+
+        vertices: list[tuple[float, float, float]] = []
+        groups: list[str] = []
+        materials: list[str] = []
+        material_libraries: dict[str, list[str]] = {}
+        vertex_count = 0
+        face_count = 0
+        skipped = 0
+        texture_count = 0
+        origins: list[tuple[str, _GeoOrigin]] = []
+
+        with zipfile.ZipFile(file_path) as archive:
+            for info in archive.infolist():
+                safe_name = self._safe_asset_path(info.filename)
+                if safe_name is None or info.is_dir():
                     continue
-
-                parts = line.split(None, 1)
-                if len(parts) < 2:
+                suffix = PurePosixPath(safe_name).suffix.lower()
+                if suffix in _TEXTURE_SUFFIXES:
+                    texture_count += 1
                     continue
-
-                prefix, data = parts[0], parts[1]
-
-                if prefix == "v":  # Vertex
-                    try:
-                        coords = data.split()[:3]
-                        x, y, z = float(coords[0]), float(coords[1]), float(coords[2])
-                        vertices.append((x, y, z))
-                        vertex_count += 1
-                    except (ValueError, IndexError):
-                        skipped += 1
-
-                elif prefix == "f":  # Face
-                    face_count += 1
-
-                elif prefix == "g":  # Group
-                    current_group = data.strip()
-                    groups.append(current_group)
-
-                elif prefix == "mtllib":  # Material library
-                    materials.append(data.strip())
-
-        bbox: dict[str, float] = {}
-        if vertices:
-            xs = [v[0] for v in vertices]
-            ys = [v[1] for v in vertices]
-            zs = [v[2] for v in vertices]
-            bbox = {
-                "min_x": min(xs), "max_x": max(xs),
-                "min_y": min(ys), "max_y": max(ys),
-                "min_z": min(zs), "max_z": max(zs),
-            }
+                payload = archive.read(info)
+                if suffix == ".xml":
+                    origin = _parse_geo_origin_xml(payload, safe_name)
+                    if origin is not None:
+                        origins.append((safe_name, origin))
+                    continue
+                if suffix != ".obj":
+                    continue
+                parsed = self._parse_obj_text(payload.decode("utf-8", errors="ignore"))
+                obj_vertices, obj_groups, obj_materials, obj_vertex_count, obj_face_count, obj_skipped = parsed
+                vertices.extend(obj_vertices)
+                groups.extend(obj_groups)
+                materials.extend(obj_materials)
+                material_libraries[safe_name] = obj_materials
+                vertex_count += obj_vertex_count
+                face_count += obj_face_count
+                skipped += obj_skipped
 
         return _ParsedObj(
             vertices=_sample_vertices(vertices, _MAX_VERTICES),
@@ -304,8 +408,61 @@ class ObjReader:
             face_count=face_count,
             filename=file_path.name,
             skipped=skipped,
-            bbox=bbox,
+            bbox=self._bbox(vertices),
+            material_libraries=material_libraries,
+            texture_count=texture_count,
+            georef=_single_geo_origin(origins),
         )
+
+    def _parse_sync(self, file_path: Path) -> _ParsedObj:
+        if file_path.suffix.lower() == ".zip":
+            return self._parse_zip_sync(file_path)
+
+        text = file_path.read_text(encoding="utf-8", errors="ignore")
+        parsed = self._parse_obj_text(text)
+        vertices, groups, materials, vertex_count, face_count, skipped = parsed
+        return _ParsedObj(
+            vertices=_sample_vertices(vertices, _MAX_VERTICES),
+            groups=groups,
+            materials=materials,
+            vertex_count=vertex_count,
+            face_count=face_count,
+            filename=file_path.name,
+            skipped=skipped,
+            bbox=self._bbox(vertices),
+            material_libraries={file_path.name: materials},
+        )
+
+    def _coordinate_transform(
+        self, parsed: _ParsedObj, fallback_lon: float, fallback_lat: float
+    ) -> tuple[Callable[[float, float, float], tuple[float, float, float]], str, str]:
+        if parsed.georef is not None:
+            georef = parsed.georef
+            transformer = Transformer.from_crs(georef.source_crs, "EPSG:4326", always_xy=True)
+
+            def metadata_transform(x: float, y: float, z: float) -> tuple[float, float, float]:
+                lon, lat = transformer.transform(georef.x + x, georef.y + y)
+                return float(lon), float(lat), georef.z + z
+
+            return metadata_transform, "metadata.xml", georef.source_crs
+
+        sample = parsed.vertices[:10]
+        if sample and all(-180 <= x <= 180 and -90 <= y <= 90 for x, y, _ in sample):
+            return (lambda x, y, z: (x, y, z)), "geographic", "EPSG:4326"
+
+        bbox = parsed.bbox
+        center_x = (bbox.get("min_x", 0.0) + bbox.get("max_x", 0.0)) / 2
+        center_y = (bbox.get("min_y", 0.0) + bbox.get("max_y", 0.0)) / 2
+
+        def synthetic_transform(x: float, y: float, z: float) -> tuple[float, float, float]:
+            scale = 0.0001
+            return (
+                fallback_lon + (x - center_x) * scale,
+                fallback_lat + (y - center_y) * scale,
+                z,
+            )
+
+        return synthetic_transform, "synthetic", "LOCAL"
 
     async def _persist(
         self, parsed: _ParsedObj, *, dataset_id: str, geo_origin: _GeoOrigin | None = None, db_engine
