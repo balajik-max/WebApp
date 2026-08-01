@@ -1,0 +1,2 @@
+gis_feature_id,property_id,assessment_number,sas_number,door_number,owner_name,owner_mobile,address,property_use,occupancy_status,construction_type,tax_zone,plot_area_sqm,built_up_area_sqm,floor_count,annual_rate_per_sqm,financial_year,latitude,longitude
+,PID-EXAMPLE-001,ASM-EXAMPLE-001,,12/A,Example Owner,,Example street,Residential,Owner occupied,RCC framed,A,120,180,2,,2026-27,,

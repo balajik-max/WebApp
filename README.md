@@ -5,6 +5,19 @@ versioning, and AI-assisted analysis of civic infrastructure across
 Davangere City.  Everything runs locally in Docker — **no paid APIs, no
 cloud dependencies, no telemetry**.
 
+## Property Tax Phase 3
+
+The map now supports official municipal-register import/linking, GIS comparison, floor-wise assessment, approval, demand generation, and immutable revision history. Start with `START_PROPERTY_TAX_PHASE3_APP.bat` and open `http://localhost:3000/map`. Import templates are available in `sample_data/property_tax`.
+
+
+## Property Tax Phase 2.1
+
+On Windows, start Docker Desktop and double-click
+`START_PROPERTY_TAX_PHASE2_1_APP.bat`. The map opens at
+`http://localhost:3000/map`. Select **Property Tax**, activate Tax mode, use a
+building class as a real filter, and click a principal building to open its
+Phase 2 assessment record.
+
 ---
 
 ## Stack at a glance

@@ -13,6 +13,7 @@ import {
 import { ReportGenerator } from "../components/WardReportPanel";
 import { AiAssistant } from "../components/AiAssistant";
 import { PointVerificationPanel } from "../components/PointVerificationPanel";
+import { PropertyTaxAssessmentPanel } from "../components/PropertyTaxAssessmentPanel";
 import { DropOverlay } from "../components/DropOverlay";
 import { useNavigate, useOutletContext, useSearchParams } from "react-router-dom";
 import type { AiHighlight, FeatureFilter, UrbanFeature } from "../lib/types";
@@ -23,6 +24,7 @@ import { logActivity } from "../lib/activityLog";
 import { useUploadTransfer } from "../context/UploadTransferContext";
 import { collectDroppedFolder, classifyAndZipFolder, type WebkitEntry } from "../lib/datasetFileIntake";
 import type { DetectionMode } from "../lib/detectionMode";
+import { classifyPropertyTaxFeature } from "../lib/propertyTax";
 
 type SpatialAuditStatus = "idle" | "running" | "success" | "error";
 
@@ -123,6 +125,8 @@ export function MapView() {
     quickAnalysisViewState.sidebarPanel === "analysis"
   );
   const [pointVerificationRefresh, setPointVerificationRefresh] = useState(0);
+  const [propertyTaxModeActive, setPropertyTaxModeActive] = useState(false);
+  const [propertyTaxPanelOpen, setPropertyTaxPanelOpen] = useState(false);
 
   useEffect(() => {
     logActivity("page_viewed", undefined, { page: "map", page_label: "Map" });
@@ -394,7 +398,32 @@ export function MapView() {
         initialPitch={mapState.pitch}
         initialBearing={mapState.bearing}
         onCameraChange={setMapState}
+        onPropertyTaxActiveChange={setPropertyTaxModeActive}
+        propertyTaxPanelOpen={propertyTaxPanelOpen}
+        onPropertyTaxPanelOpenChange={setPropertyTaxPanelOpen}
+        propertyTaxSelectedFeatureId={
+          propertyTaxModeActive && selected && classifyPropertyTaxFeature(selected).isPrincipalBuilding
+            ? selected.properties.id
+            : null
+        }
       />
+
+      {propertyTaxModeActive && selected && classifyPropertyTaxFeature(selected).isPrincipalBuilding && (
+        <PropertyTaxAssessmentPanel
+          feature={selected}
+          onClose={() => {
+            setSelected(null);
+            setPropertyTaxPanelOpen(true);
+          }}
+        />
+      )}
+
+      {propertyTaxModeActive && (!selected || !classifyPropertyTaxFeature(selected).isPrincipalBuilding) && (
+        <div className="property-assessment-pick-hint" data-testid="property-assessment-pick-hint">
+          <span aria-hidden="true">⌖</span>
+          <div><strong>Select a coloured building</strong><small>Click a principal building to open its property record and assessment.</small></div>
+        </div>
+      )}
 
       {!isMobile && !sidebarCollapsed && (
         <div

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, useCallback, useImperativeHandle, useMemo, forwardRef, type MutableRefObject } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, useCallback, useImperativeHandle, useMemo, forwardRef, type MutableRefObject } from "react";
 import { createPortal } from "react-dom";
 import maplibregl, { Map as MLMap, MapMouseEvent, MapLayerMouseEvent, GeoJSONSource } from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
@@ -6,17 +6,7 @@ import "maplibre-gl/dist/maplibre-gl.css";
 import { fetchFeatureById, fetchFeaturesInViewport, fetchVisualizationLayerFeatures } from "../lib/features";
 import type { AiHighlight, FeatureFilter, UrbanFeature, FeatureCollectionResponse } from "../lib/types";
 import { ApiError } from "../lib/api";
-import { logActivity } from "../lib/activityLog";
 import { colorForCategory, UNCATEGORIZED_COLOR } from "../lib/categoryColors";
-import {
-  PROPERTY_TAX_CLASSES,
-  TAX_CLASS_PROP,
-  TAX_CLASS_SOURCE_PROP,
-  TAX_PRINCIPAL_PROP,
-  classifyPropertyTaxFeature,
-  propertyTaxStats,
-  type PropertyTaxClass,
-} from "../lib/propertyTax";
 import {
   type DetectionMode,
   DETECTION_MODE_TARGET_CLASSES,
@@ -41,11 +31,11 @@ import { AttributeTable } from "./AttributeTable";
 import { PanoramaViewer } from "./PanoramaViewer";
 import { CylinderPanoramaViewer } from "./CylinderPanoramaViewer";
 import { GoogleStreetView } from "./GoogleStreetView";
-import { MAX_MAP_PITCH } from "./LookAroundCompass";
+import { LookAroundCompass, DEFAULT_MAP_PITCH, MAX_MAP_PITCH } from "./LookAroundCompass";
 import { DataSourceSelector } from "./DataSourceSelector";
-import { SupportingFilesImport, ReportPanel } from "./WardReportPanel";
+import { SupportingFilesImport } from "./WardReportPanel";
 import { AnomalyAlertCard } from "./AnomalyAlertCard";
-import { ASSET_KEY_TO_CANONICAL_CLASS, RoadInspectionCard } from "./RoadInspectionCard";
+import { RoadInspectionCard } from "./RoadInspectionCard";
 import { QuickAnalysisPanel } from "./QuickAnalysisPanel";
 import { QuickAnalysisMapDashboard, type ManholeConnectionDetail, type QuickAnalysisTool } from "./QuickAnalysisMapDashboard";
 import { PlacemarkEditor } from "./map/PlacemarkEditor";
@@ -63,7 +53,6 @@ import {
 import { ManholeRecommendCard } from "./ManholeRecommendCard";
 import { Map3DViewer } from "./Map3DViewer";
 import { GroupedFieldList } from "./GroupedFieldList";
-import { PropertyTaxPanel } from "./PropertyTaxPanel";
 import { aiManholeRecommend, type AiAnswer } from "../lib/ai";
 import { useLanguage } from "../context/LanguageContext";
 import {
@@ -173,17 +162,6 @@ interface Props {
   initialBasemap?: Basemap;
   onBasemapChange?: (basemap: Basemap) => void;
 
-  /** AI Detection mode/overlay/Road Inspection state, persisted by the
-   * parent for the same reason as initialBasemap above: this component
-   * unmounts on every tab switch, so an active AI Detection mode was
-   * silently resetting the moment the user left the Map tab and came back. */
-  initialDetectionMode?: DetectionMode;
-  onDetectionModeChange?: (mode: DetectionMode) => void;
-  initialAiOverlayEnabled?: boolean;
-  onAiOverlayEnabledChange?: (enabled: boolean) => void;
-  initialRoadInspectionActive?: boolean;
-  onRoadInspectionActiveChange?: (active: boolean) => void;
-
   /** Whether the mobile Data Sources drawer is open — lifted up to
    * WorkspaceLayout so the topbar's menu button can open it. Ignored on
    * desktop, where the sidebar is always visible. */
@@ -200,17 +178,6 @@ interface Props {
   spatialAuditExecutedRef: MutableRefObject<boolean>;
   spatialAuditStatus: "idle" | "running" | "success" | "error";
   onSpatialAuditStatusChange: (status: "idle" | "running" | "success" | "error") => void;
-  /** Reports whether the GIS Property Tax mode is active so the parent can
-   * open the selected building's assessment record without duplicating the
-   * map classification state. */
-  onPropertyTaxActiveChange?: (active: boolean) => void;
-  /** Classification-panel visibility is owned by MapView so closing a
-   * building assessment can reliably restore the first Property Tax panel. */
-  propertyTaxPanelOpen: boolean;
-  onPropertyTaxPanelOpenChange: (open: boolean) => void;
-  /** Currently-open property assessment. Used only to draw a clear map
-   * selection outline; the source GIS feature remains unchanged. */
-  propertyTaxSelectedFeatureId?: string | null;
 }
 
 const DAVANGERE_CENTER: [number, number] = [75.9218, 14.4644];
@@ -744,13 +711,6 @@ const LAYER_ROAD_INSPECTION_ASSETS_LINE = "road-inspection-assets-line";
 const LAYER_ROAD_INSPECTION_ASSETS_POINT = "road-inspection-assets-point";
 const ROAD_INSPECTION_WIDTH_SOURCE = "road-inspection-width";
 const LAYER_ROAD_INSPECTION_WIDTH = "road-inspection-width-line";
-// A bright ring around whichever single finding is currently open in its
-// detail card — with dozens of same-colored red/yellow dots on screen at
-// once, nothing otherwise marks out which one the open card is talking about.
-const SELECTED_ISSUE_SOURCE = "selected-issue-highlight";
-const LAYER_SELECTED_ISSUE = "selected-issue-highlight-ring";
-const CLICK_HIT_PADDING_PX = 4;
-const ROAD_INSPECTION_CLICK_HIT_PADDING_PX = 20;
 
 // Base (category-agnostic) filters for the layers above — kept as named
 // constants so the category-visibility checklist can AND a hidden-category
@@ -2547,7 +2507,6 @@ function roadInspectionFeatureToGeoJson(feature: RoadInspectionFeature): GeoJSON
       canonical_class: feature.canonical_class,
       attributes: feature.attributes,
       audit_color: feature.audit_color,
-      evidence_for_class: feature.evidence_for_class ?? null,
     },
   };
 }
@@ -3092,12 +3051,6 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     onRasterSettingsChange,
     initialBasemap,
     onBasemapChange,
-    initialDetectionMode,
-    onDetectionModeChange,
-    initialAiOverlayEnabled,
-    onAiOverlayEnabledChange,
-    initialRoadInspectionActive,
-    onRoadInspectionActiveChange,
     aiHighlights,
     focusFeatureId,
     isolateFocusFeature = false,
@@ -3116,10 +3069,6 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     commandCenterMobileOpen, onCommandCenterMobileOpenChange,
     spatialAuditRequested, setSpatialAuditRequested, spatialAuditExecutedRef,
     spatialAuditStatus, onSpatialAuditStatusChange,
-    onPropertyTaxActiveChange,
-    propertyTaxPanelOpen,
-    onPropertyTaxPanelOpenChange,
-    propertyTaxSelectedFeatureId,
   },
   ref
 ) {
@@ -3297,34 +3246,24 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
   // Refs mirror the state so the per-fetch applyFeatureCollection callback
   // (a stable useCallback, not re-created on every mode change) always reads
   // the CURRENT mode/building colors without needing to be in its deps.
-  const [detectionMode, setDetectionMode] = useState<DetectionMode>(initialDetectionMode ?? null);
-  const detectionModeRef = useRef<DetectionMode>(initialDetectionMode ?? null);
+  const [detectionMode, setDetectionMode] = useState<DetectionMode>(null);
+  const detectionModeRef = useRef<DetectionMode>(null);
   // Road Inspection is deliberately separate from the four category-wide AI
   // modes: it narrows the map to selectable centerlines, then asks the server
   // for findings assigned to exactly one unique road ID.
-  const [roadInspectionActive, setRoadInspectionActive] = useState(initialRoadInspectionActive ?? false);
-  const roadInspectionActiveRef = useRef(initialRoadInspectionActive ?? false);
+  const [roadInspectionActive, setRoadInspectionActive] = useState(false);
+  const roadInspectionActiveRef = useRef(false);
   const [roadInspectionRoad, setRoadInspectionRoad] = useState<UrbanFeature | null>(null);
   const [roadInspectionReport, setRoadInspectionReport] = useState<RoadInspection | null>(null);
   const [roadInspectionLoading, setRoadInspectionLoading] = useState(false);
   const [roadInspectionError, setRoadInspectionError] = useState<string | null>(null);
   const roadInspectionAbortRef = useRef<AbortController | null>(null);
-  const [roadInspectionCategoryFilter, setRoadInspectionCategoryFilter] =
-    useState<keyof RoadInspection["assets"] | null>(null);
   // Selecting a mode only isolates the map to that asset family (plain
   // category colors) — the actual AI red/yellow/green overlay is a
   // separate, explicit step, so a fresh mode selection always starts with
   // this off until the user turns it on.
-  const [aiOverlayEnabled, setAiOverlayEnabled] = useState(initialAiOverlayEnabled ?? false);
-  const aiOverlayEnabledRef = useRef(initialAiOverlayEnabled ?? false);
-
-  // Mirror the three AI Detection states up to the parent (same rationale as
-  // initialBasemap/onBasemapChange) so they survive this component
-  // unmounting on every tab switch instead of silently resetting.
-  useEffect(() => { onDetectionModeChange?.(detectionMode); }, [detectionMode, onDetectionModeChange]);
-  useEffect(() => { onAiOverlayEnabledChange?.(aiOverlayEnabled); }, [aiOverlayEnabled, onAiOverlayEnabledChange]);
-  useEffect(() => { onRoadInspectionActiveChange?.(roadInspectionActive); }, [roadInspectionActive, onRoadInspectionActiveChange]);
-
+  const [aiOverlayEnabled, setAiOverlayEnabled] = useState(false);
+  const aiOverlayEnabledRef = useRef(false);
   const buildingColorMapRef = useRef<Record<string, "red" | "yellow" | "green" | "blue">>({});
   const surfaceIssueColorMapRef = useRef<Record<string, SeverityGeometryColor>>({});
   // feature id -> its own anomaly, for the hover tooltip's "AI Detected"
@@ -3339,7 +3278,6 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
   // is registered once at map load and would otherwise close over stale
   // state — same pattern as the other mode-driven refs above).
   const buildingAnomalyIdMapRef = useRef<Record<string, string>>({});
-  const roadInspectionAnomalyIdMapRef = useRef<Record<string, string>>({});
   // raw_category -> canonical_class, fetched once, used to compute which
   // categories a detection mode should hide (e.g. Poles mode hides
   // everything except Illumination_Asset categories).
@@ -3393,20 +3331,6 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
   const [streetPickMode, setStreetPickMode] = useState(false);
   const [streetViewTarget, setStreetViewTarget] = useState<{ latitude: number; longitude: number } | null>(null);
   const [loadedFeatures, setLoadedFeatures] = useState<UrbanFeature[]>([]);
-  // GIS property-tax classification is a presentation layer over the existing
-  // survey features. It never mutates source attributes or official tax data.
-  const [propertyTaxActive, setPropertyTaxActive] = useState(false);
-  const [propertyTaxClassFilter, setPropertyTaxClassFilter] = useState<PropertyTaxClass | null>(null);
-  const propertyTaxActiveRef = useRef(false);
-  const propertyTaxClassFilterRef = useRef<PropertyTaxClass | null>(null);
-  const propertyTaxClickConsumedRef = useRef(false);
-  useEffect(() => {
-    propertyTaxActiveRef.current = propertyTaxActive;
-    onPropertyTaxActiveChange?.(propertyTaxActive);
-  }, [onPropertyTaxActiveChange, propertyTaxActive]);
-  useEffect(() => {
-    propertyTaxClassFilterRef.current = propertyTaxClassFilter;
-  }, [propertyTaxClassFilter]);
   const cadastralPointMarkersRef = useRef<maplibregl.Marker[]>([]);
   const streetPickModeRef = useRef(false);
   const streetPickConsumedRef = useRef(false);
@@ -3547,10 +3471,6 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
   // zoom, or programmatic camera animation (flyTo/easeTo/fitBounds), so
   // that's what re-syncs the preview instead of relying on move/zoom end.
   const latestPointerPointRef = useRef<{ x: number; y: number } | null>(null);
-  // Throttles the "Did zooming and panning on Map Canvas" activity log so a
-  // continuous drag/scroll session logs one entry per burst of interaction
-  // rather than one per moveend event.
-  const lastMapInteractionLogRef = useRef(0);
   const measureRafRef = useRef<number | null>(null);
   const [measureUnit, setMeasureUnit] = useState<DistanceUnit>("kilometers");
   const [measureAreaUnit, setMeasureAreaUnit] = useState<AreaUnit>("sq_kilometers");
@@ -3578,7 +3498,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
   // Drives the round compass control — mirrors the map's actual bearing so
   // it stays in sync with right-click-drag rotation, not just the compass
   // dial itself.
-  const [_mapBearing, setMapBearing] = useState(0);
+  const [mapBearing, setMapBearing] = useState(0);
   // Mirrors the map's actual pitch (3D tilt) for the Look Around compass's
   // up/down buttons and drag-to-look interaction.
   const [mapPitch, setMapPitch] = useState(0);
@@ -4057,7 +3977,6 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
       !mapReady
       || !map
       || basemap !== "cadastral"
-      || propertyTaxActive
       || detectionMode
       || roadInspectionActive
       || activeQuickAnalysisCardId === "drain-encroachment"
@@ -4175,7 +4094,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
       for (const marker of markers) marker.remove();
       if (cadastralPointMarkersRef.current === markers) cadastralPointMarkersRef.current = [];
     };
-  }, [activeQuickAnalysisCardId, basemap, detectionMode, hiddenCategories, loadedFeatures, mapReady, propertyTaxActive, roadInspectionActive, utilitySubCategory]);
+  }, [activeQuickAnalysisCardId, basemap, detectionMode, hiddenCategories, loadedFeatures, mapReady, roadInspectionActive, utilitySubCategory]);
 
   useEffect(() => {
     basemapRef.current = basemap;
@@ -4604,7 +4523,17 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
   // Toggling Look Around on defers to the same "other tools win" rule as
   // toggleStreetPickMode: it force-exits measurement/street-view-pick first
   // rather than teaching those tools about Look Around.
-  // (Compass removed from UI — kept for potential future use.)
+  const toggleLookAround = useCallback(() => {
+    if (lookAroundActiveRef.current) {
+      deactivateLookAround();
+      return;
+    }
+    cancelPlacemarkPlacement();
+    if (measureActiveRef.current) closeMeasureSafely();
+    if (streetPickModeRef.current) toggleStreetPickMode();
+    lookAroundActiveRef.current = true;
+    setLookAroundActive(true);
+  }, [cancelPlacemarkPlacement, deactivateLookAround, closeMeasureSafely, toggleStreetPickMode]);
 
   const openPlacemarkDraft = useCallback((draft: PlacemarkDraft) => {
     const map = mapRef.current;
@@ -4791,7 +4720,11 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
 
   // Double-click the compass centre resets bearing AND pitch (unlike the
   // "N" button, which only resets bearing) without touching centre/zoom.
-  // (Compass removed from UI — kept for potential future use.)
+  const resetLookAroundCamera = useCallback(() => {
+    const map = mapRef.current;
+    if (!map) return;
+    map.easeTo({ bearing: 0, pitch: DEFAULT_MAP_PITCH, duration: 300 });
+  }, []);
 
   // Switching modes reuses the same cancellation path: the previous tool's
   // unfinished geometry is wiped (via resetMeasureTempState) before the new
@@ -5039,7 +4972,6 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
       const isDuplicateTemple = coordinate !== null
         && isGenericTemplePoint(feature)
         && namedTempleLocations.some((namedCoordinate) => haversineDistance(coordinate, namedCoordinate) < 14);
-      const taxClassification = classifyPropertyTaxFeature(feature as unknown as UrbanFeature);
       return {
         ...feature,
         properties: {
@@ -5047,9 +4979,6 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
           [VIZ_SOURCE_LAYER_PROP]: sourceLayer,
           [VIZ_LAYER_ID_PROP]: visualizationLayerId(datasetId, sourceLayer),
           [CADASTRAL_DUPLICATE_POINT_PROP]: isDuplicateTemple,
-          [TAX_PRINCIPAL_PROP]: taxClassification.isPrincipalBuilding,
-          [TAX_CLASS_PROP]: taxClassification.taxClass,
-          [TAX_CLASS_SOURCE_PROP]: taxClassification.source,
         },
       } as GeoJSON.Feature;
     });
@@ -5123,7 +5052,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     // While an AI Detection mode owns the map, the detection effect below
     // drives layer visibility by canonical class; this manual-checklist
     // filter must not fight it, so stand down in that case.
-    if (analysisWorkspaceActive || detectionMode || roadInspectionActive || activeQuickAnalysisCardId || propertyTaxActive) return;
+    if (analysisWorkspaceActive || detectionMode || roadInspectionActive || activeQuickAnalysisCardId) return;
     const hiddenForBase = selectedVisualizationFeatures.length > 0
       ? new Set(selectedVisualizationCompositeIds)
       : new Set<string>();
@@ -5151,7 +5080,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     if (map.getLayer(VIZ_SELECTED_POLY_OUTLINE)) map.setFilter(VIZ_SELECTED_POLY_OUTLINE, withFeatureVisibility(POLY_BASE_FILTER, hiddenCategories, noHiddenVisualizationLayers));
     if (map.getLayer(VIZ_SELECTED_LINES)) map.setFilter(VIZ_SELECTED_LINES, withFeatureVisibility(LINE_BASE_FILTER, hiddenCategories, noHiddenVisualizationLayers));
     if (map.getLayer(VIZ_SELECTED_POINTS)) map.setFilter(VIZ_SELECTED_POINTS, withFeatureVisibility(POINT_BASE_FILTER, hiddenCategories, noHiddenVisualizationLayers));
-  }, [activeQuickAnalysisCardId, analysisWorkspaceActive, mapReady, hiddenCategories, detectionMode, propertyTaxActive, roadInspectionActive, selectedVisualizationCompositeIds, selectedVisualizationFeatures.length]);
+  }, [activeQuickAnalysisCardId, analysisWorkspaceActive, mapReady, hiddenCategories, detectionMode, roadInspectionActive, selectedVisualizationCompositeIds, selectedVisualizationFeatures.length]);
 
   // Each Quick Analysis card owns a focused cadastral view. Drain keeps only
   // building context + drain lines; utility and manhole views keep building
@@ -5400,111 +5329,11 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     source.setData({ type: "FeatureCollection", features });
   }, [mapReady, selectedVisualizationFeatures, visualizationField]);
 
-  // Property Tax is a dedicated map-reading mode, not another visualization
-  // overlay. Reuse the existing polygon source/layers, hide competing survey
-  // geometry and filter the shared polygon layer down to principal buildings.
-  // This removes the duplicated outlines/fills that previously made the map
-  // look stacked and also ensures a class filter is a real filter, not a fade.
-  useEffect(() => {
-    const map = mapRef.current;
-    if (!mapReady || !map) return;
-
-    const setVisibility = (layerId: string, visible: boolean) => {
-      if (map.getLayer(layerId)) map.setLayoutProperty(layerId, "visibility", visible ? "visible" : "none");
-    };
-
-    const taxBuildingFilter: maplibregl.FilterSpecification = [
-      "all",
-      POLY_BASE_FILTER,
-      ["==", ["get", TAX_PRINCIPAL_PROP], true],
-      ...(propertyTaxClassFilter
-        ? [["==", ["get", TAX_CLASS_PROP], propertyTaxClassFilter] as maplibregl.FilterSpecification]
-        : []),
-    ] as unknown as maplibregl.FilterSpecification;
-
-    if (propertyTaxActive) {
-      for (const layerId of [LAYER_POLY_FILL, LAYER_POLY_OUTLINE, LAYER_POLY_FILL_CADASTRAL, LAYER_POLY_OUTLINE_CADASTRAL]) {
-        if (map.getLayer(layerId)) map.setFilter(layerId, taxBuildingFilter);
-      }
-
-      // Show exactly one polygon rendering pair for the active basemap.
-      setVisibility(LAYER_POLY_FILL, basemap !== "cadastral");
-      setVisibility(LAYER_POLY_OUTLINE, basemap !== "cadastral");
-      setVisibility(LAYER_POLY_FILL_CADASTRAL, basemap === "cadastral");
-      setVisibility(LAYER_POLY_OUTLINE_CADASTRAL, basemap === "cadastral");
-
-      // Hide survey overlays that visually collide with tax buildings. The
-      // street/satellite/cadastral basemap remains available as context.
-      for (const layerId of [
-        LAYER_LINES,
-        LAYER_LINES_CADASTRAL,
-        LAYER_POINTS,
-        LAYER_POINTS_CADASTRAL,
-        LAYER_POINTS_CADASTRAL_HIT,
-        LAYER_PHOTOS,
-        REFERENCE_SURVEY_ROAD_LABELS,
-        VIZ_SELECTED_POINTS,
-        VIZ_SELECTED_LINES,
-        VIZ_SELECTED_POLY_FILL,
-        VIZ_SELECTED_POLY_OUTLINE,
-      ]) setVisibility(layerId, false);
-      return;
-    }
-
-    // Restore the normal map exactly from the existing visibility/category
-    // state when Tax mode is switched off.
-    const hiddenForBase = selectedVisualizationFeatures.length > 0
-      ? new Set(selectedVisualizationCompositeIds)
-      : new Set<string>();
-    const noHiddenVisualizationLayers = new Set<string>();
-    if (map.getLayer(LAYER_POLY_FILL)) map.setFilter(LAYER_POLY_FILL, withFeatureVisibility(POLY_BASE_FILTER, hiddenCategories, hiddenForBase));
-    if (map.getLayer(LAYER_POLY_OUTLINE)) map.setFilter(LAYER_POLY_OUTLINE, withFeatureVisibility(POLY_BASE_FILTER, hiddenCategories, hiddenForBase));
-    if (map.getLayer(LAYER_POLY_FILL_CADASTRAL)) map.setFilter(LAYER_POLY_FILL_CADASTRAL, withFeatureVisibility(POLY_BASE_FILTER, hiddenCategories, hiddenForBase));
-    if (map.getLayer(LAYER_POLY_OUTLINE_CADASTRAL)) map.setFilter(LAYER_POLY_OUTLINE_CADASTRAL, withFeatureVisibility(POLY_BASE_FILTER, hiddenCategories, hiddenForBase));
-    if (map.getLayer(LAYER_LINES)) map.setFilter(LAYER_LINES, withFeatureVisibility(LINE_BASE_FILTER, hiddenCategories, hiddenForBase));
-    if (map.getLayer(LAYER_LINES_CADASTRAL)) map.setFilter(LAYER_LINES_CADASTRAL, withFeatureVisibility(LINE_BASE_FILTER, hiddenCategories, hiddenForBase));
-    if (map.getLayer(LAYER_POINTS)) map.setFilter(LAYER_POINTS, withFeatureVisibility(POINT_BASE_FILTER, hiddenCategories, hiddenForBase));
-    if (map.getLayer(LAYER_POINTS_CADASTRAL_HIT)) map.setFilter(LAYER_POINTS_CADASTRAL_HIT, withFeatureVisibility(CADASTRAL_POINT_HIT_FILTER, hiddenCategories, hiddenForBase));
-    if (map.getLayer(LAYER_POINTS_CADASTRAL)) map.setFilter(LAYER_POINTS_CADASTRAL, withFeatureVisibility(CADASTRAL_POINT_HIT_FILTER, hiddenCategories, hiddenForBase));
-    if (map.getLayer(LAYER_PHOTOS)) map.setFilter(LAYER_PHOTOS, withFeatureVisibility(PHOTO_BASE_FILTER, hiddenCategories, hiddenForBase));
-    if (map.getLayer(VIZ_SELECTED_POLY_FILL)) map.setFilter(VIZ_SELECTED_POLY_FILL, withFeatureVisibility(POLY_BASE_FILTER, hiddenCategories, noHiddenVisualizationLayers));
-    if (map.getLayer(VIZ_SELECTED_POLY_OUTLINE)) map.setFilter(VIZ_SELECTED_POLY_OUTLINE, withFeatureVisibility(POLY_BASE_FILTER, hiddenCategories, noHiddenVisualizationLayers));
-    if (map.getLayer(VIZ_SELECTED_LINES)) map.setFilter(VIZ_SELECTED_LINES, withFeatureVisibility(LINE_BASE_FILTER, hiddenCategories, noHiddenVisualizationLayers));
-    if (map.getLayer(VIZ_SELECTED_POINTS)) map.setFilter(VIZ_SELECTED_POINTS, withFeatureVisibility(POINT_BASE_FILTER, hiddenCategories, noHiddenVisualizationLayers));
-
-    applyBasemapVisibility(map, basemap);
-    setVisibility(LAYER_PHOTOS, true);
-    for (const layerId of [VIZ_SELECTED_POINTS, VIZ_SELECTED_LINES, VIZ_SELECTED_POLY_FILL, VIZ_SELECTED_POLY_OUTLINE]) {
-      setVisibility(layerId, true);
-    }
-  }, [
-    applyBasemapVisibility,
-    basemap,
-    hiddenCategories,
-    mapReady,
-    propertyTaxActive,
-    propertyTaxClassFilter,
-    selectedVisualizationCompositeIds,
-    selectedVisualizationFeatures.length,
-  ]);
-
   useEffect(() => {
     const map = mapRef.current;
     if (!mapReady || !map) return;
 
     const baseColor = buildCategoryColorExpression(colorByCategoryRef.current);
-    const taxPairs: string[] = [];
-    for (const item of PROPERTY_TAX_CLASSES) taxPairs.push(item.key, item.color);
-    const taxClassColor = [
-      "match",
-      ["coalesce", ["get", TAX_CLASS_PROP], "Unclassified"],
-      ...taxPairs,
-      "#94a3b8",
-    ] as unknown as maplibregl.ExpressionSpecification;
-    const polygonBaseColor = propertyTaxActive ? taxClassColor : baseColor;
-    const polygonBaseOpacity: number | maplibregl.ExpressionSpecification = propertyTaxActive
-      ? 0.76
-      : DEFAULT_FILL_OPACITY;
     let selectedColor: maplibregl.ExpressionSpecification | string = baseColor;
 
     if (visualizationMode === "category" && visualizationField) {
@@ -5572,38 +5401,12 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     // separate lookup) kept showing the correct finding the whole time.
     const buildingAiFillActive = aiOverlayEnabled && (detectionMode === "drains" || detectionMode === "powerlines");
     if (map.getLayer(LAYER_POLY_FILL) && !buildingAiFillActive) {
-      map.setPaintProperty(LAYER_POLY_FILL, "fill-color", polygonBaseColor);
-      map.setPaintProperty(LAYER_POLY_FILL, "fill-opacity", polygonBaseOpacity);
+      map.setPaintProperty(LAYER_POLY_FILL, "fill-color", baseColor);
+      map.setPaintProperty(LAYER_POLY_FILL, "fill-opacity", DEFAULT_FILL_OPACITY);
     }
     if (map.getLayer(LAYER_POLY_OUTLINE)) {
-      map.setPaintProperty(LAYER_POLY_OUTLINE, "line-color", propertyTaxActive ? polygonBaseColor : baseColor);
-      map.setPaintProperty(
-        LAYER_POLY_OUTLINE,
-        "line-width",
-        propertyTaxActive ? 1.25 : 1,
-      );
-      map.setPaintProperty(LAYER_POLY_OUTLINE, "line-opacity", 0.96);
-    }
-    if (map.getLayer(LAYER_POLY_FILL_CADASTRAL)) {
-      map.setPaintProperty(
-        LAYER_POLY_FILL_CADASTRAL,
-        "fill-color",
-        propertyTaxActive ? taxClassColor : cadastralPolygonFillExpression(),
-      );
-      map.setPaintProperty(LAYER_POLY_FILL_CADASTRAL, "fill-opacity", propertyTaxActive ? 0.76 : 0.18);
-    }
-    if (map.getLayer(LAYER_POLY_OUTLINE_CADASTRAL)) {
-      map.setPaintProperty(
-        LAYER_POLY_OUTLINE_CADASTRAL,
-        "line-color",
-        propertyTaxActive ? taxClassColor : cadastralPolygonOutlineExpression(),
-      );
-      map.setPaintProperty(
-        LAYER_POLY_OUTLINE_CADASTRAL,
-        "line-width",
-        propertyTaxActive ? 1.25 : ["interpolate", ["linear"], ["zoom"], 12, 0.7, 18, 1.1],
-      );
-      map.setPaintProperty(LAYER_POLY_OUTLINE_CADASTRAL, "line-opacity", propertyTaxActive ? 0.96 : 0.88);
+      map.setPaintProperty(LAYER_POLY_OUTLINE, "line-width", 1);
+      map.setPaintProperty(LAYER_POLY_OUTLINE, "line-opacity", 1);
     }
 
     if (map.getLayer(VIZ_SELECTED_POINTS)) {
@@ -5626,37 +5429,10 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
       map.setPaintProperty(VIZ_SELECTED_POLY_OUTLINE, "line-opacity", visualizationOpacity);
     }
   }, [
-    aiOverlayEnabled, basemap, detectionMode, loadedFeatures, mapReady, visualizationField,
-    propertyTaxActive, propertyTaxClassFilter,
+    aiOverlayEnabled, basemap, detectionMode, mapReady, visualizationField,
     visualizationLineWidth, visualizationMode, visualizationOpacity,
     visualizationPointSize, visualizationPreview,
   ]);
-
-  // A selected taxable building gets a dedicated two-line focus treatment.
-  // The layers already exist for other map workflows, so no duplicate source
-  // or geometry is introduced.
-  useEffect(() => {
-    const map = mapRef.current;
-    if (!mapReady || !map) return;
-    const featureId = propertyTaxActive ? propertyTaxSelectedFeatureId : null;
-    const focusFilter: maplibregl.FilterSpecification = featureId
-      ? ["==", ["get", "id"], String(featureId)]
-      : ["==", ["get", "id"], "__none__"];
-
-    if (map.getLayer(LAYER_SURFACE_GLOW)) {
-      map.setFilter(LAYER_SURFACE_GLOW, focusFilter);
-      map.setPaintProperty(LAYER_SURFACE_GLOW, "line-color", "#07111f");
-      map.setPaintProperty(LAYER_SURFACE_GLOW, "line-width", featureId ? 9 : 0);
-      map.setPaintProperty(LAYER_SURFACE_GLOW, "line-blur", 4);
-      map.setPaintProperty(LAYER_SURFACE_GLOW, "line-opacity", featureId ? 0.68 : 0);
-    }
-    if (map.getLayer(LAYER_SURFACE_BORDER)) {
-      map.setFilter(LAYER_SURFACE_BORDER, focusFilter);
-      map.setPaintProperty(LAYER_SURFACE_BORDER, "line-color", "#ffffff");
-      map.setPaintProperty(LAYER_SURFACE_BORDER, "line-width", featureId ? 2.8 : 0);
-      map.setPaintProperty(LAYER_SURFACE_BORDER, "line-opacity", featureId ? 1 : 0);
-    }
-  }, [mapReady, propertyTaxActive, propertyTaxSelectedFeatureId]);
 
   const toggleCategoryVisibility = useCallback((category: string) => {
     setHiddenCategories((prev) => {
@@ -6114,27 +5890,17 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     source.setData({ type: "FeatureCollection", features });
   }, [mapReady, anomalies]);
 
-  // Keep the clicked road visible while loading, then replace the clicked
-  // rendered feature with the full DB geometry from the report. Rendered map
-  // features can be tile-clipped, which made the teal road highlight stop
-  // short on some roads.
+  // Keep the clicked road visible as the report card is read, even though
+  // Road Inspection intentionally hides all non-road map categories.
   useEffect(() => {
     const map = mapRef.current;
     if (!mapReady || !map) return;
     const source = map.getSource(ROAD_INSPECTION_SOURCE) as GeoJSONSource | undefined;
-    const focusFeature = roadInspectionReport?.road_geometry && roadInspectionRoad
-      ? {
-          type: "Feature" as const,
-          id: roadInspectionRoad.properties.id,
-          geometry: roadInspectionReport.road_geometry,
-          properties: roadInspectionRoad.properties,
-        }
-      : roadInspectionRoad;
     source?.setData({
       type: "FeatureCollection",
-      features: focusFeature ? [focusFeature as unknown as GeoJSON.Feature] : [],
+      features: roadInspectionRoad ? [roadInspectionRoad as unknown as GeoJSON.Feature] : [],
     });
-  }, [mapReady, roadInspectionRoad, roadInspectionReport]);
+  }, [mapReady, roadInspectionRoad]);
 
   // The server returns the actual geometry and attributes for every asset
   // assigned to the selected road. Keep these in a dedicated source so the
@@ -6167,37 +5933,6 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
         .filter((feature): feature is NonNullable<typeof feature> => feature !== null),
     });
   }, [mapReady, roadInspectionReport]);
-
-  useEffect(() => {
-    const byFeature: Record<string, string> = {};
-    for (const issue of roadInspectionReport?.issues ?? []) {
-      for (const featureId of issue.feature_ids) byFeature[featureId] = issue.id;
-    }
-    roadInspectionAnomalyIdMapRef.current = byFeature;
-  }, [roadInspectionReport]);
-
-  useEffect(() => {
-    const map = mapRef.current;
-    if (!mapReady || !map) return;
-    const canonicalClass = roadInspectionCategoryFilter
-      ? ASSET_KEY_TO_CANONICAL_CLASS[roadInspectionCategoryFilter]
-      : null;
-    const categoryFilter = canonicalClass
-      ? ([
-          "any",
-          ["==", ["coalesce", ["get", "canonical_class"], ""], canonicalClass],
-          ["==", ["coalesce", ["get", "evidence_for_class"], ""], canonicalClass],
-        ] as unknown as maplibregl.FilterSpecification)
-      : null;
-    const withCategory = (base: maplibregl.FilterSpecification) =>
-      categoryFilter ? (["all", base, categoryFilter] as unknown as maplibregl.FilterSpecification) : base;
-    const noWidth = ["==", ["get", "id"], "__none__"] as unknown as maplibregl.FilterSpecification;
-    const widthOnly = ["==", ["coalesce", ["get", "anomaly_type"], ""], "road_width_narrowing"] as unknown as maplibregl.FilterSpecification;
-    if (map.getLayer(LAYER_ROAD_INSPECTION_ASSETS_FILL)) map.setFilter(LAYER_ROAD_INSPECTION_ASSETS_FILL, withCategory(POLY_BASE_FILTER));
-    if (map.getLayer(LAYER_ROAD_INSPECTION_ASSETS_LINE)) map.setFilter(LAYER_ROAD_INSPECTION_ASSETS_LINE, withCategory(LINE_BASE_FILTER));
-    if (map.getLayer(LAYER_ROAD_INSPECTION_ASSETS_POINT)) map.setFilter(LAYER_ROAD_INSPECTION_ASSETS_POINT, withCategory(POINT_BASE_FILTER));
-    if (map.getLayer(LAYER_ROAD_INSPECTION_WIDTH)) map.setFilter(LAYER_ROAD_INSPECTION_WIDTH, roadInspectionCategoryFilter ? noWidth : widthOnly);
-  }, [mapReady, roadInspectionCategoryFilter]);
 
   useEffect(() => () => roadInspectionAbortRef.current?.abort(), []);
 
@@ -6670,11 +6405,11 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     setRoadInspectionLoading(false);
     const nextMode = detectionMode === mode ? null : mode;
     setDetectionMode(nextMode);
-    if (nextMode) logActivity("ai_detection_selected", undefined, { mode: DETECTION_MODE_LABEL[nextMode] });
-    // Picking a family shows its red/yellow/green severity overlay right
-    // away — no separate ON/OFF step. Re-picking the already-active family
-    // (nextMode === null) turns it off and returns to the normal view.
-    setAiOverlayEnabled(nextMode !== null);
+    // Every AI Detection family, including Potholes and Standing Water,
+    // starts with its severity overlay OFF. The selected GDB asset family stays
+    // visible, and the shared ON/OFF control enables or disables only the
+    // red/yellow/green severity fill, border and outer glow.
+    setAiOverlayEnabled(false);
   }, [detectionMode, setSpatialAuditRequested, spatialAuditExecutedRef]);
 
   const closeRoadInspection = useCallback(() => {
@@ -6683,7 +6418,6 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     setRoadInspectionReport(null);
     setRoadInspectionError(null);
     setRoadInspectionLoading(false);
-    setRoadInspectionCategoryFilter(null);
   }, []);
 
   const toggleRoadInspection = useCallback(() => {
@@ -6710,7 +6444,6 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     setRoadInspectionReport(null);
     setRoadInspectionError(null);
     setRoadInspectionLoading(true);
-    setRoadInspectionCategoryFilter(null);
     fetchRoadInspection(road.properties.id, controller.signal)
       .then((report) => {
         if (!controller.signal.aborted) setRoadInspectionReport(report);
@@ -6721,6 +6454,31 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
       .finally(() => {
         if (!controller.signal.aborted) setRoadInspectionLoading(false);
       });
+  }, []);
+
+  const toggleAiOverlay = useCallback(() => {
+    const activeMode = detectionModeRef.current;
+    const overlayIsOn = aiOverlayEnabledRef.current;
+
+    // For Potholes and Standing Water, switching the AI overlay OFF exits
+    // the focused detection view completely. This hands the map back to the
+    // normal GDB visualization so every category in the active dataset is
+    // visible again, instead of leaving only the selected surface class on
+    // screen with its severity styling removed. Other detection families
+    // retain their existing ON/OFF behaviour.
+    if (overlayIsOn && (activeMode === "potholes" || activeMode === "standing_water")) {
+      aiOverlayEnabledRef.current = false;
+      detectionModeRef.current = null;
+      setAiOverlayEnabled(false);
+      setDetectionMode(null);
+      setExtraVisibleCategories(new Set());
+      setHiddenCategories(new Set());
+      return;
+    }
+
+    const next = !overlayIsOn;
+    aiOverlayEnabledRef.current = next;
+    setAiOverlayEnabled(next);
   }, []);
 
   // Marks "the user asked for the one-time Spatial Audit" — synchronous, so
@@ -7468,37 +7226,6 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
 
   const selectedAnomaly = anomalies.find((a) => a.id === selectedAnomalyId) ?? null;
 
-  // Selecting an issue from the Road Inspection list only opened its card —
-  // the map viewport never moved, so behind a card opened while still
-  // zoomed out to the whole road, the actual finding could be off-screen.
-  // A same-colored dot among dozens of others also doesn't say "this one" on
-  // its own, so a dedicated ring marks it explicitly, not just the camera move.
-  useEffect(() => {
-    const map = mapRef.current;
-    if (!map) return;
-    const source = map.getSource(SELECTED_ISSUE_SOURCE) as GeoJSONSource | undefined;
-    if (!source) return;
-    if (!selectedAnomaly) {
-      source.setData({ type: "FeatureCollection", features: [] });
-      return;
-    }
-    source.setData({
-      type: "FeatureCollection",
-      features: [
-        {
-          type: "Feature",
-          geometry: { type: "Point", coordinates: [selectedAnomaly.lon, selectedAnomaly.lat] },
-          properties: {},
-        },
-      ],
-    });
-    map.easeTo({
-      center: [selectedAnomaly.lon, selectedAnomaly.lat],
-      zoom: Math.max(map.getZoom(), 19),
-      duration: 700,
-    });
-  }, [selectedAnomaly]);
-
   const handleAnomalyStatusChange = useCallback(async (anomalyId: string, next: AnomalyStatus) => {
     const updated = await updateAnomalyStatus(anomalyId, next);
     setAnomalies((prev) => prev.map((a) => (a.id === anomalyId ? updated : a)));
@@ -7814,7 +7541,6 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
       return;
     }
     addRasterOverlay(dataset);
-    logActivity("dataset_loaded", "dataset", { filename: dataset.name });
     // Load the complete updated dataset selection immediately. fitBounds
     // below changes only the camera and deliberately does not trigger a
     // second data request.
@@ -8011,24 +7737,13 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     // This fires after all camera changes (pan, zoom, rotate, pitch, and
     // programmatic flyTo/fitBounds/easeTo), allowing the parent layout to
     // restore the exact camera state when returning to the Map page.
-    const persistCameraState = (e: { originalEvent?: unknown }) => {
+    const persistCameraState = () => {
       onCameraChange?.({
         zoom: map.getZoom(),
         center: map.getCenter().toArray() as [number, number],
         pitch: map.getPitch(),
         bearing: map.getBearing(),
       });
-      // originalEvent is only set when a real mouse/touch/keyboard gesture
-      // drove this moveend — it's absent for programmatic camera changes
-      // (initial load, restoring saved mapState, dataset fitBounds,
-      // flyTo/easeTo/jumpTo), which must never be logged as the user
-      // having "zoomed and panned" when they did nothing of the sort.
-      if (!e.originalEvent) return;
-      const now = Date.now();
-      if (now - lastMapInteractionLogRef.current > 4000) {
-        lastMapInteractionLogRef.current = now;
-        logActivity("map_interacted");
-      }
     };
     map.on("moveend", persistCameraState);
 
@@ -8299,10 +8014,10 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
         paint: {
           "line-color": roadIssueColor,
           "line-width": [
-            "interpolate", ["linear"], ["zoom"],
-            12, ["case", ["==", ["get", "selected"], true], 5, 3],
-            16, ["case", ["==", ["get", "selected"], true], 8, 5],
-            20, ["case", ["==", ["get", "selected"], true], 12, 8],
+            "case",
+            ["==", ["get", "selected"], true],
+            ["interpolate", ["linear"], ["zoom"], 12, 5, 16, 8, 20, 12],
+            ["interpolate", ["linear"], ["zoom"], 12, 3, 16, 5, 20, 8],
           ],
           "line-opacity": 0.94,
         },
@@ -8314,10 +8029,10 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
         filter: POINT_BASE_FILTER,
         paint: {
           "circle-radius": [
-            "interpolate", ["linear"], ["zoom"],
-            12, ["case", ["==", ["get", "selected"], true], 10, 6],
-            16, ["case", ["==", ["get", "selected"], true], 15, 10],
-            20, ["case", ["==", ["get", "selected"], true], 20, 14],
+            "case",
+            ["==", ["get", "selected"], true],
+            ["interpolate", ["linear"], ["zoom"], 12, 10, 16, 15, 20, 20],
+            ["interpolate", ["linear"], ["zoom"], 12, 6, 16, 10, 20, 14],
           ],
           "circle-color": roadIssueColor,
           "circle-opacity": 0.94,
@@ -8721,27 +8436,6 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
         LAYER_POLY_FILL, LAYER_POLY_FILL_CADASTRAL,
         LAYER_PHOTOS,
       ];
-      const TAX_BUILDING_CLICKABLE = [LAYER_POLY_FILL, LAYER_POLY_FILL_CADASTRAL];
-      const queryPropertyTaxBuilding = (
-        point: { x: number; y: number },
-        padding = 2,
-      ): UrbanFeature | null => {
-        const layers = TAX_BUILDING_CLICKABLE.filter((layerId) => Boolean(map.getLayer(layerId)));
-        if (layers.length === 0) return null;
-        const box: [[number, number], [number, number]] = [
-          [point.x - padding, point.y - padding],
-          [point.x + padding, point.y + padding],
-        ];
-        const selectedClass = propertyTaxClassFilterRef.current;
-        const hit = map.queryRenderedFeatures(box, { layers }).find((feature) => {
-          const properties = feature.properties ?? {};
-          const principal = properties[TAX_PRINCIPAL_PROP];
-          const isPrincipal = principal === true || principal === 1 || principal === "true" || principal === "1";
-          if (!isPrincipal) return false;
-          return !selectedClass || properties[TAX_CLASS_PROP] === selectedClass;
-        });
-        return hit ? decodeFeature(hit) : null;
-      };
       void runFetch();
 
       // AI highlight overlay — separate GeoJSON source so it never
@@ -8925,7 +8619,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
       // for every detection mode (Poles/Drains/Manholes/Roads/Powerlines),
       // just a different visual treatment for manholes (heatmap density
       // instead of individual red/yellow/green dots).
-      const openAnomalyWorkflow = (id: string) => {
+      const openAnomalyFinding = (id: string) => {
         const anomaly = anomalyByIdRef.current[id];
         const activeMode = detectionModeRef.current;
         const context = aiOverlayEnabledRef.current
@@ -8933,37 +8627,25 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
           : null;
         const primaryFeatureId = anomaly ? primaryFeatureIdForAnomaly(anomaly) : null;
 
-        if (!context || !primaryFeatureId) return;
-
-        void fetchFeatureById(primaryFeatureId)
-          .then((feature) => onFeatureSelect(feature, context))
-          .catch(() => {});
-      };
-
-      const openAnomalyFinding = (id: string) => {
-        const activeMode = detectionModeRef.current;
         setSelectedAnomalyId(id);
         if (activeMode === "potholes" || activeMode === "standing_water") {
           // A surface recommendation and the network recommendation are both
           // right-side cards; keep only the clicked surface finding open.
           setManholeRecommendOpen(false);
         }
+        if (!context || !primaryFeatureId) return;
+
+        aiAnomalyClickConsumedRef.current = true;
+        window.requestAnimationFrame(() => { aiAnomalyClickConsumedRef.current = false; });
+        void fetchFeatureById(primaryFeatureId)
+          .then((feature) => onFeatureSelect(feature, context))
+          .catch(() => {});
       };
       map.on("click", LAYER_ANOMALIES, (e: MapMouseEvent) => {
         const hit = map.queryRenderedFeatures(e.point, { layers: [LAYER_ANOMALIES] });
         if (!hit.length) return;
         const id = hit[0].properties?.id as string | undefined;
         if (id) openAnomalyFinding(id);
-      });
-      map.on("contextmenu", LAYER_ANOMALIES, (e: MapMouseEvent) => {
-        const hit = map.queryRenderedFeatures(e.point, { layers: [LAYER_ANOMALIES] });
-        if (!hit.length) return;
-        const id = hit[0].properties?.id as string | undefined;
-        if (!id) return;
-        e.preventDefault();
-        e.originalEvent.preventDefault();
-        setSelectedAnomalyId(id);
-        openAnomalyWorkflow(id);
       });
       map.on("mouseenter", LAYER_ANOMALIES, () => (map.getCanvas().style.cursor = "pointer"));
       map.on("mouseleave", LAYER_ANOMALIES, () => (map.getCanvas().style.cursor = ""));
@@ -9026,16 +8708,6 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
         if (!id) return;
         openAnomalyFinding(id);
       });
-      map.on("contextmenu", LAYER_MANHOLE_HEATMAP_POINTS, (e: MapMouseEvent) => {
-        const hit = map.queryRenderedFeatures(e.point, { layers: [LAYER_MANHOLE_HEATMAP_POINTS] });
-        if (!hit.length) return;
-        const id = hit[0].properties?.id as string | undefined;
-        if (!id) return;
-        e.preventDefault();
-        e.originalEvent.preventDefault();
-        setSelectedAnomalyId(id);
-        openAnomalyWorkflow(id);
-      });
       map.on("mouseenter", LAYER_MANHOLE_HEATMAP_POINTS, () => (map.getCanvas().style.cursor = "pointer"));
       map.on("mouseleave", LAYER_MANHOLE_HEATMAP_POINTS, () => (map.getCanvas().style.cursor = ""));
 
@@ -9085,22 +8757,12 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
         layout: { "line-cap": "round", "line-join": "round" },
         paint: {
           "line-color": [
-            "case",
-            ["==", ["get", "audit_color"], "red"], "#ef4444",
-            ["==", ["get", "audit_color"], "yellow"], "#f59e0b",
-            ["==", ["get", "audit_color"], "green"], "#22c55e",
-            ["==", ["get", "canonical_class"], "Drainage_Asset"], "#a78bfa",
-            // Power_Line absorbs raw "Water Line" categories for detector
-            // grouping (see spatial_audit.py), but a water pipe rendered in
-            // the same hazard pink as a live overhead conductor reads as a
-            // false electrical-danger signal — split the display color only.
-            [
-              "all",
-              ["==", ["get", "canonical_class"], "Power_Line"],
-              ["in", "water", ["downcase", ["to-string", ["get", "category"]]]],
-            ],
-            "#0284c7",
-            ["==", ["get", "canonical_class"], "Power_Line"], "#fb7185",
+            "match", ["coalesce", ["get", "audit_color"], ["get", "canonical_class"]],
+            "red", "#ef4444",
+            "yellow", "#f59e0b",
+            "green", "#22c55e",
+            "Drainage_Asset", "#a78bfa",
+            "Power_Line", "#fb7185",
             "#38bdf8",
           ],
           "line-width": ["interpolate", ["linear"], ["zoom"], 12, 3, 16, 5, 19, 7],
@@ -9153,34 +8815,12 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
         },
       });
       map.on("click", LAYER_ROAD_INSPECTION_WIDTH, (e: MapMouseEvent) => {
-        const box: [[number, number], [number, number]] = [
-          [e.point.x - ROAD_INSPECTION_CLICK_HIT_PADDING_PX, e.point.y - ROAD_INSPECTION_CLICK_HIT_PADDING_PX],
-          [e.point.x + ROAD_INSPECTION_CLICK_HIT_PADDING_PX, e.point.y + ROAD_INSPECTION_CLICK_HIT_PADDING_PX],
-        ];
-        const hit = map.queryRenderedFeatures(box, { layers: [LAYER_ROAD_INSPECTION_WIDTH] });
+        const hit = map.queryRenderedFeatures(e.point, { layers: [LAYER_ROAD_INSPECTION_WIDTH] });
         const id = hit[0]?.properties?.id as string | undefined;
         if (id) setSelectedAnomalyId(id);
       });
       map.on("mouseenter", LAYER_ROAD_INSPECTION_WIDTH, () => (map.getCanvas().style.cursor = "pointer"));
       map.on("mouseleave", LAYER_ROAD_INSPECTION_WIDTH, () => (map.getCanvas().style.cursor = ""));
-
-      map.addSource(SELECTED_ISSUE_SOURCE, {
-        type: "geojson",
-        data: { type: "FeatureCollection", features: [] },
-      });
-      map.addLayer({
-        id: LAYER_SELECTED_ISSUE,
-        type: "circle",
-        source: SELECTED_ISSUE_SOURCE,
-        paint: {
-          // Ring only, no fill — sits around the finding's own colored dot
-          // instead of covering it.
-          "circle-radius": ["interpolate", ["linear"], ["zoom"], 10, 16, 16, 24, 20, 30],
-          "circle-opacity": 0,
-          "circle-stroke-color": "#fde047",
-          "circle-stroke-width": 4,
-        },
-      });
 
       // A separate, top-most source keeps an attribute-table selection
       // visible even while the regular dataset source is being refreshed.
@@ -9233,31 +8873,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
         // same click. Once Escape deactivates the tool (panel still open),
         // this must stop applying so ordinary feature clicks work again.
         if (placemarkModeRef.current || streetPickModeRef.current || streetPickConsumedRef.current || aiAnomalyClickConsumedRef.current || isMeasureInputActive()) return;
-
-        if (propertyTaxActiveRef.current) {
-          if (propertyTaxClickConsumedRef.current) return;
-          propertyTaxClickConsumedRef.current = true;
-          window.requestAnimationFrame(() => { propertyTaxClickConsumedRef.current = false; });
-          setHover(null);
-          const taxBuilding = queryPropertyTaxBuilding(e.point, 2);
-          if (taxBuilding) {
-            // The assessment replaces the classification panel instead of
-            // colliding with it on the right side of the map.
-            onPropertyTaxPanelOpenChange(false);
-            onFeatureSelect(taxBuilding);
-          } else {
-            onFeatureSelect(null);
-          }
-          return;
-        }
-        const hitPadding = roadInspectionActiveRef.current
-          ? ROAD_INSPECTION_CLICK_HIT_PADDING_PX
-          : CLICK_HIT_PADDING_PX;
-        const clickBox: [[number, number], [number, number]] = [
-          [e.point.x - hitPadding, e.point.y - hitPadding],
-          [e.point.x + hitPadding, e.point.y + hitPadding],
-        ];
-        const hit = map.queryRenderedFeatures(clickBox, { layers: ALL_CLICKABLE });
+        const hit = map.queryRenderedFeatures(e.point, { layers: ALL_CLICKABLE });
         if (!hit.length) return;
         const isAi = AI_CLICKABLE.includes(hit[0].layer?.id as string);
         const base = isAi ? hit.find((f) => BASE_CLICKABLE.includes(f.layer?.id as string)) : hit[0];
@@ -9276,17 +8892,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
           return;
         }
         if (roadInspectionActiveRef.current) {
-          // Don't trust hit[0]: a pole/manhole/photo marker within the same
-          // padded click box renders above the road line and would otherwise
-          // win by stack order alone, making road selection fail depending
-          // on how much clutter happens to sit near the cursor at that zoom.
-          const roadHit = hit.map(decodeFeature).find(isRoadCenterlineFeature);
-          if (roadHit) {
-            void openRoadInspection(roadHit);
-            return;
-          }
-          const anomalyId = roadInspectionAnomalyIdMapRef.current[selected.properties.id];
-          if (anomalyId) setSelectedAnomalyId(anomalyId);
+          if (isRoadCenterlineFeature(selected)) void openRoadInspection(selected);
           else onFeatureSelect(selected);
           return;
         }
@@ -9309,6 +8915,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
           const anomalyId = buildingAnomalyIdMapRef.current[selected.properties.id];
           if (anomalyId) {
             setSelectedAnomalyId(anomalyId);
+            if (verificationContext) onFeatureSelect(selected, verificationContext);
             return;
           }
         }
@@ -9323,6 +8930,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
         ) {
           setManholeRecommendOpen(false);
           setSelectedAnomalyId(selectedAnomaly.id);
+          onFeatureSelect(selected, verificationContext);
           return;
         }
         if (
@@ -9336,12 +8944,9 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
           // connectivity), so they render through the identical status panel.
           if (selectedAnomaly) {
             setSelectedAnomalyId(selectedAnomaly.id);
+            if (verificationContext) onFeatureSelect(selected, verificationContext);
             return;
           }
-        }
-        if (aiOverlayEnabledRef.current && selectedAnomaly && verificationContext) {
-          setSelectedAnomalyId(selectedAnomaly.id);
-          return;
         }
         if (selected.properties.category === "site_photo") {
           setPhotoViewer({
@@ -9351,28 +8956,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
           });
           return;
         }
-        onFeatureSelect(selected);
-      };
-      const handleFeatureContextMenu = (e: MapMouseEvent) => {
-        if (placemarkModeRef.current || streetPickModeRef.current || isMeasureInputActive() || quickAnalysisActiveRef.current) return;
-        const hit = map.queryRenderedFeatures(e.point, { layers: ALL_CLICKABLE });
-        if (!hit.length) return;
-        const activeMode = detectionModeRef.current;
-        if (!aiOverlayEnabledRef.current || !activeMode) return;
-        const isAi = AI_CLICKABLE.includes(hit[0].layer?.id as string);
-        const base = isAi ? hit.find((f) => BASE_CLICKABLE.includes(f.layer?.id as string)) : hit[0];
-        const selected = decodeFeature(base ?? hit[0]);
-        let anomaly = anomalyByFeatureIdRef.current[anomalyLookupKey(DETECTION_MODE_ANOMALY_TYPE[activeMode], selected.properties.id)];
-        const mappedAnomalyId = (activeMode === "drains" || activeMode === "powerlines")
-          ? buildingAnomalyIdMapRef.current[selected.properties.id]
-          : undefined;
-        if (!anomaly && mappedAnomalyId) anomaly = anomalyByIdRef.current[mappedAnomalyId];
-        const context = aiVerificationContextForAnomaly(anomaly, activeMode);
-        if (!anomaly || !context) return;
-        e.preventDefault();
-        e.originalEvent.preventDefault();
-        setSelectedAnomalyId(anomaly.id);
-        onFeatureSelect(selected, context);
+        onFeatureSelect(selected, verificationContext);
       };
       const handleFeatureHover = (e: MapMouseEvent) => {
         // While a measurement tool is actually armed/drawing, ordinary
@@ -9384,13 +8968,6 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
         // flag) so hover works normally again as soon as Escape deactivates
         // the tool, even while the Measure panel itself stays open.
         if (placemarkModeRef.current || streetPickModeRef.current || isMeasureInputActive() || quickAnalysisActiveRef.current) { setHover(null); return; }
-        if (propertyTaxActiveRef.current) {
-          // Generic GIS metadata (especially a full-ward polygon underneath
-          // the cursor) must never cover the tax map or steal selection.
-          setHover(null);
-          map.getCanvas().style.cursor = queryPropertyTaxBuilding(e.point, 1) ? "pointer" : "";
-          return;
-        }
         const hit = map.queryRenderedFeatures(e.point, { layers: ALL_CLICKABLE });
         if (!hit.length) { setHover(null); return; }
         const aiHit = hit.find((f) => AI_CLICKABLE.includes(f.layer?.id as string));
@@ -9442,11 +9019,6 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
       // because the mouse crossed a feature underneath the measurement layer.
       const handleFeatureMouseEnter = (e: MapMouseEvent) => {
         if (placemarkModeRef.current || streetPickModeRef.current) { map.getCanvas().style.cursor = "crosshair"; return; }
-        if (propertyTaxActiveRef.current) {
-          setHover(null);
-          map.getCanvas().style.cursor = queryPropertyTaxBuilding(e.point, 1) ? "pointer" : "";
-          return;
-        }
         if (quickAnalysisActiveRef.current) {
           const hit = map.queryRenderedFeatures(e.point, { layers: ALL_CLICKABLE });
           const baseHit = hit.find((feature) => BASE_CLICKABLE.includes(feature.layer?.id as string));
@@ -9467,7 +9039,6 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
       };
       const handleFeatureMouseLeave = () => {
         if (placemarkModeRef.current || streetPickModeRef.current) { map.getCanvas().style.cursor = "crosshair"; setHover(null); return; }
-        if (propertyTaxActiveRef.current) { map.getCanvas().style.cursor = ""; setHover(null); return; }
         if (quickAnalysisActiveRef.current) { map.getCanvas().style.cursor = ""; setHover(null); return; }
         if (isMeasureInputActive()) return;
         map.getCanvas().style.cursor = "";
@@ -9475,26 +9046,12 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
       };
       ALL_CLICKABLE.forEach((id) => {
         map.on("click", id, handleFeatureClick);
-        map.on("contextmenu", id, handleFeatureContextMenu);
         map.on("mouseenter", id, handleFeatureMouseEnter);
         map.on("mousemove", id, handleFeatureHover);
         map.on("mouseleave", id, handleFeatureMouseLeave);
       });
 
       map.on("click", (event) => {
-        if (propertyTaxActiveRef.current) {
-          if (!propertyTaxClickConsumedRef.current) {
-            const taxBuilding = queryPropertyTaxBuilding(event.point, 2);
-            setHover(null);
-            if (taxBuilding) {
-              onPropertyTaxPanelOpenChange(false);
-              onFeatureSelect(taxBuilding);
-            } else {
-              onFeatureSelect(null);
-            }
-          }
-          return;
-        }
         if (
           quickAnalysisActiveRef.current
           && !quickAnalysisFeatureClickConsumedRef.current
@@ -10300,41 +9857,6 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     return () => window.cancelAnimationFrame(frame);
   }, [sidebarCollapsed]);
 
-  const propertyTaxSummary = useMemo(() => propertyTaxStats(loadedFeatures), [loadedFeatures]);
-
-  const togglePropertyTaxActive = useCallback(() => {
-    setPropertyTaxActive((current) => {
-      const next = !current;
-      propertyTaxActiveRef.current = next;
-      setHover(null);
-      onFeatureSelect(null);
-      if (next) {
-        // Tax classification is a clean map-reading mode. Avoid stacking it
-        // over AI/inspection overlays that intentionally recolour buildings.
-        setDetectionMode(null);
-        detectionModeRef.current = null;
-        onDetectionModeChange?.(null);
-        setAiOverlayEnabled(false);
-        aiOverlayEnabledRef.current = false;
-        onAiOverlayEnabledChange?.(false);
-        setRoadInspectionActive(false);
-        roadInspectionActiveRef.current = false;
-        onRoadInspectionActiveChange?.(false);
-      } else {
-        setPropertyTaxClassFilter(null);
-        propertyTaxClassFilterRef.current = null;
-      }
-      return next;
-    });
-  }, [onAiOverlayEnabledChange, onDetectionModeChange, onFeatureSelect, onRoadInspectionActiveChange]);
-
-  const changePropertyTaxClassFilter = useCallback((value: PropertyTaxClass | null) => {
-    propertyTaxClassFilterRef.current = value;
-    setPropertyTaxClassFilter(value);
-    setHover(null);
-    onFeatureSelect(null);
-  }, [onFeatureSelect]);
-
   return (
     <>
       <aside className="sidebar-rail" aria-label="Sidebar controls">
@@ -10480,17 +10002,9 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
           onToggleDetectionMode={toggleDetectionMode}
           roadInspectionActive={roadInspectionActive}
           onToggleRoadInspection={toggleRoadInspection}
+          aiOverlayEnabled={aiOverlayEnabled}
+          onToggleAiOverlay={toggleAiOverlay}
           onAiIconClick={requestSpatialAuditOnce}
-          propertyTaxPanelOpen={propertyTaxPanelOpen}
-          propertyTaxActive={propertyTaxActive}
-          onTogglePropertyTaxPanel={() => {
-            const next = !propertyTaxPanelOpen;
-            if (next) {
-              setHover(null);
-              onFeatureSelect(null);
-            }
-            onPropertyTaxPanelOpenChange(next);
-          }}
           streetPickMode={streetPickMode}
           onToggleStreetView={toggleStreetPickMode}
           placemarkMode={placemarkMode}
@@ -10505,27 +10019,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
           hideBasemap={false}
           measureActive={measureActive}
           onToggleMeasure={toggleMeasureActive}
-          show3DBuildings={show3DBuildings}
-          onToggle3DBuildings={() => setShow3DBuildings((v) => !v)}
-          onOpen3DPlan={() => {
-            logActivity("map_3d_viewed");
-            setShow3DPlan(true);
-          }}
-          datasets={datasets.filter((d) => activeDatasetIds.includes(d.id))}
         />}
-        {layersWorkspaceActive && propertyTaxPanelOpen && (
-          <PropertyTaxPanel
-            active={propertyTaxActive}
-            total={propertyTaxSummary.total}
-            classified={propertyTaxSummary.classified}
-            unclassified={propertyTaxSummary.unclassified}
-            counts={propertyTaxSummary.counts}
-            selectedClass={propertyTaxClassFilter}
-            onToggleActive={togglePropertyTaxActive}
-            onSelectClass={changePropertyTaxClassFilter}
-            onClose={() => onPropertyTaxPanelOpenChange(false)}
-          />
-        )}
         {layersWorkspaceActive && <HoverTooltip hover={hover} />}
         {layersWorkspaceActive && selectedAnomaly && (
           <AnomalyAlertCard
@@ -10533,19 +10027,19 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
             onClose={() => setSelectedAnomalyId(null)}
             onStatusChange={handleAnomalyStatusChange}
             onStale={handleAnomalyStale}
-            backToRoadLabel={roadInspectionRoad ? roadInspectionRoad.properties.label || "road inspection" : undefined}
           />
         )}
-        {layersWorkspaceActive && roadInspectionRoad && !selectedAnomaly && (
+        {layersWorkspaceActive && roadInspectionRoad && (
           <RoadInspectionCard
             roadLabel={roadInspectionRoad.properties.label}
             report={roadInspectionReport}
             loading={roadInspectionLoading}
             error={roadInspectionError}
             onClose={closeRoadInspection}
-            onSelectIssue={(issueId) => setSelectedAnomalyId(issueId)}
-            categoryFilter={roadInspectionCategoryFilter}
-            onCategoryFilterChange={setRoadInspectionCategoryFilter}
+            onSelectIssue={(issueId) => {
+              closeRoadInspection();
+              setSelectedAnomalyId(issueId);
+            }}
           />
         )}
         {placemarkMode && !placemarkDraft && (
@@ -10617,7 +10111,50 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
           eyeAltitudeMeters={eyeAltitudeMeters}
         />}
         {layersWorkspaceActive && <div className="map-side-controls">
-          {/* Compass removed — navigation controls moved to top toolbar */}
+          <LookAroundCompass
+            bearing={mapBearing}
+            pitch={mapPitch}
+            lookAroundActive={lookAroundActive}
+            mapReady={mapReady}
+            onRotate={(next) => mapRef.current?.setBearing(next)}
+            onResetNorth={() => mapRef.current?.easeTo({ bearing: 0, duration: 300 })}
+            onStep={(deltaBearing) => mapRef.current?.setBearing(mapRef.current.getBearing() + deltaBearing)}
+            onPitchStep={(deltaPitch) => {
+              const map = mapRef.current;
+              if (!map) return;
+              map.setPitch(Math.min(MAX_MAP_PITCH, Math.max(0, map.getPitch() + deltaPitch)));
+            }}
+            onToggleLookAround={toggleLookAround}
+            onResetCamera={resetLookAroundCamera}
+          />
+          <button
+            type="button"
+            className="map-side-btn"
+            onClick={() => setShow3DPlan(true)}
+            title={t("map.view.3dViewer")}
+            aria-label={t("map.view.3dViewer")}
+            data-testid="topbar-3d-viewer"
+          >
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <path d="M12 3.5l7.5 4.2v8.6L12 20.5l-7.5-4.2V7.7L12 3.5z" />
+              <path d="M12 12v8.5M12 12l7.5-4.3M12 12L4.5 7.7" />
+            </svg>
+          </button>
+          <button
+            type="button"
+            className={`map-side-btn${show3DBuildings ? " is-active" : ""}`}
+            onClick={() => setShow3DBuildings((v) => !v)}
+            title={t("map.view.3dBuildings")}
+            aria-label={t("map.view.3dBuildings")}
+            aria-pressed={show3DBuildings}
+            data-testid="topbar-3d-buildings-toggle"
+          >
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <path d="M5 20V9l4-3 4 3v11" />
+              <path d="M13 20V6l4-2.5L21 6v14" />
+              <path d="M3 20h18" />
+            </svg>
+          </button>
         </div>}
         {manholeRecommendOpen && (
           <ManholeRecommendCard
@@ -10758,51 +10295,6 @@ function isPoleLayer(layerName: string): boolean {
   return POLE_LAYER_NAMES.has(normalizeLayerName(layerName));
 }
 
-// User customization of the layers-group tree (drag-and-drop moves, renames,
-// deletions, and groups created from scratch). Persisted to localStorage so
-// it survives reloads, since this is explicitly meant to stick around rather
-// than reset like the panel's other, purely-cosmetic UI state.
-const LAYER_GROUP_CUSTOMIZATION_STORAGE_KEY = "davangere.layer-group-customization";
-
-interface LayerGroupCustomization {
-  overrides: Map<string, string>;
-  customGroups: string[];
-  renames: Map<string, string>;
-  deletedGroups: Set<string>;
-}
-
-function loadLayerGroupCustomization(): LayerGroupCustomization {
-  try {
-    const saved = window.localStorage.getItem(LAYER_GROUP_CUSTOMIZATION_STORAGE_KEY);
-    if (saved) {
-      const parsed = JSON.parse(saved) as {
-        overrides?: Record<string, string>;
-        customGroups?: string[];
-        renames?: Record<string, string>;
-        deletedGroups?: string[];
-      };
-      return {
-        overrides: new Map(Object.entries(parsed.overrides ?? {})),
-        customGroups: parsed.customGroups ?? [],
-        renames: new Map(Object.entries(parsed.renames ?? {})),
-        deletedGroups: new Set(parsed.deletedGroups ?? []),
-      };
-    }
-  } catch { /* use empty defaults */ }
-  return { overrides: new Map(), customGroups: [], renames: new Map(), deletedGroups: new Set() };
-}
-
-function saveLayerGroupCustomization(value: LayerGroupCustomization): void {
-  try {
-    window.localStorage.setItem(LAYER_GROUP_CUSTOMIZATION_STORAGE_KEY, JSON.stringify({
-      overrides: Object.fromEntries(value.overrides),
-      customGroups: value.customGroups,
-      renames: Object.fromEntries(value.renames),
-      deletedGroups: Array.from(value.deletedGroups),
-    }));
-  } catch { /* storage unavailable or full; customization just won't persist */ }
-}
-
 function CommandCenter({
   isMobile, open, onRequestClose,
   datasets, activeDatasetIds, flyError, onSelectDataset, onSelectAllDatasets, expandedDatasetId, onToggleDatasetSettings,
@@ -10866,13 +10358,7 @@ function CommandCenter({
   });
   const normalizedLayerQuery = layerQuery.trim().toLocaleLowerCase();
   const toggleSection = useCallback((section: "dataSources" | "spatialAudit" | "categoryVisibility") => {
-    setOpenSections((current) => {
-      const next = { ...current, [section]: !current[section] };
-      if (section === "dataSources" && next.dataSources && !current.dataSources) {
-        logActivity("data_layers_opened");
-      }
-      return next;
-    });
+    setOpenSections((current) => ({ ...current, [section]: !current[section] }));
   }, []);
 
   useEffect(() => {
@@ -10892,47 +10378,13 @@ function CommandCenter({
   // active dataset exposes a tree (e.g. raster, legacy uploads) this is null
   // and the panel falls back to the classic flat category list.
   const GEOMETRY_ORDER = ["Points", "Lines", "Polygon"] as const;
+  const [expandedCategoryLayers, setExpandedCategoryLayers] = useState<Set<string>>(() => new Set());
   // Geometry-group expansion is independent of each layer's own checkbox.
   // Everything starts collapsed; we only reset on an actual datasource switch.
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(() => new Set());
   useEffect(() => {
     setExpandedGroups(new Set());
   }, [activeDatasetIds]);
-
-  // User-driven customization of the layer tree: which group each category
-  // was drag-and-dropped into (overriding wherever the computed tree would
-  // otherwise place it), groups the user created from scratch, groups the
-  // user renamed (keyed by the group's original/canonical name so renaming
-  // never disturbs the overrides above, which key off that same name), and
-  // groups the user deleted (their layers fall back into "Other"). All of
-  // this is explicitly meant to persist, so it's seeded from and mirrored to
-  // localStorage rather than resetting on dataset switch like expandedGroups.
-  const [layerGroupCustomization, setLayerGroupCustomization] = useState<LayerGroupCustomization>(loadLayerGroupCustomization);
-  useEffect(() => {
-    saveLayerGroupCustomization(layerGroupCustomization);
-  }, [layerGroupCustomization]);
-  const categoryGroupOverrides = layerGroupCustomization.overrides;
-  const customGroups = layerGroupCustomization.customGroups;
-  const groupRenames = layerGroupCustomization.renames;
-  const deletedGroups = layerGroupCustomization.deletedGroups;
-  const setCategoryGroupOverrides = useCallback((updater: (current: Map<string, string>) => Map<string, string>) => {
-    setLayerGroupCustomization((current) => ({ ...current, overrides: updater(current.overrides) }));
-  }, []);
-  const setCustomGroups = useCallback((updater: (current: string[]) => string[]) => {
-    setLayerGroupCustomization((current) => ({ ...current, customGroups: updater(current.customGroups) }));
-  }, []);
-  const setGroupRenames = useCallback((updater: (current: Map<string, string>) => Map<string, string>) => {
-    setLayerGroupCustomization((current) => ({ ...current, renames: updater(current.renames) }));
-  }, []);
-  const setDeletedGroups = useCallback((updater: (current: Set<string>) => Set<string>) => {
-    setLayerGroupCustomization((current) => ({ ...current, deletedGroups: updater(current.deletedGroups) }));
-  }, []);
-  const [draggingCategory, setDraggingCategory] = useState<string | null>(null);
-  const [dragOverGroup, setDragOverGroup] = useState<string | null>(null);
-  const [dragOverNewGroup, setDragOverNewGroup] = useState(false);
-  const [groupMenu, setGroupMenu] = useState<{ groupName: string; x: number; y: number } | null>(null);
-  const [renamingGroupName, setRenamingGroupName] = useState<string | null>(null);
-  const [renameDraft, setRenameDraft] = useState("");
 
   // Active vector (e.g. GDB) datasets — derived from CommandCenter's own
   // props so the tree can be built without reaching into the parent scope.
@@ -11046,169 +10498,8 @@ function CommandCenter({
       });
     }
 
-    // Layer out any user drag-and-drop moves on top of the computed grouping.
-    if (categoryGroupOverrides.size > 0 || customGroups.length > 0) {
-      const byCategory = new Map<string, { node: VisualizationLayerGroupNode; legend?: LegendEntry }>();
-      for (const g of groups) {
-        for (const entry of g.layers) byCategory.set(entry.node.name, entry);
-      }
-      for (const g of groups) {
-        g.layers = g.layers.filter((entry) => {
-          const target = categoryGroupOverrides.get(entry.node.name);
-          return !target || target === g.name;
-        });
-      }
-      for (const [category, targetGroup] of categoryGroupOverrides) {
-        const entry = byCategory.get(category);
-        if (!entry) continue;
-        let target = groups.find((g) => g.name === targetGroup);
-        if (!target) {
-          target = { name: targetGroup, layers: [] };
-          groups.push(target);
-        }
-        if (!target.layers.some((l) => l.node.name === category)) target.layers.push(entry);
-      }
-      for (const groupName of customGroups) {
-        if (!groups.some((g) => g.name === groupName)) groups.push({ name: groupName, layers: [] });
-      }
-      for (let i = groups.length - 1; i >= 0; i -= 1) {
-        if (groups[i].layers.length === 0 && !customGroups.includes(groups[i].name)) groups.splice(i, 1);
-      }
-    }
-
-    // Groups the user deleted never render — whatever currently lands in one
-    // (whether from the base classification or an override above) falls back
-    // into a shared "Other" bucket instead, so the layers stay reachable.
-    if (deletedGroups.size > 0) {
-      for (let i = groups.length - 1; i >= 0; i -= 1) {
-        const group = groups[i];
-        if (!deletedGroups.has(group.name)) continue;
-        groups.splice(i, 1);
-        if (group.layers.length === 0) continue;
-        let fallback = groups.find((g) => g.name === "Other");
-        if (!fallback) {
-          fallback = { name: "Other", layers: [] };
-          groups.push(fallback);
-        }
-        for (const entry of group.layers) {
-          if (!fallback.layers.some((l) => l.node.name === entry.node.name)) fallback.layers.push(entry);
-        }
-      }
-    }
-
     return { groups };
-  }, [activeVectorDatasets, visualization.manifests, categoryStats, normalizedLayerQuery, categoryGroupOverrides, customGroups, deletedGroups]);
-
-  const moveCategoryToGroup = useCallback((category: string, groupName: string) => {
-    setCategoryGroupOverrides((current) => {
-      if (current.get(category) === groupName) return current;
-      const next = new Map(current);
-      next.set(category, groupName);
-      return next;
-    });
-  }, []);
-
-  const createGroupAndMoveCategory = useCallback((category: string) => {
-    const existingNames = new Set([
-      ...(groupedCategoryView?.groups.map((g) => g.name) ?? []),
-      ...customGroups,
-    ]);
-    let suffix = 1;
-    let name = "New Layer Group";
-    while (existingNames.has(name)) {
-      suffix += 1;
-      name = `New Layer Group ${suffix}`;
-    }
-    setCustomGroups((current) => [...current, name]);
-    setCategoryGroupOverrides((current) => {
-      const next = new Map(current);
-      next.set(category, name);
-      return next;
-    });
-    setExpandedGroups((current) => new Set(current).add(name));
-  }, [groupedCategoryView, customGroups]);
-
-  // Groups are identified internally by their canonical (computed or
-  // auto-generated) name everywhere — overrides, customGroups, expandedGroups
-  // — so a rename only ever changes the label shown to the user, never that
-  // identity. That keeps renaming from having to cascade-update every other
-  // piece of state that references the group by name.
-  const groupDisplayName = useCallback(
-    (canonicalName: string) => groupRenames.get(canonicalName) ?? canonicalName,
-    [groupRenames]
-  );
-
-  const startRenamingGroup = useCallback((canonicalName: string) => {
-    setRenamingGroupName(canonicalName);
-    setRenameDraft(groupRenames.get(canonicalName) ?? canonicalName);
-  }, [groupRenames]);
-
-  const commitGroupRename = useCallback(() => {
-    setRenamingGroupName((pendingName) => {
-      if (!pendingName) return null;
-      const trimmed = renameDraft.trim();
-      setGroupRenames((current) => {
-        const next = new Map(current);
-        if (!trimmed || trimmed === pendingName) next.delete(pendingName);
-        else next.set(pendingName, trimmed);
-        return next;
-      });
-      return null;
-    });
-  }, [renameDraft]);
-
-  const deleteGroup = useCallback((groupName: string) => {
-    if (groupName === "Other") return;
-    setCategoryGroupOverrides((current) => {
-      let changed = false;
-      const next = new Map(current);
-      for (const [category, target] of current) {
-        if (target === groupName) { next.delete(category); changed = true; }
-      }
-      return changed ? next : current;
-    });
-    setCustomGroups((current) => current.filter((name) => name !== groupName));
-    setGroupRenames((current) => {
-      if (!current.has(groupName)) return current;
-      const next = new Map(current);
-      next.delete(groupName);
-      return next;
-    });
-    setDeletedGroups((current) => new Set(current).add(groupName));
-  }, []);
-
-  // Deleting an empty group is a no-op for the layers it contains, so it
-  // happens immediately. A group that still has layers in it needs the user
-  // to say where those layers should land first — `deleteGroupPrompt` drives
-  // that "move then delete" confirmation instead of silently dumping them
-  // into "Other".
-  const [deleteGroupPrompt, setDeleteGroupPrompt] = useState<{ groupName: string; targetGroup: string } | null>(null);
-
-  const requestDeleteGroup = useCallback((groupName: string) => {
-    const group = groupedCategoryView?.groups.find((g) => g.name === groupName);
-    if (!group || group.layers.length === 0) {
-      deleteGroup(groupName);
-      return;
-    }
-    const defaultTarget = groupedCategoryView?.groups.find((g) => g.name !== groupName)?.name ?? "Other";
-    setDeleteGroupPrompt({ groupName, targetGroup: defaultTarget });
-  }, [groupedCategoryView, deleteGroup]);
-
-  const confirmMoveAndDeleteGroup = useCallback(() => {
-    setDeleteGroupPrompt((pending) => {
-      if (!pending) return null;
-      const group = groupedCategoryView?.groups.find((g) => g.name === pending.groupName);
-      if (group && group.layers.length > 0) {
-        setCategoryGroupOverrides((current) => {
-          const next = new Map(current);
-          for (const { node } of group.layers) next.set(node.name, pending.targetGroup);
-          return next;
-        });
-      }
-      deleteGroup(pending.groupName);
-      return null;
-    });
-  }, [groupedCategoryView, deleteGroup]);
+  }, [activeVectorDatasets, visualization.manifests, categoryStats, normalizedLayerQuery]);
 
   useEffect(() => {
     if (!layerMenu) return;
@@ -11227,42 +10518,6 @@ function CommandCenter({
       window.removeEventListener("scroll", closeMenu, true);
     };
   }, [layerMenu]);
-
-  useEffect(() => {
-    if (!groupMenu) return;
-    const closeMenu = () => setGroupMenu(null);
-    const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key === "Escape") closeMenu();
-    };
-    document.addEventListener("click", closeMenu);
-    document.addEventListener("keydown", closeOnEscape);
-    window.addEventListener("resize", closeMenu);
-    window.addEventListener("scroll", closeMenu, true);
-    return () => {
-      document.removeEventListener("click", closeMenu);
-      document.removeEventListener("keydown", closeOnEscape);
-      window.removeEventListener("resize", closeMenu);
-      window.removeEventListener("scroll", closeMenu, true);
-    };
-  }, [groupMenu]);
-
-  useEffect(() => {
-    if (!renamingGroupName) return;
-    const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setRenamingGroupName(null);
-    };
-    document.addEventListener("keydown", closeOnEscape);
-    return () => document.removeEventListener("keydown", closeOnEscape);
-  }, [renamingGroupName]);
-
-  useEffect(() => {
-    if (!deleteGroupPrompt) return;
-    const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setDeleteGroupPrompt(null);
-    };
-    document.addEventListener("keydown", closeOnEscape);
-    return () => document.removeEventListener("keydown", closeOnEscape);
-  }, [deleteGroupPrompt]);
 
   const updateVisualizationPopupPosition = useCallback(() => {
     const anchor = visualizationAnchorRef.current;
@@ -11491,7 +10746,8 @@ function CommandCenter({
             <div className="layer-list">
               {groupedCategoryView ? (
                 groupedCategoryView.groups.map((group) => {
-                  const toggleable = group.layers.filter((layer) => {
+                  const eligible = group.layers.filter((layer) => layer.legend);
+                  const toggleable = eligible.filter((layer) => {
                     const inModeFamily = detectionMode
                       ? DETECTION_MODE_TARGET_CLASSES[detectionMode].includes(classMap[layer.node.name])
                       : false;
@@ -11524,52 +10780,12 @@ function CommandCenter({
                   };
 
                   return (
-                  <div
-                    key={group.name}
-                    className={`layer-group${dragOverGroup === group.name ? " layer-group--drop-target" : ""}`}
-                    onDragOver={(event) => {
-                      if (!draggingCategory) return;
-                      event.preventDefault();
-                      event.dataTransfer.dropEffect = "move";
-                    }}
-                    onDragEnter={(event) => {
-                      if (!draggingCategory) return;
-                      event.preventDefault();
-                      setDragOverGroup(group.name);
-                    }}
-                    onDragLeave={(event) => {
-                      if (event.currentTarget.contains(event.relatedTarget as Node)) return;
-                      setDragOverGroup((current) => (current === group.name ? null : current));
-                    }}
-                    onDrop={(event) => {
-                      event.preventDefault();
-                      const category = event.dataTransfer.getData("text/plain");
-                      setDragOverGroup(null);
-                      // Moving `category` into this group re-parents its row in
-                      // React, which unmounts the original DOM node before the
-                      // browser's native dragend can fire on it — so clear the
-                      // dragging state here too, not just in onDragEnd.
-                      setDraggingCategory(null);
-                      if (category) moveCategoryToGroup(category, group.name);
-                    }}
-                  >
-                    <div
-                      className="layer-group__head"
-                      onClick={toggleGroup}
-                      onContextMenu={(event) => {
-                        event.preventDefault();
-                        event.stopPropagation();
-                        setGroupMenu({
-                          groupName: group.name,
-                          x: Math.max(8, Math.min(event.clientX, window.innerWidth - 224)),
-                          y: Math.max(8, Math.min(event.clientY, window.innerHeight - 96)),
-                        });
-                      }}
-                    >
+                  <div key={group.name} className="layer-group">
+                    <div className="layer-group__head" onClick={toggleGroup}>
                       <input
                         type="checkbox"
                         className="layer-group__check"
-                        aria-label={`Select all layers in ${groupDisplayName(group.name)}`}
+                        aria-label={`Select all layers in ${group.name}`}
                         checked={allSelected}
                         ref={(el) => { if (el) el.indeterminate = indeterminate; }}
                         onClick={(event) => event.stopPropagation()}
@@ -11588,7 +10804,7 @@ function CommandCenter({
                           toggleGroup();
                         }}
                       >
-                        <span className="layer-group__name" title={groupDisplayName(group.name)}>{groupDisplayName(group.name)}</span>
+                        <span className="layer-group__name" title={group.name}>{group.name}</span>
                         <span className="layer-group__count">{group.layers.length}</span>
                         <span className="grouped-field-list__chevron layer-group__chevron" aria-hidden="true" />
                       </button>
@@ -11603,6 +10819,8 @@ function CommandCenter({
                         const visible = detectionMode
                           ? inModeFamily || extraVisibleCategories.has(category)
                           : !hiddenCategories.has(category);
+                        const expandKey = `${group.name}::${category}`;
+                        const open = expandedCategoryLayers.has(expandKey);
                         const toggleVisibility = () => {
                           if (detectionMode) {
                             if (!inModeFamily) onToggleExtraVisibleCategory(category);
@@ -11613,20 +10831,26 @@ function CommandCenter({
                         return (
                           <div
                             key={category}
-                            className={`layer-row layer-row--grouped${visible ? "" : " layer-row--hidden"}${draggingCategory === category ? " layer-row--dragging" : ""}`}
+                            className={`layer-row layer-row--grouped${visible ? "" : " layer-row--hidden"}`}
                             data-testid={`layer-row-${category}`}
-                            draggable
-                            onDragStart={(event) => {
-                              event.dataTransfer.setData("text/plain", category);
-                              event.dataTransfer.effectAllowed = "move";
-                              setDraggingCategory(category);
-                            }}
-                            onDragEnd={() => {
-                              setDraggingCategory(null);
-                              setDragOverGroup(null);
-                              setDragOverNewGroup(false);
-                            }}
                           >
+                            <button
+                              type="button"
+                              className="layer-row__chevron"
+                              aria-label={`${open ? "Hide" : "Show"} attributes of ${category}`}
+                              aria-expanded={open}
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                setExpandedCategoryLayers((current) => {
+                                  const next = new Set(current);
+                                  if (next.has(expandKey)) next.delete(expandKey);
+                                  else next.add(expandKey);
+                                  return next;
+                                });
+                              }}
+                            >
+                              <span className="grouped-field-list__chevron" aria-hidden="true" />
+                            </button>
                             <div
                               className={`layer-row__checkbox${visible ? " layer-row__checkbox--checked" : ""}`}
                               onClick={toggleVisibility}
@@ -11659,6 +10883,20 @@ function CommandCenter({
                               {category}
                               <span className="layer-row__count">{legend?.count ?? node.fields.length}</span>
                             </span>
+                            {open && (
+                              <ul className="layer-attributes">
+                                 {node.fields.length === 0 ? (
+                                   <li className="layer-attributes__empty">{t("map.cc.noAttributes")}</li>
+                                 ) : (
+                                  node.fields.map((field) => (
+                                    <li key={field.name} className="layer-attributes__item" title={field.name}>
+                                      <span className="layer-attributes__name">{field.name}</span>
+                                      <span className="layer-attributes__type">{field.detected_type}</span>
+                                    </li>
+                                  ))
+                                )}
+                              </ul>
+                            )}
                           </div>
                         );
                       })}
@@ -11667,34 +10905,7 @@ function CommandCenter({
                   </div>
                 );
               })
-              ) : null}
-              {groupedCategoryView && draggingCategory && (
-                <div
-                  className={`layer-group__new-drop${dragOverNewGroup ? " layer-group__new-drop--active" : ""}`}
-                  onDragOver={(event) => {
-                    event.preventDefault();
-                    event.dataTransfer.dropEffect = "move";
-                  }}
-                  onDragEnter={(event) => {
-                    event.preventDefault();
-                    setDragOverNewGroup(true);
-                  }}
-                  onDragLeave={(event) => {
-                    if (event.currentTarget.contains(event.relatedTarget as Node)) return;
-                    setDragOverNewGroup(false);
-                  }}
-                  onDrop={(event) => {
-                    event.preventDefault();
-                    const category = event.dataTransfer.getData("text/plain");
-                    setDragOverNewGroup(false);
-                    setDraggingCategory(null);
-                    if (category) createGroupAndMoveCategory(category);
-                  }}
-                >
-                  {t("map.cc.dropToCreateGroup")}
-                </div>
-              )}
-              {!groupedCategoryView && (
+              ) : (
                 displayedLayers.map((c) => {
                   // While a detection mode owns the map, a category already in
                   // the mode's own asset family is always shown (its checkbox
@@ -11798,129 +11009,6 @@ function CommandCenter({
             </svg>
             {t("map.cc.openAttributeTable")}
           </button>
-        </div>,
-        document.body
-      )}
-      {groupMenu && createPortal(
-        <div
-          className="layer-context-menu"
-          style={{ left: groupMenu.x, top: groupMenu.y }}
-          role="menu"
-          aria-label={`${groupDisplayName(groupMenu.groupName)} group actions`}
-          data-testid="layer-group-context-menu"
-          onContextMenu={(event) => event.preventDefault()}
-        >
-          <div className="layer-context-menu__title" title={groupDisplayName(groupMenu.groupName)}>
-            {groupDisplayName(groupMenu.groupName)}
-          </div>
-          <button
-            type="button"
-            role="menuitem"
-            onClick={() => {
-              startRenamingGroup(groupMenu.groupName);
-              setGroupMenu(null);
-            }}
-          >
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true">
-              <path d="M12 20h9" />
-              <path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z" />
-            </svg>
-            {t("map.cc.renameGroup")}
-          </button>
-          {groupMenu.groupName !== "Other" && (
-            <button
-              type="button"
-              role="menuitem"
-              className="layer-context-menu__danger"
-              onClick={() => {
-                requestDeleteGroup(groupMenu.groupName);
-                setGroupMenu(null);
-              }}
-            >
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true">
-                <path d="M3 6h18" />
-                <path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2m3 0-1 14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2L4 6" />
-              </svg>
-              {t("map.cc.deleteGroup")}
-            </button>
-          )}
-        </div>,
-        document.body
-      )}
-      {renamingGroupName && createPortal(
-        <div className="layer-rename-backdrop" onClick={() => setRenamingGroupName(null)}>
-          <div
-            className="layer-rename-popover"
-            role="dialog"
-            aria-label={t("map.cc.renameGroup")}
-            data-testid="layer-group-rename-popover"
-            onClick={(event) => event.stopPropagation()}
-          >
-            <div className="layer-context-menu__title">{t("map.cc.renameGroup")}</div>
-            <input
-              type="text"
-              className="layer-rename-popover__input"
-              value={renameDraft}
-              autoFocus
-              onChange={(event) => setRenameDraft(event.target.value)}
-              onKeyDown={(event) => {
-                if (event.key === "Enter") commitGroupRename();
-                if (event.key === "Escape") setRenamingGroupName(null);
-              }}
-            />
-            <div className="layer-rename-popover__actions">
-              <button type="button" onClick={() => setRenamingGroupName(null)}>
-                {t("map.cc.cancel")}
-              </button>
-              <button type="button" className="layer-rename-popover__save" onClick={commitGroupRename}>
-                {t("map.cc.save")}
-              </button>
-            </div>
-          </div>
-        </div>,
-        document.body
-      )}
-      {deleteGroupPrompt && createPortal(
-        <div className="layer-rename-backdrop" onClick={() => setDeleteGroupPrompt(null)}>
-          <div
-            className="layer-rename-popover"
-            role="dialog"
-            aria-label={t("map.cc.deleteGroup")}
-            data-testid="layer-group-delete-prompt"
-            onClick={(event) => event.stopPropagation()}
-          >
-            <div className="layer-context-menu__title">{t("map.cc.deleteGroup")}</div>
-            <p className="layer-delete-prompt__warning">{t("map.cc.groupHasLayersWarning")}</p>
-            <select
-              className="layer-rename-popover__input"
-              value={deleteGroupPrompt.targetGroup}
-              onChange={(event) => {
-                const value = event.target.value;
-                setDeleteGroupPrompt((current) => (current ? { ...current, targetGroup: value } : current));
-              }}
-            >
-              {(() => {
-                const names = (groupedCategoryView?.groups ?? [])
-                  .map((g) => g.name)
-                  .filter((name) => name !== deleteGroupPrompt.groupName);
-                // "Other" is always a valid target — the grouping logic
-                // creates it on demand — so offer it even if it isn't
-                // currently a visible group (e.g. nothing has landed there yet).
-                if (!names.includes("Other")) names.push("Other");
-                return names.map((name) => (
-                  <option key={name} value={name}>{groupDisplayName(name)}</option>
-                ));
-              })()}
-            </select>
-            <div className="layer-rename-popover__actions">
-              <button type="button" onClick={() => setDeleteGroupPrompt(null)}>
-                {t("map.cc.cancel")}
-              </button>
-              <button type="button" className="layer-rename-popover__save" onClick={confirmMoveAndDeleteGroup}>
-                {t("map.cc.moveAndDelete")}
-              </button>
-            </div>
-          </div>
         </div>,
         document.body
       )}
@@ -12195,10 +11283,9 @@ function MapControls({
   onToggleDetectionMode,
   roadInspectionActive,
   onToggleRoadInspection,
+  aiOverlayEnabled,
+  onToggleAiOverlay,
   onAiIconClick,
-  propertyTaxPanelOpen,
-  propertyTaxActive,
-  onTogglePropertyTaxPanel,
   streetPickMode,
   onToggleStreetView,
   placemarkMode,
@@ -12213,10 +11300,6 @@ function MapControls({
   hideBasemap,
   measureActive,
   onToggleMeasure,
-  show3DBuildings,
-  onToggle3DBuildings,
-  onOpen3DPlan,
-  datasets,
 }: {
   basemap: Basemap;
   onChangeBasemap: (b: Basemap) => void;
@@ -12226,13 +11309,12 @@ function MapControls({
   onToggleDetectionMode: (mode: Exclude<DetectionMode, null>) => void;
   roadInspectionActive: boolean;
   onToggleRoadInspection: () => void;
+  aiOverlayEnabled: boolean;
+  onToggleAiOverlay: () => void;
   /** Fires on every AI Detection icon click (not just the first) — the
    * caller owns the one-time-per-session gating; this is just a
    * notification. */
   onAiIconClick?: () => void;
-  propertyTaxPanelOpen: boolean;
-  propertyTaxActive: boolean;
-  onTogglePropertyTaxPanel: () => void;
   streetPickMode: boolean;
   onToggleStreetView: () => void;
   placemarkMode: boolean;
@@ -12246,23 +11328,45 @@ function MapControls({
   onToggleReferenceLayer: (key: keyof ReferenceLayerVisibility, visible: boolean) => void;
   measureActive: boolean;
   onToggleMeasure: () => void;
-  show3DBuildings: boolean;
-  onToggle3DBuildings: () => void;
-  onOpen3DPlan: () => void;
-  datasets: import("../lib/workflow").DatasetRow[];
 }) {
   const [basemapMenuOpen, setBasemapMenuOpen] = useState(false);
+  const [toolsMenuOpen, setToolsMenuOpen] = useState(false);
   const [activeToolsSection, setActiveToolsSection] = useState<"location" | null>(null);
-  const [reportOpen, setReportOpen] = useState(false);
+  const [menuPos, setMenuPos] = useState<{ top: number; left: number } | null>(null);
   // AI Detection is an independent floating control, not a tools-menu
   // category — its own open state, own outside-click handling, own anchor.
-  // The picker list is the only surface; the active family is shown via the
-  // icon's own dot (below) and via the active row inside the list itself,
-  // so re-opening the list always shows what's currently selected.
+  // Three explicit, independent states (not derived from one another):
+  // showDetectionList (the Poles/Drains/Manholes picker), showDetectionStatus
+  // (the "AI Detection : X  ON/OFF" card), and detectionMode/aiOverlayEnabled
+  // (props — the actual selection/activation, untouched by this UI layer).
+  // Keeping list-visibility and status-visibility as separate booleans
+  // (rather than deriving one from "not the other") is what lets a single
+  // icon click close the status card without also opening the list.
   const [showDetectionList, setShowDetectionList] = useState(false);
+  const [showDetectionStatus, setShowDetectionStatus] = useState(false);
+  // useDraggableMapPanel persists an absolute drag offset across opens
+  // (correct for panels with a fixed anchor). This menu's anchor moves
+  // (aiWrapRef slides with the toolbox state), so trusting its persisted
+  // style from a stale/previous anchor position visibly drops the menu on
+  // top of the icon instead of beside it. Only trust it once the user has
+  // actually dragged THIS open; otherwise always use the freshly measured
+  // menuPos below.
+  const [aiMenuDragged, setAiMenuDragged] = useState(false);
+  const [aiOffsetY, setAiOffsetY] = useState(0);
   const toolsControlRef = useRef<HTMLDivElement | null>(null);
   const basemapControlRef = useRef<HTMLDivElement | null>(null);
+  const toolsToggleRef = useRef<HTMLButtonElement | null>(null);
+  const toolsPanelsRef = useRef<HTMLDivElement | null>(null);
   const aiWrapRef = useRef<HTMLDivElement | null>(null);
+  const portalMenuRef = useRef<HTMLDivElement | null>(null);
+  const isMobile = useIsMobile();
+  const aiMenuDrag = useDraggableMapPanel<HTMLDivElement>({
+    storageKey: "davangere.ai-detection-position",
+    boundary: "viewport",
+    initialPosition: menuPos ? { x: menuPos.left, y: menuPos.top } : null,
+    margin: 8,
+    disabled: isMobile,
+  });
 
   useEffect(() => {
     if (!basemapMenuOpen) return;
@@ -12280,39 +11384,74 @@ function MapControls({
     };
   }, [basemapMenuOpen]);
 
+  // MapLibre's WebGL canvas can composite on its own GPU layer that paints
+  // over positioned overlay siblings regardless of z-index/stacking-context
+  // CSS (confirmed via elementFromPoint — the canvas rendered on top of a
+  // correctly z-indexed, position:absolute dropdown). Portaling the open
+  // dropdown straight to document.body, positioned with fixed coordinates
+  // computed from the AI icon's own rect, sidesteps the map's DOM subtree
+  // entirely instead of fighting that stacking behavior. Opens beside the
+  // icon (right edge + spacing), not below it.
   useEffect(() => {
-    if (!activeToolsSection) return;
+    if (!showDetectionList || !aiWrapRef.current) return;
+    setAiMenuDragged(false);
+    const rect = aiWrapRef.current.getBoundingClientRect();
+    setMenuPos({ top: rect.top, left: rect.right + 8 });
+  }, [showDetectionList]);
+
+  useEffect(() => {
+    if (!toolsMenuOpen) {
+      setActiveToolsSection(null);
+      return;
+    }
+
     const onToolsOutside = (event: MouseEvent) => {
       const target = event.target as Node;
       if (toolsControlRef.current?.contains(target)) return;
+      // The AI mode-picker dropdown is portaled to document.body (outside
+      // toolsControlRef) — a click inside it is unrelated to this menu and
+      // must not close it, since AI Detection is now fully independent.
+      if (portalMenuRef.current?.contains(target)) return;
       if (target instanceof Element && target.closest(".reference-layers-menu")) return;
+      setToolsMenuOpen(false);
       setActiveToolsSection(null);
     };
+
     const onToolsEscape = (event: KeyboardEvent) => {
       if (event.key !== "Escape") return;
+      setToolsMenuOpen(false);
       setActiveToolsSection(null);
     };
+
     document.addEventListener("mousedown", onToolsOutside);
     document.addEventListener("keydown", onToolsEscape);
     return () => {
       document.removeEventListener("mousedown", onToolsOutside);
       document.removeEventListener("keydown", onToolsEscape);
     };
-  }, [activeToolsSection]);
+  }, [toolsMenuOpen]);
 
-  // AI Detection dropdown: in-flow under the icon (same anchor pattern as
-  // the Location dropdown), not portaled — so this outside-click check only
-  // needs the wrap ref, which contains both the button and the dropdown.
+  // AI Detection's own outside-click/escape handling — fully independent of
+  // the tools menu's. The dropdown is portaled to document.body, so it's
+  // exempted the same way the tools menu exempts it above. Dismissing the
+  // list this way (without picking anything) returns to whatever was
+  // showing before it opened — the status card reappears if a mode is
+  // already active, same as before the list was split into its own state.
+  // The AI icon's own click handler is deliberately different (see
+  // handleAiIconClick) and does not restore the status card this way.
   useEffect(() => {
     if (!showDetectionList) return;
     const onAiOutside = (event: MouseEvent) => {
       const target = event.target as Node;
       if (aiWrapRef.current?.contains(target)) return;
+      if (portalMenuRef.current?.contains(target)) return;
       setShowDetectionList(false);
+      setShowDetectionStatus(Boolean(detectionMode));
     };
     const onAiEscape = (event: KeyboardEvent) => {
       if (event.key !== "Escape") return;
       setShowDetectionList(false);
+      setShowDetectionStatus(Boolean(detectionMode));
     };
     document.addEventListener("mousedown", onAiOutside);
     document.addEventListener("keydown", onAiEscape);
@@ -12320,14 +11459,19 @@ function MapControls({
       document.removeEventListener("mousedown", onAiOutside);
       document.removeEventListener("keydown", onAiEscape);
     };
-  }, [showDetectionList]);
+  }, [showDetectionList, detectionMode]);
 
-  // Plain open/close toggle — clicking the AI icon always reaches the
-  // picker list in one click, whether or not a family is already active.
-  // The list itself highlights the active row (ai-detection-menu__item
-  // --active) so re-opening it always shows the current selection.
+  // Strict 3-state controller for the AI icon. The two surfaces (list,
+  // status card) must never flip together in one click — closing the status
+  // card must NOT also open the list (that only happens on the next click).
+  // The priority is exactly: (1) close status card if visible, (2) close
+  // list if visible, (3) otherwise open the list.
   const handleAiIconClick = () => {
     onAiIconClick?.();
+    if (showDetectionStatus) {
+      setShowDetectionStatus(false);
+      return;
+    }
     if (showDetectionList) {
       setShowDetectionList(false);
       return;
@@ -12335,108 +11479,294 @@ function MapControls({
     setShowDetectionList(true);
   };
 
+  // Keeps the AI icon flush under the toggle when the tools menu is closed,
+  // and dynamically pushes it below the expanded panel's real rendered
+  // height when the menu opens — measured from actual DOM rects and the
+  // container's own CSS gap (not a hardcoded offset), so it stays correct
+  // regardless of which tool category's content is showing.
+  const measureAiOffset = useCallback(() => {
+    const container = toolsControlRef.current;
+    const toggleEl = toolsToggleRef.current;
+    if (!container || !toggleEl) return;
+    const gap = parseFloat(getComputedStyle(container).rowGap || getComputedStyle(container).gap || "0") || 0;
+    const containerTop = container.getBoundingClientRect().top;
+    let referenceBottom = toggleEl.getBoundingClientRect().bottom;
+    if (toolsMenuOpen && toolsPanelsRef.current) {
+      const panelsBottom = toolsPanelsRef.current.getBoundingClientRect().bottom;
+      if (panelsBottom > referenceBottom) referenceBottom = panelsBottom;
+    }
+    setAiOffsetY(referenceBottom - containerTop + gap);
+  }, [toolsMenuOpen]);
+
+  useLayoutEffect(() => {
+    measureAiOffset();
+  }, [measureAiOffset, activeToolsSection]);
+
+  useEffect(() => {
+    const panelsEl = toolsPanelsRef.current;
+    if (!panelsEl || typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(() => measureAiOffset());
+    observer.observe(panelsEl);
+    return () => observer.disconnect();
+  }, [measureAiOffset]);
+
+  const hasActiveTool = Boolean(
+    detectionMode ||
+    roadInspectionActive ||
+    streetPickMode ||
+    placemarkMode ||
+    myPlacesOpen ||
+    coordinateSearchOpen ||
+    measureActive ||
+    Object.values(referenceLayers).some(Boolean)
+  );
+
   return (
     <>
       <div className="feature-count" data-testid="viewport-status">
         {status.loading ? "loading..." : `${status.count} features`}
       </div>
       {!hideBasemap && (
-      /* Single thumbnail toggle — bottom-left, like Google Maps/Earth.
-         Shows the active basemap as a thumbnail preview. Click opens a
-         popup above with all three options as labeled thumbnail cards. */
       <div className="basemap-picker" ref={basemapControlRef}>
         <button
           type="button"
-          className="basemap-picker__toggle"
-          onClick={() => setBasemapMenuOpen((c) => !c)}
+          className={`basemap-picker__toggle${basemapMenuOpen ? " basemap-picker__toggle--open" : ""}`}
+          onClick={() => setBasemapMenuOpen((current) => !current)}
           aria-label="Choose map style"
           aria-expanded={basemapMenuOpen}
           aria-controls="basemap-picker-menu"
           title="Map style"
           data-testid="basemap-picker-toggle"
         >
-          <span className={`basemap-picker__thumb basemap-picker__thumb--${basemap === "off" ? "off" : basemap === "satellite" ? "satellite" : "street"}`} aria-hidden="true" />
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" aria-hidden="true">
+            <circle cx="12" cy="12" r="9" />
+            <path d="M3 12h18M12 3c2.8 2.5 4.2 5.5 4.2 9S14.8 18.5 12 21c-2.8-2.5-4.2-5.5-4.2-9S9.2 5.5 12 3Z" />
+          </svg>
         </button>
         {basemapMenuOpen && (
           <div id="basemap-picker-menu" className="basemap-picker__menu" role="menu" aria-label="Map styles">
-            <button type="button" role="menuitem" className={`basemap-picker__option${basemap === "satellite" ? " basemap-picker__option--active" : ""}`} onClick={() => { onChangeBasemap("satellite"); setBasemapMenuOpen(false); }} title="Satellite" aria-label="Satellite" data-testid="basemap-satellite">
-              <span className="basemap-picker__thumb basemap-picker__thumb--satellite" aria-hidden="true" />
-              <span className="basemap-picker__option-label">Satellite</span>
+            <button type="button" className={basemap === "street" ? "is-active" : ""} onClick={() => { onChangeBasemap("street"); setBasemapMenuOpen(false); }} title="Street" aria-label="Street" data-testid="basemap-street">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true"><path d="M7 3 6 21M17 3l1 18" /><path d="M12 4v3M12 10.5v3M12 17v3" /></svg>
             </button>
-            <button type="button" role="menuitem" className={`basemap-picker__option${basemap === "street" ? " basemap-picker__option--active" : ""}`} onClick={() => { onChangeBasemap("street"); setBasemapMenuOpen(false); }} title="Map" aria-label="Map" data-testid="basemap-street">
-              <span className="basemap-picker__thumb basemap-picker__thumb--street" aria-hidden="true" />
-              <span className="basemap-picker__option-label">Map</span>
+            <button type="button" className={basemap === "satellite" ? "is-active" : ""} onClick={() => { onChangeBasemap("satellite"); setBasemapMenuOpen(false); }} title="Satellite" aria-label="Satellite" data-testid="basemap-satellite">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true"><circle cx="12" cy="12" r="6" /><ellipse cx="12" cy="12" rx="10" ry="4" transform="rotate(-20 12 12)" /></svg>
             </button>
-            <button type="button" role="menuitem" className={`basemap-picker__option${streetPickMode ? " basemap-picker__option--active" : ""}`} onClick={() => { onToggleStreetView(); setBasemapMenuOpen(false); }} title="Street View" aria-label="Street View" data-testid="basemap-street-view">
-              <span className="basemap-picker__thumb basemap-picker__thumb--street-view" aria-hidden="true">
-                {/* Google-style orange pegman */}
-                <svg className="basemap-picker__pegman" viewBox="0 0 64 80" fill="none" xmlns="http://www.w3.org/2000/svg">
-                  {/* Head */}
-                  <circle cx="32" cy="12" r="10" fill="#FF9500" stroke="#E07000" strokeWidth="1.5"/>
-                  {/* Body */}
-                  <path d="M18 30 Q18 22 32 22 Q46 22 46 30 L43 52 Q43 56 32 56 Q21 56 21 52 Z" fill="#FF9500" stroke="#E07000" strokeWidth="1.5"/>
-                  {/* Left arm */}
-                  <path d="M18 30 L10 44" stroke="#FF9500" strokeWidth="6" strokeLinecap="round"/>
-                  {/* Right arm */}
-                  <path d="M46 30 L54 44" stroke="#FF9500" strokeWidth="6" strokeLinecap="round"/>
-                  {/* Left leg */}
-                  <path d="M25 56 L22 72" stroke="#FF9500" strokeWidth="6" strokeLinecap="round"/>
-                  {/* Right leg */}
-                  <path d="M39 56 L42 72" stroke="#FF9500" strokeWidth="6" strokeLinecap="round"/>
-                  {/* Face highlight */}
-                  <circle cx="28" cy="10" r="3" fill="rgba(255,255,255,0.3)"/>
-                </svg>
-              </span>
-              <span className="basemap-picker__option-label">Street View</span>
-            </button>
-            <button type="button" role="menuitem" className={`basemap-picker__option${basemap === "off" ? " basemap-picker__option--active" : ""}`} onClick={() => { onChangeBasemap("off"); setBasemapMenuOpen(false); }} title="None" aria-label="No basemap" data-testid="basemap-off">
-              <span className="basemap-picker__thumb basemap-picker__thumb--off" aria-hidden="true" />
-              <span className="basemap-picker__option-label">None</span>
+            <button type="button" className={basemap === "off" ? "is-active" : ""} onClick={() => { onChangeBasemap("off"); setBasemapMenuOpen(false); }} title="No basemap" aria-label="No basemap" data-testid="basemap-off">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="1" /><path d="M4 20 20 4" /></svg>
             </button>
           </div>
         )}
       </div>
       )}
-      {/* ── Google Earth-style horizontal toolbar — top of canvas ─────────
-           Order: AI Analysis | divider | Location | Measure | divider | 3D View | 3D Buildings
-           Floating panels (location options, AI detection list) still drop
-           down from their respective buttons, anchored below the toolbar.  */}
-      <div className="map-topbar" ref={toolsControlRef} role="toolbar" aria-label="Map tools">
+      <div className="map-tools" ref={toolsControlRef}>
+        <button
+          type="button"
+          ref={toolsToggleRef}
+          className={`map-tools__toggle${toolsMenuOpen ? " map-tools__toggle--open" : ""}${hasActiveTool ? " map-tools__toggle--has-active" : ""}`}
+          onClick={() => {
+            const nextOpen = !toolsMenuOpen;
+            setToolsMenuOpen(nextOpen);
+            if (!nextOpen) {
+              setActiveToolsSection(null);
+            }
+          }}
+          aria-expanded={toolsMenuOpen}
+          aria-controls="map-tools-panels"
+          aria-label={toolsMenuOpen ? "Close map tools" : "Open map tools"}
+          data-testid="map-tools-toggle"
+          title={toolsMenuOpen ? "Close tools" : "Open tools"}
+        >
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" width="19" height="19" aria-hidden="true">
+            <rect x="3" y="8" width="18" height="12" rx="2" />
+            <path d="M8 8V6a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+            <path d="M3 13h18" />
+            <path d="M10 13v2M14 13v2" />
+          </svg>
+          {hasActiveTool && <span className="map-tools__active-dot" aria-hidden="true" />}
+        </button>
 
-        {/* ── AI Analysis ─────────────────────────────────────────────── */}
-        <div className="map-topbar__ai-wrap" ref={aiWrapRef}>
+        <div
+          id="map-tools-panels"
+          ref={toolsPanelsRef}
+          className={`map-tools__panels${toolsMenuOpen ? " map-tools__panels--open" : ""}`}
+          aria-label="Map tools"
+          aria-hidden={!toolsMenuOpen}
+        >
+          <div className="map-tools__category-rail" aria-label="Tool categories">
+            <button
+              type="button"
+              className={`map-tools__category-btn${activeToolsSection === "location" ? " map-tools__category-btn--active" : ""}${(streetPickMode || placemarkMode || myPlacesOpen || coordinateSearchOpen || Object.values(referenceLayers).some(Boolean)) ? " map-tools__category-btn--has-active" : ""}`}
+              onClick={() => {
+                setActiveToolsSection((current) => current === "location" ? null : "location");
+              }}
+              aria-label="Location and map tools"
+              aria-expanded={activeToolsSection === "location"}
+              title="Location tools"
+              data-testid="map-tools-category-location"
+            >
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" width="19" height="19" aria-hidden="true">
+                <path d="M12 22s7-6.1 7-13a7 7 0 1 0-14 0c0 6.9 7 13 7 13Z" />
+                <circle cx="12" cy="9" r="2.2" />
+              </svg>
+              {(streetPickMode || placemarkMode || myPlacesOpen || coordinateSearchOpen || Object.values(referenceLayers).some(Boolean)) && <span className="map-tools__category-dot" aria-hidden="true" />}
+            </button>
+
+            {/* Direct action, not a category with a sub-panel — one click
+                after opening the toolbox reaches Measure, same depth as
+                every other rail button, instead of being buried inside the
+                Location panel's list of six tools. */}
+            <button
+              type="button"
+              className={`map-tools__category-btn${measureActive ? " map-tools__category-btn--active" : ""}`}
+              onClick={onToggleMeasure}
+              aria-label="Measure distances and areas on the map"
+              aria-pressed={measureActive}
+              title="Measure"
+              data-testid="map-tools-category-measure"
+            >
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" width="17" height="17" aria-hidden="true">
+                <rect x="2.5" y="8" width="19" height="8" rx="1.5" transform="rotate(-45 12 12)" />
+                <g transform="rotate(-45 12 12)">
+                  <path d="M6 8v3M9.5 8v2M13 8v3M16.5 8v2" />
+                </g>
+              </svg>
+            </button>
+          </div>
+
+          <div className="map-tools__content">
+          {activeToolsSection === "location" && (
+          <div className="map-tools__floating-panel map-tools__floating-panel--location" data-testid="location-tools-panel">
+            <div className="map-controls map-controls--floating-panel map-controls--location-panel">
+              <div className="map-controls__group map-controls__group--annotations" data-testid="annotation-controls">
           <button
             type="button"
-            className={`map-topbar__btn${showDetectionList ? " map-topbar__btn--active" : ""}${(detectionMode || roadInspectionActive) ? " map-topbar__btn--has-active" : ""}`}
+            className={`map-controls__btn${placemarkMode ? " map-controls__btn--active" : ""}`}
+            onClick={onTogglePlacemark}
+            data-testid="placemark-tool"
+            aria-pressed={placemarkMode}
+            title="Place a saved placemark on the map"
+          >
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" width="15" height="15" style={{ marginRight: 4, verticalAlign: -2 }} aria-hidden="true">
+              <path d="M12 22s7-6.1 7-13a7 7 0 1 0-14 0c0 6.9 7 13 7 13Z" />
+              <circle cx="12" cy="9" r="2.2" />
+            </svg>
+            <span className="map-controls__btn-label">Placemark</span>
+          </button>
+          <button
+            type="button"
+            className={`map-controls__btn${myPlacesOpen ? " map-controls__btn--active" : ""}`}
+            onClick={onToggleMyPlaces}
+            data-testid="my-places-toggle"
+            aria-pressed={myPlacesOpen}
+            title="Search and manage saved placemarks"
+          >
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" width="15" height="15" style={{ marginRight: 4, verticalAlign: -2 }} aria-hidden="true">
+              <path d="M4 5.5A2.5 2.5 0 0 1 6.5 3H18a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6.5A2.5 2.5 0 0 1 4 18.5v-13Z" />
+              <path d="M8 3v18M12 8h5M12 12h5" />
+            </svg>
+            <span className="map-controls__btn-label">My Places{placemarkCount > 0 ? ` · ${placemarkCount}` : ""}</span>
+          </button>
+          <button
+            type="button"
+            className={`map-controls__btn${coordinateSearchOpen ? " map-controls__btn--active" : ""}`}
+            onClick={onToggleCoordinateSearch}
+            data-testid="coordinate-search-toggle"
+            aria-pressed={coordinateSearchOpen}
+            title="Enter latitude and longitude and fly to the exact location"
+          >
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" width="15" height="15" style={{ marginRight: 4, verticalAlign: -2 }} aria-hidden="true">
+              <circle cx="12" cy="12" r="6" />
+              <path d="M12 2v4M12 18v4M2 12h4M18 12h4" />
+              <circle cx="12" cy="12" r="1.5" fill="currentColor" stroke="none" />
+            </svg>
+            Coordinate Search
+          </button>
+          <ReferenceLayersMenu value={referenceLayers} onChange={onToggleReferenceLayer} />
+              </div>
+              <div className="map-controls__group map-controls__group--street-view">
+          <button
+            className={`map-controls__btn map-controls__btn--street-view${streetPickMode ? " map-controls__btn--active" : ""}`}
+            onClick={onToggleStreetView}
+            data-testid="street-view-picker"
+            title="Select a map location and open the nearest Google Street View panorama"
+            aria-pressed={streetPickMode}
+          >
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" width="15" height="15" style={{ marginRight: 4, verticalAlign: -2 }}>
+              <circle cx="12" cy="5" r="2.5" fill="currentColor" stroke="none" />
+              <path d="M8 10c1.2-1.2 2.5-1.8 4-1.8s2.8.6 4 1.8M9.2 10.2 8 16m6.8-5.8L16 16M9.3 13h5.4M10.5 16v5m3-5v5" />
+            </svg>
+            <span className="map-controls__btn-label">Street View</span>
+          </button>
+              </div>
+            </div>
+          </div>
+          )}
+          </div>
+        </div>
+        {/* AI Detection: an independent floating control, not a tools-menu
+            category. It sits directly below the toggle and dynamically
+            slides down (via aiOffsetY, see measureAiOffset) when the tools
+            menu expands, but its own panel opens to the right and is never
+            gated by toolsMenuOpen/activeToolsSection. */}
+        <div
+          className="map-tools__ai-wrap"
+          ref={aiWrapRef}
+          style={{ transform: `translateY(${aiOffsetY}px)` }}
+        >
+          <button
+            type="button"
+            className={`map-tools__ai-standalone${(showDetectionList || showDetectionStatus) ? " map-tools__ai-standalone--active" : ""}${(detectionMode || roadInspectionActive) ? " map-tools__ai-standalone--has-active" : ""}`}
             onClick={handleAiIconClick}
-            aria-label="AI Analysis"
+            aria-label="AI detection tools"
             aria-haspopup="true"
             aria-expanded={showDetectionList}
-            title="AI Analysis"
+            title="AI detection"
             data-testid="map-tools-category-ai"
           >
-            {/* Sparkle / AI star icon */}
-            <svg viewBox="0 0 24 24" fill="currentColor" width="17" height="17" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="currentColor" width="19" height="19" aria-hidden="true">
               <path d="M12 2l1.8 5.2L19 9l-5.2 1.8L12 16l-1.8-5.2L5 9l5.2-1.8L12 2Z" />
               <path d="m19 13 .9 2.1L22 16l-2.1.9L19 19l-.9-2.1L16 16l2.1-.9L19 13Z" />
             </svg>
-            <span className="map-topbar__label">AI Analysis</span>
-            {(detectionMode || roadInspectionActive) && <span className="map-topbar__dot" aria-hidden="true" />}
+            {(detectionMode || roadInspectionActive) && <span className="map-tools__category-dot" aria-hidden="true" />}
           </button>
-          {showDetectionList && (
-            <div className="map-topbar__dropdown" data-testid="ai-detection-menu">
+
+          {showDetectionList && menuPos && createPortal(
+            <div
+              className="ai-detection-menu"
+              data-testid="ai-detection-menu"
+              ref={(node) => {
+                portalMenuRef.current = node;
+                aiMenuDrag.panelRef.current = node;
+              }}
+              style={{ position: "fixed", ...(aiMenuDragged ? aiMenuDrag.style : { top: menuPos.top, left: menuPos.left }) }}
+            >
+              <div
+                className="floating-map-panel__dragbar"
+                onPointerDown={(event) => {
+                  setAiMenuDragged(true);
+                  aiMenuDrag.onDragStart(event);
+                }}
+              >
+                <span>AI Detection</span>
+                <small>Drag</small>
+                <button type="button" onClick={() => setShowDetectionList(false)} aria-label="Close AI Detection">×</button>
+              </div>
               {(["poles", "drains", "manholes", "roads", "powerlines", "potholes", "standing_water"] as const).map((mode) => (
                 <button
                   type="button"
                   key={mode}
-                  className={`map-topbar__dropdown-item${detectionMode === mode ? " is-active" : ""}`}
+                  className={`ai-detection-menu__item${detectionMode === mode ? " ai-detection-menu__item--active" : ""}`}
                   onClick={() => {
-                    // Re-picking the already-active family turns it off
-                    // (see toggleDetectionMode) — that's the exit path back
-                    // to the normal view now that there's no separate
-                    // ON/OFF control.
-                    onToggleDetectionMode(mode);
+                    // Always activate the chosen mode — never toggle it off.
+                    // onToggleDetectionMode is a toggle, so re-picking the
+                    // already-active mode would clear detectionMode and hide
+                    // the status card; guard against that so selection is a
+                    // pure "set" (matching the spec).
+                    if (detectionMode !== mode) {
+                      onToggleDetectionMode(mode);
+                    }
                     setShowDetectionList(false);
+                    setShowDetectionStatus(true);
                   }}
                   data-testid={`detection-mode-${mode}`}
                 >
@@ -12445,160 +11775,49 @@ function MapControls({
               ))}
               <button
                 type="button"
-                className={`map-topbar__dropdown-item${roadInspectionActive ? " is-active" : ""}`}
+                className={`ai-detection-menu__item${roadInspectionActive ? " ai-detection-menu__item--active" : ""}`}
                 onClick={() => {
                   onToggleRoadInspection();
                   setShowDetectionList(false);
+                  setShowDetectionStatus(true);
                 }}
                 data-testid="road-inspection-mode"
               >
                 Road Inspection
               </button>
+            </div>,
+            document.body
+          )}
+
+          {/* Persistent status card — its visibility (showDetectionStatus)
+              is a fully independent boolean from the list's, not derived
+              from "list closed". That decoupling is what lets the AI icon's
+              first click close just this card without also opening the
+              list (see handleAiIconClick above). Reuses the same
+              aiOverlayEnabled/onToggleAiOverlay state as everything else;
+              no new or duplicate detection state. */}
+          {showDetectionStatus && (detectionMode || roadInspectionActive) && (
+            <div className="ai-status-card" data-testid="ai-status-card">
+              <span className="ai-status-card__label">
+                AI Detection : {roadInspectionActive ? "Road Inspection" : detectionMode ? DETECTION_MODE_LABEL[detectionMode] : ""}
+              </span>
+              {detectionMode && (
+                  <button
+                    type="button"
+                    className={`ai-overlay-toggle${aiOverlayEnabled ? " ai-overlay-toggle--on" : ""}`}
+                    onClick={onToggleAiOverlay}
+                    data-testid="ai-overlay-toggle"
+                    title={aiOverlayEnabled ? "Turn off the AI red/yellow/green overlay" : "Turn on the AI red/yellow/green overlay"}
+                  >
+                    <span className="ai-overlay-toggle__track">
+                      <span className="ai-overlay-toggle__knob" />
+                    </span>
+                    <span className="map-controls__btn-label">{aiOverlayEnabled ? "ON" : "OFF"}</span>
+                  </button>
+                )}
             </div>
           )}
         </div>
-
-        <span className="map-topbar__divider" aria-hidden="true" />
-
-        {/* ── Property tax classification ────────────────────────────── */}
-        <button
-          type="button"
-          className={`map-topbar__btn${propertyTaxPanelOpen ? " map-topbar__btn--active" : ""}${propertyTaxActive ? " map-topbar__btn--has-active" : ""}`}
-          onClick={onTogglePropertyTaxPanel}
-          aria-label="Property tax classification"
-          aria-expanded={propertyTaxPanelOpen}
-          title="Property tax classification"
-          data-testid="property-tax-toggle"
-        >
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" width="17" height="17" aria-hidden="true">
-            <path d="M4 21V9l8-5 8 5v12" />
-            <path d="M8 21v-7h8v7M3 21h18" />
-            <path d="M9 10h.01M12 10h.01M15 10h.01" strokeWidth="2.4" strokeLinecap="round" />
-          </svg>
-          <span className="map-topbar__label">Property Tax</span>
-          {propertyTaxActive && <span className="map-topbar__dot" aria-hidden="true" />}
-        </button>
-
-        <span className="map-topbar__divider" aria-hidden="true" />
-
-        {/* ── Location tools ──────────────────────────────────────────── */}
-        <div className="map-topbar__location-wrap">
-          <button
-            type="button"
-            className={`map-topbar__btn${activeToolsSection === "location" ? " map-topbar__btn--active" : ""}${(placemarkMode || myPlacesOpen || coordinateSearchOpen || Object.values(referenceLayers).some(Boolean)) ? " map-topbar__btn--has-active" : ""}`}
-            onClick={() => setActiveToolsSection((c) => c === "location" ? null : "location")}
-            aria-label="Location tools"
-            aria-expanded={activeToolsSection === "location"}
-            title="Location tools"
-            data-testid="map-tools-category-location"
-          >
-            {/* Pin / placemark icon */}
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" width="17" height="17" aria-hidden="true">
-              <path d="M12 22s7-6.1 7-13a7 7 0 1 0-14 0c0 6.9 7 13 7 13Z" />
-              <circle cx="12" cy="9" r="2.2" />
-            </svg>
-            <span className="map-topbar__label">Location</span>
-            {(placemarkMode || myPlacesOpen || coordinateSearchOpen || Object.values(referenceLayers).some(Boolean)) && <span className="map-topbar__dot" aria-hidden="true" />}
-          </button>
-          {activeToolsSection === "location" && (
-            <div className="map-topbar__dropdown" data-testid="location-tools-panel">
-              <button type="button" className={`map-topbar__dropdown-item${placemarkMode ? " is-active" : ""}`} onClick={onTogglePlacemark} aria-pressed={placemarkMode} data-testid="placemark-tool">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" width="15" height="15" aria-hidden="true"><path d="M12 21s6-5.4 6-11a6 6 0 1 0-12 0c0 5.6 6 11 6 11Z"/><circle cx="12" cy="10" r="2"/></svg>
-                Placemark
-              </button>
-              <button type="button" className={`map-topbar__dropdown-item${myPlacesOpen ? " is-active" : ""}`} onClick={onToggleMyPlaces} aria-pressed={myPlacesOpen} data-testid="my-places-toggle">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" width="15" height="15" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
-                My Places{placemarkCount > 0 ? ` · ${placemarkCount}` : ""}
-              </button>
-              <button type="button" className={`map-topbar__dropdown-item${coordinateSearchOpen ? " is-active" : ""}`} onClick={onToggleCoordinateSearch} aria-pressed={coordinateSearchOpen} data-testid="coordinate-search-toggle">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" width="15" height="15" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.35-4.35"/></svg>
-                Coordinate Search
-              </button>
-              <ReferenceLayersMenu value={referenceLayers} onChange={onToggleReferenceLayer} />
-            </div>
-          )}
-        </div>
-
-        {/* ── Measure ─────────────────────────────────────────────────── */}
-        <button
-          type="button"
-          className={`map-topbar__btn${measureActive ? " map-topbar__btn--active" : ""}`}
-          onClick={onToggleMeasure}
-          aria-label="Measure"
-          aria-pressed={measureActive}
-          title="Measure distances and areas"
-          data-testid="map-tools-category-measure"
-        >
-          {/* Ruler icon */}
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" width="17" height="17" aria-hidden="true">
-            <rect x="2.5" y="8" width="19" height="8" rx="1.5" transform="rotate(-45 12 12)" />
-            <g transform="rotate(-45 12 12)">
-              <path d="M6 8v3M9.5 8v2M13 8v3M16.5 8v2" />
-            </g>
-          </svg>
-          <span className="map-topbar__label">Measure</span>
-        </button>
-
-        <span className="map-topbar__divider" aria-hidden="true" />
-
-        {/* ── Report ──────────────────────────────────────────────────── */}
-        <div className="map-topbar__report-wrap">
-          <button
-            type="button"
-            className={`map-topbar__btn${reportOpen ? " map-topbar__btn--active" : ""}`}
-            onClick={() => { setReportOpen((v) => !v); setActiveToolsSection(null); }}
-            aria-label="Neighbourhood Report"
-            title="Neighbourhood Report"
-            data-testid="topbar-report"
-          >
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" width="17" height="17" aria-hidden="true">
-              <path d="M7 3h8l4 4v14a1 1 0 01-1 1H7a1 1 0 01-1-1V4a1 1 0 011-1z" />
-              <path d="M9 12h6M9 16h6M9 8h2" />
-            </svg>
-            <span className="map-topbar__label">Report</span>
-          </button>
-          {reportOpen && (
-            <div className="map-topbar__report-panel">
-              <ReportPanel datasets={datasets} />
-            </div>
-          )}
-        </div>
-
-        <span className="map-topbar__divider" aria-hidden="true" />
-        <button
-          type="button"
-          className="map-topbar__btn"
-          onClick={() => onOpen3DPlan?.()}
-          title="3D city model viewer"
-          aria-label="Open 3D city model viewer"
-          data-testid="topbar-3d-viewer"
-        >
-          {/* Hexagon / 3D object icon */}
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" width="17" height="17" aria-hidden="true">
-            <path d="M12 3.5l7.5 4.2v8.6L12 20.5l-7.5-4.2V7.7L12 3.5z" />
-            <path d="M12 12v8.5M12 12l7.5-4.3M12 12L4.5 7.7" />
-          </svg>
-          <span className="map-topbar__label">3D View</span>
-        </button>
-
-        {/* ── 3D Buildings toggle ──────────────────────────────────────── */}
-        <button
-          type="button"
-          className={`map-topbar__btn${show3DBuildings ? " map-topbar__btn--active" : ""}`}
-          onClick={onToggle3DBuildings}
-          aria-label="Toggle 3D buildings"
-          aria-pressed={show3DBuildings}
-          title="Toggle 3D buildings on the map"
-          data-testid="topbar-3d-buildings-toggle"
-        >
-          {/* Buildings icon */}
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" width="17" height="17" aria-hidden="true">
-            <path d="M5 20V9l4-3 4 3v11" />
-            <path d="M13 20V6l4-2.5L21 6v14" />
-            <path d="M3 20h18" />
-          </svg>
-          <span className="map-topbar__label">3D Buildings</span>
-        </button>
       </div>
       {status.error && (
         <div style={{ position: "absolute", bottom: 12, left: "50%", transform: "translateX(-50%)", zIndex: 10, padding: "8px 14px", background: "var(--danger-muted)", border: "1px solid var(--danger)", borderRadius: "var(--radius-md)", color: "var(--danger)", fontSize: 11, fontWeight: 600 }}>
