@@ -118,6 +118,24 @@ export function AdminSystemView() {
   const [selectedUserId, setSelectedUserId] = useState<string | null>(null);
   const [sessionHistoryOpen, setSessionHistoryOpen] = useState(false);
 
+  // Stable identities: AdminSystemView re-renders every second (the
+  // Users & Activity poll below), so inline arrow functions passed as
+  // props here would get a new identity on every render regardless of
+  // active tab. AdminServicesOverview/AdminSecurityOverview key their
+  // fetch-and-poll useEffect on these callbacks, so an unstable
+  // identity restarts their poll interval on every render — turning an
+  // intended 30s/60s poll into a near-continuous fetch loop.
+  const handleServicesUpdated = useCallback((at: Date) => setLastUpdated(at), []);
+  const handleServicesPayload = useCallback(
+    (p: ServiceMonitoringResponse) => setServicesNew(p),
+    []
+  );
+  const handleSecurityUpdated = useCallback((at: Date) => setLastUpdated(at), []);
+  const handleSecurityPayload = useCallback(
+    (p: SecurityMonitoringResponse) => setSecurity(p),
+    []
+  );
+
   const fetchOne = useCallback(async <T,>(
     path: string,
     setData: (v: T) => void,
@@ -304,8 +322,8 @@ export function AdminSystemView() {
           {/* ── Services ─────────────────────────────────────── */}
           {activeTab === "services" && (
             <AdminServicesOverview
-              onUpdated={(at) => setLastUpdated(at)}
-              onPayload={(p) => setServicesNew(p)}
+              onUpdated={handleServicesUpdated}
+              onPayload={handleServicesPayload}
               pollMs={30_000}
             />
           )}
@@ -313,8 +331,8 @@ export function AdminSystemView() {
           {/* ── Security ─────────────────────────────────────── */}
           {activeTab === "security" && (
             <AdminSecurityOverview
-              onUpdated={(at) => setLastUpdated(at)}
-              onPayload={(p) => setSecurity(p)}
+              onUpdated={handleSecurityUpdated}
+              onPayload={handleSecurityPayload}
               pollMs={60_000}
             />
           )}

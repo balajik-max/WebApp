@@ -32,7 +32,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.deps import require_admin
 from app.api.v1.system import system_storage
 from app.core.config import get_settings
-from app.db.session import get_db
+from app.db.session import get_auth_db, get_db
 from app.models import (
     ActivityAction,
     ActivityLog,
@@ -1250,7 +1250,7 @@ def _session_entry(session: UserSession, user_name: str, user_role: str, cutoff:
 
 
 @router.get("/activity", response_model=AdminActivityOut, dependencies=[Depends(require_admin)])
-async def admin_activity(db: AsyncSession = Depends(get_db)) -> AdminActivityOut:
+async def admin_activity(db: AsyncSession = Depends(get_auth_db)) -> AdminActivityOut:
     # Window for "active users right now". A session counts as active while
     # it has no logout and its last heartbeat fell inside this window. Kept
     # short on purpose so the count is meaningful in real time.
@@ -1309,7 +1309,7 @@ async def admin_activity(db: AsyncSession = Depends(get_db)) -> AdminActivityOut
 
 
 @router.get("/sessions", response_model=AdminSessionsOut, dependencies=[Depends(require_admin)])
-async def admin_sessions(db: AsyncSession = Depends(get_db)) -> AdminSessionsOut:
+async def admin_sessions(db: AsyncSession = Depends(get_auth_db)) -> AdminSessionsOut:
     """Every login session on record, newest first — backs the Users &
     Activity "Session History" table (with CSV export). Same admin-role
     exclusion as the rest of this dashboard.
@@ -1338,7 +1338,7 @@ async def admin_sessions(db: AsyncSession = Depends(get_db)) -> AdminSessionsOut
     response_model=AdminUserActivityOut,
     dependencies=[Depends(require_admin)],
 )
-async def admin_user_activity(user_id: uuid.UUID, db: AsyncSession = Depends(get_db)) -> AdminUserActivityOut:
+async def admin_user_activity(user_id: uuid.UUID, db: AsyncSession = Depends(get_auth_db)) -> AdminUserActivityOut:
     """Full tracking detail for a single user — every session and logged
     action, plus summary stats. Backs the right-hand drawer opened by
     clicking a user anywhere in Admin → Users & Activity.
