@@ -32,7 +32,7 @@ from app.core.security import (
     password_policy_error,
     verify_password,
 )
-from app.db.session import get_db
+from app.db.session import get_auth_db
 from app.models import ActivityAction, ActivityLog, User, UserSession
 from app.schemas.auth import (
     ChangePasswordRequest,
@@ -154,7 +154,7 @@ async def login(
     payload: LoginRequest,
     request: Request,
     response: Response,
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_auth_db),
 ) -> TokenResponse:
     email = payload.email.strip().lower()
 
@@ -226,7 +226,7 @@ async def login(
 async def logout(
     request: Request,
     response: Response,
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_auth_db),
     user: User = Depends(get_current_user),
 ) -> dict:
     session = await _find_open_session(
@@ -270,7 +270,7 @@ async def logout(
 async def heartbeat(
     request: Request,
     payload: HeartbeatRequest | None = None,
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_auth_db),
     user: User = Depends(get_current_user),
 ) -> dict:
     """Update the current login session while the frontend tab is active."""
@@ -306,7 +306,7 @@ async def change_password(
     request: Request,
     response: Response,
     user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_auth_db),
 ) -> ChangePasswordResponse:
     """Change the authenticated user's password and close the session."""
 
@@ -414,7 +414,7 @@ async def me(
 async def refresh_token(
     request: Request,
     response: Response,
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_auth_db),
 ) -> dict:
     token = request.cookies.get("refresh_token")
 
