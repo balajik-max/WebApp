@@ -34,6 +34,12 @@ interface Props {
 export function PanoramaViewer({ url, label, startHeading, onClose, initialYaw, initialPitch, initialZoom, onPersist, getPersistedView }: Props) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // Bumped once when the Viewer instance finishes being created, so the
+  // [url] effect re-runs and catches any url that advanced while the
+  // viewer wasn't ready yet (e.g. an early slideshow tick). Without this,
+  // the pending url would never get setPanorama()'d and the slideshow
+  // would stay stuck on the same image.
+  const [viewerReady, setViewerReady] = useState(0);
   // Persist zoom and viewing direction across photo transitions so the
   // slideshow doesn't snap back to defaults on every advance — the user
   // complained that setting a viewport on photo A gets immediately reset
@@ -46,22 +52,44 @@ export function PanoramaViewer({ url, label, startHeading, onClose, initialYaw, 
   const zoomRef = useRef<number | null>(initialZoom ?? null);
   const yawRef = useRef<number | null>(initialYaw ?? null);
   const pitchRef = useRef<number | null>(initialPitch ?? null);
-  // On every [url] change, sync from the freshly-passed props. Without
-  // this, the refs only ever hold the value they had at first mount, so
-  // the second photo onward would always re-seed from the very first
-  // photo's final state, not the most recent one.
-  // Also consult getPersistedView() — it's evaluated at effect-run time
-  // (after the previous photo's cleanup has persisted), closing the
-  // render-time staleness race on a full remount.
+
+  // The Viewer instance and the url it currently shows, kept alive across
+  // photo advances so `setPanorama()` can crossfade between images instead
+  // of destroying and rebuilding the whole Viewer on every [url] change
+  // (that teardown+recreate window is what flashed the "Loading panorama…"
+  // loader between photos).
+  const viewerRef = useRef<Viewer | null>(null);
+  const currentUrlRef = useRef<string | null>(null);
+  // True while setPanorama's crossfade animation is running. Prevents the
+  // [url] effect from firing a new setPanorama into an in-flight one —
+  // at 4× slideshow speed (875ms/tick) the 1.5s default crossfade hadn't
+  // finished before the next tick, the library cancelled it, and the viewer
+  // got stuck (the aborted url was already marked "handled"). The next
+  // tick's url is parked here so the effect picks it up right after the
+  // current transition completes.
+  const transitioningRef = useRef(false);
+  const pendingUrlRef = useRef<string | null>(null);
+
+  // Seed the refs from the parent's persisted view ONLY while the Viewer
+  // hasn't been created yet (fresh mount). Once the Viewer exists, the
+  // refs are kept live by the position-updated / zoom-updated listeners —
+  // re-seeding them from the parent's persisted value on every render
+  // would CLOBBER the user's current viewport (e.g. a drag done since the
+  // last photo change) with the last-persisted snapshot. That clobber was
+  // the "view resets on next/previous" bug: the persisted value is only
+  // refreshed by onPersist (fired after a photo loads / on unmount), so it
+  // lags behind the user's live view.
   const persisted = getPersistedView?.();
-  if (persisted?.active) {
-    zoomRef.current = persisted.fov;
-    yawRef.current = persisted.yaw;
-    pitchRef.current = persisted.pitch;
-  } else {
-    zoomRef.current = initialZoom ?? zoomRef.current;
-    yawRef.current = initialYaw ?? yawRef.current;
-    pitchRef.current = initialPitch ?? pitchRef.current;
+  if (!viewerRef.current) {
+    if (persisted?.active) {
+      zoomRef.current = persisted.fov;
+      yawRef.current = persisted.yaw;
+      pitchRef.current = persisted.pitch;
+    } else {
+      zoomRef.current = initialZoom ?? zoomRef.current;
+      yawRef.current = initialYaw ?? yawRef.current;
+      pitchRef.current = initialPitch ?? pitchRef.current;
+    }
   }
 
   useEffect(() => {
@@ -87,6 +115,11 @@ export function PanoramaViewer({ url, label, startHeading, onClose, initialYaw, 
     const restoreZoom = zoomRef.current;
     const restoreYaw = yawRef.current;
     const restorePitch = pitchRef.current;
+    // Captured once — this effect only runs on mount ([] deps below), so
+    // this is always the FIRST photo opened. Subsequent photos are handled
+    // by the [url] effect further down via setPanorama(), reusing this
+    // same Viewer instance instead of tearing it down.
+    const initialUrl = url;
     const timer = setTimeout(() => {
       const psOptions: {
         container: HTMLElement;
@@ -99,7 +132,7 @@ export function PanoramaViewer({ url, label, startHeading, onClose, initialYaw, 
         defaultPitch?: number;
       } = {
         container,
-        panorama: url,
+        panorama: initialUrl,
         navbar: ["zoom", "move", "fullscreen"],
         loadingTxt: "Loading panorama…",
         withCredentials: true,
@@ -119,6 +152,9 @@ export function PanoramaViewer({ url, label, startHeading, onClose, initialYaw, 
         psOptions.defaultPitch = restorePitch;
       }
       viewer = new Viewer(psOptions);
+      viewerRef.current = viewer;
+      currentUrlRef.current = initialUrl;
+      setViewerReady(1);
       viewer.addEventListener("panorama-error", () => {
         setError("Couldn't load this as a 360° panorama — the file may not actually be equirectangular.");
       });
@@ -140,6 +176,17 @@ export function PanoramaViewer({ url, label, startHeading, onClose, initialYaw, 
       // so applying here would just get overwritten. We defer past a
       // macrotask so we run after the library's synchronous XMP rotate.
       viewer.addEventListener("panorama-loaded", () => {
+        // This listener is registered once at mount but the Viewer instance
+        // stays alive across photo advances, so `panorama-loaded` fires on
+        // EVERY setPanorama() call — not just the first one. The restore
+        // values below are snapshots of the FIRST photo's refs, so applying
+        // them on every load would force the first photo's initial viewport
+        // over the user's current one (the "view resets on next/previous /
+        // slideshow" bug). Subsequent photos are restored by the [url]
+        // effect's setPanorama(options) call, which passes the user's live
+        // yaw/pitch/zoom — so only the first load needs this deferred
+        // post-XMP restore.
+        if (currentUrlRef.current !== initialUrl) return;
         // Clear any pending apply from a previous panorama load.
         if (applyTimer) clearTimeout(applyTimer);
         applyTimer = setTimeout(() => {
@@ -189,8 +236,97 @@ export function PanoramaViewer({ url, label, startHeading, onClose, initialYaw, 
         onPersist?.(pos.yaw, pos.pitch, zoomRef.current);
         viewer.destroy();
       }
+      viewerRef.current = null;
+      currentUrlRef.current = null;
     };
-  }, [url]);
+    // Mount-once: the Viewer instance is created here and lives across
+    // photo advances. The effect below reuses it via setPanorama() for
+    // every later [url] change instead of destroying/rebuilding it.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Photo advance (next/previous / slideshow) — smooth crossfade into the
+  // new panorama on the SAME Viewer instance instead of unmounting it.
+  // This closes the blank "Loading panorama…" gap between photos.
+  // The user's viewport (yaw/pitch/zoom) is preserved: it's snapshotted
+  // from the live interaction refs (seeded from the parent's persisted
+  // view) and passed straight into setPanorama, so nothing resets.
+  useEffect(() => {
+    const viewer = viewerRef.current;
+    // The viewer is created asynchronously (deferred past a macrotask to
+    // dodge React StrictMode's phantom-mount fetch abort). If the first
+    // photo advance (e.g. a slideshow tick) lands before the viewer exists,
+    // we must NOT mark this url as "handled" — otherwise every later tick
+    // sees currentUrlRef === url and skips, leaving the slideshow stuck on
+    // one image. Instead, re-run until the viewer is ready.
+    if (!viewer) return;
+    if (currentUrlRef.current === url) return;
+    // A crossfade is still running (only possible at 4× slideshow speed
+    // where 875ms/tick outpaces the transition). Don't fire setPanorama
+    // into it — the library would cancel the in-flight animation and the
+    // viewer would get stuck. Park this url and pick it up as soon as the
+    // current transition finishes.
+    if (transitioningRef.current) {
+      pendingUrlRef.current = url;
+      return;
+    }
+
+    const advance = (targetUrl: string): Promise<void> | void => {
+      const restoreZoom = zoomRef.current;
+      const restoreYaw = yawRef.current;
+      const restorePitch = pitchRef.current;
+      transitioningRef.current = true;
+      return viewer
+        .setPanorama(targetUrl, {
+          // Pure opacity crossfade between the old and new image — NO
+          // camera rotation. `rotation: false` makes the library
+          // counter-rotate the new mesh instead of spinning the camera, so
+          // the user's viewport stays exactly where they left it during the
+          // fade. Speed is tuned to complete comfortably before the fastest
+          // slideshow tick (4× = 875ms) so rapid advances never stack or
+          // cancel mid-flight.
+          transition: { rotation: false, speed: 650 },
+          showLoader: false,
+          zoom: restoreZoom ?? undefined,
+          position:
+            restoreYaw != null || restorePitch != null
+              ? { yaw: restoreYaw ?? 0, pitch: restorePitch ?? 0 }
+              : undefined,
+        })
+        .then(() => {
+          transitioningRef.current = false;
+          // Re-assert the refs + parent's persisted view from the viewer's
+          // now-correct state so the next advance keeps the same viewport.
+          zoomRef.current = viewer.getZoomLevel();
+          const pos = viewer.getPosition();
+          yawRef.current = pos.yaw;
+          pitchRef.current = pos.pitch;
+          onPersist?.(pos.yaw, pos.pitch, zoomRef.current);
+          // If the slideshow kept ticking during this transition, the
+          // newest pending url must be applied now — otherwise it's stuck
+          // again. Guarded by `currentUrlRef` so the pending url is only
+          // applied if it actually differs from the one already shown.
+          const pending = pendingUrlRef.current;
+          pendingUrlRef.current = null;
+          if (pending && pending !== currentUrlRef.current) {
+            currentUrlRef.current = pending;
+            return advance(pending);
+          }
+        })
+        .catch(() => {
+          transitioningRef.current = false;
+          setError("Couldn't load this as a 360° panorama — the file may not actually be equirectangular.");
+        });
+    };
+
+    currentUrlRef.current = url;
+    setError(null);
+    advance(url);
+    // viewerReady re-runs this effect once the Viewer is created, so a url
+    // that advanced while the viewer wasn't ready yet (early slideshow
+    // tick) gets picked up instead of being skipped forever.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [url, viewerReady]);
 
   return (
     <div
