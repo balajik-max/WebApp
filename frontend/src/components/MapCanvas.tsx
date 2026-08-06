@@ -9168,6 +9168,9 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
             label: selected.properties.label || "Site photo",
             isPanorama: selected.properties.attributes?.is_360 === true,
             direction: Number(selected.properties.attributes?.direction) || undefined,
+            taken_at: typeof selected.properties.attributes?.taken_at === "string"
+              ? selected.properties.attributes.taken_at
+              : undefined,
             lat: clickedCoords ? clickedCoords[1] : undefined,
             lon: clickedCoords ? clickedCoords[0] : undefined,
           };
@@ -9195,25 +9198,50 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
                 label: f.properties.label || "Site photo",
                 isPanorama: f.properties.attributes?.is_360 === true,
                 direction: Number(f.properties.attributes?.direction) || undefined,
+                // EXIF capture time ("YYYY-MM-DD HH:MM:SS") — geotagged
+                // 360-video frames get sequential timestamps, so this is
+                // the true drive-order for the slideshow path.
+                taken_at: typeof f.properties.attributes?.taken_at === "string"
+                  ? f.properties.attributes.taken_at
+                  : undefined,
                 lat: coords ? coords[1] : undefined,
                 lon: coords ? coords[0] : undefined,
               };
             });
           const list = siblingIds.has(clicked.id) ? siblings : [...siblings, clicked];
-          // Spatial ordering: sort by compass bearing from the clicked
-          // photo, so the slideshow follows the path of travel.
-          const cLat = clicked.lat;
-          const cLon = clicked.lon;
-          if (cLat != null && cLon != null) {
-            list.sort((a, b) => {
-              if (a.lat == null || a.lon == null) return 1;
-              if (b.lat == null || b.lon == null) return -1;
-              const bA = Math.atan2(a.lon - cLon, a.lat - cLat);
-              const bB = Math.atan2(b.lon - cLon, b.lat - cLat);
-              return bA - bB;
-            });
+          // Ordering for prev/next + slideshow:
+          //  1. Capture-time order (taken_at) when the photos carry EXIF
+          //     timestamps — 360-camera video frames land sequentially, so
+          //     this restores the true drive sequence even around turns
+          //     (bearing-sorting scrambles a linear path by interleaving
+          //     frames from different headings).
+          //  2. Fallback for timestamp-less photos: compass bearing from
+          //     the clicked photo (spatial order, like walking a path).
+          //  3. Final fallback: natural label order.
+          const toMs = (t: string) => {
+            // EXIF writes "YYYY:MM:DD HH:MM:SS"; normalize to a sortable
+            // epoch so any separator variant compares correctly.
+            const m = t.match(/^(\d{4})[:\-/](\d{2})[:\-/](\d{2})[T ](\d{2}):(\d{2}):(\d{2})/);
+            if (!m) return NaN;
+            return Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +m[6]);
+          };
+          const timestamps = list.every((s) => s.taken_at != null && !Number.isNaN(toMs(s.taken_at!)));
+          if (timestamps) {
+            list.sort((a, b) => toMs(a.taken_at!) - toMs(b.taken_at!));
           } else {
-            list.sort((a, b) => a.label.localeCompare(b.label, undefined, { numeric: true }));
+            const cLat = clicked.lat;
+            const cLon = clicked.lon;
+            if (cLat != null && cLon != null) {
+              list.sort((a, b) => {
+                if (a.lat == null || a.lon == null) return 1;
+                if (b.lat == null || b.lon == null) return -1;
+                const bA = Math.atan2(a.lon - cLon, a.lat - cLat);
+                const bB = Math.atan2(b.lon - cLon, b.lat - cLat);
+                return bA - bB;
+              });
+            } else {
+              list.sort((a, b) => a.label.localeCompare(b.label, undefined, { numeric: true }));
+            }
           }
           const index = Math.max(0, list.findIndex((s) => s.id === clicked.id));
           setPhotoSlideshowPlaying(false);
