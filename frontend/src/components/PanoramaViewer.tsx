@@ -25,15 +25,29 @@ interface Props {
    *  is called AFTER the previous viewer's cleanup, so it always returns
    *  the freshest persisted values. */
   getPersistedView?: () => { active: boolean; yaw: number; pitch: number; fov: number };
+  /** Full slideshow sequence (the sibling nav list from the parent).
+   *  Used to export every frame at the user's locked viewport. */
+  list?: { id: string; url: string; label: string; isPanorama: boolean; direction?: number; lat?: number; lon?: number }[];
+  /** When true, the parent has started a PPT export — the viewer should
+   *  render every frame at the locked view and call onExportFrame for each
+   *  captured image. */
+  exporting?: boolean;
+  /** Parent's signal that the current frame has been captured and it's
+   *  safe to advance to the next url. Called with the captured dataURL. */
+  onExportFrame?: (dataUrl: string) => void;
 }
 
 /** Real 360° equirectangular sphere viewer — used instead of the flat
  * lightbox when a photo is detected as a true panorama (GPano XMP tag or
  * a 2:1 aspect ratio). Drag to look around, scroll to zoom, matching the
  * standard Street-View-style interaction model. */
-export function PanoramaViewer({ url, label, startHeading, onClose, initialYaw, initialPitch, initialZoom, onPersist, getPersistedView }: Props) {
+export function PanoramaViewer({ url, label, startHeading, onClose, initialYaw, initialPitch, initialZoom, onPersist, getPersistedView, list, exporting, onExportFrame }: Props) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // PPT export progress — 0 when idle, 0..1 while exporting so the UI can
+  // show "Exporting X/Y…" instead of leaving the user wondering why the
+  // viewer is cycling through photos on its own.
+  const [exportProgress, setExportProgress] = useState<number | null>(null);
   // Bumped once when the Viewer instance finishes being created, so the
   // [url] effect re-runs and catches any url that advanced while the
   // viewer wasn't ready yet (e.g. an early slideshow tick). Without this,
@@ -127,6 +141,7 @@ export function PanoramaViewer({ url, label, startHeading, onClose, initialYaw, 
         navbar: string[];
         loadingTxt: string;
         withCredentials: boolean;
+        rendererParameters?: { preserveDrawingBuffer?: boolean };
         defaultYaw?: number;
         defaultZoomLvl?: number;
         defaultPitch?: number;
@@ -136,6 +151,11 @@ export function PanoramaViewer({ url, label, startHeading, onClose, initialYaw, 
         navbar: ["zoom", "move", "fullscreen"],
         loadingTxt: "Loading panorama…",
         withCredentials: true,
+        // Keep the WebGL drawing buffer after each composite so we can
+        // reliably capture the rendered frame with canvas.toDataURL() for
+        // the PPT export. Without this, the buffer is cleared after the
+        // browser presents the frame and captures come back blank/black.
+        rendererParameters: { preserveDrawingBuffer: true },
       };
       // Restore persisted zoom level instead of the library default (50).
       if (restoreZoom != null) {
@@ -328,6 +348,151 @@ export function PanoramaViewer({ url, label, startHeading, onClose, initialYaw, 
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [url, viewerReady]);
 
+  // PPT export: cycle through the whole list, rendering EVERY frame at the
+  // SAME locked viewport (yaw/pitch/zoom the user set), capture each as an
+  // image, and hand it to the parent to assemble the .pptx. This is the
+  // core of the feature — the exported deck is a consistent Street-View
+  // ride at exactly the view the user chose, never each image's own
+  // capture heading.
+  useEffect(() => {
+    if (!exporting || !list?.length || !viewerRef.current || !onExportFrame) return;
+    const viewer = viewerRef.current;
+    const frames = list.map((p) => p.url);
+    // Lock the CURRENT user viewport once — every exported frame uses it.
+    const lockYaw = yawRef.current ?? 0;
+    const lockPitch = pitchRef.current ?? 0;
+    const lockZoom = zoomRef.current;
+    let cancelled = false;
+    setExportProgress(0);
+    (async () => {
+      for (let i = 0; i < frames.length; i++) {
+        if (cancelled) return;
+        setExportProgress(i / frames.length);
+        try {
+          // Load this frame at the locked view — no loader, minimal (or no)
+          // transition so each capture is deterministic.
+          // Disable transition for export: the crossfade animation creates
+          // a TEMPORARY mesh in a tempContainer, and only after the animation
+          // completes does PSV move the mesh to the real scene. Skipping the
+          // transition avoids that whole intermediate state and gives us a
+          // clean, immediately-renderable frame.
+          await viewer.setPanorama(frames[i], {
+            transition: false,
+            showLoader: false,
+            zoom: lockZoom ?? undefined,
+            position: { yaw: lockYaw, pitch: lockPitch },
+          });
+          // --- Canvas access ---
+          // PSV wraps THREE's WebGLRenderer inside its own Renderer service.
+          // The real canvas lives at:
+          //   viewer.renderer  → PSV Renderer (AbstractService)
+          //     .renderer      → THREE.WebGLRenderer
+          //       .domElement → HTMLCanvasElement
+          // Previously we accessed viewer.renderer.domElement which is
+          // undefined on the PSV wrapper, causing every capture to throw
+          // and produce empty (black) slides.
+          const threeRenderer = (viewer.renderer as unknown as {
+            renderer?: { render(scene: unknown, camera: unknown): void; domElement: HTMLCanvasElement };
+            scene?: unknown;
+            camera?: unknown;
+          }).renderer;
+          const psvRenderer = viewer.renderer as unknown as {
+            renderer?: { render(scene: unknown, camera: unknown): void };
+            scene?: unknown;
+            camera?: unknown;
+          };
+          const canvas = threeRenderer?.domElement;
+          if (!canvas) {
+            onExportFrame("");
+            continue;
+          }
+          // Composite the WebGL canvas onto a 2D canvas with a black
+          // background before encoding as JPEG.  PSV forces alpha:true on
+          // the WebGL context (its config merge overwrites user values),
+          // so pixels where no geometry exists are transparent.  JPEG has
+          // no alpha channel and encodes transparent pixels as black.  By
+          // pre-filling a 2D canvas with black and drawing the WebGL frame
+          // on top, every transparent pixel becomes black while the
+          // panorama texture remains intact — giving us clean, correct
+          // captures.
+          const tmpCanvas = document.createElement("canvas");
+          const capture = (): string => {
+            // 1. Force a synchronous render via the underlying THREE
+            //    renderer so the drawing buffer is guaranteed to contain
+            //    the current frame — no dependency on rAF timing.
+            try {
+              if (psvRenderer.renderer && psvRenderer.scene && psvRenderer.camera) {
+                psvRenderer.renderer.render(psvRenderer.scene, psvRenderer.camera);
+              }
+            } catch {
+              /* fall through to async-rendered buffer */
+            }
+            // 2. Block until the GPU has finished all pending draw
+            //    commands so the pixel data is ready to read.
+            try {
+              const gl = canvas.getContext("webgl2") ?? canvas.getContext("webgl");
+              if (gl) gl.finish();
+            } catch {
+              /* ignore — not critical */
+            }
+            // 3. Draw the (possibly alpha) WebGL frame onto a 2D canvas
+            //    pre-filled with black, then export as JPEG.
+            try {
+              tmpCanvas.width = canvas.width;
+              tmpCanvas.height = canvas.height;
+              const ctx = tmpCanvas.getContext("2d");
+              if (ctx) {
+                ctx.fillStyle = "#000";
+                ctx.fillRect(0, 0, tmpCanvas.width, tmpCanvas.height);
+                ctx.drawImage(canvas, 0, 0);
+                return tmpCanvas.toDataURL("image/jpeg", 0.92);
+              }
+            } catch {
+              /* fall through */
+            }
+            // 4. Direct fallback.
+            return canvas.toDataURL("image/jpeg", 0.9);
+          };
+          let captured = false;
+          let lastDataUrl = "";
+          for (let attempt = 0; attempt < 3 && !captured; attempt++) {
+            viewer.needsUpdate();
+            // Wait for two animation frames — the first lets the PSV
+            // render loop pick up needsUpdate and draw; the second
+            // ensures the draw is flushed to the buffer.
+            await new Promise<void>((resolve) =>
+              requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
+            );
+            // An extra microtask yield gives the browser a chance to
+            // composite before we read the buffer.
+            await new Promise<void>((resolve) => setTimeout(resolve, 0));
+            lastDataUrl = capture();
+            if (lastDataUrl && lastDataUrl.length > 1000) {
+              onExportFrame(lastDataUrl);
+              captured = true;
+            }
+          }
+          if (!captured) {
+            // Last resort — still report the frame so the deck keeps a slide
+            // for it (the assembly renders a black placeholder).
+            onExportFrame(lastDataUrl && lastDataUrl.length > 1000 ? lastDataUrl : "");
+          }
+        } catch (err) {
+          // A frame that fails to load just gets a black placeholder slide.
+          // eslint-disable-next-line no-console
+          console.warn("PPT export: skipped frame", frames[i], err);
+          onExportFrame("");
+        }
+      }
+      if (!cancelled) setExportProgress(null);
+    })();
+    return () => {
+      cancelled = true;
+      setExportProgress(null);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [exporting, list, onExportFrame]);
+
   return (
     <div
       style={{ position: "fixed", inset: 0, zIndex: 1000, background: "#000" }}
@@ -360,6 +525,20 @@ export function PanoramaViewer({ url, label, startHeading, onClose, initialYaw, 
       >
         Close ✕
       </button>
+      {exportProgress != null && (
+        <div
+          style={{
+            position: "absolute", inset: 0, zIndex: 1002,
+            background: "rgba(0,0,0,0.55)", display: "flex", alignItems: "center", justifyContent: "center",
+            flexDirection: "column", gap: 12, color: "#fff", fontSize: 14,
+          }}
+        >
+          <div style={{ fontWeight: 600 }}>Exporting slideshow to PPT…</div>
+          <div style={{ opacity: 0.75, fontSize: 12 }}>
+            Capturing frame {Math.min(Math.floor((exportProgress || 0) * (list?.length || 1)) + 1, list?.length || 1)} / {list?.length || 1}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
