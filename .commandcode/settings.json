@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Shell(node -e \"const p=require('./frontend/node_modules/@photo-sphere-viewer/core/package.json'); console.log(p.version)\")",
+      "Shell(node -e const fs=require('fs'); const files=fs.readdirSync('.'); console.log(files.join('\\n')))",
+      "powershell",
+      "Shell(npx tsc --noEmit 2 >& 1)"
+    ],
+    "deny": [],
+    "defaultMode": "default"
+  }
+}

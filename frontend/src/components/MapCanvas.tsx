@@ -3199,7 +3199,58 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
   const preCadastralHiddenCategoriesRef = useRef<Set<string> | null>(null);
   const cadastralPresetActiveRef = useRef(false);
   const [hover, setHover] = useState<HoverInfo | null>(null);
-  const [photoViewer, setPhotoViewer] = useState<{ url: string; label: string; isPanorama: boolean } | null>(null);
+  const [photoViewer, setPhotoViewer] = useState<{
+    url: string; label: string; isPanorama: boolean;
+    direction?: number;
+    lat?: number; lon?: number;
+    list: { id: string; url: string; label: string; isPanorama: boolean; direction?: number; lat?: number; lon?: number }[];
+    index: number;
+  } | null>(null);
+  const [photoSlideshowPlaying, setPhotoSlideshowPlaying] = useState(false);
+  /** Single source of truth for the 360/180 viewer's look-direction &
+   *  zoom, held here (not inside the viewer) so it survives EVERYTHING —
+   *  photo advances, and also a full React remount when navigation swaps
+   *  between <PanoramaViewer> and <CylinderPanoramaViewer> (a neighbour
+   *  photo with a different is_360 flag changes the component type). Both
+   *  viewer components seed their own refs from this on mount and report
+   *  their final view back here on every teardown. Angles in radians,
+   *  fov/zoom in degrees. Reset when the viewer is closed. */
+  const viewerPersistRef = useRef<{ active: boolean; yaw: number; pitch: number; fov: number }>({ active: false, yaw: 0, pitch: 0, fov: 75 });
+  /** Slideshow speed — user-adjustable via the bottom-bar speed selector. */
+  const [photoSlideshowSpeed, setPhotoSlideshowSpeed] = useState(3500);
+  const gotoPhoto = useCallback((delta: number) => {
+    setPhotoViewer((prev) => {
+      if (!prev || prev.list.length < 2) return prev;
+      const nextIndex = (prev.index + delta + prev.list.length) % prev.list.length;
+      const next = prev.list[nextIndex];
+      return { ...next, list: prev.list, index: nextIndex };
+    });
+  }, []);
+  const closePhotoViewer = useCallback(() => {
+    setPhotoSlideshowPlaying(false);
+    setPhotoViewer(null);
+    // Fresh start for the next ride: don't carry one survey's viewport
+    // into an unrelated one.
+    viewerPersistRef.current = { active: false, yaw: 0, pitch: 0, fov: 75 };
+  }, []);
+  // Slideshow auto-advance. Depends on presence-of-viewer (not the object
+  // itself, which changes every tick via gotoPhoto) so the interval isn't
+  // torn down and rebuilt on every single photo advance.
+  useEffect(() => {
+    if (!photoSlideshowPlaying || !photoViewer) return;
+    const timer = setInterval(() => gotoPhoto(1), photoSlideshowSpeed);
+    return () => clearInterval(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [photoSlideshowPlaying, Boolean(photoViewer), gotoPhoto, photoSlideshowSpeed]);
+  useEffect(() => {
+    if (!photoViewer) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "ArrowLeft") { setPhotoSlideshowPlaying(false); gotoPhoto(-1); }
+      else if (e.key === "ArrowRight") { setPhotoSlideshowPlaying(false); gotoPhoto(1); }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [Boolean(photoViewer), gotoPhoto]);
   const [datasets, setDatasets] = useState<DatasetRow[]>([]);
   // More than one entry lets two or more datasets be shown together (e.g. a
   // raster orthophoto plus its companion GDB vector layer over the same area).
@@ -9109,11 +9160,92 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
           return;
         }
         if (selected.properties.category === "site_photo") {
-          setPhotoViewer({
+          const clickedCoords = selected.geometry.type === "Point"
+            ? (selected.geometry.coordinates as [number, number]) : undefined;
+          const clicked = {
+            id: selected.properties.id,
             url: `${API_BASE}/api/v1/features/${selected.properties.id}/photo`,
             label: selected.properties.label || "Site photo",
             isPanorama: selected.properties.attributes?.is_360 === true,
-          });
+            direction: Number(selected.properties.attributes?.direction) || undefined,
+            taken_at: typeof selected.properties.attributes?.taken_at === "string"
+              ? selected.properties.attributes.taken_at
+              : undefined,
+            lat: clickedCoords ? clickedCoords[1] : undefined,
+            lon: clickedCoords ? clickedCoords[0] : undefined,
+          };
+          // Sibling photos for prev/next + slideshow — scoped to the same
+          // dataset and the features currently loaded into the map source
+          // (this app streams features per-viewport, so the nav list is
+          // "photos visible right now", same scope Street View uses).
+          // Sorted by GPS bearing from the clicked photo so arrows point
+          // in the correct spatial order (like walking along a path).
+          const siblingIds = new Set<string>();
+          const siblings = (map.querySourceFeatures(FEATURE_SOURCE, {
+            filter: ["all", PHOTO_BASE_FILTER, ["==", ["get", "dataset_id"], selected.properties.dataset_id]],
+          }) as unknown as Array<{ id?: string | number; geometry: unknown; properties?: Record<string, unknown> | null }>)
+            .map((f) => decodeFeature(f))
+            .filter((f) => {
+              if (siblingIds.has(f.properties.id)) return false;
+              siblingIds.add(f.properties.id);
+              return true;
+            })
+            .map((f) => {
+              const coords = f.geometry.type === "Point" ? (f.geometry.coordinates as [number, number]) : undefined;
+              return {
+                id: f.properties.id,
+                url: `${API_BASE}/api/v1/features/${f.properties.id}/photo`,
+                label: f.properties.label || "Site photo",
+                isPanorama: f.properties.attributes?.is_360 === true,
+                direction: Number(f.properties.attributes?.direction) || undefined,
+                // EXIF capture time ("YYYY-MM-DD HH:MM:SS") — geotagged
+                // 360-video frames get sequential timestamps, so this is
+                // the true drive-order for the slideshow path.
+                taken_at: typeof f.properties.attributes?.taken_at === "string"
+                  ? f.properties.attributes.taken_at
+                  : undefined,
+                lat: coords ? coords[1] : undefined,
+                lon: coords ? coords[0] : undefined,
+              };
+            });
+          const list = siblingIds.has(clicked.id) ? siblings : [...siblings, clicked];
+          // Ordering for prev/next + slideshow:
+          //  1. Capture-time order (taken_at) when the photos carry EXIF
+          //     timestamps — 360-camera video frames land sequentially, so
+          //     this restores the true drive sequence even around turns
+          //     (bearing-sorting scrambles a linear path by interleaving
+          //     frames from different headings).
+          //  2. Fallback for timestamp-less photos: compass bearing from
+          //     the clicked photo (spatial order, like walking a path).
+          //  3. Final fallback: natural label order.
+          const toMs = (t: string) => {
+            // EXIF writes "YYYY:MM:DD HH:MM:SS"; normalize to a sortable
+            // epoch so any separator variant compares correctly.
+            const m = t.match(/^(\d{4})[:\-/](\d{2})[:\-/](\d{2})[T ](\d{2}):(\d{2}):(\d{2})/);
+            if (!m) return NaN;
+            return Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +m[6]);
+          };
+          const timestamps = list.every((s) => s.taken_at != null && !Number.isNaN(toMs(s.taken_at!)));
+          if (timestamps) {
+            list.sort((a, b) => toMs(a.taken_at!) - toMs(b.taken_at!));
+          } else {
+            const cLat = clicked.lat;
+            const cLon = clicked.lon;
+            if (cLat != null && cLon != null) {
+              list.sort((a, b) => {
+                if (a.lat == null || a.lon == null) return 1;
+                if (b.lat == null || b.lon == null) return -1;
+                const bA = Math.atan2(a.lon - cLon, a.lat - cLat);
+                const bB = Math.atan2(b.lon - cLon, b.lat - cLat);
+                return bA - bB;
+              });
+            } else {
+              list.sort((a, b) => a.label.localeCompare(b.label, undefined, { numeric: true }));
+            }
+          }
+          const index = Math.max(0, list.findIndex((s) => s.id === clicked.id));
+          setPhotoSlideshowPlaying(false);
+          setPhotoViewer({ ...list[index], list, index });
           return;
         }
         onFeatureSelect(selected);
@@ -10345,11 +10477,107 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
         )}
       </div>
       {photoViewer && (
-        photoViewer.isPanorama ? (
-          <PanoramaViewer url={photoViewer.url} label={photoViewer.label} onClose={() => setPhotoViewer(null)} />
-        ) : (
-          <CylinderPanoramaViewer url={photoViewer.url} label={photoViewer.label} mode="180" onClose={() => setPhotoViewer(null)} />
-        )
+        <>
+          {photoViewer.isPanorama ? (
+            <PanoramaViewer
+              url={photoViewer.url}
+              label={photoViewer.label}
+              startHeading={photoViewer.direction}
+              initialYaw={viewerPersistRef.current.active ? viewerPersistRef.current.yaw : undefined}
+              initialPitch={viewerPersistRef.current.active ? viewerPersistRef.current.pitch : undefined}
+              initialZoom={viewerPersistRef.current.active ? viewerPersistRef.current.fov : undefined}
+              onPersist={(yaw, pitch, zoom) => { viewerPersistRef.current = { active: true, yaw, pitch, fov: zoom }; }}
+              getPersistedView={() => viewerPersistRef.current}
+              onClose={closePhotoViewer}
+            />
+          ) : (
+            <CylinderPanoramaViewer
+              url={photoViewer.url}
+              label={photoViewer.label}
+              mode="180"
+              startHeading={photoViewer.direction}
+              initialYaw={viewerPersistRef.current.active ? viewerPersistRef.current.yaw : undefined}
+              initialPitch={viewerPersistRef.current.active ? viewerPersistRef.current.pitch : undefined}
+              initialFov={viewerPersistRef.current.active ? viewerPersistRef.current.fov : undefined}
+              onPersist={(yaw, pitch, fov) => { viewerPersistRef.current = { active: true, yaw, pitch, fov }; }}
+              getPersistedView={() => viewerPersistRef.current}
+              currentLat={photoViewer.lat}
+              currentLon={photoViewer.lon}
+              siblings={photoViewer.list.map((s, i) => ({
+                index: i,
+                lat: s.lat ?? 0,
+                lon: s.lon ?? 0,
+                label: s.label,
+              }))}
+              onGotoPhoto={(idx) => { setPhotoSlideshowPlaying(false); gotoPhoto(idx - photoViewer.index); }}
+              onClose={closePhotoViewer}
+            />
+          )}
+          {photoViewer.list.length > 1 && (
+            <div
+              style={{
+                position: "fixed", left: "50%", bottom: 24, transform: "translateX(-50%)", zIndex: 1002,
+                display: "flex", alignItems: "center", gap: 8,
+                background: "rgba(0,0,0,0.6)", border: "1px solid rgba(255,255,255,0.2)",
+                borderRadius: "var(--radius-md)", padding: "8px 14px",
+                backdropFilter: "blur(6px)",
+              }}
+            >
+              <button
+                type="button"
+                aria-label="Previous photo"
+                onClick={() => { setPhotoSlideshowPlaying(false); gotoPhoto(-1); }}
+                style={{ background: "rgba(255,255,255,0.15)", border: "1px solid rgba(255,255,255,0.3)", color: "#fff", borderRadius: "var(--radius-sm)", width: 30, height: 30, cursor: "pointer", fontSize: 16, lineHeight: 1 }}
+              >
+                ‹
+              </button>
+              <button
+                type="button"
+                aria-label={photoSlideshowPlaying ? "Pause slideshow" : "Play slideshow"}
+                onClick={() => setPhotoSlideshowPlaying((p) => !p)}
+                style={{ background: photoSlideshowPlaying ? "rgba(255,255,255,0.35)" : "rgba(255,255,255,0.15)", border: "1px solid rgba(255,255,255,0.3)", color: "#fff", borderRadius: "var(--radius-sm)", padding: "6px 12px", cursor: "pointer", fontSize: 12, fontWeight: 600 }}
+              >
+                {photoSlideshowPlaying ? "⏸ Pause" : "▶ Slideshow"}
+              </button>
+              <span style={{ color: "#fff", fontSize: 12, minWidth: 44, textAlign: "center" }}>
+                {photoViewer.index + 1} / {photoViewer.list.length}
+              </span>
+              <button
+                type="button"
+                aria-label="Next photo"
+                onClick={() => { setPhotoSlideshowPlaying(false); gotoPhoto(1); }}
+                style={{ background: "rgba(255,255,255,0.15)", border: "1px solid rgba(255,255,255,0.3)", color: "#fff", borderRadius: "var(--radius-sm)", width: 30, height: 30, cursor: "pointer", fontSize: 16, lineHeight: 1 }}
+              >
+                ›
+              </button>
+              {/* Speed selector — user decides how fast slides advance */}
+              <div style={{ display: "flex", alignItems: "center", gap: 3, marginLeft: 4, borderLeft: "1px solid rgba(255,255,255,0.2)", paddingLeft: 8 }}>
+                <span style={{ color: "rgba(255,255,255,0.5)", fontSize: 10, marginRight: 2 }}>Speed</span>
+                {([
+                  { label: "0.5×", ms: 7000 },
+                  { label: "1×", ms: 3500 },
+                  { label: "2×", ms: 1750 },
+                  { label: "4×", ms: 875 },
+                ] as const).map((opt) => (
+                  <button
+                    key={opt.label}
+                    type="button"
+                    aria-label={`Slideshow speed ${opt.label}`}
+                    onClick={() => setPhotoSlideshowSpeed(opt.ms)}
+                    style={{
+                      background: photoSlideshowSpeed === opt.ms ? "rgba(99,179,237,0.4)" : "rgba(255,255,255,0.1)",
+                      border: `1px solid ${photoSlideshowSpeed === opt.ms ? "rgba(99,179,237,0.7)" : "rgba(255,255,255,0.2)"}`,
+                      color: photoSlideshowSpeed === opt.ms ? "#90cdf4" : "rgba(255,255,255,0.6)",
+                      borderRadius: "var(--radius-sm)", padding: "3px 7px", cursor: "pointer", fontSize: 10, fontWeight: 600,
+                    }}
+                  >
+                    {opt.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+        </>
       )}
       {streetViewTarget && (
         <GoogleStreetView
