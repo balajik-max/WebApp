@@ -15,6 +15,7 @@
     "axios": "^1.7.9",
     "jszip": "^3.10.1",
     "maplibre-gl": "^4.7.1",
+    "pptxgenjs": "^4.0.1",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "react-markdown": "^9.0.1",

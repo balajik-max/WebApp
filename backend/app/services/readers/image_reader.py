@@ -45,6 +45,14 @@ _GPS_IFD_TAG = 0x8825  # 34853 — GPSInfo pointer in IFD0
 _EXIF_IFD_TAG = 0x8769  # 34665 — Exif SubIFD pointer in IFD0
 _DATETIME_ORIGINAL_TAG = 0x9003  # 36867 — lives inside the Exif SubIFD
 _GPS_H_POSITIONING_ERROR_TAG = 0x1F  # 31 — the phone/GPS chip's own reported accuracy, in metres
+# EXIF GPS Info IFD tags for capture direction (bearing the camera was
+# pointing when the photo was taken) — lets the map open the viewer facing
+# the same way the field agent was looking, so a sequence of bike-captured
+# 360 photos plays back as a continuous "ride" instead of each one snapping
+# back to image-centre. GPSImgDirection is an unsigned RATIONAL degrees
+# value in [0, 360); GPSImgDirectionRef is "T" (true) / "M" (magnetic).
+_GPS_IMG_DIRECTION_TAG = 0x1E  # 30
+_GPS_IMG_DIRECTION_REF_TAG = 0x1D  # 29
 
 _CONTENT_TYPES = {
     ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png",
@@ -63,6 +71,7 @@ class _ParsedPhoto:
     taken_at: str | None
     gps_accuracy_m: float | None
     is_360: bool
+    direction: float | None  # degrees [0, 360), true north if ref == "T"
 
 
 @dataclass(slots=True)
@@ -87,7 +96,13 @@ def _extract_taken_at(exif) -> str | None:
         return None
 
 
-def _extract_gps(img: Image.Image) -> tuple[float, float, float | None, str | None, float | None] | None:
+def _extract_gps(img: Image.Image) -> tuple[float, float, float | None, str | None, float | None, float | None] | None:
+    """Returns (lat, lon, altitude, taken_at, gps_accuracy_m, direction).
+    `direction` is the EXIF GPSImgDirection in degrees [0, 360) referenced
+    to true or magnetic north per GPSImgDirectionRef ("T"/"M"), normalized
+    to true north assuming the phone's built-in magnet compensation (good
+    enough for on-the-ground photo sequencing; a survey-grade declination
+    lookup would be the next refinement)."""
     exif = img.getexif()
     if not exif:
         return None
@@ -140,7 +155,21 @@ def _extract_gps(img: Image.Image) -> tuple[float, float, float | None, str | No
         except (TypeError, ValueError):
             gps_accuracy_m = None
 
-    return lat, lon, altitude, _extract_taken_at(exif), gps_accuracy_m
+    # Capture heading (bearing of the camera when the photo was taken).
+    # GPSImgDirection is stored as a rational "degrees" — Pillow returns a
+    # float. Ref "T" => true north, "M" => magnetic (we treat as true north
+    # since phone compass APIs already apply the local declination).
+    direction = None
+    dir_val = gps_ifd.get(_GPS_IMG_DIRECTION_TAG)
+    if dir_val is not None:
+        try:
+            d = float(dir_val)
+            if 0.0 <= d < 360.0:
+                direction = d
+        except (TypeError, ValueError):
+            direction = None
+
+    return lat, lon, altitude, _extract_taken_at(exif), gps_accuracy_m, direction
 
 
 def _is_panorama(img: Image.Image) -> bool:
@@ -214,7 +243,7 @@ class ImageReader:
                 skipped += 1
                 skip_reasons.append(f"{name}: no GPS EXIF data")
                 return
-            lat, lon, altitude, taken_at, gps_accuracy_m = gps
+            lat, lon, altitude, taken_at, gps_accuracy_m, direction = gps
             photos.append(
                 _ParsedPhoto(
                     filename=Path(name).name,
@@ -226,6 +255,7 @@ class ImageReader:
                     taken_at=taken_at,
                     is_360=is_360,
                     gps_accuracy_m=gps_accuracy_m,
+                    direction=direction,
                 )
             )
 
@@ -279,6 +309,13 @@ class ImageReader:
                     # map to open an immersive sphere viewer instead of a
                     # flat lightbox for this photo.
                     "is_360": photo.is_360,
+                    # Capture heading (bearing the camera pointed when the
+                    # photo was taken), 0–360° true-north. Drives the
+                    # viewer's initial facing direction so consecutive bike-
+                    # captured photos play like a continuous Street-View ride
+                    # rather than snapping back to each image's geometric
+                    # centre on every advance.
+                    "direction": photo.direction,
                 }
 
                 batch.append(

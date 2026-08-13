@@ -41,6 +41,7 @@ import { AttributeTable } from "./AttributeTable";
 import { PanoramaViewer } from "./PanoramaViewer";
 import { CylinderPanoramaViewer } from "./CylinderPanoramaViewer";
 import { GoogleStreetView } from "./GoogleStreetView";
+import PptxGenJS from "pptxgenjs";
 import { MAX_MAP_PITCH } from "./LookAroundCompass";
 import { DataSourceSelector } from "./DataSourceSelector";
 import { SupportingFilesImport, ReportPanel } from "./WardReportPanel";
@@ -3224,7 +3225,157 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
   const preCadastralHiddenCategoriesRef = useRef<Set<string> | null>(null);
   const cadastralPresetActiveRef = useRef(false);
   const [hover, setHover] = useState<HoverInfo | null>(null);
-  const [photoViewer, setPhotoViewer] = useState<{ url: string; label: string; isPanorama: boolean } | null>(null);
+  const [photoViewer, setPhotoViewer] = useState<{
+    url: string; label: string; isPanorama: boolean;
+    direction?: number;
+    lat?: number; lon?: number;
+    list: { id: string; url: string; label: string; isPanorama: boolean; direction?: number; lat?: number; lon?: number }[];
+    index: number;
+  } | null>(null);
+  const [photoSlideshowPlaying, setPhotoSlideshowPlaying] = useState(false);
+  /** Single source of truth for the 360/180 viewer's look-direction &
+   *  zoom, held here (not inside the viewer) so it survives EVERYTHING —
+   *  photo advances, and also a full React remount when navigation swaps
+   *  between <PanoramaViewer> and <CylinderPanoramaViewer> (a neighbour
+   *  photo with a different is_360 flag changes the component type). Both
+   *  viewer components seed their own refs from this on mount and report
+   *  their final view back here on every teardown. Angles in radians,
+   *  fov/zoom in degrees. Reset when the viewer is closed. */
+  const viewerPersistRef = useRef<{ active: boolean; yaw: number; pitch: number; fov: number }>({ active: false, yaw: 0, pitch: 0, fov: 75 });
+  /** Slideshow speed — user-adjustable via the bottom-bar speed selector. */
+  const [photoSlideshowSpeed, setPhotoSlideshowSpeed] = useState(3500);
+  /** PPT export — true while PanoramaViewer is cycling through every frame
+   *  at the user's locked viewport and handing us captured images. */
+  const [photoExporting, setPhotoExporting] = useState(false);
+  /** Frames captured during the active export, assembled into the .pptx
+   *  once the last one arrives. Held in refs so the counting never depends
+   *  on a closure over photoViewer state (which could change mid-export). */
+  const photoExportFramesRef = useRef<{ url: string; label: string; dataUrl: string }[]>([]);
+  const photoExportListRef = useRef<{ url: string; label: string }[]>([]);
+  const gotoPhoto = useCallback((delta: number) => {
+    setPhotoViewer((prev) => {
+      if (!prev || prev.list.length < 2) return prev;
+      const nextIndex = (prev.index + delta + prev.list.length) % prev.list.length;
+      const next = prev.list[nextIndex];
+      return { ...next, list: prev.list, index: nextIndex };
+    });
+  }, []);
+  const closePhotoViewer = useCallback(() => {
+    setPhotoSlideshowPlaying(false);
+    setPhotoViewer(null);
+    // Fresh start for the next ride: don't carry one survey's viewport
+    // into an unrelated one.
+    viewerPersistRef.current = { active: false, yaw: 0, pitch: 0, fov: 75 };
+  }, []);
+  // Start the PPT export. Every frame is captured at the viewer's locked
+  // viewport (the user's current yaw/pitch/zoom) — the export state is
+  // passed to PanoramaViewer which cycles the whole list and reports each
+  // captured dataURL back via onExportFrame.
+  const startPhotoExport = useCallback(() => {
+    setPhotoSlideshowPlaying(false);
+    photoExportFramesRef.current = [];
+    // Snapshot the list ONCE at export start — the viewer iterates this
+    // exact list, and the assembler must count against the same one even
+    // if photoViewer state changes mid-export.
+    photoExportListRef.current = photoViewer?.list ?? [];
+    setPhotoExporting(true);
+  }, [photoViewer]);
+  // A captured frame arrived from the viewer — buffer it; when the last
+  // one lands, assemble the .pptx and trigger the browser download.
+  const handleExportFrame = useCallback((dataUrl: string) => {
+    const frames = photoExportFramesRef.current;
+    const list = photoExportListRef.current;
+    const idx = frames.length;
+    frames.push({ url: list[idx]?.url ?? "", label: list[idx]?.label ?? "", dataUrl });
+    if (frames.length < list.length) return;
+    setPhotoExporting(false);
+    // One slide per frame — full-bleed image + caption, assembled from the
+    // captured dataURLs. The deck is a consistent Street-View ride at the
+    // user's locked viewport (every frame was rendered at that same view).
+    void (async () => {
+      try {
+        const pptx = new PptxGenJS();
+        pptx.layout = "LAYOUT_WIDE"; // 13.333" x 7.5" (16:9)
+        const SLIDE_W = 13.333;
+        const SLIDE_H = 7.5;
+        // Reserve the bottom strip for the caption bar so the image never
+        // overlaps the label.
+        const CAPTION_H = 0.6;
+        const IMG_MAX_W = SLIDE_W;
+        const IMG_MAX_H = SLIDE_H - CAPTION_H;
+        // Title slide — names the deck after the first photo's label.
+        const firstLabel = list[0]?.label ?? "360 Survey";
+        pptx.defineSlideMaster({
+          title: "SURVEY",
+          background: { color: "000000" },
+          objects: [
+            { text: { text: "360° Street Survey", options: { x: 0.6, y: 0.35, w: 9, h: 0.7, fontSize: 30, bold: true, color: "FFFFFF", fontFace: "Arial" } } },
+            { text: { text: "Captured at a single locked viewport", options: { x: 0.6, y: 1.05, w: 9, h: 0.5, fontSize: 16, color: "AAAAAA", fontFace: "Arial" } } },
+          ],
+        });
+        const titleSlide = pptx.addSlide("SURVEY");
+        titleSlide.addText(firstLabel, { x: 0.6, y: 4.2, w: 9, h: 0.8, fontSize: 22, bold: true, color: "FFFFFF", fontFace: "Arial" });
+
+        // Fully decode a dataURL before AddImage: this both guarantees the
+        // image is completely loaded before it is baked into the deck and
+        // gives us its natural size so we can preserve its aspect ratio.
+        const loadImage = (dataUrl: string) =>
+          new Promise<{ width: number; height: number }>((resolve) => {
+            const img = new Image();
+            img.onload = () => resolve({ width: img.naturalWidth || 1, height: img.naturalHeight || 1 });
+            img.onerror = () => resolve({ width: 1, height: 1 });
+            img.src = dataUrl;
+          });
+
+        // One slide per frame, in the exact order of the view the user
+        // configured. Every frame gets a slide — a blank/failed capture still
+        // yields a (placeholder) slide so no image from the view is dropped
+        // and the deck never collapses to just the intro page.
+        for (let i = 0; i < list.length; i++) {
+          const dataUrl = frames[i]?.dataUrl ?? "";
+          const label = list[i]?.label ?? frames[i]?.label ?? "";
+          const slide = pptx.addSlide();
+          slide.background = { color: "000000" };
+          if (dataUrl && dataUrl.length > 0) {
+            const { width, height } = await loadImage(dataUrl);
+            // Fit the image centred while preserving its aspect ratio; the
+            // black slide background letterboxes any surplus so nothing is
+            // stretched/distorted.
+            const scale = Math.min(IMG_MAX_W / width, IMG_MAX_H / height);
+            const w = width * scale;
+            const h = height * scale;
+            const x = (SLIDE_W - w) / 2;
+            const y = (IMG_MAX_H - h) / 2;
+            slide.addImage({ data: dataUrl, x, y, w, h });
+          }
+          slide.addText(`${i + 1}. ${label}`, { x: 0.4, y: SLIDE_H - CAPTION_H + 0.14, w: 12.5, h: 0.42, fontSize: 13, color: "FFFFFF", fontFace: "Arial" });
+        }
+        await pptx.writeFile({ fileName: `360-slideshow-${Date.now()}.pptx` });
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.error("PPT export failed", err);
+        setPhotoExporting(false);
+      }
+    })();
+  }, []);
+  // Slideshow auto-advance. Depends on presence-of-viewer (not the object
+  // itself, which changes every tick via gotoPhoto) so the interval isn't
+  // torn down and rebuilt on every single photo advance.
+  useEffect(() => {
+    if (!photoSlideshowPlaying || !photoViewer) return;
+    const timer = setInterval(() => gotoPhoto(1), photoSlideshowSpeed);
+    return () => clearInterval(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [photoSlideshowPlaying, Boolean(photoViewer), gotoPhoto, photoSlideshowSpeed]);
+  useEffect(() => {
+    if (!photoViewer) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "ArrowLeft") { setPhotoSlideshowPlaying(false); gotoPhoto(-1); }
+      else if (e.key === "ArrowRight") { setPhotoSlideshowPlaying(false); gotoPhoto(1); }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [Boolean(photoViewer), gotoPhoto]);
   const [datasets, setDatasets] = useState<DatasetRow[]>([]);
   // More than one entry lets two or more datasets be shown together (e.g. a
   // raster orthophoto plus its companion GDB vector layer over the same area).
@@ -9344,11 +9495,92 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
           return;
         }
         if (selected.properties.category === "site_photo") {
-          setPhotoViewer({
+          const clickedCoords = selected.geometry.type === "Point"
+            ? (selected.geometry.coordinates as [number, number]) : undefined;
+          const clicked = {
+            id: selected.properties.id,
             url: `${API_BASE}/api/v1/features/${selected.properties.id}/photo`,
             label: selected.properties.label || "Site photo",
             isPanorama: selected.properties.attributes?.is_360 === true,
-          });
+            direction: Number(selected.properties.attributes?.direction) || undefined,
+            taken_at: typeof selected.properties.attributes?.taken_at === "string"
+              ? selected.properties.attributes.taken_at
+              : undefined,
+            lat: clickedCoords ? clickedCoords[1] : undefined,
+            lon: clickedCoords ? clickedCoords[0] : undefined,
+          };
+          // Sibling photos for prev/next + slideshow — scoped to the same
+          // dataset and the features currently loaded into the map source
+          // (this app streams features per-viewport, so the nav list is
+          // "photos visible right now", same scope Street View uses).
+          // Sorted by GPS bearing from the clicked photo so arrows point
+          // in the correct spatial order (like walking along a path).
+          const siblingIds = new Set<string>();
+          const siblings = (map.querySourceFeatures(FEATURE_SOURCE, {
+            filter: ["all", PHOTO_BASE_FILTER, ["==", ["get", "dataset_id"], selected.properties.dataset_id]],
+          }) as unknown as Array<{ id?: string | number; geometry: unknown; properties?: Record<string, unknown> | null }>)
+            .map((f) => decodeFeature(f))
+            .filter((f) => {
+              if (siblingIds.has(f.properties.id)) return false;
+              siblingIds.add(f.properties.id);
+              return true;
+            })
+            .map((f) => {
+              const coords = f.geometry.type === "Point" ? (f.geometry.coordinates as [number, number]) : undefined;
+              return {
+                id: f.properties.id,
+                url: `${API_BASE}/api/v1/features/${f.properties.id}/photo`,
+                label: f.properties.label || "Site photo",
+                isPanorama: f.properties.attributes?.is_360 === true,
+                direction: Number(f.properties.attributes?.direction) || undefined,
+                // EXIF capture time ("YYYY-MM-DD HH:MM:SS") — geotagged
+                // 360-video frames get sequential timestamps, so this is
+                // the true drive-order for the slideshow path.
+                taken_at: typeof f.properties.attributes?.taken_at === "string"
+                  ? f.properties.attributes.taken_at
+                  : undefined,
+                lat: coords ? coords[1] : undefined,
+                lon: coords ? coords[0] : undefined,
+              };
+            });
+          const list = siblingIds.has(clicked.id) ? siblings : [...siblings, clicked];
+          // Ordering for prev/next + slideshow:
+          //  1. Capture-time order (taken_at) when the photos carry EXIF
+          //     timestamps — 360-camera video frames land sequentially, so
+          //     this restores the true drive sequence even around turns
+          //     (bearing-sorting scrambles a linear path by interleaving
+          //     frames from different headings).
+          //  2. Fallback for timestamp-less photos: compass bearing from
+          //     the clicked photo (spatial order, like walking a path).
+          //  3. Final fallback: natural label order.
+          const toMs = (t: string) => {
+            // EXIF writes "YYYY:MM:DD HH:MM:SS"; normalize to a sortable
+            // epoch so any separator variant compares correctly.
+            const m = t.match(/^(\d{4})[:\-/](\d{2})[:\-/](\d{2})[T ](\d{2}):(\d{2}):(\d{2})/);
+            if (!m) return NaN;
+            return Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +m[6]);
+          };
+          const timestamps = list.every((s) => s.taken_at != null && !Number.isNaN(toMs(s.taken_at!)));
+          if (timestamps) {
+            list.sort((a, b) => toMs(a.taken_at!) - toMs(b.taken_at!));
+          } else {
+            const cLat = clicked.lat;
+            const cLon = clicked.lon;
+            if (cLat != null && cLon != null) {
+              list.sort((a, b) => {
+                if (a.lat == null || a.lon == null) return 1;
+                if (b.lat == null || b.lon == null) return -1;
+                const bA = Math.atan2(a.lon - cLon, a.lat - cLat);
+                const bB = Math.atan2(b.lon - cLon, b.lat - cLat);
+                return bA - bB;
+              });
+            } else {
+              list.sort((a, b) => a.label.localeCompare(b.label, undefined, { numeric: true }));
+            }
+          }
+          const index = Math.max(0, list.findIndex((s) => s.id === clicked.id));
+          setPhotoSlideshowPlaying(false);
+          setPhotoViewer({ ...list[index], list, index });
           return;
         }
         onFeatureSelect(selected);
@@ -10664,11 +10896,125 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
         )}
       </div>
       {photoViewer && (
-        photoViewer.isPanorama ? (
-          <PanoramaViewer url={photoViewer.url} label={photoViewer.label} onClose={() => setPhotoViewer(null)} />
-        ) : (
-          <CylinderPanoramaViewer url={photoViewer.url} label={photoViewer.label} mode="180" onClose={() => setPhotoViewer(null)} />
-        )
+        <>
+          {photoViewer.isPanorama ? (
+            <PanoramaViewer
+              url={photoViewer.url}
+              label={photoViewer.label}
+              startHeading={photoViewer.direction}
+              initialYaw={viewerPersistRef.current.active ? viewerPersistRef.current.yaw : undefined}
+              initialPitch={viewerPersistRef.current.active ? viewerPersistRef.current.pitch : undefined}
+              initialZoom={viewerPersistRef.current.active ? viewerPersistRef.current.fov : undefined}
+              onPersist={(yaw, pitch, zoom) => { viewerPersistRef.current = { active: true, yaw, pitch, fov: zoom }; }}
+              getPersistedView={() => viewerPersistRef.current}
+              list={photoViewer.list}
+              exporting={photoExporting}
+              onExportFrame={handleExportFrame}
+              onClose={closePhotoViewer}
+            />
+          ) : (
+            <CylinderPanoramaViewer
+              url={photoViewer.url}
+              label={photoViewer.label}
+              mode="180"
+              startHeading={photoViewer.direction}
+              initialYaw={viewerPersistRef.current.active ? viewerPersistRef.current.yaw : undefined}
+              initialPitch={viewerPersistRef.current.active ? viewerPersistRef.current.pitch : undefined}
+              initialFov={viewerPersistRef.current.active ? viewerPersistRef.current.fov : undefined}
+              onPersist={(yaw, pitch, fov) => { viewerPersistRef.current = { active: true, yaw, pitch, fov }; }}
+              getPersistedView={() => viewerPersistRef.current}
+              currentLat={photoViewer.lat}
+              currentLon={photoViewer.lon}
+              siblings={photoViewer.list.map((s, i) => ({
+                index: i,
+                lat: s.lat ?? 0,
+                lon: s.lon ?? 0,
+                label: s.label,
+              }))}
+              onGotoPhoto={(idx) => { setPhotoSlideshowPlaying(false); gotoPhoto(idx - photoViewer.index); }}
+              onClose={closePhotoViewer}
+            />
+          )}
+          {photoViewer.list.length > 1 && (
+            <div
+              style={{
+                position: "fixed", left: "50%", bottom: 24, transform: "translateX(-50%)", zIndex: 1002,
+                display: "flex", alignItems: "center", gap: 8,
+                background: "rgba(0,0,0,0.6)", border: "1px solid rgba(255,255,255,0.2)",
+                borderRadius: "var(--radius-md)", padding: "8px 14px",
+                backdropFilter: "blur(6px)",
+              }}
+            >
+              <button
+                type="button"
+                aria-label="Previous photo"
+                onClick={() => { setPhotoSlideshowPlaying(false); gotoPhoto(-1); }}
+                style={{ background: "rgba(255,255,255,0.15)", border: "1px solid rgba(255,255,255,0.3)", color: "#fff", borderRadius: "var(--radius-sm)", width: 30, height: 30, cursor: "pointer", fontSize: 16, lineHeight: 1 }}
+              >
+                ‹
+              </button>
+              <button
+                type="button"
+                aria-label={photoSlideshowPlaying ? "Pause slideshow" : "Play slideshow"}
+                onClick={() => setPhotoSlideshowPlaying((p) => !p)}
+                style={{ background: photoSlideshowPlaying ? "rgba(255,255,255,0.35)" : "rgba(255,255,255,0.15)", border: "1px solid rgba(255,255,255,0.3)", color: "#fff", borderRadius: "var(--radius-sm)", padding: "6px 12px", cursor: "pointer", fontSize: 12, fontWeight: 600 }}
+              >
+                {photoSlideshowPlaying ? "⏸ Pause" : "▶ Slideshow"}
+              </button>
+              <span style={{ color: "#fff", fontSize: 12, minWidth: 44, textAlign: "center" }}>
+                {photoViewer.index + 1} / {photoViewer.list.length}
+              </span>
+              <button
+                type="button"
+                aria-label="Next photo"
+                onClick={() => { setPhotoSlideshowPlaying(false); gotoPhoto(1); }}
+                style={{ background: "rgba(255,255,255,0.15)", border: "1px solid rgba(255,255,255,0.3)", color: "#fff", borderRadius: "var(--radius-sm)", width: 30, height: 30, cursor: "pointer", fontSize: 16, lineHeight: 1 }}
+              >
+                ›
+              </button>
+              {/* Speed selector — user decides how fast slides advance */}
+              <div style={{ display: "flex", alignItems: "center", gap: 3, marginLeft: 4, borderLeft: "1px solid rgba(255,255,255,0.2)", paddingLeft: 8 }}>
+                <span style={{ color: "rgba(255,255,255,0.5)", fontSize: 10, marginRight: 2 }}>Speed</span>
+                {([
+                  { label: "0.5×", ms: 7000 },
+                  { label: "1×", ms: 3500 },
+                  { label: "2×", ms: 1750 },
+                  { label: "4×", ms: 875 },
+                ] as const).map((opt) => (
+                  <button
+                    key={opt.label}
+                    type="button"
+                    aria-label={`Slideshow speed ${opt.label}`}
+                    onClick={() => setPhotoSlideshowSpeed(opt.ms)}
+                    style={{
+                      background: photoSlideshowSpeed === opt.ms ? "rgba(99,179,237,0.4)" : "rgba(255,255,255,0.1)",
+                      border: `1px solid ${photoSlideshowSpeed === opt.ms ? "rgba(99,179,237,0.7)" : "rgba(255,255,255,0.2)"}`,
+                      color: photoSlideshowSpeed === opt.ms ? "#90cdf4" : "rgba(255,255,255,0.6)",
+                      borderRadius: "var(--radius-sm)", padding: "3px 7px", cursor: "pointer", fontSize: 10, fontWeight: 600,
+                    }}
+                  >
+                    {opt.label}
+                  </button>
+                ))}
+              </div>
+              <button
+                type="button"
+                aria-label="Export slideshow as PowerPoint"
+                onClick={startPhotoExport}
+                disabled={photoExporting}
+                style={{
+                  background: photoExporting ? "rgba(255,255,255,0.1)" : "rgba(76,175,80,0.25)",
+                  border: `1px solid ${photoExporting ? "rgba(255,255,255,0.2)" : "rgba(76,175,80,0.5)"}`,
+                  color: photoExporting ? "rgba(255,255,255,0.5)" : "#a5d6a7",
+                  borderRadius: "var(--radius-sm)", padding: "6px 12px", cursor: photoExporting ? "default" : "pointer",
+                  fontSize: 12, fontWeight: 600, marginLeft: 4,
+                }}
+              >
+                {photoExporting ? "Exporting…" : "⬇ Export PPT"}
+              </button>
+            </div>
+          )}
+        </>
       )}
       {streetViewTarget && (
         <GoogleStreetView
