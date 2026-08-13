@@ -32,6 +32,7 @@ import { AttributeTable } from "./AttributeTable";
 import { PanoramaViewer } from "./PanoramaViewer";
 import { CylinderPanoramaViewer } from "./CylinderPanoramaViewer";
 import { GoogleStreetView } from "./GoogleStreetView";
+import PptxGenJS from "pptxgenjs";
 import { MAX_MAP_PITCH } from "./LookAroundCompass";
 import { DataSourceSelector } from "./DataSourceSelector";
 import { SupportingFilesImport, ReportPanel } from "./WardReportPanel";
@@ -3218,6 +3219,14 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
   const viewerPersistRef = useRef<{ active: boolean; yaw: number; pitch: number; fov: number }>({ active: false, yaw: 0, pitch: 0, fov: 75 });
   /** Slideshow speed — user-adjustable via the bottom-bar speed selector. */
   const [photoSlideshowSpeed, setPhotoSlideshowSpeed] = useState(3500);
+  /** PPT export — true while PanoramaViewer is cycling through every frame
+   *  at the user's locked viewport and handing us captured images. */
+  const [photoExporting, setPhotoExporting] = useState(false);
+  /** Frames captured during the active export, assembled into the .pptx
+   *  once the last one arrives. Held in refs so the counting never depends
+   *  on a closure over photoViewer state (which could change mid-export). */
+  const photoExportFramesRef = useRef<{ url: string; label: string; dataUrl: string }[]>([]);
+  const photoExportListRef = useRef<{ url: string; label: string }[]>([]);
   const gotoPhoto = useCallback((delta: number) => {
     setPhotoViewer((prev) => {
       if (!prev || prev.list.length < 2) return prev;
@@ -3232,6 +3241,97 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     // Fresh start for the next ride: don't carry one survey's viewport
     // into an unrelated one.
     viewerPersistRef.current = { active: false, yaw: 0, pitch: 0, fov: 75 };
+  }, []);
+  // Start the PPT export. Every frame is captured at the viewer's locked
+  // viewport (the user's current yaw/pitch/zoom) — the export state is
+  // passed to PanoramaViewer which cycles the whole list and reports each
+  // captured dataURL back via onExportFrame.
+  const startPhotoExport = useCallback(() => {
+    setPhotoSlideshowPlaying(false);
+    photoExportFramesRef.current = [];
+    // Snapshot the list ONCE at export start — the viewer iterates this
+    // exact list, and the assembler must count against the same one even
+    // if photoViewer state changes mid-export.
+    photoExportListRef.current = photoViewer?.list ?? [];
+    setPhotoExporting(true);
+  }, [photoViewer]);
+  // A captured frame arrived from the viewer — buffer it; when the last
+  // one lands, assemble the .pptx and trigger the browser download.
+  const handleExportFrame = useCallback((dataUrl: string) => {
+    const frames = photoExportFramesRef.current;
+    const list = photoExportListRef.current;
+    const idx = frames.length;
+    frames.push({ url: list[idx]?.url ?? "", label: list[idx]?.label ?? "", dataUrl });
+    if (frames.length < list.length) return;
+    setPhotoExporting(false);
+    // One slide per frame — full-bleed image + caption, assembled from the
+    // captured dataURLs. The deck is a consistent Street-View ride at the
+    // user's locked viewport (every frame was rendered at that same view).
+    void (async () => {
+      try {
+        const pptx = new PptxGenJS();
+        pptx.layout = "LAYOUT_WIDE"; // 13.333" x 7.5" (16:9)
+        const SLIDE_W = 13.333;
+        const SLIDE_H = 7.5;
+        // Reserve the bottom strip for the caption bar so the image never
+        // overlaps the label.
+        const CAPTION_H = 0.6;
+        const IMG_MAX_W = SLIDE_W;
+        const IMG_MAX_H = SLIDE_H - CAPTION_H;
+        // Title slide — names the deck after the first photo's label.
+        const firstLabel = list[0]?.label ?? "360 Survey";
+        pptx.defineSlideMaster({
+          title: "SURVEY",
+          background: { color: "000000" },
+          objects: [
+            { text: { text: "360° Street Survey", options: { x: 0.6, y: 0.35, w: 9, h: 0.7, fontSize: 30, bold: true, color: "FFFFFF", fontFace: "Arial" } } },
+            { text: { text: "Captured at a single locked viewport", options: { x: 0.6, y: 1.05, w: 9, h: 0.5, fontSize: 16, color: "AAAAAA", fontFace: "Arial" } } },
+          ],
+        });
+        const titleSlide = pptx.addSlide("SURVEY");
+        titleSlide.addText(firstLabel, { x: 0.6, y: 4.2, w: 9, h: 0.8, fontSize: 22, bold: true, color: "FFFFFF", fontFace: "Arial" });
+
+        // Fully decode a dataURL before AddImage: this both guarantees the
+        // image is completely loaded before it is baked into the deck and
+        // gives us its natural size so we can preserve its aspect ratio.
+        const loadImage = (dataUrl: string) =>
+          new Promise<{ width: number; height: number }>((resolve) => {
+            const img = new Image();
+            img.onload = () => resolve({ width: img.naturalWidth || 1, height: img.naturalHeight || 1 });
+            img.onerror = () => resolve({ width: 1, height: 1 });
+            img.src = dataUrl;
+          });
+
+        // One slide per frame, in the exact order of the view the user
+        // configured. Every frame gets a slide — a blank/failed capture still
+        // yields a (placeholder) slide so no image from the view is dropped
+        // and the deck never collapses to just the intro page.
+        for (let i = 0; i < list.length; i++) {
+          const dataUrl = frames[i]?.dataUrl ?? "";
+          const label = list[i]?.label ?? frames[i]?.label ?? "";
+          const slide = pptx.addSlide();
+          slide.background = { color: "000000" };
+          if (dataUrl && dataUrl.length > 0) {
+            const { width, height } = await loadImage(dataUrl);
+            // Fit the image centred while preserving its aspect ratio; the
+            // black slide background letterboxes any surplus so nothing is
+            // stretched/distorted.
+            const scale = Math.min(IMG_MAX_W / width, IMG_MAX_H / height);
+            const w = width * scale;
+            const h = height * scale;
+            const x = (SLIDE_W - w) / 2;
+            const y = (IMG_MAX_H - h) / 2;
+            slide.addImage({ data: dataUrl, x, y, w, h });
+          }
+          slide.addText(`${i + 1}. ${label}`, { x: 0.4, y: SLIDE_H - CAPTION_H + 0.14, w: 12.5, h: 0.42, fontSize: 13, color: "FFFFFF", fontFace: "Arial" });
+        }
+        await pptx.writeFile({ fileName: `360-slideshow-${Date.now()}.pptx` });
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.error("PPT export failed", err);
+        setPhotoExporting(false);
+      }
+    })();
   }, []);
   // Slideshow auto-advance. Depends on presence-of-viewer (not the object
   // itself, which changes every tick via gotoPhoto) so the interval isn't
@@ -10488,6 +10588,9 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
               initialZoom={viewerPersistRef.current.active ? viewerPersistRef.current.fov : undefined}
               onPersist={(yaw, pitch, zoom) => { viewerPersistRef.current = { active: true, yaw, pitch, fov: zoom }; }}
               getPersistedView={() => viewerPersistRef.current}
+              list={photoViewer.list}
+              exporting={photoExporting}
+              onExportFrame={handleExportFrame}
               onClose={closePhotoViewer}
             />
           ) : (
@@ -10575,6 +10678,21 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
                   </button>
                 ))}
               </div>
+              <button
+                type="button"
+                aria-label="Export slideshow as PowerPoint"
+                onClick={startPhotoExport}
+                disabled={photoExporting}
+                style={{
+                  background: photoExporting ? "rgba(255,255,255,0.1)" : "rgba(76,175,80,0.25)",
+                  border: `1px solid ${photoExporting ? "rgba(255,255,255,0.2)" : "rgba(76,175,80,0.5)"}`,
+                  color: photoExporting ? "rgba(255,255,255,0.5)" : "#a5d6a7",
+                  borderRadius: "var(--radius-sm)", padding: "6px 12px", cursor: photoExporting ? "default" : "pointer",
+                  fontSize: 12, fontWeight: 600, marginLeft: 4,
+                }}
+              >
+                {photoExporting ? "Exporting…" : "⬇ Export PPT"}
+              </button>
             </div>
           )}
         </>
