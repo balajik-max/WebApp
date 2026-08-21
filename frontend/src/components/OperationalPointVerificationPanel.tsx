@@ -21,7 +21,7 @@ import {
   type WorkflowHistoryItem,
   type WorkflowStatus,
 } from "../lib/pointVerifications";
-import type { UrbanFeature } from "../lib/types";
+import type { FeatureGeometry, UrbanFeature } from "../lib/types";
 import type { AiVerificationContext } from "./MapCanvas";
 
 interface Props {
@@ -103,7 +103,29 @@ function EvidenceImage({ title, url, filename }: { title: string; url: string | 
   );
 }
 
+function buildWorkflowFeature(record: PointVerificationRecord): UrbanFeature {
+  const pointCoordinates = typeof record.longitude === "number" && Number.isFinite(record.longitude)
+    && typeof record.latitude === "number" && Number.isFinite(record.latitude)
+    ? [record.longitude, record.latitude]
+    : [0, 0];
+
+  return {
+    type: "Feature",
+    id: record.feature_id,
+    geometry: { type: "Point", coordinates: pointCoordinates } as FeatureGeometry,
+    properties: {
+      id: record.feature_id,
+      dataset_id: record.dataset_id,
+      label: record.label,
+      category: record.asset_type,
+      severity: 0,
+      attributes: record.original_gdb_attributes ?? {},
+    },
+  };
+}
+
 function HistoryEntry({ entry }: { entry: WorkflowHistoryItem }) {
+
   return (
     <article className="point-verification-text-block">
       <span>{entry.event.replaceAll("_", " ")} · version {entry.version}</span>
@@ -185,7 +207,11 @@ export function OperationalPointVerificationPanel({
         if (verificationId) {
           const next = await fetchPointVerificationById(verificationId, controller.signal);
           hydrateForm(next);
-          setLoadedFeature(await fetchFeatureById(next.feature_id, controller.signal));
+          try {
+            setLoadedFeature(await fetchFeatureById(next.feature_id, controller.signal));
+          } catch {
+            setLoadedFeature(buildWorkflowFeature(next));
+          }
         } else if (feature && mapRequestContext) {
           hydrateForm(await fetchPointVerification(feature.properties.id, mapRequestContext, controller.signal));
         }

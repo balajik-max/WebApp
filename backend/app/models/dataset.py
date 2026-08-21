@@ -5,7 +5,7 @@ import enum
 import uuid
 from datetime import date, datetime
 
-from sqlalchemy import Date, Enum as SAEnum, ForeignKey, Integer, String
+from sqlalchemy import BigInteger, Date, Enum as SAEnum, ForeignKey, String
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -48,7 +48,7 @@ class Dataset(Base):
         nullable=False,
     )
     storage_key: Mapped[str | None] = mapped_column(String(1024), nullable=True)
-    size_bytes: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    size_bytes: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
 
     status: Mapped[DatasetStatus] = mapped_column(
         SAEnum(DatasetStatus, name="dataset_status", native_enum=False, length=32),

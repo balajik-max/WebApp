@@ -18582,6 +18582,8 @@ html[data-lang="kn"] body {
 .classify-panel__select {
   font-size: 11.5px; font-weight: 600; color: var(--ink-dim); background: var(--surface-3);
   border: 1px solid var(--edge-strong); border-radius: var(--radius-sm); padding: 6px 8px; cursor: pointer;
+}
+
 /* ── GIS Property Tax classification panel ───────────────────────────── */
 .property-tax-panel {
   position: absolute;

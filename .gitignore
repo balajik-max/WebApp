@@ -64,3 +64,11 @@ graphify-out/
 
 # Vendored nginx build artifact (binaries, logs, temp)
 deployment/nginx-lb/
+
+# Runtime PID files (regenerated per-process, never source)
+*.pid
+
+# Stray agent-run worktrees/checkouts that sometimes get created
+# alongside the repo (can carry a populated .env with real secrets) -
+# never let one be picked up by a broad `git add`.
+.codex-*-run/

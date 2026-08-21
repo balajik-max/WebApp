@@ -998,12 +998,13 @@ export function DatasetsView() {
         </div>
       </section>
 
+      </div>
+      </div>
+      {/* ── UNCLASSIFIED CATEGORIES (spatial audit classifier review) ── */}
       {(user?.role === "admin" || user?.role === "architect") && (
         <UnclassifiedCategoriesPanel />
       )}
 
-      </div>
-      </div>
       {/* ── ATTRIBUTE TABLE OVERLAY ── */}
       {openTableFor && (
         <AttributeTable

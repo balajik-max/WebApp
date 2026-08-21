@@ -3,7 +3,7 @@ import chiefMinisterPhoto from "../../assets/chief-minister-dk-shivakumar.png";
 import corporationLogo from "../../assets/davanagere-corporation-logo.png";
 import urbanDevelopmentMinisterPhoto from "../../assets/urban-development-minister-yathindra-siddaramaiah.png";
 import karnatakaLogo from "../../assets/government-karnataka-logo.png";
-import deputyCommissionerPhoto from "../../assets/deputy-commissioner-gangadharaswamy-gm.png";
+import commissionerPhoto from "../../assets/Dr. N. Mahantesh.jpg";
 
 type PublicPortalHeaderProps = {
   showLoginAction?: boolean;
@@ -32,10 +32,10 @@ const OFFICIALS = [
     alt: "Shri Yathindra Siddaramaiah, Minister for Urban Development, Government of Karnataka",
   },
   {
-    name: "Shri Gangadharaswamy G. M.",
-    designation: "Deputy Commissioner, Davanagere",
-    photo: deputyCommissionerPhoto,
-    alt: "Shri Gangadharaswamy G. M., Deputy Commissioner, Davanagere",
+    name: "Dr. N. Mahantesh",
+    designation: "Commissioner, Davanagere City Corporation",
+    photo: commissionerPhoto,
+    alt: "Dr. N. Mahantesh, KMAS (Selection Grade), Commissioner, Davanagere City Corporation",
   },
 ] as const;
 

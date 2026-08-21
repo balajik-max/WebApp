@@ -18,10 +18,11 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 # Single source of truth for the upload size cap - shared by the
 # SecurityMiddleware body-size check (rejects before the body is fully
 # read) and the datasets upload route (rejects after buffering). Real-world
-# GIS rasters/point clouds routinely run several hundred MB, so this is set
-# generously for a self-hosted deployment rather than the 300MB that
-# rejected genuine survey data.
-MAX_UPLOAD_BYTES = 2 * 1024 * 1024 * 1024  # 2 GB
+# GIS rasters/point clouds and full-resolution orthomosaics / digital
+# surface models routinely run several GB, so this is set generously for a
+# self-hosted deployment. NOTE: downstream GDAL/geopandas reads the whole
+# file into memory, so the host must have RAM headroom well above this cap.
+MAX_UPLOAD_BYTES = 10 * 1024 * 1024 * 1024  # 10 GB
 
 
 class Settings(BaseSettings):

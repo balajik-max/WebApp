@@ -172,12 +172,9 @@ export function WorkflowDashboard({ kind }: WorkflowDashboardProps) {
   const openWorkflow = (item: WorkflowDashboardItem) => {
     const query = new URLSearchParams({
       workflowVerification: item.verification_id,
-      locateFeature: item.feature_id,
-      focusMode: "isolate",
     });
     navigate(`/map?${query.toString()}`);
   };
-
   const title = kind === "tasks" ? t("workflow.tasksTitle") : t("workflow.activityTitle");
   const subtitle = kind === "tasks"
     ? t("workflow.tasksSubtitle")
@@ -323,3 +320,4 @@ export function WorkflowDashboard({ kind }: WorkflowDashboardProps) {
     </main>
   );
 }
+

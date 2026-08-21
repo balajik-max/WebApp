@@ -74,26 +74,22 @@ async def get_current_user(
     # Exempted as non-destructive, MLA-appropriate oversight: its own auth
     # session (logout/heartbeat/change-password), running the spatial audit
     # engine (recomputes findings from already-surveyed data, doesn't let
-    # MLA edit anything), and marking a finding as Open/Reviewing (the route
-    # itself still blocks Resolved for every role — that requires Architect
-    # evidence + Admin approval regardless).
-    _mla_exempt_paths = {
+    # MLA edit anything), the activity log endpoint, and loading (uploading)
+    # geospatial datasets into the system for review.
+    _mla_write_allowed = {
         "/api/auth/logout",
         "/api/auth/heartbeat",
         "/api/auth/change-password",
-        "/api/v1/ai/audit",
+        "/api/v1/activity/log",
+        "/api/v1/datasets/upload",
     }
-    _mla_exempt_prefixes = ("/api/v1/ai/audit/anomalies/",)
+    # Normalize path (strip trailing slash) for reliable matching across
+    # reverse-proxy and ASGI URL normalization variants.
+    _req_path = request.url.path.rstrip("/")
     if (
         user.role == UserRole.MLA
         and request.method not in {"GET", "HEAD", "OPTIONS"}
-        and request.url.path
-        not in {
-            "/api/auth/logout",
-            "/api/auth/heartbeat",
-            "/api/auth/change-password",
-            "/api/v1/activity/log",
-        }
+        and _req_path not in _mla_write_allowed
     ):
         raise HTTPException(
             status_code=403,

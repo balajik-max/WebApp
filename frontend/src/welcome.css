@@ -3154,7 +3154,7 @@ body.public-welcome-scroll .portal-header-login svg {
   width: clamp(154px, 9.5vw, 176px);
   min-width: 154px;
   display: grid;
-  grid-template-rows: auto 30px 30px;
+  grid-template-rows: auto auto auto;
   justify-items: center;
   align-items: start;
   row-gap: 3px;
@@ -3181,37 +3181,34 @@ body.public-welcome-scroll .portal-header-login svg {
 
 .portal-official__name {
   grid-row: 2;
-  min-height: 30px;
   color: #0d552f;
-  font-size: clamp(9px, 0.62vw, 10.5px);
+  font-size: clamp(10.5px, 0.72vw, 12px);
   font-weight: 800;
-  line-height: 1.14;
+  line-height: 1.2;
   white-space: nowrap;
 }
 
 .portal-official__designation {
   grid-row: 3;
-  min-height: 30px;
   color: #4f5964;
-  font-size: clamp(8px, 0.55vw, 9.5px);
+  font-size: clamp(9.5px, 0.64vw, 11px);
   font-weight: 500;
-  line-height: 1.16;
+  line-height: 1.25;
 }
 
 @media (max-width: 1280px) {
   .portal-official {
     width: 132px;
     min-width: 132px;
-    grid-template-rows: auto 32px 32px;
+    grid-template-rows: auto auto auto;
   }
 
   .portal-official__name {
-    min-height: 32px;
     white-space: normal;
   }
 
   .portal-official__designation {
-    min-height: 32px;
+    /* inherits auto sizing */
   }
 }
 
@@ -3232,17 +3229,15 @@ body.public-welcome-scroll .portal-header-login svg {
   .portal-official {
     width: min(29vw, 132px);
     min-width: min(29vw, 132px);
-    grid-template-rows: auto 34px 36px;
+    grid-template-rows: auto auto auto;
   }
 
   .portal-official__name {
-    min-height: 34px;
     font-size: 9px;
     white-space: normal;
   }
 
   .portal-official__designation {
-    min-height: 36px;
     font-size: 8px;
   }
 }

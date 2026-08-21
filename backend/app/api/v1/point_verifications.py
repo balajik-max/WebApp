@@ -6,6 +6,7 @@ import shutil
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Awaitable, Callable, TypeVar
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Response, UploadFile
 from fastapi.responses import FileResponse
@@ -20,7 +21,7 @@ from starlette.background import BackgroundTask
 
 from app.api.deps import require_ae, require_aee, require_any, require_commissioner, require_operational
 from app.core.config import get_settings
-from app.db.session import get_db
+from app.db.session import AuthSessionLocal, get_auth_db, get_db, get_role_session_factory
 from app.models import (
     ActivityAction,
     ActivityLog,
@@ -51,6 +52,31 @@ from app.services.resolved_gdb_export import ResolvedGdbRecord, generate_resolve
 from app.services.storage import delete_object, get_object_bytes, upload_stream
 
 router = APIRouter()
+T = TypeVar("T")
+
+
+def _workflow_data_role_for_user(user_role: UserRole | str) -> str:
+    role_value = user_role.value if isinstance(user_role, UserRole) else str(user_role)
+    if role_value in {UserRole.AEE.value, UserRole.COMMISSIONER.value}:
+        return UserRole.AE.value
+    return role_value
+
+
+async def _run_in_workflow_db(
+    user_role: UserRole | str,
+    operation: Callable[[AsyncSession], Awaitable[T]],
+) -> T:
+    session_factory = get_role_session_factory(_workflow_data_role_for_user(user_role))
+    async with session_factory() as workflow_db:
+        try:
+            result = await operation(workflow_db)
+        except Exception:
+            await workflow_db.rollback()
+            raise
+        else:
+            await workflow_db.commit()
+            return result
+
 
 _MODE_TO_ANOMALY: dict[str, AnomalyType] = {
     "poles": AnomalyType.POLE_REDUNDANCY,
@@ -429,41 +455,85 @@ async def _to_out(
     )
 
 
-async def _active_user_ids(db: AsyncSession, role: UserRole) -> list[uuid.UUID]:
-    return list((await db.execute(select(User.id).where(User.role == role, User.is_active.is_(True)))).scalars().all())
+async def _active_auth_user_ids(role: UserRole) -> list[uuid.UUID]:
+    async with AuthSessionLocal() as session:
+        return list((await session.execute(select(User.id).where(User.role == role, User.is_active.is_(True)))).scalars().all())
+
+
+async def _ensure_user_present(db: AsyncSession, user: User) -> None:
+    existing = (await db.execute(select(User).where(User.id == user.id))).scalar_one_or_none()
+    if existing is None:
+        db.add(User(
+            id=user.id,
+            name=user.name,
+            email=user.email,
+            password_hash=user.password_hash,
+            role=user.role,
+            is_active=user.is_active,
+        ))
+        await db.flush()
+        return
+    existing.name = user.name
+    existing.email = user.email
+    existing.password_hash = user.password_hash
+    existing.role = user.role
+    existing.is_active = user.is_active
 
 
 async def _notify_aees(db: AsyncSession, row: PointVerification, ae: User, feature: Feature) -> None:
-    for user_id in await _active_user_ids(db, UserRole.AEE):
-        db.add(Notification(
+    message = (
+        f"Work by AE {row.ae_name_manual or ae.name} is waiting for AEE approval. "
+        f"Issue: {row.issue_description or 'Field issue'}. Feature: {feature.label or feature.category or feature.id}."
+    )
+    for user_id in await _active_auth_user_ids(UserRole.AEE):
+        await _create_shared_remediation_notification(
             user_id=user_id,
             actor_id=ae.id,
             source=NotificationSource.REMEDIATION_SUBMITTED,
             source_id=row.id,
-            feature_id=feature.id,
-            message=(
-                f"Work by AE {row.ae_name_manual or ae.name} is waiting for AEE approval. "
-                f"Issue: {row.issue_description or 'Field issue'}. Feature: {feature.label or feature.category or feature.id}."
-            )[:1024],
-        ))
+            message=message,
+        )
 
 
 async def _notify_commissioners_after_aee(db: AsyncSession, row: PointVerification, aee: User, feature: Feature) -> None:
-    for user_id in await _active_user_ids(db, UserRole.COMMISSIONER):
-        db.add(Notification(
+    message = (
+        f"Work completed by AE {row.ae_name_manual or '???'} and approved as Good by "
+        f"AEE {row.aee_name_manual or aee.name}. Feature: {feature.label or feature.category or feature.id}."
+    )
+    for user_id in await _active_auth_user_ids(UserRole.COMMISSIONER):
+        await _create_shared_remediation_notification(
             user_id=user_id,
             actor_id=aee.id,
             source=NotificationSource.REMEDIATION_AEE_APPROVED,
             source_id=row.id,
-            feature_id=feature.id,
-            message=(
-                f"Work completed by AE {row.ae_name_manual or '—'} and approved as Good by "
-                f"AEE {row.aee_name_manual or aee.name}. Feature: {feature.label or feature.category or feature.id}."
-            )[:1024],
+            message=message,
+        )
+
+
+async def _create_shared_remediation_notification(
+    *,
+    user_id: uuid.UUID,
+    actor_id: uuid.UUID | None,
+    source: NotificationSource,
+    source_id: uuid.UUID | None,
+    message: str,
+) -> None:
+    async with AuthSessionLocal() as session:
+        session.add(Notification(
+            user_id=user_id,
+            actor_id=actor_id,
+            source=source,
+            source_id=source_id,
+            # Shared auth DB may not contain the recipient role DB's feature row,
+            # so keep the remediation notification itself portable and let the
+            # frontend reopen the workflow by verification/source id.
+            feature_id=None,
+            message=message[:1024],
         ))
+        await session.commit()
 
 
-def _notify_ae_after_aee(db: AsyncSession, row: PointVerification, aee: User, approved: bool) -> None:
+async def _notify_ae_after_aee(db: AsyncSession, row: PointVerification, aee: User, approved: bool) -> None:
     if row.field_submitter_id is None:
         return
     if approved:
@@ -475,32 +545,30 @@ def _notify_ae_after_aee(db: AsyncSession, row: PointVerification, aee: User, ap
             f"Your work was returned by AEE {row.aee_name_manual or aee.name} as "
             f"{row.aee_category or 'correction required'}. Remarks: {row.aee_remarks or 'Please correct and resubmit.'}"
         )
-    db.add(Notification(
+    await _create_shared_remediation_notification(
         user_id=row.field_submitter_id,
         actor_id=aee.id,
         source=source,
         source_id=row.id,
-        feature_id=row.feature_id,
-        message=message[:1024],
-    ))
+        message=message,
+    )
 
-
-def _notify_acceptance(db: AsyncSession, row: PointVerification, commissioner: User) -> None:
+async def _notify_acceptance(db: AsyncSession, row: PointVerification, commissioner: User) -> None:
     recipients = {row.field_submitter_id, row.aee_id}
+    message = (
+        f"Commissioner {commissioner.name} accepted the work solved by AE "
+        f"{row.ae_name_manual or '???'} and approved by AEE {row.aee_name_manual or '???'}."
+    )
     for user_id in recipients:
         if user_id is None:
             continue
-        db.add(Notification(
+        await _create_shared_remediation_notification(
             user_id=user_id,
             actor_id=commissioner.id,
             source=NotificationSource.REMEDIATION_COMMISSIONER_ACCEPTED,
             source_id=row.id,
-            feature_id=row.feature_id,
-            message=(
-                f"Commissioner {commissioner.name} accepted the work solved by AE "
-                f"{row.ae_name_manual or '—'} and approved by AEE {row.aee_name_manual or '—'}."
-            )[:1024],
-        ))
+            message=message,
+        )
 
 
 def _record_activity(db: AsyncSession, row: PointVerification, actor: User, event: str, details: dict) -> None:
@@ -757,87 +825,94 @@ async def aee_decision(
     feature_id: uuid.UUID,
     body: AeeDecisionIn,
     aee: User = Depends(require_aee),
-    db: AsyncSession = Depends(get_db),
 ) -> WorkflowOut:
-    feature = await _load_feature(db, feature_id)
-    anomaly = await _load_anomaly(db, body.anomaly_id, lock=True)
-    row = await _load_verification(db, feature_id, anomaly.id, lock=True)
-    if row is None:
-        raise HTTPException(status_code=404, detail="AE field submission was not found")
-    if row.workflow_status != RemediationWorkflowStatus.PENDING_AEE_APPROVAL:
-        raise HTTPException(status_code=409, detail="This work is not waiting for AEE approval")
-    if not row.issue_solved or not (row.issue_description or "").strip() or not (row.short_description or "").strip():
-        raise HTTPException(status_code=422, detail="Required AE work details are incomplete")
-    if not row.before_photo_key or not row.after_photo_key:
-        raise HTTPException(status_code=422, detail="Required Before and After evidence is incomplete")
-    if row.gps_validation_status != "PHOTO_EXIF_VERIFIED":
-        raise HTTPException(status_code=422, detail="Photo GPS evidence is not verified")
+    async def _apply(db: AsyncSession) -> WorkflowOut:
+        await _ensure_user_present(db, aee)
+        feature = await _load_feature(db, feature_id)
+        anomaly = await _load_anomaly(db, body.anomaly_id, lock=True)
+        row = await _load_verification(db, feature_id, anomaly.id, lock=True)
+        if row is None:
+            raise HTTPException(status_code=404, detail="AE field submission was not found")
+        if row.workflow_status != RemediationWorkflowStatus.PENDING_AEE_APPROVAL:
+            raise HTTPException(status_code=409, detail="This work is not waiting for AEE approval")
+        if not row.issue_solved or not (row.issue_description or "").strip() or not (row.short_description or "").strip():
+            raise HTTPException(status_code=422, detail="Required AE work details are incomplete")
+        if not row.before_photo_key or not row.after_photo_key:
+            raise HTTPException(status_code=422, detail="Required Before and After evidence is incomplete")
+        if row.gps_validation_status != "PHOTO_EXIF_VERIFIED":
+            raise HTTPException(status_code=422, detail="Photo GPS evidence is not verified")
 
-    now = datetime.now(timezone.utc)
-    approved = body.category == "GOOD"
-    row.aee_id = aee.id
-    row.aee_name_manual = body.aee_name.strip()
-    row.aee_category = body.category
-    row.aee_decided_at = now
-    row.aee_remarks = (body.remarks or "").strip() or None
-    row.workflow_status = (
-        RemediationWorkflowStatus.AEE_APPROVED if approved else RemediationWorkflowStatus.RETURNED_BY_AEE
-    )
-    row.current_condition = "GOOD" if approved else row.original_ai_condition
-    anomaly.status = AnomalyStatus.RESOLVED if approved else AnomalyStatus.REVIEWING
-    event = "AEE_APPROVED_GOOD" if approved else f"AEE_RETURNED_{body.category}"
-    _append_history(
-        row,
-        event=event,
-        actor=aee,
-        details={
-            "aee_name": row.aee_name_manual,
-            "category": body.category,
-            "remarks": row.aee_remarks,
-        },
-    )
-    await db.flush()
-    _record_activity(db, row, aee, event, {"category": body.category, "aee_name": row.aee_name_manual})
-    _notify_ae_after_aee(db, row, aee, approved)
-    if approved:
-        await _notify_commissioners_after_aee(db, row, aee, feature)
-    return await _to_out(db, feature, row, anomaly, row.detection_mode)  # type: ignore[arg-type]
+        now = datetime.now(timezone.utc)
+        approved = body.category == "GOOD"
+        row.aee_id = aee.id
+        row.aee_name_manual = body.aee_name.strip()
+        row.aee_category = body.category
+        row.aee_decided_at = now
+        row.aee_remarks = (body.remarks or "").strip() or None
+        row.workflow_status = (
+            RemediationWorkflowStatus.AEE_APPROVED if approved else RemediationWorkflowStatus.RETURNED_BY_AEE
+        )
+        row.current_condition = "GOOD" if approved else row.original_ai_condition
+        anomaly.status = AnomalyStatus.RESOLVED if approved else AnomalyStatus.REVIEWING
+        event = "AEE_APPROVED_GOOD" if approved else f"AEE_RETURNED_{body.category}"
+        _append_history(
+            row,
+            event=event,
+            actor=aee,
+            details={
+                "aee_name": row.aee_name_manual,
+                "category": body.category,
+                "remarks": row.aee_remarks,
+            },
+        )
+        await db.flush()
+        _record_activity(db, row, aee, event, {"category": body.category, "aee_name": row.aee_name_manual})
+        await _notify_ae_after_aee(db, row, aee, approved)
+        if approved:
+            await _notify_commissioners_after_aee(db, row, aee, feature)
+        return await _to_out(db, feature, row, anomaly, row.detection_mode)  # type: ignore[arg-type]
+
+    return await _run_in_workflow_db(aee.role, _apply)
 
 
+@router.post("/{feature_id}/commissioner-accept", response_model=WorkflowOut, summary="Commissioner accepts AEE-approved completed work")
 @router.post("/{feature_id}/commissioner-accept", response_model=WorkflowOut, summary="Commissioner accepts AEE-approved completed work")
 async def commissioner_accept(
     feature_id: uuid.UUID,
     body: CommissionerAcceptanceIn,
     commissioner: User = Depends(require_commissioner),
-    db: AsyncSession = Depends(get_db),
 ) -> WorkflowOut:
-    feature = await _load_feature(db, feature_id)
-    anomaly = await _load_anomaly(db, body.anomaly_id, lock=True)
-    row = await _load_verification(db, feature_id, anomaly.id, lock=True)
-    if row is None:
-        raise HTTPException(status_code=404, detail="AEE-approved work was not found")
-    if row.workflow_status != RemediationWorkflowStatus.AEE_APPROVED:
-        raise HTTPException(status_code=409, detail="This work is not waiting for Commissioner acceptance")
-    if row.aee_category != "GOOD" or row.aee_id is None:
-        raise HTTPException(status_code=422, detail="Only AEE-approved Good work may be accepted")
+    async def _apply(db: AsyncSession) -> WorkflowOut:
+        await _ensure_user_present(db, commissioner)
+        feature = await _load_feature(db, feature_id)
+        anomaly = await _load_anomaly(db, body.anomaly_id, lock=True)
+        row = await _load_verification(db, feature_id, anomaly.id, lock=True)
+        if row is None:
+            raise HTTPException(status_code=404, detail="AEE-approved work was not found")
+        if row.workflow_status != RemediationWorkflowStatus.AEE_APPROVED:
+            raise HTTPException(status_code=409, detail="This work is not waiting for Commissioner acceptance")
+        if row.aee_category != "GOOD" or row.aee_id is None:
+            raise HTTPException(status_code=422, detail="Only AEE-approved Good work may be accepted")
 
-    row.commissioner_decision = "ACCEPT"
-    row.commissioner_id = commissioner.id
-    row.commissioner_decided_at = datetime.now(timezone.utc)
-    row.commissioner_remarks = (body.remarks or "").strip() or None
-    row.workflow_status = RemediationWorkflowStatus.COMMISSIONER_ACCEPTED
-    row.current_condition = "GOOD"
-    anomaly.status = AnomalyStatus.RESOLVED
-    _append_history(
-        row,
-        event="COMMISSIONER_ACCEPTED",
-        actor=commissioner,
-        details={"remarks": row.commissioner_remarks},
-    )
-    await db.flush()
-    _record_activity(db, row, commissioner, "COMMISSIONER_ACCEPTED", {})
-    _notify_acceptance(db, row, commissioner)
-    return await _to_out(db, feature, row, anomaly, row.detection_mode)  # type: ignore[arg-type]
+        row.commissioner_decision = "ACCEPT"
+        row.commissioner_id = commissioner.id
+        row.commissioner_decided_at = datetime.now(timezone.utc)
+        row.commissioner_remarks = (body.remarks or "").strip() or None
+        row.workflow_status = RemediationWorkflowStatus.COMMISSIONER_ACCEPTED
+        row.current_condition = "GOOD"
+        anomaly.status = AnomalyStatus.RESOLVED
+        _append_history(
+            row,
+            event="COMMISSIONER_ACCEPTED",
+            actor=commissioner,
+            details={"remarks": row.commissioner_remarks},
+        )
+        await db.flush()
+        _record_activity(db, row, commissioner, "COMMISSIONER_ACCEPTED", {})
+        await _notify_acceptance(db, row, commissioner)
+        return await _to_out(db, feature, row, anomaly, row.detection_mode)  # type: ignore[arg-type]
+
+    return await _run_in_workflow_db(commissioner.role, _apply)
 
 
 async def _dashboard_items(
@@ -922,13 +997,15 @@ async def ae_tasks(
     summary="AEE-only remediation activity dashboard",
 )
 async def aee_activity(
-    _aee: User = Depends(require_aee),
-    db: AsyncSession = Depends(get_db),
+    aee: User = Depends(require_aee),
 ) -> list[WorkflowDashboardItem]:
-    return await _dashboard_items(
-        db,
-        PointVerification.field_submitter_id.is_not(None),
-        PointVerification.workflow_status.in_(list(_ACTIVE_WORKFLOW_STATUSES)),
+    return await _run_in_workflow_db(
+        aee.role,
+        lambda db: _dashboard_items(
+            db,
+            PointVerification.field_submitter_id.is_not(None),
+            PointVerification.workflow_status.in_(list(_ACTIVE_WORKFLOW_STATUSES)),
+        ),
     )
 
 
@@ -994,7 +1071,7 @@ async def remediation_inbox(
 @router.get("/updates", response_model=list[RemediationUpdateItem], summary="Current user's remediation notifications")
 async def remediation_updates(
     current_user: User = Depends(require_any),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_auth_db),
 ) -> list[RemediationUpdateItem]:
     rows = (
         await db.execute(
@@ -1069,7 +1146,7 @@ async def remediation_updates(
 async def mark_remediation_update_read(
     notification_id: uuid.UUID,
     current_user: User = Depends(require_any),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_auth_db),
 ) -> dict[str, bool]:
     notification = (
         await db.execute(
@@ -1219,16 +1296,19 @@ async def _stream_object(key: str | None, content_type: str | None) -> Response:
 async def remediation_evidence(
     verification_id: uuid.UUID,
     kind: str,
-    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_any),
 ) -> Response:
-    row = (await db.execute(select(PointVerification).where(PointVerification.id == verification_id))).scalar_one_or_none()
-    if row is None:
-        raise HTTPException(status_code=404, detail="Remediation record not found")
-    if kind == "before":
-        return await _stream_object(row.before_photo_key, row.before_photo_content_type)
-    if kind == "after":
-        return await _stream_object(row.after_photo_key, row.after_photo_content_type)
-    raise HTTPException(status_code=404, detail="Evidence type not found")
+    async def _load(db: AsyncSession) -> Response:
+        row = (await db.execute(select(PointVerification).where(PointVerification.id == verification_id))).scalar_one_or_none()
+        if row is None:
+            raise HTTPException(status_code=404, detail="Remediation record not found")
+        if kind == "before":
+            return await _stream_object(row.before_photo_key, row.before_photo_content_type)
+        if kind == "after":
+            return await _stream_object(row.after_photo_key, row.after_photo_content_type)
+        raise HTTPException(status_code=404, detail="Evidence type not found")
+
+    return await _run_in_workflow_db(current_user.role, _load)
 
 
 @router.get("/history-evidence/{verification_id}/{event_index}/{kind}", dependencies=[Depends(require_any)], summary="View historical field evidence")
@@ -1236,20 +1316,23 @@ async def remediation_history_evidence(
     verification_id: uuid.UUID,
     event_index: int,
     kind: str,
-    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_any),
 ) -> Response:
-    row = (await db.execute(select(PointVerification).where(PointVerification.id == verification_id))).scalar_one_or_none()
-    if row is None:
-        raise HTTPException(status_code=404, detail="Remediation record not found")
-    history = row.workflow_history or []
-    if event_index < 0 or event_index >= len(history):
-        raise HTTPException(status_code=404, detail="Evidence history entry not found")
-    entry = history[event_index]
-    if kind == "before":
-        return await _stream_object(entry.get("before_photo_key"), entry.get("before_photo_content_type"))
-    if kind == "after":
-        return await _stream_object(entry.get("after_photo_key"), entry.get("after_photo_content_type"))
-    raise HTTPException(status_code=404, detail="Evidence type not found")
+    async def _load(db: AsyncSession) -> Response:
+        row = (await db.execute(select(PointVerification).where(PointVerification.id == verification_id))).scalar_one_or_none()
+        if row is None:
+            raise HTTPException(status_code=404, detail="Remediation record not found")
+        history = row.workflow_history or []
+        if event_index < 0 or event_index >= len(history):
+            raise HTTPException(status_code=404, detail="Evidence history entry not found")
+        entry = history[event_index]
+        if kind == "before":
+            return await _stream_object(entry.get("before_photo_key"), entry.get("before_photo_content_type"))
+        if kind == "after":
+            return await _stream_object(entry.get("after_photo_key"), entry.get("after_photo_content_type"))
+        raise HTTPException(status_code=404, detail="Evidence type not found")
+
+    return await _run_in_workflow_db(current_user.role, _load)
 
 
 @router.get(
@@ -1260,28 +1343,31 @@ async def remediation_history_evidence(
 )
 async def get_workflow_by_id(
     verification_id: uuid.UUID,
-    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_any),
 ) -> WorkflowOut:
-    row = (
-        await db.execute(select(PointVerification).where(PointVerification.id == verification_id))
-    ).scalar_one_or_none()
-    if row is None:
-        raise HTTPException(
-            status_code=404,
-            detail="This approval item no longer exists or the notification is outdated.",
-        )
-    if row.anomaly_id is None:
-        raise HTTPException(
-            status_code=409,
-            detail="This approval item is missing its AI detection reference and cannot be opened.",
-        )
+    async def _load(db: AsyncSession) -> WorkflowOut:
+        row = (
+            await db.execute(select(PointVerification).where(PointVerification.id == verification_id))
+        ).scalar_one_or_none()
+        if row is None:
+            raise HTTPException(
+                status_code=404,
+                detail="This approval item no longer exists or the notification is outdated.",
+            )
+        if row.anomaly_id is None:
+            raise HTTPException(
+                status_code=409,
+                detail="This approval item is missing its AI detection reference and cannot be opened.",
+            )
 
-    feature = await _load_feature(db, row.feature_id)
-    anomaly = await _load_anomaly(db, row.anomaly_id)
-    detection_mode = _ANOMALY_TO_MODE.get(anomaly.anomaly_type)
-    if detection_mode is None:
-        raise HTTPException(status_code=409, detail="This AI detection type is not supported by remediation.")
-    return await _to_out(db, feature, row, anomaly, detection_mode)
+        feature = await _load_feature(db, row.feature_id)
+        anomaly = await _load_anomaly(db, row.anomaly_id)
+        detection_mode = _ANOMALY_TO_MODE.get(anomaly.anomaly_type)
+        if detection_mode is None:
+            raise HTTPException(status_code=409, detail="This AI detection type is not supported by remediation.")
+        return await _to_out(db, feature, row, anomaly, detection_mode)
+
+    return await _run_in_workflow_db(current_user.role, _load)
 
 
 @router.get("/{feature_id}/workflow", response_model=WorkflowOut, dependencies=[Depends(require_any)], summary="Read remediation workflow and complete history")
@@ -1289,10 +1375,15 @@ async def get_workflow(
     feature_id: uuid.UUID,
     anomaly_id: uuid.UUID = Query(...),
     detection_mode: DetectionMode = Query(...),
-    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_any),
 ) -> WorkflowOut:
-    feature = await _load_feature(db, feature_id)
-    anomaly = await _load_anomaly(db, anomaly_id)
-    _validate_ai_candidate(feature, anomaly, detection_mode)
-    row = await _load_verification(db, feature_id, anomaly.id)
-    return await _to_out(db, feature, row, anomaly, detection_mode)
+    async def _load(db: AsyncSession) -> WorkflowOut:
+        feature = await _load_feature(db, feature_id)
+        anomaly = await _load_anomaly(db, anomaly_id)
+        _validate_ai_candidate(feature, anomaly, detection_mode)
+        row = await _load_verification(db, feature_id, anomaly.id)
+        return await _to_out(db, feature, row, anomaly, detection_mode)
+
+    return await _run_in_workflow_db(current_user.role, _load)
+
+

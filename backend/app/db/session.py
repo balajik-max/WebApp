@@ -86,10 +86,28 @@ def _get_role_engine(role: str):
     return _role_engines[role]
 
 
+def role_engines_distinct_from_auth() -> dict[str, "AsyncEngine"]:
+    """Engines for every role whose database URL differs from the auth
+    database — i.e. the actual isolated per-role databases that need their
+    own copy of schema/migrations applied (Base.metadata.create_all only
+    ever targets whichever engine it's given explicitly)."""
+    _init_role_db_map()
+    return {
+        role: _get_role_engine(role)
+        for role, db_url in _ROLE_DB_MAP.items()
+        if db_url != _settings.database_url
+    }
+
+
 def _get_role_session_factory(role: str) -> async_sessionmaker[AsyncSession]:
     """Get the session factory for a specific role's database."""
     _get_role_engine(role)
     return _role_sessions[role]
+
+
+def get_role_session_factory(role: str) -> async_sessionmaker[AsyncSession]:
+    """Public accessor for a role database session factory."""
+    return _get_role_session_factory(role)
 
 
 def _extract_role_from_request(request: Request) -> str | None:

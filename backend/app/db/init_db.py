@@ -48,15 +48,20 @@ from app.models import (  # noqa: F401
 log = logging.getLogger("davangere.db.init")
 
 
-async def _ensure_spatial_index() -> None:
-    """Create the named spatial + JSONB indexes required by the spec.
+async def _ensure_spatial_index(target_engine=None) -> None:
+    """Create the named spatial + JSONB indexes required by the spec, plus
+    every additive migration since (property tax, pothole costing, public
+    portal, KPWD SR sync, ...). All statements are idempotent
+    (IF NOT EXISTS / ON CONFLICT DO NOTHING), so this is safe to run
+    against any database that has the base ORM tables — including each
+    role-specific database, not just the auth database.
 
     * `idx_features_geom` — GIST on features.geom for instant viewport filtering.
     * `idx_features_attributes_gin` — GIN on features.attributes for
       unstructured JSONB queries (`?`, `@>`, `#>` operators).
     """
     settings = get_settings()
-    async with engine.begin() as conn:
+    async with (target_engine or engine).begin() as conn:
         await conn.execute(
             text(
                 "CREATE INDEX IF NOT EXISTS idx_features_geom "
@@ -591,9 +596,37 @@ async def init_database() -> None:
     async with engine.begin() as conn:
         await conn.execute(text("CREATE EXTENSION IF NOT EXISTS postgis;"))
         await conn.run_sync(Base.metadata.create_all)
+        # Widen datasets.size_bytes to BIGINT so a recorded byte size up to
+        # 10 GB fits. Base.metadata.create_all only creates *missing* tables,
+        # so existing deployments need this additive ALTER. Idempotent.
+        await conn.execute(
+            text("ALTER TABLE datasets ALTER COLUMN size_bytes TYPE BIGINT;")
+        )
 
     # 2. Ensure named spatial index exists (spec requirement).
     await _ensure_spatial_index()
+
+    # 2b. The role-routed `get_db` dependency sends every admin/architect/
+    # commissioner/aee/ae/mla request to its own isolated database, not the
+    # auth database — so any table or column only ever created here (via
+    # Base.metadata.create_all against the auth engine, or the raw DDL in
+    # _ensure_spatial_index) silently doesn't exist for role-scoped
+    # requests. Mirror both steps into every role database so they carry
+    # the same schema. Idempotent, so safe on every startup.
+    from app.db.session import role_engines_distinct_from_auth
+
+    for role, role_engine in role_engines_distinct_from_auth().items():
+        try:
+            async with role_engine.begin() as conn:
+                await conn.execute(text("CREATE EXTENSION IF NOT EXISTS postgis;"))
+                await conn.run_sync(Base.metadata.create_all)
+                # Mirror the datasets.size_bytes widening into role databases.
+                await conn.execute(
+                    text("ALTER TABLE datasets ALTER COLUMN size_bytes TYPE BIGINT;")
+                )
+            await _ensure_spatial_index(role_engine)
+        except Exception:  # noqa: BLE001
+            log.exception("Schema sync failed for role database: %s", role)
 
     # 3. Seed all colleague roles and the new read-only MLA role.
     async with SessionLocal() as session:
