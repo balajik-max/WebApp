@@ -1,7 +1,7 @@
 import { apiGet } from "./api";
 import type { FeatureCollectionResponse, FeatureFilter, UrbanFeature } from "./types";
 
-export const VIEWPORT_FEATURE_LIMIT = 5000;
+export const VIEWPORT_FEATURE_LIMIT = 50000;
 
 export function buildFeatureQuery(
   bbox: [number, number, number, number],

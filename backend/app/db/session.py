@@ -73,8 +73,8 @@ def _get_role_engine(role: str):
             db_url,
             echo=False,
             pool_pre_ping=True,
-            pool_size=5,
-            max_overflow=10,
+            pool_size=15,
+            max_overflow=25,
             future=True,
         )
         _role_sessions[role] = async_sessionmaker(

@@ -68,6 +68,7 @@ from __future__ import annotations
 
 import re
 import uuid
+from datetime import datetime, timezone
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -779,6 +780,23 @@ async def _detect_powerline_proximity(
 
 
 async def run_spatial_audit(dataset_id: uuid.UUID, db: AsyncSession) -> AuditSummary:
+    # A single unbroken connection/transaction spanning the WHOLE detector
+    # suite (worst case ~25+ minutes on a large/complex ward, dominated by
+    # the road-width-narrowing geometry scan) turned out to be unreliable in
+    # practice: the connection would go dead partway through with "the
+    # underlying connection is closed" right as the final commit tried to
+    # run — losing the ENTIRE run's computation. Postgres's own server log
+    # showed no corresponding termination for that connection, which points
+    # at the connection getting silently dropped by the container network
+    # layer during a long, low-traffic-but-logically-active period (a known
+    # class of issue with Docker Desktop's virtualized networking on
+    # Windows) rather than anything Postgres or this app did. Splitting the
+    # work into a few short-lived transactions, each committing before
+    # moving on, means no single connection needs to survive more than a few
+    # minutes, and a mid-run failure only loses that one phase's work
+    # instead of the whole audit.
+    run_started_at = datetime.now(timezone.utc)
+
     dataset = (
         await db.execute(select(Dataset).where(Dataset.id == dataset_id))
     ).scalar_one_or_none()
@@ -786,49 +804,89 @@ async def run_spatial_audit(dataset_id: uuid.UUID, db: AsyncSession) -> AuditSum
         raise ValueError(f"Dataset {dataset_id} not found")
     ward = dataset.ward
 
-    # Upgrade legacy road taxonomy inside the same audit transaction. This is
-    # idempotent and deterministic, and lets old persistent volumes participate
-    # in Road AI Detection without requiring a dataset re-upload.
-    await backfill_road_classification(db)
-    await backfill_surface_issue_classes(dataset_id, db)
-
-    # Preserve every finding already attached to any remediation workflow
-    # across AI re-runs on the SAME dataset. The earlier implementation only
-    # checked legacy Architect/Admin status values, which could delete an
-    # anomaly used by an active AE/AEE/Commissioner task. A linked workflow
-    # record is now the authoritative protection signal regardless of stage.
-    protected_rows = (
-        await db.execute(
-            select(SpatialAnomaly)
-            .join(PointVerification, PointVerification.anomaly_id == SpatialAnomaly.id)
-            .where(SpatialAnomaly.dataset_id == dataset_id)
+    async def try_lock() -> bool:
+        # One audit run per dataset at a time, enforced across BOTH backend
+        # worker processes (a plain in-memory lock only protects one process
+        # — this deployment runs multiple uvicorn workers) via a Postgres
+        # transaction-scoped advisory lock. Without this, concurrent
+        # triggers for the same dataset (a stale client retry, two browser
+        # tabs, the frontend's own re-run-on-dataset-switch effect firing
+        # twice) each run the full detector suite at the same time, piling
+        # up redundant multi-minute work. Re-checked at the start of each
+        # phase below (a transaction-scoped lock releases on every commit),
+        # so if a concurrent run does slip in during the brief gap between
+        # phases, this run simply stops adding more phases rather than
+        # racing it — safe either way, since every insert this run has
+        # already made is protected from the final cleanup delete by
+        # run_started_at below, and re-running the audit is always safe.
+        await db.execute(text("SET LOCAL idle_in_transaction_session_timeout = 0"))
+        result = await db.execute(
+            text("SELECT pg_try_advisory_xact_lock(hashtext(CAST(:dataset_id AS text)))"),
+            {"dataset_id": str(dataset_id)},
         )
-    ).scalars().all()
-    protected_ids = {row.id for row in protected_rows}
-    protected_keys = {
-        (row.anomaly_type, primary_id)
-        for row in protected_rows
-        if (primary_id := _primary_feature_id(row)) is not None
-    }
+        return result.scalar_one()
 
-    # Idempotent re-run: clear only unprotected open/reviewing findings.
-    # Resolved/dismissed and remediation-linked rows are retained.
-    delete_stmt = delete(SpatialAnomaly).where(
-        SpatialAnomaly.dataset_id == dataset_id,
-        SpatialAnomaly.status.in_([AnomalyStatus.OPEN, AnomalyStatus.REVIEWING]),
-    )
-    if protected_ids:
-        delete_stmt = delete_stmt.where(SpatialAnomaly.id.notin_(protected_ids))
-    await db.execute(delete_stmt)
+    protected_ids: set[uuid.UUID] = set()
+    protected_keys: set[tuple[AnomalyType, uuid.UUID]] = set()
 
-    await _detect_pole_redundancy(dataset_id, ward, db)
-    await _detect_drain_encroachment(dataset_id, ward, db)
-    await _detect_manhole_status(dataset_id, ward, db)
-    await detect_road_width_narrowing(dataset_id, ward, db)
-    await _detect_powerline_proximity(dataset_id, ward, db)
-    await detect_pothole_status(dataset_id, ward, db)
-    await detect_standing_water_status(dataset_id, ward, db)
-    await db.flush()
+    if await try_lock():
+        # Upgrade legacy road taxonomy inside the same audit transaction. This is
+        # idempotent and deterministic, and lets old persistent volumes participate
+        # in Road AI Detection without requiring a dataset re-upload.
+        await backfill_road_classification(db)
+        await backfill_surface_issue_classes(dataset_id, db)
+
+        # Preserve every finding already attached to any remediation workflow
+        # across AI re-runs on the SAME dataset. The earlier implementation only
+        # checked legacy Architect/Admin status values, which could delete an
+        # anomaly used by an active AE/AEE/Commissioner task. A linked workflow
+        # record is now the authoritative protection signal regardless of stage.
+        protected_rows = (
+            await db.execute(
+                select(SpatialAnomaly)
+                .join(PointVerification, PointVerification.anomaly_id == SpatialAnomaly.id)
+                .where(SpatialAnomaly.dataset_id == dataset_id)
+            )
+        ).scalars().all()
+        protected_ids = {row.id for row in protected_rows}
+        protected_keys = {
+            (row.anomaly_type, primary_id)
+            for row in protected_rows
+            if (primary_id := _primary_feature_id(row)) is not None
+        }
+
+        # Phase 1: every FAST detector (each only reads `features` — real
+        # geometry — and stages its new rows via db.add_all(), buffered in
+        # the session, not sent to Postgres yet).
+        await _detect_pole_redundancy(dataset_id, ward, db)
+        await _detect_drain_encroachment(dataset_id, ward, db)
+        await _detect_manhole_status(dataset_id, ward, db)
+        await _detect_powerline_proximity(dataset_id, ward, db)
+        await detect_pothole_status(dataset_id, ward, db)
+        await detect_standing_water_status(dataset_id, ward, db)
+        await db.commit()
+
+        # Phase 2: the one genuinely slow detector, isolated in its own
+        # transaction so its multi-minute runtime can't compound with
+        # anything else's.
+        if await try_lock():
+            await detect_road_width_narrowing(dataset_id, ward, db)
+            await db.commit()
+
+    if await try_lock():
+        # Idempotent re-run: clear only unprotected open/reviewing findings
+        # that existed BEFORE this run started — never something this run
+        # itself just inserted (in an earlier phase, already committed).
+        # Resolved/dismissed and remediation-linked rows are retained too.
+        delete_stmt = delete(SpatialAnomaly).where(
+            SpatialAnomaly.dataset_id == dataset_id,
+            SpatialAnomaly.status.in_([AnomalyStatus.OPEN, AnomalyStatus.REVIEWING]),
+            SpatialAnomaly.created_at < run_started_at,
+        )
+        if protected_ids:
+            delete_stmt = delete_stmt.where(SpatialAnomaly.id.notin_(protected_ids))
+        await db.execute(delete_stmt)
+        await db.flush()
 
     if protected_keys:
         generated_rows = (

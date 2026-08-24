@@ -120,19 +120,23 @@ services:
     env_file:
       - .env
     environment:
-      # Compose-scoped overrides so in-network hostnames win regardless of
-      # what the operator set in `.env` (which may target localhost for
-      # bare-metal runs).
-      DATABASE_URL:    postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@192.168.10.81:4594/davangere_auth
+      # LOCAL-RUN OVERRIDE: this branch normally points these at a shared
+      # remote Postgres server (192.168.10.81:4594, multi-role databases) —
+      # not reachable/authenticated from this machine. Redirected to the
+      # project's own local `db` service (single davangere_spatial_db,
+      # matching how this project ran before the remote multi-DB setup was
+      # introduced) so it's fully self-contained for local development.
+      # Revert to the 192.168.10.81 addresses if/when running against the
+      # real shared server with real credentials.
+      DATABASE_URL:    postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
       MINIO_ENDPOINT:  http://storage:9000
-      OLLAMA_BASE_URL: http://host.docker.internal:11435
-      # Multi-database: Role-specific databases on 192.168.10.81:4594
-      DB_ADMIN:        postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@192.168.10.81:4594/davangere_admin
-      DB_ARCHITECT:    postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@192.168.10.81:4594/davangere_architect
-      DB_COMMISSIONER: postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@192.168.10.81:4594/davangere_commissioner
-      DB_AEE:          postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@192.168.10.81:4594/davangere_aee
-      DB_AE:           postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@192.168.10.81:4594/davangere_ae
-      DB_MLA:          postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@192.168.10.81:4594/davangere_mla
+      OLLAMA_BASE_URL: http://ai_engine:11434
+      DB_ADMIN:        postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
+      DB_ARCHITECT:    postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
+      DB_COMMISSIONER: postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
+      DB_AEE:          postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
+      DB_AE:           postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
+      DB_MLA:          postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
     ports:
       - "${BACKEND_PORT:-8001}:8001"
     volumes:
@@ -198,7 +202,10 @@ services:
       - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
       - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
     ports:
-      - "3000:3000"
+      # Was hardcoded to 3000:3000 — directly conflicts with the app
+      # frontend's own port (${FRONTEND_PORT:-3000}) on the same host.
+      # Moved off the app's port; override with GRAFANA_PORT if needed.
+      - "${GRAFANA_PORT:-3001}:3000"
     depends_on:
       - prometheus
     networks: [urban_net]

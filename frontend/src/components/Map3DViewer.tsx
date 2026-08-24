@@ -518,6 +518,72 @@ function buildFrondGeometry(length: number, width: number, droop: number): THREE
   return geo;
 }
 
+// A banana leaf is NOT a tapering palm frond — it's one broad, flat, oval
+// blade (narrow only right at the base where it meets the midrib, wide for
+// most of its length, rounded/blunt at the tip) that droops increasingly
+// sharply toward its outer half under its own weight. Reusing the frond
+// taper-to-a-point shape read as "small stubby palm"; this profile is what
+// actually makes it recognizable as a banana leaf.
+function buildBananaLeafGeometry(length: number, width: number, droop: number): THREE.BufferGeometry {
+  const segments = 10;
+  const geo = new THREE.PlaneGeometry(width, length, 1, segments);
+  geo.translate(0, length / 2, 0);
+  const pos = geo.attributes.position;
+  for (let i = 0; i < pos.count; i++) {
+    const t = pos.getY(i) / length; // 0 at base, 1 at the tip
+    // Oval profile: narrow at the base, widest around the middle, rounded
+    // off (not pointed) at the tip.
+    const widthMul = Math.pow(Math.sin(Math.min(t, 0.98) * Math.PI * 0.98), 0.6);
+    pos.setX(i, pos.getX(i) * widthMul);
+    // Mostly flat near the base, then an increasingly sharp droop toward
+    // the tip — a banana leaf arches over and hangs, it doesn't gently curl.
+    pos.setZ(i, pos.getZ(i) - droop * t * t * t);
+  }
+  pos.needsUpdate = true;
+  geo.rotateX(-Math.PI / 2);
+  geo.computeVertexNormals();
+  return geo;
+}
+
+// A flat, fixed-width road ribbon that follows each point's REAL elevation
+// exactly — unlike a TubeGeometry flattened via geo.scale(1, 0.12, 1) after
+// the fact, which squashes the path's own baked-in elevation changes by that
+// same 0.12 factor along with the tube's cross-section (fine on gentle
+// terrain, but visibly flattens a real hilly ward's roads to a fraction of
+// their true relief, unlike buildings which always sit at their exact real
+// height). Each cross-section offset stays in the horizontal (X/Z) plane
+// only, so the ribbon naturally banks along a slope exactly like a real
+// road, with no vertical scaling of any kind.
+function buildFlatRoadRibbon(points: THREE.Vector3[], halfWidth: number): THREE.BufferGeometry {
+  const left: THREE.Vector3[] = [];
+  const right: THREE.Vector3[] = [];
+  for (let i = 0; i < points.length; i++) {
+    const prev = points[Math.max(0, i - 1)];
+    const next = points[Math.min(points.length - 1, i + 1)];
+    let dx = next.x - prev.x, dz = next.z - prev.z;
+    const len = Math.hypot(dx, dz);
+    if (len < 1e-6) { dx = 1; dz = 0; } else { dx /= len; dz /= len; }
+    const px = -dz, pz = dx; // perpendicular, horizontal plane only
+    const p = points[i];
+    left.push(new THREE.Vector3(p.x + px * halfWidth, p.y, p.z + pz * halfWidth));
+    right.push(new THREE.Vector3(p.x - px * halfWidth, p.y, p.z - pz * halfWidth));
+  }
+  const positions: number[] = [];
+  for (let i = 0; i < points.length; i++) {
+    positions.push(left[i].x, left[i].y, left[i].z, right[i].x, right[i].y, right[i].z);
+  }
+  const indices: number[] = [];
+  for (let i = 0; i < points.length - 1; i++) {
+    const a = i * 2, b = i * 2 + 1, c = (i + 1) * 2, d = (i + 1) * 2 + 1;
+    indices.push(a, c, b, b, c, d);
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
+  geo.setIndex(indices);
+  geo.computeVertexNormals();
+  return geo;
+}
+
 // Rich per-object detail payload — mirrors what the 2D Map Canvas's own
 // HoverTooltip shows (color swatch, category, real surveyed attributes),
 // plus the real lon/lat, so a click in the 3D view gives the exact same
@@ -675,6 +741,34 @@ function buildGenericFeature(
           })
         );
         group.add(mesh);
+      } else if (has("road", "carriageway", "pavement", "highway", "street", "footpath", "sidewalk")) {
+        // Paved road/footpath surface polygon. A real survey often digitizes
+        // the WHOLE road network's paved edges as one single polygon (seen in
+        // this data: one Road_PG feature alone has 47,000+ vertices spanning
+        // a quarter of a square kilometre) — an outline that is long, thin,
+        // and branches at every junction. Filling that shape's interior via
+        // triangulation (THREE.ShapeUtils / earcut) is fragile at this scale
+        // and complexity: it does not reliably respect thin, deeply-branching
+        // boundaries and can produce one huge stray solid fill instead of the
+        // real thin network. Tracing the boundary as a flat terrain-following
+        // ribbon has no such failure mode (it just follows real points along
+        // a path) and reproduces the same thin road-network look.
+        const loop = ring[0][0] === ring[ring.length - 1][0] && ring[0][1] === ring[ring.length - 1][1] ? ring : [...ring, ring[0]];
+        // Resample every ~3 m so the ribbon follows real hilly terrain relief
+        // continuously between the original survey vertices, not just at
+        // them — a no-op for already-dense rings (like the 47,000-point one
+        // above), since densifyLine only adds points where a segment is
+        // longer than the step.
+        const densified = densifyLine(loop, projector, 3);
+        const pts = densified.map(([lon, lat]) => {
+          const [x, z] = projector.toLocal(lon, lat);
+          return new THREE.Vector3(x, elevAt(lon, lat) + 0.4, z);
+        });
+        if (pts.length >= 2) {
+          const geo = buildFlatRoadRibbon(pts, 1.4);
+          const mesh = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ color: colorObj, roughness: 0.95, side: THREE.DoubleSide }));
+          group.add(mesh);
+        }
       } else if (has("fence", "wall", "hedge", "boundary", "compound")) {
         // Wall / fence / boundary: a low solid extrusion with a distinct cap.
         const mesh = buildBuildingMesh(ring, vary(2.2, 0.4), projector, elevAt, false, color);
@@ -708,31 +802,41 @@ function buildGenericFeature(
       for (const rawLine of lines) {
         if (rawLine.length < 2) continue;
         const isPipeLike = has("water", "river", "canal", "drain", "pipe", "sewer", "culvert", "channel");
+        const isRoadLike = has("road", "street", "path", "track", "lane", "footpath", "carriageway", "edge", "rail", "railway");
+        // "demarcator" catches Property_Limits_Demarcator — a real surveyed
+        // property-line feature, not an underground utility. It matched none
+        // of these keywords before ("demarcator" isn't "boundary"), so it
+        // fell through to the buried-cable default below and was invisible
+        // outside Underground View.
+        const isFenceLike = has("fence", "wall", "hedge", "boundary", "demarcator", "compound");
         // Resample every ~3 m so the ribbon follows the real terrain relief
         // continuously instead of only at the sparse original survey points.
         const line = densifyLine(rawLine, projector, 3);
         const pts = line.map(([lon, lat]) => {
           const [x, z] = projector.toLocal(lon, lat);
           // Buried utilities sit below the terrain; surface features stay on it.
-          // Road ribbons are flattened via geo.scale(1, 0.12, 1) below —
-          // radius 1.4 * 0.12 = 0.168 m half-thickness, so a lift smaller than
-          // that leaves the ribbon's underside below the terrain (the "road
-          // sinks into the ground" bug). 0.4 m clears it with margin.
           const y = isPipeLike
             ? elevAt(lon, lat) - 2.2
-            : has("road", "street", "path", "track", "lane", "footpath", "carriageway", "edge", "rail", "railway")
+            : isRoadLike
             ? elevAt(lon, lat) + 0.4
+            : isFenceLike
+            ? elevAt(lon, lat) + 0.05
             : elevAt(lon, lat) - 1.8;
           return new THREE.Vector3(x, y, z);
         });
         const curve = new THREE.CatmullRomCurve3(pts);
         const mat = new THREE.MeshStandardMaterial({ color: colorObj, roughness: 0.7, metalness: 0.1 });
-        if (has("road", "street", "path", "track", "lane", "footpath", "carriageway", "edge", "rail", "railway")) {
-          // Road / path: a flat ribbon just above the terrain.
-          const geo = new THREE.TubeGeometry(curve, Math.max(2, pts.length * 3), 1.4, 6, false);
-          geo.scale(1, 0.12, 1);
-          group.add(new THREE.Mesh(geo, mat));
-        } else if (has("fence", "wall", "hedge", "boundary")) {
+        if (isRoadLike) {
+          // Road / path: a flat ribbon that follows each point's REAL
+          // elevation exactly (no vertical scaling) — a TubeGeometry
+          // flattened via geo.scale(1, 0.12, 1) squashes the path's own
+          // baked-in elevation changes by that same factor along with the
+          // tube's cross-section, visibly flattening a hilly ward's roads
+          // to a fraction of their true relief, unlike buildings which
+          // always sit at their exact real height.
+          const geo = buildFlatRoadRibbon(pts, 1.4);
+          group.add(new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ color: colorObj, roughness: 0.7, metalness: 0.1, side: THREE.DoubleSide })));
+        } else if (isFenceLike) {
           const geo = new THREE.TubeGeometry(curve, Math.max(2, pts.length * 3), 0.18, 6, false);
           group.add(new THREE.Mesh(geo, mat));
         } else if (isPipeLike) {
@@ -2242,6 +2346,54 @@ export function Map3DViewer({ features, classMap, anomalies, datasets, activeDat
         });
         for (const d of drains) {
           const geom = d.geometry;
+          if (geom.type === "Point") {
+            // A generic drainage-network point (e.g. a survey/access marker
+            // with no channel geometry) — a small flat disc instead of
+            // silently rendering nothing.
+            const [lon, lat] = geom.coordinates;
+            const [x, z] = projector.toLocal(lon, lat);
+            const disc = new THREE.Mesh(
+              new THREE.CylinderGeometry(0.4, 0.4, 0.12, 12),
+              new THREE.MeshStandardMaterial({ color: new THREE.Color(sceneColor(d.properties.category)), roughness: 0.6 }),
+            );
+            disc.position.set(x, elevAt(lon, lat) - 0.05, z);
+            disc.userData = featureDetail(d, "drain", sceneColor(d.properties.category), lon, lat);
+            gfor(d).add(disc);
+            clickable.push(disc);
+            continue;
+          }
+          if (geom.type === "Polygon" || geom.type === "MultiPolygon") {
+            // A drain/channel surveyed as a polygon footprint (e.g. an open
+            // storm-water drain's paved channel area), not a centerline —
+            // trace its boundary as a flat terrain-following ribbon, same
+            // technique as the road-surface polygons, since triangulating a
+            // real GIS polygon's interior is fragile at scale/complexity and
+            // this canonical class had NO polygon handling at all before
+            // (silently dropped: Polygon didn't match Point or Line here, and
+            // Drainage_Asset is in HANDLED_CANONICAL so the generic fallback
+            // skipped it too — a real, previously-invisible category).
+            const rings: [number, number][][] =
+              geom.type === "Polygon"
+                ? [geom.coordinates[0] as [number, number][]]
+                : (geom.coordinates as unknown as number[][][][]).map((poly) => poly[0] as [number, number][]);
+            const drainSurfaceColor = new THREE.Color(sceneColor(d.properties.category));
+            for (const dring of rings) {
+              if (dring.length < 3) continue;
+              const loop = dring[0][0] === dring[dring.length - 1][0] && dring[0][1] === dring[dring.length - 1][1] ? dring : [...dring, dring[0]];
+              const densified = densifyLine(loop, projector, 3);
+              const dpts = densified.map(([lon, lat]) => {
+                const [x, z] = projector.toLocal(lon, lat);
+                return new THREE.Vector3(x, elevAt(lon, lat) + 0.05, z);
+              });
+              if (dpts.length < 2) continue;
+              const dgeo = buildFlatRoadRibbon(dpts, 0.8);
+              const dmesh = new THREE.Mesh(dgeo, new THREE.MeshStandardMaterial({ color: drainSurfaceColor, roughness: 0.9, side: THREE.DoubleSide }));
+              dmesh.userData = featureDetail(d, "drain", sceneColor(d.properties.category), dring[0][0], dring[0][1]);
+              gfor(d).add(dmesh);
+              clickable.push(dmesh);
+            }
+            continue;
+          }
           const lines: [number, number][][] =
             geom.type === "LineString"
               ? [geom.coordinates]
@@ -2666,11 +2818,31 @@ export function Map3DViewer({ features, classMap, anomalies, datasets, activeDat
             raw.includes("sewage") || raw.includes("sewer") || raw.includes("pipe") ||
             raw.includes("drain") || raw.includes("culvert");
           const geom = r.geometry;
+          if (geom.type === "Point") {
+            // A generic road-related point feature (e.g. a survey marker) —
+            // no line geometry to ribbon, so drop a small flat disc instead
+            // of silently rendering nothing.
+            const [lon, lat] = geom.coordinates;
+            const [x, z] = projector.toLocal(lon, lat);
+            const disc = new THREE.Mesh(
+              new THREE.CylinderGeometry(0.5, 0.5, 0.08, 12),
+              new THREE.MeshStandardMaterial({ color: segColor, roughness: 0.9 }),
+            );
+            disc.position.set(x, elevAt(lon, lat) + 0.1, z);
+            disc.userData = featureDetail(r, "road", sceneColor(r.properties.category), lon, lat);
+            gfor(r).add(disc);
+            clickable.push(disc);
+            continue;
+          }
           const lines: [number, number][][] =
             geom.type === "LineString"
               ? [geom.coordinates]
               : geom.type === "MultiLineString"
               ? (geom.coordinates as [number, number][][])
+              : geom.type === "Polygon"
+              ? (geom.coordinates as [number, number][][]).slice(0, 1)
+              : geom.type === "MultiPolygon"
+              ? (geom.coordinates as [number, number][][][]).flatMap((poly) => poly.slice(0, 1))
               : [];
           for (const rawLine of lines) {
             if (rawLine.length < 2) continue;
@@ -2685,15 +2857,11 @@ export function Map3DViewer({ features, classMap, anomalies, datasets, activeDat
               // Sewage / pipe segments are buried utilities — sit them below
               // the terrain surface (deeper than power/water) so they show
               // through the transparent DTM as underground infrastructure.
-              // Road ribbons are flattened via geo.scale(1, 0.12, 1) below —
-              // radius 1.6 * 0.12 = 0.192 m half-thickness, so a +0.15 m lift
-              // left the ribbon's underside ~0.04 m BELOW the terrain (the
-              // "road sinks into the ground" bug). 0.4 m clears it with margin.
               return new THREE.Vector3(x, elevAt(lon, lat) + (isPipe ? -3.2 : 0.4), z);
             });
-            const curve = new THREE.CatmullRomCurve3(pts);
             const [firstLon, firstLat] = line[0];
             if (isPipe) {
+              const curve = new THREE.CatmullRomCurve3(pts);
               const geo = new THREE.TubeGeometry(curve, Math.max(2, pts.length * 3), 0.5, 10, false);
               const mat = new THREE.MeshStandardMaterial({ color: segColor, roughness: 0.5, metalness: 0.2 });
               const mesh = new THREE.Mesh(geo, mat);
@@ -2701,10 +2869,15 @@ export function Map3DViewer({ features, classMap, anomalies, datasets, activeDat
               gfor(r).add(mesh);
               clickable.push(mesh);
             } else {
-              const geo = new THREE.TubeGeometry(curve, Math.max(2, pts.length * 3), 1.6, 6, false);
-              // Flatten the tube into a road ribbon by scaling Y.
-              geo.scale(1, 0.12, 1);
-              const mat = new THREE.MeshStandardMaterial({ color: segColor, roughness: 0.95 });
+              // A flat ribbon that follows each point's REAL elevation
+              // exactly (no vertical scaling) — a TubeGeometry flattened via
+              // geo.scale(1, 0.12, 1) squashes the path's own baked-in
+              // elevation changes by that same factor along with the tube's
+              // cross-section, visibly flattening a hilly ward's roads to a
+              // fraction of their true relief, unlike buildings which always
+              // sit at their exact real height.
+              const geo = buildFlatRoadRibbon(pts, 1.6);
+              const mat = new THREE.MeshStandardMaterial({ color: segColor, roughness: 0.95, side: THREE.DoubleSide });
               const mesh = new THREE.Mesh(geo, mat);
               mesh.userData = featureDetail(r, "road", sceneColor(r.properties.category), firstLon, firstLat);
               gfor(r).add(mesh);
@@ -3024,13 +3197,98 @@ export function Map3DViewer({ features, classMap, anomalies, datasets, activeDat
           }
         }
 
-        // Real surveyed vegetation (trees) — a realistic coconut-style tree at
-        // each surveyed point: a tall slender trunk with a crown of drooping
-        // fronds, tinted with the same category color used on the 2D map.
-        // Heights vary a little so the grove looks natural rather than cloned.
+        // Real surveyed vegetation (trees) — a realistic tree at each
+        // surveyed point, tinted with the same category color used on the
+        // 2D map. Heights vary a little so the grove looks natural rather
+        // than cloned.
+        //
+        // Rendered via InstancedMesh (one batch per raw-category + species
+        // pair, so the Layers panel can still toggle each raw category
+        // independently): a dense ward can carry tens of thousands of trees,
+        // and a one-Mesh-plus-one-Material-per-part-per-tree approach (~17
+        // unique draw calls per tree) is the single biggest cause of 3D
+        // pan/zoom lag on those wards. Geometry and material are shared
+        // across every tree in a batch; only each instance's transform (and,
+        // for selection highlight, its instance color) varies per tree.
+        //
+        // Species (e.g. "Coconut Tree" vs "Arecanut Tree" vs "Banana Tree")
+        // often isn't its own GIS layer/category — some surveys fold every
+        // species into one "Tree" category and record the real species in a
+        // "Name" attribute instead. Read that so whatever species a tree is
+        // actually classified as, ITS shape is what renders — not every
+        // "Tree" feature defaulting to one generic coconut-palm look.
         const vegetation = features.filter((f) => effectiveClassMap[f.properties.category ?? ""] === "Vegetation");
-        // Built once and reused (scaled) for every frond on every tree.
-        const frondGeo = buildFrondGeometry(4.2, 0.6, 1.6);
+        type TreeKind = "coconut" | "areca" | "palm" | "banana" | "other";
+        const classifyTreeKind = (species: string): TreeKind => {
+          const s = species.toLowerCase();
+          if (s.includes("areca")) return "areca";
+          if (s.includes("banana")) return "banana";
+          if (s.includes("coconut")) return "coconut";
+          if (s.includes("palm")) return "palm"; // generic/ornamental palm, distinct from a named coconut palm
+          return "other"; // unspecified/"Other Tree" — a plain broadleaf tree, not a palm at all
+        };
+        // Realistic per-species height range (metres) — a banana plant is
+        // genuinely only ~3-4m tall, nothing like a mature palm.
+        const heightForKind = (kind: TreeKind, seed: number): number => {
+          switch (kind) {
+            case "areca": return 13 + seed; // 13–18 m — tall and slender
+            case "coconut": return 11 + seed; // 11–16 m
+            case "palm": return 8 + (seed % 4); // 8–11 m — shorter ornamental palm
+            case "banana": return 3 + (seed % 2); // 3–4 m — a real banana plant's actual height
+            case "other": return 5 + (seed % 4); // 5–8 m — generic broadleaf tree
+          }
+        };
+        // Built once and reused (scaled) for every instance of its kind.
+        const frondGeoPalm = buildFrondGeometry(4.2, 0.6, 1.6); // coconut: long, wide, arching
+        // Arecanut fronds are shorter, narrower, and far less drooping —
+        // the "erect plumose crown" that tells it apart from a coconut palm.
+        const frondGeoAreca = buildFrondGeometry(2.6, 0.35, 0.6);
+        // A generic/ornamental fan palm: wider, flatter, less arching blade.
+        const frondGeoFan = buildFrondGeometry(3.4, 0.85, 0.7);
+        // Banana leaves are one huge broad oval blade each, drooping hard
+        // toward the tip — genuinely longer than the whole plant is tall,
+        // since real banana leaves arch out and hang well past the stem.
+        const frondGeoBanana = buildBananaLeafGeometry(3.0, 1.5, 2.2);
+        // A thin pale midrib running the length of each leaf — the single
+        // most recognizable "banana leaf" detail; without it the blade
+        // reads as a generic broad leaf, not specifically a banana leaf.
+        const bananaRibGeo = new THREE.BoxGeometry(0.08, 0.03, 2.9);
+        bananaRibGeo.translate(0, 0, -1.45); // base at local origin, extends toward -Z (tip) — matches the leaf geometry's own convention
+        const trunkGeoCoconut = new THREE.CylinderGeometry(0.18, 0.3, 1, 8); // unit height — scaled per instance
+        // Arecanut palms grow a single very slender, unbranched trunk —
+        // noticeably thinner than a coconut palm's.
+        const trunkGeoAreca = new THREE.CylinderGeometry(0.09, 0.13, 1, 8);
+        // A banana "trunk" is really a fat, layered pseudostem (barely
+        // tapering, almost cylindrical) — not a woody trunk narrowing to a
+        // point the way a palm's does.
+        const trunkGeoBanana = new THREE.CylinderGeometry(0.32, 0.4, 1, 10);
+        // A generic broadleaf tree's ordinary short, thick trunk.
+        const trunkGeoOther = new THREE.CylinderGeometry(0.22, 0.3, 1, 8);
+        const budGeo = new THREE.SphereGeometry(0.3, 8, 8);
+        const coconutGeo = new THREE.SphereGeometry(0.22, 8, 8);
+        // Arecanut's signature "crown shaft" — a smooth, pale-green sheath
+        // just below the fronds — has no coconut-palm equivalent.
+        const crownShaftGeoUnit = new THREE.CylinderGeometry(0.13, 0.16, 1, 8);
+        // A generic tree's round leafy canopy — the classic "lollipop tree"
+        // silhouette, deliberately nothing like a palm's crown of fronds.
+        const canopyGeo = new THREE.IcosahedronGeometry(1.8, 0);
+        const trunkMatWood = new THREE.MeshStandardMaterial({ color: 0x7a5230, roughness: 0.9 });
+        const trunkMatBanana = new THREE.MeshStandardMaterial({ color: 0x6b8e3a, roughness: 0.75 });
+        const budMat = new THREE.MeshStandardMaterial({ color: 0x5b3a1f, roughness: 0.9 });
+        const coconutMat = new THREE.MeshStandardMaterial({ color: 0x6b4423, roughness: 0.85 });
+        const crownShaftMat = new THREE.MeshStandardMaterial({ color: 0x9cbf6b, roughness: 0.6 });
+        const canopyMat = new THREE.MeshStandardMaterial({ color: 0x3f7d3f, roughness: 0.85, flatShading: true });
+        const bananaRibMat = new THREE.MeshStandardMaterial({ color: 0xd7e6b0, roughness: 0.6 });
+        const FROND_COUNT: Record<TreeKind, number> = { coconut: 12, areca: 9, palm: 10, banana: 5, other: 0 };
+        const WHITE = new THREE.Color(0xffffff);
+
+        type TreeInstance = {
+          f: UrbanFeature; lon: number; lat: number; x: number; z: number; ground: number; h: number; seed: number;
+        };
+        // Batch key = raw category + species, so a batch is always
+        // homogeneous for both the Layers-panel group (per raw category)
+        // and the 3D shape (per species).
+        const treeBatches = new Map<string, { category: string; kind: TreeKind; trees: TreeInstance[] }>();
         for (const v of vegetation) {
           const geom = v.geometry;
           const pt =
@@ -3043,60 +3301,180 @@ export function Map3DViewer({ features, classMap, anomalies, datasets, activeDat
           const [lon, lat] = pt;
           const [x, z] = projector.toLocal(lon, lat);
           const ground = elevAt(lon, lat);
-          // This tree's OWN raw category color — matches the 2D Layers panel.
-          // DoubleSide because each frond is a flat blade — a plane is
-          // invisible from behind without it.
+          const seed = Math.abs(Number(v.properties.id) || 0) % 6;
+          const cat = v.properties.category ?? "";
+          const species = readRawAttr(v.properties.attributes ?? {}, "name") ?? cat;
+          const kind = classifyTreeKind(species);
+          const h = heightForKind(kind, seed);
+          const key = `${cat}||${kind}`;
+          if (!treeBatches.has(key)) treeBatches.set(key, { category: cat, kind, trees: [] });
+          treeBatches.get(key)!.trees.push({ f: v, lon, lat, x, z, ground, h, seed });
+        }
+
+        const treeDummy = new THREE.Object3D();
+        for (const { category: cat, kind, trees } of treeBatches.values()) {
+          if (trees.length === 0) continue;
+          const target = gfor(trees[0].f);
+          const hasCoconuts = kind === "coconut";
+          const hasCrownShaft = kind === "areca";
+          const hasBud = kind === "coconut" || kind === "areca" || kind === "palm";
+          const hasCanopy = kind === "other";
+          const hasFronds = kind !== "other";
+          const hasRibs = kind === "banana";
+          const trunkGeo =
+            kind === "areca" ? trunkGeoAreca : kind === "banana" ? trunkGeoBanana : kind === "other" ? trunkGeoOther : trunkGeoCoconut;
+          const trunkMat = kind === "banana" ? trunkMatBanana : trunkMatWood;
+          const frondGeo =
+            kind === "areca" ? frondGeoAreca : kind === "palm" ? frondGeoFan : kind === "banana" ? frondGeoBanana : frondGeoPalm;
+          const frondCount = FROND_COUNT[kind];
+
+          const trunkMesh = new THREE.InstancedMesh(trunkGeo, trunkMat, trees.length);
+          const budMesh = hasBud ? new THREE.InstancedMesh(budGeo, budMat, trees.length) : null;
+          const coconutMesh = hasCoconuts ? new THREE.InstancedMesh(coconutGeo, coconutMat, trees.length * 3) : null;
+          const crownShaftMesh = hasCrownShaft ? new THREE.InstancedMesh(crownShaftGeoUnit, crownShaftMat, trees.length) : null;
+          const canopyMesh = hasCanopy ? new THREE.InstancedMesh(canopyGeo, canopyMat, trees.length) : null;
+          // This category's OWN raw category color — matches the 2D Layers
+          // panel. DoubleSide because each frond is a flat blade — a plane
+          // is invisible from behind without it.
           const frondMat = new THREE.MeshStandardMaterial({
-            color: sceneColor(v.properties.category),
+            color: sceneColor(cat),
             roughness: 0.8,
             side: THREE.DoubleSide,
           });
-          const g = new THREE.Group();
-          const seed = Math.abs(Number(v.properties.id) || 0) % 6;
-          const h = 11 + seed; // 11–16 m coconut palm
-          const trunk = new THREE.Mesh(
-            new THREE.CylinderGeometry(0.18, 0.3, h, 8),
-            new THREE.MeshStandardMaterial({ color: 0x7a5230, roughness: 0.9 })
-          );
-          trunk.position.y = ground + h / 2;
-          g.add(trunk);
-          // A real coconut palm has NO round crown ball — just a small growing
-          // bud where a starburst of long arching fronds emerges, plus a
-          // cluster of coconuts underneath it. The earlier sphere "crown" was
-          // what made trees read as a spiky pom-pom/sea urchin instead of a
-          // tree; removed in favour of just the bud + fronds.
-          const crownY = ground + h;
-          const bud = new THREE.Mesh(
-            new THREE.SphereGeometry(0.3, 8, 8),
-            new THREE.MeshStandardMaterial({ color: 0x5b3a1f, roughness: 0.9 })
-          );
-          bud.position.y = crownY;
-          g.add(bud);
-          const coconutMat = new THREE.MeshStandardMaterial({ color: 0x6b4423, roughness: 0.85 });
-          for (let i = 0; i < 3; i++) {
-            const a = (i / 3) * Math.PI * 2 + seed;
-            const coconut = new THREE.Mesh(new THREE.SphereGeometry(0.22, 8, 8), coconutMat);
-            coconut.position.set(Math.cos(a) * 0.4, crownY - 0.35, Math.sin(a) * 0.4);
-            g.add(coconut);
-          }
-          // Each frond is a flattened cone (elliptical cross-section, not
-          // round) so it reads as a blade rather than a spike, with a
-          // slightly different length/droop per frond so the crown looks
-          // like a natural cluster instead of a perfectly uniform wheel.
-          const frondCount = 12;
-          for (let i = 0; i < frondCount; i++) {
-            const aAngle = (i / frondCount) * Math.PI * 2;
-            const lenScale = 0.85 + ((i % 4) * 0.08); // slight variety so the crown isn't a perfectly uniform wheel
-            const frond = new THREE.Mesh(frondGeo, frondMat);
-            frond.scale.setScalar(lenScale);
-            frond.position.set(0, crownY, 0);
-            frond.rotation.y = -aAngle; // the geometry's own baked droop/taper does the rest
-            g.add(frond);
-          }
-          g.position.set(x, 0, z);
-          g.userData = featureDetail(v, "vegetation", sceneColor(v.properties.category), lon, lat);
-          gfor(v).add(g);
-          clickable.push(g);
+          const frondMesh = hasFronds ? new THREE.InstancedMesh(frondGeo, frondMat, trees.length * frondCount) : null;
+          const ribMesh = hasRibs ? new THREE.InstancedMesh(bananaRibGeo, bananaRibMat, trees.length * frondCount) : null;
+          // Lazily creates each mesh's per-instance color buffer (defaults
+          // every instance to white == no tint) so a later click-select can
+          // highlight exactly one tree via setColorAt, not the whole batch.
+          trunkMesh.setColorAt(0, WHITE);
+          budMesh?.setColorAt(0, WHITE);
+          coconutMesh?.setColorAt(0, WHITE);
+          crownShaftMesh?.setColorAt(0, WHITE);
+          canopyMesh?.setColorAt(0, WHITE);
+          frondMesh?.setColorAt(0, WHITE);
+          ribMesh?.setColorAt(0, WHITE);
+
+          const trunkDetails: Object3DDetail[] = [];
+          const budDetails: Object3DDetail[] = [];
+          const coconutDetails: Object3DDetail[] = [];
+          const crownShaftDetails: Object3DDetail[] = [];
+          const canopyDetails: Object3DDetail[] = [];
+          const frondDetails: Object3DDetail[] = [];
+          const ribDetails: Object3DDetail[] = [];
+
+          let coconutIdx = 0;
+          let frondIdx = 0;
+          trees.forEach((t, i) => {
+            const { f: v, lon, lat, x, z, ground, h, seed } = t;
+            const detail = featureDetail(v, "vegetation", sceneColor(cat), lon, lat);
+
+            treeDummy.position.set(x, ground + h / 2, z);
+            treeDummy.scale.set(1, h, 1);
+            treeDummy.rotation.set(0, 0, 0);
+            treeDummy.updateMatrix();
+            trunkMesh.setMatrixAt(i, treeDummy.matrix);
+            trunkDetails.push(detail);
+
+            const crownY = ground + h;
+
+            if (crownShaftMesh) {
+              // The crown shaft sits at the very top of the trunk, just
+              // under where the fronds emerge.
+              treeDummy.position.set(x, crownY - 0.6, z);
+              treeDummy.scale.set(1, 1.2, 1);
+              treeDummy.updateMatrix();
+              crownShaftMesh.setMatrixAt(i, treeDummy.matrix);
+              crownShaftDetails.push(detail);
+            }
+            if (coconutMesh) {
+              // A real coconut palm has NO round crown ball — just a small
+              // growing bud where a starburst of long arching fronds
+              // emerges, plus a cluster of coconuts underneath it.
+              for (let c = 0; c < 3; c++) {
+                const a = (c / 3) * Math.PI * 2 + seed;
+                treeDummy.position.set(x + Math.cos(a) * 0.4, crownY - 0.35, z + Math.sin(a) * 0.4);
+                treeDummy.scale.set(1, 1, 1);
+                treeDummy.updateMatrix();
+                coconutMesh.setMatrixAt(coconutIdx, treeDummy.matrix);
+                coconutDetails.push(detail);
+                coconutIdx++;
+              }
+            }
+            if (canopyMesh) {
+              // A plain leafy canopy ball for an unspecified/"Other Tree" —
+              // no palm crown at all.
+              treeDummy.position.set(x, crownY - 0.4, z);
+              treeDummy.scale.setScalar(0.85 + (seed % 3) * 0.12);
+              treeDummy.rotation.set(0, seed, 0);
+              treeDummy.updateMatrix();
+              canopyMesh.setMatrixAt(i, treeDummy.matrix);
+              canopyDetails.push(detail);
+            }
+            if (budMesh) {
+              treeDummy.position.set(x, crownY, z);
+              treeDummy.scale.set(1, 1, 1);
+              treeDummy.rotation.set(0, 0, 0);
+              treeDummy.updateMatrix();
+              budMesh.setMatrixAt(i, treeDummy.matrix);
+              budDetails.push(detail);
+            }
+
+            // Each frond/leaf is a flattened cone (elliptical cross-section,
+            // not round) so it reads as a blade rather than a spike, with a
+            // slightly different length/droop per one so the crown looks
+            // like a natural cluster instead of a perfectly uniform wheel.
+            // Arecanut fronds sit more upright (less spread) than a coconut
+            // palm's wide, arching crown; banana leaves splay outward and
+            // droop down from a low central point instead of radiating from
+            // a tall crown.
+            if (frondMesh) {
+              for (let fi = 0; fi < frondCount; fi++) {
+                const aAngle = (fi / frondCount) * Math.PI * 2;
+                const lenScale =
+                  kind === "areca" ? 0.9 + ((fi % 3) * 0.06)
+                  : kind === "banana" ? 0.95 + ((fi % 3) * 0.08)
+                  : 0.85 + ((fi % 4) * 0.08);
+                // Banana leaves emerge near-horizontal from the crown, then
+                // droop hard under their own weight — a steep tilt (not the
+                // shallow palm-frond spread) is what sells "banana", plus
+                // the geometry's own extra-strong droop curve baked in.
+                const tiltX = kind === "areca" ? -0.35 : kind === "banana" ? 0.95 : 0;
+                treeDummy.position.set(x, kind === "banana" ? crownY - 0.15 : crownY, z);
+                treeDummy.scale.setScalar(lenScale);
+                treeDummy.rotation.set(tiltX, -aAngle, 0);
+                treeDummy.updateMatrix();
+                frondMesh.setMatrixAt(frondIdx, treeDummy.matrix);
+                frondDetails.push(detail);
+                if (ribMesh) {
+                  ribMesh.setMatrixAt(frondIdx, treeDummy.matrix);
+                  ribDetails.push(detail);
+                }
+                frondIdx++;
+              }
+            }
+          });
+
+          trunkMesh.instanceMatrix.needsUpdate = true;
+          if (budMesh) budMesh.instanceMatrix.needsUpdate = true;
+          if (coconutMesh) coconutMesh.instanceMatrix.needsUpdate = true;
+          if (crownShaftMesh) crownShaftMesh.instanceMatrix.needsUpdate = true;
+          if (canopyMesh) canopyMesh.instanceMatrix.needsUpdate = true;
+          if (frondMesh) frondMesh.instanceMatrix.needsUpdate = true;
+          if (ribMesh) ribMesh.instanceMatrix.needsUpdate = true;
+
+          trunkMesh.userData = { instanced: true, instanceDetails: trunkDetails };
+          if (budMesh) budMesh.userData = { instanced: true, instanceDetails: budDetails };
+          if (coconutMesh) coconutMesh.userData = { instanced: true, instanceDetails: coconutDetails };
+          if (crownShaftMesh) crownShaftMesh.userData = { instanced: true, instanceDetails: crownShaftDetails };
+          if (canopyMesh) canopyMesh.userData = { instanced: true, instanceDetails: canopyDetails };
+          if (frondMesh) frondMesh.userData = { instanced: true, instanceDetails: frondDetails };
+          if (ribMesh) ribMesh.userData = { instanced: true, instanceDetails: ribDetails };
+
+          const meshes = [trunkMesh, budMesh, coconutMesh, crownShaftMesh, canopyMesh, frondMesh, ribMesh].filter(
+            (m) => m !== null
+          ) as THREE.Object3D[];
+          target.add(...meshes);
+          clickable.push(...meshes);
         }
 
         // Real surveyed signage (road signs, markers) — a thin post with a
@@ -3284,12 +3662,28 @@ export function Map3DViewer({ features, classMap, anomalies, datasets, activeDat
           }
           return true;
         };
-        const resolveHit = (hits: THREE.Intersection[]): (Object3DDetail & { object: THREE.Object3D }) | null => {
+        const resolveHit = (
+          hits: THREE.Intersection[]
+        ): (Object3DDetail & { object: THREE.Object3D; instanceId?: number }) | null => {
           if (hits.length === 0) return null;
-          let obj: THREE.Object3D | null = hits[0].object;
+          const firstHit = hits[0];
+          let obj: THREE.Object3D | null = firstHit.object;
           while (obj && !clickableSet.has(obj)) obj = obj.parent;
           if (!obj) return null;
-          const u = obj.userData as Partial<Object3DDetail>;
+          const raw = obj.userData as Partial<Object3DDetail> & {
+            instanced?: boolean;
+            instanceDetails?: Object3DDetail[];
+          };
+          // An InstancedMesh batch (e.g. trees): one shared object, many
+          // trees — the real per-tree detail lives in a side array keyed by
+          // the raycaster's own instanceId, not on the object's userData.
+          if (raw.instanced) {
+            if (firstHit.instanceId == null) return null;
+            const d = raw.instanceDetails?.[firstHit.instanceId];
+            if (!d || !d.category) return null;
+            return { ...d, object: obj, instanceId: firstHit.instanceId };
+          }
+          const u = raw;
           // No real category/label on this object — rather than pop up a
           // near-empty panel, treat it as "nothing selectable was hit".
           if (!u.category) return null;
@@ -3308,7 +3702,21 @@ export function Map3DViewer({ features, classMap, anomalies, datasets, activeDat
         // glow so the selection is unmistakable at typical zoomed-out scene
         // scale. Returns a function that restores each mesh's original
         // emissive color/intensity exactly.
-        const applyHighlightTint = (object: THREE.Object3D): (() => void) => {
+        const applyHighlightTint = (object: THREE.Object3D, instanceId?: number): (() => void) => {
+          // One instance out of a shared InstancedMesh batch — tint only
+          // that instance's own color slot, never the material (which is
+          // shared by every other tree in the batch).
+          const im = object as THREE.InstancedMesh;
+          if (instanceId != null && im.isInstancedMesh) {
+            const prev = new THREE.Color();
+            im.getColorAt(instanceId, prev);
+            im.setColorAt(instanceId, new THREE.Color(0x22d3ee));
+            if (im.instanceColor) im.instanceColor.needsUpdate = true;
+            return () => {
+              im.setColorAt(instanceId, prev);
+              if (im.instanceColor) im.instanceColor.needsUpdate = true;
+            };
+          }
           const restores: (() => void)[] = [];
           object.traverse((child) => {
             const mesh = child as THREE.Mesh;
@@ -3344,7 +3752,7 @@ export function Map3DViewer({ features, classMap, anomalies, datasets, activeDat
             setSelected(null);
             return;
           }
-          tintRestoreRef.current = applyHighlightTint(hit.object);
+          tintRestoreRef.current = applyHighlightTint(hit.object, hit.instanceId);
           const { object: _obj, ...detail } = hit;
           setSelected(detail);
         };

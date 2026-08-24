@@ -80,20 +80,23 @@ CLASS_SYNONYMS: dict[str, set[str]] = {
     "Drainage_Asset": {
         "drain", "drain closed", "closed drain", "drain open", "open drain",
         "storm water drain", "swd", "culvert", "silt trap", "drainage",
+        "ugd system", "ugd_system", "ugd", "underground drainage",
     },
     "Power_Line": {"power line", "powerline", "poweline", "electric line", "overhead line"},
     "Utility_Pole": {"utility pole", "transformer pole", "cc camera pole"},
     "Road_Centerline": {
         "road centerline", "centerline", "center line", "carriageway centerline",
-        "road center line",
+        "road center line", "road cl", "road_cl", "rd cl", "cl",
     },
     "Road_Surface": {
         "concrete road", "concrete edge", "road edge", "carriageway",
         "asphalt road", "bituminous road", "tar road", "road surface",
+        "road pg", "road_pg", "rd pg", "pavement", "road polygon",
     },
     "Road_Segment": {
         "road", "sidewalk", "footpath", "foot path", "sewage line", "sewage_line",
-        "sewerage line", "sewer line",
+        "sewerage line", "sewer line", "road feature", "road_feature", "row",
+        "right of way", "right_of_way",
     },
     "Building": {"building", "building extenstions", "building extensions"},
     "Signage": {"signage", "road signage", "sign"},

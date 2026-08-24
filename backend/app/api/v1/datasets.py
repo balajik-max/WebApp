@@ -671,10 +671,21 @@ async def get_dem_grid(
         from rasterio.warp import transform_bounds
 
         with MemoryFile(raw_bytes) as memfile, memfile.open() as src:
+            # Nearest-neighbour, not bilinear: a decimated read's resampling
+            # blends whichever source pixels land in each output cell, and a
+            # DTM with real nodata gaps (common — drone coverage rarely lines
+            # up exactly with the surveyed ward) will blend nodata (e.g.
+            # -32767) into real elevation at every gap edge. That produces
+            # intermediate garbage values (nowhere near -32767, nowhere near
+            # real elevation either) that no longer equal `src.nodata`, so
+            # they silently pass the nodata filter below as if they were real
+            # elevation — rendering as a sheer cliff/wall in the 3D view.
+            # Nearest-neighbour always picks one whole source pixel per
+            # output cell, so it never blends nodata into a valid value.
             data = src.read(
                 1,
                 out_shape=(resolution, resolution),
-                resampling=Resampling.bilinear,
+                resampling=Resampling.nearest,
             ).astype("float64")
             if src.nodata is not None:
                 data[data == src.nodata] = float("nan")

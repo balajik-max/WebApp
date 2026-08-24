@@ -54,23 +54,23 @@ class LlmReply:
     prompt_tokens_hint: int
 
 
-# Singleton Ollama client for connection pooling.
-_ollama_client: ollama.Client | None = None
-
-
 def _client() -> ollama.Client:
-    """Return a singleton Ollama client with generous timeouts."""
-    global _ollama_client
-    if _ollama_client is None:
-        s = get_settings()
-        # 5 min timeout so large context summarization calls never truncate early.
-        _ollama_client = ollama.Client(host=s.ollama_base_url, timeout=300)
-        log.info(
-            "Initialized Ollama client: host=%s, model=%s, timeout=300s",
-            s.ollama_base_url,
-            s.ollama_model,
-        )
-    return _ollama_client
+    """A fresh Ollama client per call.
+
+    This used to be a process-wide singleton for connection reuse, but a
+    single interrupted/cancelled request (a client closing its browser tab
+    mid-generation, a request timeout) could leave the shared client's
+    underlying connection in a broken state — every subsequent call through
+    that same client then hung indefinitely waiting on a dead socket, with no
+    way to recover short of restarting the backend process. Each of this
+    module's call sites already does exactly one blocking chat/embed call in
+    its own worker thread, so there is no real connection-reuse benefit being
+    given up — a fresh client is cheap (no handshake happens at construction
+    time) and can never inherit another call's broken connection state.
+    """
+    s = get_settings()
+    # 5 min timeout so large context summarization calls never truncate early.
+    return ollama.Client(host=s.ollama_base_url, timeout=300)
 
 
 def _blocking_chat(*, model: str, system: str, user: str, num_ctx: int = 4096, num_predict: int = 1024) -> str:

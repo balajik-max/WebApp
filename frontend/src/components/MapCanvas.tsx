@@ -7660,6 +7660,19 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     setSelectedAnomalyId((current) => (current === anomalyId ? null : current));
   }, []);
 
+  // A freshly-generated AI explanation only ever landed in the card's own
+  // local state before, never in this shared list — so closing and
+  // reopening the SAME anomaly (or a re-render that unmounts/remounts the
+  // card, e.g. from a hover tooltip elsewhere) always re-fetched from
+  // scratch, even moments after a successful generation. Worse, if that
+  // remount happened WHILE the fetch was still in flight, the card's own
+  // AbortController cancelled it, and with the result never reaching this
+  // shared list either, the panel could reopen with no explanation at all
+  // and no visible error — the "AI analysis is just gone" symptom.
+  const handleAnomalyExplained = useCallback((anomalyId: string, explanationText: string) => {
+    setAnomalies((prev) => prev.map((a) => (a.id === anomalyId ? { ...a, explanation_text: explanationText } : a)));
+  }, []);
+
   const cloneFeatureFilter = useCallback((value: FeatureFilter): FeatureFilter => ({
     ...value,
     datasetIds: value.datasetIds ? [...value.datasetIds] : undefined,
@@ -10765,6 +10778,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
             onClose={() => setSelectedAnomalyId(null)}
             onStatusChange={handleAnomalyStatusChange}
             onStale={handleAnomalyStale}
+            onExplained={handleAnomalyExplained}
             backToRoadLabel={roadInspectionRoad ? roadInspectionRoad.properties.label || "road inspection" : undefined}
           />
         )}

@@ -54,7 +54,7 @@ from app.services.storage import ensure_bucket, upload_stream
 log = logging.getLogger("davangere.api.features")
 router = APIRouter()
 
-_HARD_ROW_LIMIT = 5000
+_HARD_ROW_LIMIT = 50000
 _DEFAULT_ROW_LIMIT = 2000
 
 

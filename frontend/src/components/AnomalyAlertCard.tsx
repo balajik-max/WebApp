@@ -22,6 +22,12 @@ interface Props {
    * exists) — remove it from the map/local state instead of showing a raw
    * fetch error, since re-running the audit is a normal, expected action. */
   onStale: (anomalyId: string) => void;
+  /** Called once a fresh AI explanation is successfully generated, so the
+   * shared anomalies list (not just this card's own local state) caches it —
+   * otherwise closing and reopening the same finding always re-fetches from
+   * scratch, and a remount mid-fetch (this card's own AbortController firing)
+   * can leave the panel with no explanation and no visible error at all. */
+  onExplained?: (anomalyId: string, explanationText: string) => void;
   /** Set when this card was opened from Road Inspection's issue list — `onClose`
    * already returns there (its state was never torn down), but the "×" alone
    * reads as "dismiss", not "go back". Shows an explicit back affordance so
@@ -110,7 +116,7 @@ const MIN_HEIGHT = 220;
 
 type ResizeEdge = "right" | "bottom" | "corner";
 
-export function AnomalyAlertCard({ anomaly, onClose, onStatusChange, onStale, backToRoadLabel }: Props) {
+export function AnomalyAlertCard({ anomaly, onClose, onStatusChange, onStale, onExplained, backToRoadLabel }: Props) {
   const { user } = useAuth();
   const isAdmin = user?.role === "admin";
   const canEditCost = user?.role !== "mla";
@@ -248,7 +254,10 @@ export function AnomalyAlertCard({ anomaly, onClose, onStatusChange, onStale, ba
     const ctrl = new AbortController();
     setLoading(true);
     explainAnomaly(anomaly.id, ctrl.signal)
-      .then((r) => setExplanation(r.explanation_text))
+      .then((r) => {
+        setExplanation(r.explanation_text);
+        onExplained?.(anomaly.id, r.explanation_text);
+      })
       .catch((e: Error) => {
         if (e.name === "AbortError") return;
         if (e instanceof ApiError && e.status === 404) {
@@ -259,7 +268,7 @@ export function AnomalyAlertCard({ anomaly, onClose, onStatusChange, onStale, ba
       })
       .finally(() => setLoading(false));
     return () => ctrl.abort();
-  }, [anomaly.id, anomaly.explanation_text, onStale]);
+  }, [anomaly.id, anomaly.explanation_text, onStale, onExplained]);
 
   const hydrateCostEstimate = (estimate: PotholeCostEstimate) => {
     setLiveRepairEstimate(estimate);
