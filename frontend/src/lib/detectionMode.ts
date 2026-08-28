@@ -14,7 +14,7 @@ export type DetectionMode =
   | null;
 
 export const DETECTION_MODE_TARGET_CLASSES: Record<Exclude<DetectionMode, null>, string[]> = {
-  poles: ["Illumination_Asset"],
+  poles: ["Illumination_Asset", "Utility_Pole"],
   drains: ["Building", "Drainage_Asset"],
   // Road_Segment was here for pipe-route-recommendation context, but reads
   // as pure clutter in the AI Detection focus itself (easy to mistake for a
