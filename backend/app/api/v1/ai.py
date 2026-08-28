@@ -15,7 +15,7 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -1628,9 +1628,22 @@ def _powerline_proximity_explain_prompt(row: SpatialAnomaly, crib: str) -> str:
 )
 async def explain_anomaly(
     anomaly_id: uuid.UUID,
-    user: User = Depends(require_any),
+    request: Request,
     db: AsyncSession = Depends(get_db),
 ) -> AnomalyExplainResponse:
+    # Extract user info from JWT directly — avoids holding an auth DB
+    # connection for the duration of the long Ollama call.
+    token = request.cookies.get("access_token") or ""
+    if not token:
+        auth = request.headers.get("Authorization", "")
+        token = auth[7:] if auth.startswith("Bearer ") else ""
+    if not token:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    from app.core.security import decode_token
+    payload = decode_token(token)
+    user_id = uuid.UUID(str(payload["sub"]))
+    user_role = payload.get("role", "admin")
+
     row = (
         await db.execute(select(SpatialAnomaly).where(SpatialAnomaly.id == anomaly_id))
     ).scalar_one_or_none()
@@ -1651,7 +1664,7 @@ async def explain_anomaly(
             estimate = await estimate_pothole_cost(
                 db,
                 anomaly_id=row_id_value,
-                user_id=user.id,
+                user_id=user_id,
                 refresh_online=False,
             )
             base_cost = estimate.get("base_repair_cost_inr")
@@ -1720,11 +1733,22 @@ async def explain_anomaly(
             "only a ratio.\n\n"
             f"FACTS:\n{crib}"
         )
+    # Release the DB connection before the long Ollama call (12-30s).
+    # Without this, every concurrent explain request holds a pool connection
+    # idle-in-transaction, eventually exhausting the pool and causing 500s.
+    await db.close()
+
     reply = await run_grounded_completion(context=crib, user_prompt=prompt, num_predict=280, num_ctx=1024)
 
-    row.explanation_text = reply.text
-    row.explanation_model = reply.model
-    await db.commit()
+    # Re-open a fresh session just to persist the result.
+    from app.db.session import get_db_by_role
+    async for write_db in get_db_by_role(user_role):
+        anomaly_row = (await write_db.execute(
+            select(SpatialAnomaly).where(SpatialAnomaly.id == row_id_value)
+        )).scalar_one_or_none()
+        if anomaly_row:
+            anomaly_row.explanation_text = reply.text
+            anomaly_row.explanation_model = reply.model
 
     return AnomalyExplainResponse(
         id=row_id_value, explanation_text=reply.text + cost_summary, explanation_model=reply.model, cached=False

@@ -466,13 +466,17 @@ async def get_raster_preview(
         raise HTTPException(status_code=404, detail="Dataset not found")
 
     overlay = (row.dataset_metadata or {}).get("raster_overlay")
-    if not overlay or not overlay.get("image_key"):
+    image_key = overlay.get("image_key") if overlay else None
+    if not image_key:
         raise HTTPException(status_code=404, detail="No raster preview available for this dataset")
+
+    # Release the DB connection before heavy I/O (MinIO download)
+    await db.close()
 
     from app.services.storage import get_object_bytes
 
     try:
-        png_bytes = await get_object_bytes(overlay["image_key"])
+        png_bytes = await get_object_bytes(image_key)
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=404, detail="Raster preview not found in storage") from exc
 
@@ -504,8 +508,13 @@ async def get_raster_tile(
     if row.file_type != DatasetFileType.GEOTIFF or not row.storage_key:
         raise HTTPException(status_code=400, detail="Full-resolution tiles require a source GeoTIFF")
 
+    storage_key = row.storage_key
+
+    # Release the DB connection before heavy I/O (GDAL tile rendering)
+    await db.close()
+
     try:
-        png_bytes = await render_raster_tile(row.storage_key, z, x, y, mode)
+        png_bytes = await render_raster_tile(storage_key, z, x, y, mode)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:  # noqa: BLE001

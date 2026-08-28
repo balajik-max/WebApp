@@ -28,7 +28,8 @@ auth_engine = create_async_engine(
     echo=False,
     pool_pre_ping=True,
     pool_size=10,
-    max_overflow=20,
+    max_overflow=15,
+    pool_recycle=300,
     future=True,
 )
 
@@ -75,6 +76,7 @@ def _get_role_engine(role: str):
             pool_pre_ping=True,
             pool_size=15,
             max_overflow=25,
+            pool_recycle=300,
             future=True,
         )
         _role_sessions[role] = async_sessionmaker(
@@ -132,10 +134,16 @@ async def get_auth_db() -> AsyncGenerator[AsyncSession, None]:
         try:
             yield session
         except Exception:
-            await session.rollback()
+            try:
+                await session.rollback()
+            except Exception:
+                pass  # session may already be closed
             raise
         else:
-            await session.commit()
+            try:
+                await session.commit()
+            except Exception:
+                pass  # session may already be closed by endpoint
 
 
 async def get_db_by_role(role: str) -> AsyncGenerator[AsyncSession, None]:
@@ -145,10 +153,16 @@ async def get_db_by_role(role: str) -> AsyncGenerator[AsyncSession, None]:
         try:
             yield session
         except Exception:
-            await session.rollback()
+            try:
+                await session.rollback()
+            except Exception:
+                pass  # session may already be closed
             raise
         else:
-            await session.commit()
+            try:
+                await session.commit()
+            except Exception:
+                pass  # session may already be closed by endpoint
 
 
 async def get_db(request: Request) -> AsyncGenerator[AsyncSession, None]:

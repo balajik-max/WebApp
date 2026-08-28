@@ -2750,7 +2750,7 @@ const BUILDING_DEFAULT_COLOR = "#16a34a"; // green — not (meaningfully) encroa
 const BUILDING_RED_COLOR = "#dc2626"; // red — drain crosses straight through
 const BUILDING_YELLOW_COLOR = "#eab308"; // gold/yellow — partial graze, no full crossing
 const DRAINS_MODE_FILL_OPACITY = 0.75;
-const DEFAULT_FILL_OPACITY = 0.35;
+const DEFAULT_FILL_OPACITY: number | maplibregl.ExpressionSpecification = ["interpolate", ["linear"], ["zoom"], 11, 0.05, 13, 0.15, 15, 0.3, 17, 0.35] as unknown as maplibregl.ExpressionSpecification;
 
 /** In Drains mode, buildings are recolored by their OWN encroachment
  * finding rather than shown as a separate point marker — a fully/partly
@@ -5706,12 +5706,12 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     // from these layers by the filter effect and rendered only by the overlay.
     if (map.getLayer(LAYER_POINTS)) {
       map.setPaintProperty(LAYER_POINTS, "circle-color", withPointVerificationColor(baseColor));
-      map.setPaintProperty(LAYER_POINTS, "circle-radius", 3.5);
-      map.setPaintProperty(LAYER_POINTS, "circle-opacity", 0.9);
+      map.setPaintProperty(LAYER_POINTS, "circle-radius", ["interpolate", ["linear"], ["zoom"], 11, 1.2, 13, 2.0, 15, 3.0, 17, 3.5]);
+      map.setPaintProperty(LAYER_POINTS, "circle-opacity", ["interpolate", ["linear"], ["zoom"], 11, 0.5, 14, 0.7, 17, 0.9]);
     }
     if (map.getLayer(LAYER_LINES)) {
       map.setPaintProperty(LAYER_LINES, "line-color", baseColor);
-      map.setPaintProperty(LAYER_LINES, "line-width", 2.5);
+      map.setPaintProperty(LAYER_LINES, "line-width", ["interpolate", ["linear"], ["zoom"], 11, 0.5, 14, 1.5, 17, 2.5]);
       map.setPaintProperty(LAYER_LINES, "line-opacity", 1);
     }
     // Buildings are recolored red/yellow by their own real finding in BOTH
@@ -5958,9 +5958,24 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
 
     const [west, south, east, north] = overlay.bounds;
     const rasterSettings = effectiveRasterSettings(dataset, rasterSettingsRef.current[dataset.id]);
-    if (dataset.file_type === "geotiff") {
-      // GeoTIFFs are sampled from the original source at every zoom. The
-      // small ingestion preview remains only for non-TIFF derived rasters.
+    // Calculate geographic extent of the raster overlay in km².
+    const latMid = (north + south) / 2;
+    const kmPerDegLat = 111.32;
+    const kmPerDegLon = 111.32 * Math.cos(latMid * Math.PI / 180);
+    const extentKm2 = (east - west) * kmPerDegLon * (north - south) * kmPerDegLat;
+    // Small-area GeoTIFFs (< 5 km²) are rendered as a single image overlay
+    // instead of on-demand tiles. The tile reproject from e.g. EPSG:32643 to
+    // Web Mercator on high-res imagery is prohibitively slow (40+ seconds per
+    // tile). The ingestion preview PNG already covers the full extent and loads
+    // instantly.
+    const useImageOverlay = dataset.file_type !== "geotiff" || extentKm2 < 5;
+    if (useImageOverlay) {
+      map.addSource(sourceId, {
+        type: "image",
+        url: rasterPreviewUrl(dataset.id, rasterSettings),
+        coordinates: [[west, north], [east, north], [east, south], [west, south]],
+      });
+    } else {
       map.addSource(sourceId, {
         type: "raster",
         tiles: [rasterTileUrl(dataset.id, rasterSettings)],
@@ -5968,13 +5983,6 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
         minzoom: 0,
         maxzoom: 24,
         bounds: [west, south, east, north],
-      });
-    } else {
-      map.addSource(sourceId, {
-        type: "image",
-        url: rasterPreviewUrl(dataset.id, rasterSettings),
-        // MapLibre image sources take corners clockwise from top-left.
-        coordinates: [[west, north], [east, north], [east, south], [west, south]],
       });
     }
     // Insert below the vector feature layers so pins/lines stay visible
@@ -7974,6 +7982,11 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
       } else {
         removeObj3DLayer(dataset.id);
       }
+      // Clear features immediately so the user sees the removal instantly
+      // instead of waiting for the slow re-fetch (~4s) to repopulate.
+      abortRef.current?.abort();
+      applyFeatureCollection(EMPTY_FC);
+      setStatus({ loading: true, count: 0, truncated: false, error: null, bbox: null });
       scheduleFetch();
       return;
     }
@@ -8197,9 +8210,9 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     map.on("moveend", persistCameraState);
 
     map.on("load", () => {
-      map.addSource(FEATURE_SOURCE, { type: "geojson", data: EMPTY_FC as unknown as GeoJSON.FeatureCollection, promoteId: "id" });
-      map.addLayer({ id: LAYER_POLY_FILL, type: "fill", source: FEATURE_SOURCE, filter: POLY_BASE_FILTER, paint: { "fill-color": ["interpolate", ["linear"], ["coalesce", ["get", "severity"], 0], 0, "#3aa1ff", 0.5, "#f5c542", 1, "#ff5a3d"], "fill-opacity": 0.35 } });
-      map.addLayer({ id: LAYER_POLY_OUTLINE, type: "line", source: FEATURE_SOURCE, filter: POLY_BASE_FILTER, paint: { "line-color": "#0b1013", "line-width": 1 } });
+      map.addSource(FEATURE_SOURCE, { type: "geojson", data: EMPTY_FC as unknown as GeoJSON.FeatureCollection, promoteId: "id", maxzoom: 22, tolerance: 0 });
+      map.addLayer({ id: LAYER_POLY_FILL, type: "fill", source: FEATURE_SOURCE, filter: POLY_BASE_FILTER, paint: { "fill-color": ["interpolate", ["linear"], ["coalesce", ["get", "severity"], 0], 0, "#3aa1ff", 0.5, "#f5c542", 1, "#ff5a3d"], "fill-opacity": ["interpolate", ["linear"], ["zoom"], 11, 0.05, 13, 0.15, 15, 0.3, 17, 0.35] } });
+      map.addLayer({ id: LAYER_POLY_OUTLINE, type: "line", source: FEATURE_SOURCE, filter: POLY_BASE_FILTER, paint: { "line-color": "#0b1013", "line-width": ["interpolate", ["linear"], ["zoom"], 11, 0.3, 14, 0.7, 17, 1.0] } });
       map.addLayer({
         id: LAYER_SURFACE_GLOW,
         type: "line",
@@ -8223,7 +8236,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
           "line-opacity": 0,
         },
       });
-      map.addLayer({ id: LAYER_LINES, type: "line", source: FEATURE_SOURCE, filter: LINE_BASE_FILTER, paint: { "line-color": ["interpolate", ["linear"], ["coalesce", ["get", "severity"], 0], 0, "#3aa1ff", 0.5, "#f5c542", 1, "#ff5a3d"], "line-width": 2.5 } });
+      map.addLayer({ id: LAYER_LINES, type: "line", source: FEATURE_SOURCE, filter: LINE_BASE_FILTER, paint: { "line-color": ["interpolate", ["linear"], ["coalesce", ["get", "severity"], 0], 0, "#3aa1ff", 0.5, "#f5c542", 1, "#ff5a3d"], "line-width": ["interpolate", ["linear"], ["zoom"], 11, 0.5, 14, 1.5, 17, 2.5] } });
       map.addLayer({
         id: LAYER_POLY_FILL_CADASTRAL,
         type: "fill",
@@ -8270,7 +8283,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
         // site_photo features get their own camera-icon symbol layer below
         // instead of a plain dot.
         filter: POINT_BASE_FILTER,
-        paint: { "circle-radius": 3.5, "circle-color": ["interpolate", ["linear"], ["coalesce", ["get", "severity"], 0], 0, "#3aa1ff", 0.5, "#f5c542", 1, "#ff5a3d"], "circle-stroke-color": "#0b1013", "circle-stroke-width": 1.5, "circle-opacity": 0.9 },
+        paint: { "circle-radius": ["interpolate", ["linear"], ["zoom"], 11, 1.2, 13, 2.0, 15, 3.0, 17, 3.5], "circle-color": ["interpolate", ["linear"], ["coalesce", ["get", "severity"], 0], 0, "#3aa1ff", 0.5, "#f5c542", 1, "#ff5a3d"], "circle-stroke-color": "#0b1013", "circle-stroke-width": ["interpolate", ["linear"], ["zoom"], 11, 0.3, 14, 0.8, 17, 1.5], "circle-opacity": ["interpolate", ["linear"], ["zoom"], 11, 0.5, 14, 0.7, 17, 0.9] },
       });
       const cadastralPointImages: Array<[string, CadastralPointIconKind]> = [
         [CADASTRAL_POINT_ICON_DEFAULT, "default"],

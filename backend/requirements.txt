@@ -1,5 +1,6 @@
 fastapi==0.115.6
 uvicorn[standard]==0.32.1
+orjson==3.10.12
 python-dotenv==1.0.1
 pydantic==2.9.2
 pydantic-settings==2.6.1
