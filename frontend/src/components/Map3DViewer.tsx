@@ -846,7 +846,25 @@ function buildGenericFeature(
         // where it genuinely is one, and to the placeholder height when
         // neither yields a real storey count.
         const storeys = floorsRaw ? parseStoreyCountToken(floorsRaw) ?? (Number(floorsRaw) || null) : null;
-        const heightM = storeys && storeys > 0 ? storeys * 3.2 : vary(6, 2.5);
+        // No real floor count on this feature (true for every "*_Plot"
+        // category — a land parcel, not a surveyed structure) — the
+        // fallback used to be one flat vary(6, 2.5) for every building type,
+        // so a Residential_Plot, Commercial_Plot, and Industrial_Plot all
+        // landed in the exact same 3.5–8.5 m band regardless of what kind of
+        // building the parcel is actually for. Centering that fallback on a
+        // type-appropriate typical height (still varied per-feature) gives
+        // real visual distinction between building types even without a
+        // surveyed floor count.
+        const typedFallbackHeight = has("industrial")
+          ? vary(6.5, 1.2) // usually a single tall-ceilinged shed/workshop storey
+          : has("public")
+          ? vary(9, 3) // civic buildings tend to be larger than a typical house
+          : has("commercial")
+          ? vary(7, 2)
+          : has("residential")
+          ? vary(5.5, 2) // a typical 1–2 storey house
+          : vary(6, 2.5);
+        const heightM = storeys && storeys > 0 ? storeys * 3.2 : typedFallbackHeight;
         const mesh = buildBuildingMesh(ring, heightM, projector, elevAt, false, color);
         if (mesh) group.add(mesh);
       } else {
