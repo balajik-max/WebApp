@@ -97,10 +97,20 @@ CLASS_SYNONYMS: dict[str, set[str]] = {
         "road", "sidewalk", "footpath", "foot path", "sewage line", "sewage_line",
         "sewerage line", "sewer line", "road feature", "road_feature", "row",
         "right of way", "right_of_way",
+        # "Railway Line"/"Railway ROW" — a ground-level track/right-of-way
+        # corridor, not an overhead electrical conductor. Without this, the
+        # embedding fallback matched it to Power_Line by surface similarity
+        # of the word "line" alone, rendering a railway track as an 8m-high
+        # overhead wire strung between poles.
+        "railway line", "railway_line", "railway row", "railway_row",
     },
     "Building": {"building", "building extenstions", "building extensions"},
     "Signage": {"signage", "road signage", "sign"},
-    "Vegetation": {"coconut tree", "tree", "vegetation"},
+    "Vegetation": {
+        "coconut tree", "tree", "vegetation", "banana tree", "banana_tree",
+        "arecanut tree", "arecanut_tree", "areacanut tree", "areacanut_tree",
+        "palm tree", "palm_tree", "other tree", "other_tree",
+    },
     "Elevation_Contour": {
         "contour", "contour line", "contour line minor", "contour line major",
         "contour line intermediate", "contour_line_minor", "contour_line_major",

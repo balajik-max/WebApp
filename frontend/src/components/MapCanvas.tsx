@@ -745,11 +745,6 @@ const LAYER_ROAD_INSPECTION_ASSETS_LINE = "road-inspection-assets-line";
 const LAYER_ROAD_INSPECTION_ASSETS_POINT = "road-inspection-assets-point";
 const ROAD_INSPECTION_WIDTH_SOURCE = "road-inspection-width";
 const LAYER_ROAD_INSPECTION_WIDTH = "road-inspection-width-line";
-// A bright ring around whichever single finding is currently open in its
-// detail card — with dozens of same-colored red/yellow dots on screen at
-// once, nothing otherwise marks out which one the open card is talking about.
-const SELECTED_ISSUE_SOURCE = "selected-issue-highlight";
-const LAYER_SELECTED_ISSUE = "selected-issue-highlight-ring";
 const CLICK_HIT_PADDING_PX = 4;
 const ROAD_INSPECTION_CLICK_HIT_PADDING_PX = 20;
 
@@ -7630,27 +7625,9 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
   // Selecting an issue from the Road Inspection list only opened its card —
   // the map viewport never moved, so behind a card opened while still
   // zoomed out to the whole road, the actual finding could be off-screen.
-  // A same-colored dot among dozens of others also doesn't say "this one" on
-  // its own, so a dedicated ring marks it explicitly, not just the camera move.
   useEffect(() => {
     const map = mapRef.current;
-    if (!map) return;
-    const source = map.getSource(SELECTED_ISSUE_SOURCE) as GeoJSONSource | undefined;
-    if (!source) return;
-    if (!selectedAnomaly) {
-      source.setData({ type: "FeatureCollection", features: [] });
-      return;
-    }
-    source.setData({
-      type: "FeatureCollection",
-      features: [
-        {
-          type: "Feature",
-          geometry: { type: "Point", coordinates: [selectedAnomaly.lon, selectedAnomaly.lat] },
-          properties: {},
-        },
-      ],
-    });
+    if (!map || !selectedAnomaly) return;
     map.easeTo({
       center: [selectedAnomaly.lon, selectedAnomaly.lat],
       zoom: Math.max(map.getZoom(), 19),
@@ -9340,24 +9317,6 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
       });
       map.on("mouseenter", LAYER_ROAD_INSPECTION_WIDTH, () => (map.getCanvas().style.cursor = "pointer"));
       map.on("mouseleave", LAYER_ROAD_INSPECTION_WIDTH, () => (map.getCanvas().style.cursor = ""));
-
-      map.addSource(SELECTED_ISSUE_SOURCE, {
-        type: "geojson",
-        data: { type: "FeatureCollection", features: [] },
-      });
-      map.addLayer({
-        id: LAYER_SELECTED_ISSUE,
-        type: "circle",
-        source: SELECTED_ISSUE_SOURCE,
-        paint: {
-          // Ring only, no fill — sits around the finding's own colored dot
-          // instead of covering it.
-          "circle-radius": ["interpolate", ["linear"], ["zoom"], 10, 16, 16, 24, 20, 30],
-          "circle-opacity": 0,
-          "circle-stroke-color": "#fde047",
-          "circle-stroke-width": 4,
-        },
-      });
 
       // A separate, top-most source keeps an attribute-table selection
       // visible even while the regular dataset source is being refreshed.

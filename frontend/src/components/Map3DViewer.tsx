@@ -584,6 +584,26 @@ function buildFlatRoadRibbon(points: THREE.Vector3[], halfWidth: number): THREE.
   return geo;
 }
 
+// Real cadastral surveys record storey counts as a code string, not a plain
+// number — "G" (ground only), "G+2" (ground + 2 upper), "LG+G+4" (lower
+// ground + ground + 4 upper), etc. Number("G") / Number("LG+G+4") is NaN, so
+// a naive numeric parse silently fell back to a random placeholder height
+// even though the real floor count was right there — this is exactly why a
+// real multi-storey commercial building rendered barely taller than a
+// single-storey one. Each "+"-separated token counts as one storey unless
+// it's a bare number, which counts as that many upper floors on its own.
+function parseStoreyCountToken(raw: string): number | null {
+  const s = raw.trim().toUpperCase();
+  if (!s) return null;
+  let total = 0;
+  for (const part of s.split("+")) {
+    const p = part.trim();
+    if (!p) continue;
+    total += /^\d+$/.test(p) ? parseInt(p, 10) : 1;
+  }
+  return total > 0 ? total : null;
+}
+
 // Rich per-object detail payload — mirrors what the 2D Map Canvas's own
 // HoverTooltip shows (color swatch, category, real surveyed attributes),
 // plus the real lon/lat, so a click in the 3D view gives the exact same
@@ -773,15 +793,61 @@ function buildGenericFeature(
         // Wall / fence / boundary: a low solid extrusion with a distinct cap.
         const mesh = buildBuildingMesh(ring, vary(2.2, 0.4), projector, elevAt, false, color);
         if (mesh) group.add(mesh);
+      } else if (has("roofline", "roof line", "rooftop")) {
+        // A "Building Roofline" layer is the SAME building's roof-edge
+        // outline as a separate survey layer (its own real category, like
+        // "Residential Building" / "Commercial Building") — not a second,
+        // independent structure. Checked before the general "building"
+        // keyword match below (roofline also contains "building" and would
+        // otherwise match it too): extruding it as ANOTHER full-height
+        // volume at the same footprint stacked a visually duplicate/glitchy
+        // building on top of the real one. A thin flat cap at roof height
+        // still shows the real surveyed roofline shape without that.
+        const pts = ring.map(([lon, lat]) => {
+          const [x, z] = projector.toLocal(lon, lat);
+          return { x, z, y: elevAt(lon, lat) + vary(6, 2.5) };
+        });
+        const contour = pts.map((p) => new THREE.Vector2(p.x, p.z));
+        const faces = THREE.ShapeUtils.triangulateShape(contour, []);
+        if (faces.length > 0) {
+          const positions = new Float32Array(pts.length * 3);
+          pts.forEach((p, i) => { positions[i * 3] = p.x; positions[i * 3 + 1] = p.y; positions[i * 3 + 2] = p.z; });
+          const geo = new THREE.BufferGeometry();
+          geo.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
+          geo.setIndex(faces.flat());
+          geo.computeVertexNormals();
+          const mesh = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ color: colorObj, roughness: 0.6, side: THREE.DoubleSide }));
+          group.add(mesh);
+        }
       } else if (
         has(
           "building", "structure", "footprint", "house", "shed", "room", "plot",
           "temple", "church", "mosque", "school", "college", "hospital", "office",
-          "shop", "market", "hall", "hostel", "clinic", "bank", "hotel", "warehouse"
+          "shop", "market", "hall", "hostel", "clinic", "bank", "hotel", "warehouse",
+          "station",
+          // Bare land-use categories ("Residential", "Commercial",
+          // "Industrial", "Public & Semi Public") are still real building
+          // footprints in this survey, not empty parcels — confirmed by a
+          // real NO_OF_FLOORS attribute on one — just without the word
+          // "Building" in the category name.
+          "residential", "commercial", "industrial", "public"
         )
       ) {
-        // Building / structure: full-height extruded volume.
-        const mesh = buildBuildingMesh(ring, vary(6, 2.5), projector, elevAt, false, color);
+        // Building / structure: full-height extruded volume. Real surveyed
+        // floor count (e.g. NO_OF_FLOORS) beats the stated-random fallback
+        // height whenever it's present.
+        const floorsEntry = Object.entries(f.properties.attributes ?? {}).find(([k]) => {
+          const nk = k.toLowerCase().replace(/[^a-z]/g, "");
+          return nk === "noofloors" || nk === "numfloors" || nk === "totalfloors" || nk === "floors";
+        });
+        const floorsRaw = floorsEntry ? String(floorsEntry[1] ?? "").trim() : "";
+        // The value is usually a storey CODE ("G", "LG+G+4"), not a plain
+        // number — only fall back to a numeric parse for the rare case
+        // where it genuinely is one, and to the placeholder height when
+        // neither yields a real storey count.
+        const storeys = floorsRaw ? parseStoreyCountToken(floorsRaw) ?? (Number(floorsRaw) || null) : null;
+        const heightM = storeys && storeys > 0 ? storeys * 3.2 : vary(6, 2.5);
+        const mesh = buildBuildingMesh(ring, heightM, projector, elevAt, false, color);
         if (mesh) group.add(mesh);
       } else {
         // Generic plot / area: a low extruded slab so it still reads as a volume.
@@ -808,7 +874,10 @@ function buildGenericFeature(
         // of these keywords before ("demarcator" isn't "boundary"), so it
         // fell through to the buried-cable default below and was invisible
         // outside Underground View.
-        const isFenceLike = has("fence", "wall", "hedge", "boundary", "demarcator", "compound");
+        // "gate" is a real surface-level entrance feature, not an
+        // underground utility — matched none of these before, so it fell
+        // through to the buried-cable default too.
+        const isFenceLike = has("fence", "wall", "hedge", "boundary", "demarcator", "compound", "gate");
         // Resample every ~3 m so the ribbon follows the real terrain relief
         // continuously instead of only at the sparse original survey points.
         const line = densifyLine(rawLine, projector, 3);
@@ -1414,12 +1483,36 @@ function buildManholeMarker(
   const wall = new THREE.MeshStandardMaterial({ color: bodyColor, roughness: 0.7 });
   const primaryIssue = issue?.primaryIssue;
 
-  const CHAMBER_R = 1.4;
-  const SHAFT_R = 0.6;
+  // A real inspection chamber is roughly 1–1.2 m across and a manhole neck
+  // roughly 0.6–0.75 m — these were 2.8 m and 1.2 m respectively, which read
+  // as a giant cylinder rather than a manhole.
+  const CHAMBER_R = 0.55;
+  const SHAFT_R = 0.32;
   const SHAFT_H = Math.min(0.9, Math.max(0.4, chamberH * 0.25));
   // Height of the concrete surround/collar sitting flush with the road surface
   // — the bit you actually see at ground level, with the cast-iron lid in it.
   const COLLAR_H = 0.25;
+  // The caller seats this whole group at (ground - chamberH) specifically so
+  // the LID reaches back up to real ground level — chamberH is meant to be
+  // the total depth from chamber floor to lid, not just the open chamber's
+  // own height. Building the chamber cylinder at the FULL chamberH and then
+  // stacking the shaft+collar+lid on TOP of that (the previous code) made
+  // the lid overshoot ground level by that whole extra stack's height
+  // (~1.3–1.5 m for a typical depth) — which is exactly why manholes were
+  // rendering well above ground and looking oversized. The open chamber's
+  // own height must instead be chamberH minus every fixed offset stacked
+  // above it (the 0.3 m chamber start height, the shaft, the collar, and the
+  // small collar-to-lid gap) — landing lidY at exactly chamberH so the lid
+  // reaches ground. A LID_CLEARANCE_M term then lifts it a hair above that:
+  // sitting at EXACTLY the terrain's own height ties for the same Z-depth as
+  // the ground mesh, so the GPU can render either one on top at each pixel
+  // (z-fighting) — the lid can flicker or lose to the terrain and look
+  // "buried", the opposite of the intended "sits visibly at ground level".
+  // Every other surface feature in this file (roads, contours, drains) lifts
+  // itself a few cm above elevAt() for exactly this reason; the manhole lid
+  // needs the same real, visible clearance, not a mathematically perfect fit.
+  const LID_CLEARANCE_M = 0.08;
+  const chamberCylH = Math.max(0.4, chamberH - 0.3 - SHAFT_H - COLLAR_H - 0.06 + LID_CLEARANCE_M);
 
   // Base slab
   const slab = new THREE.Mesh(new THREE.CylinderGeometry(CHAMBER_R + 0.4, CHAMBER_R + 0.4, 0.3, 24), concrete);
@@ -1429,10 +1522,10 @@ function buildManholeMarker(
   // Chamber wall (open-top cylinder, rendered double-sided so the interior
   // reads as a hollow chamber when viewed from above in underground mode)
   const chamber = new THREE.Mesh(
-    new THREE.CylinderGeometry(CHAMBER_R, CHAMBER_R, chamberH, 28, 1, true),
+    new THREE.CylinderGeometry(CHAMBER_R, CHAMBER_R, chamberCylH, 28, 1, true),
     new THREE.MeshStandardMaterial({ color: bodyColor, roughness: 0.7, side: THREE.DoubleSide })
   );
-  chamber.position.y = 0.3 + chamberH / 2;
+  chamber.position.y = 0.3 + chamberCylH / 2;
   group.add(chamber);
 
   // Chamber floor
@@ -1449,12 +1542,12 @@ function buildManholeMarker(
 
   // Conical access shaft
   const shaft = new THREE.Mesh(new THREE.CylinderGeometry(SHAFT_R, CHAMBER_R, SHAFT_H, 24, 1, true), wall);
-  shaft.position.y = 0.3 + chamberH + SHAFT_H / 2;
+  shaft.position.y = 0.3 + chamberCylH + SHAFT_H / 2;
   group.add(shaft);
 
   // Concrete cover collar / frame flush with the surface — the square-ish
   // concrete surround you see around a real manhole lid at ground level.
-  const collarY = 0.3 + chamberH + SHAFT_H;
+  const collarY = 0.3 + chamberCylH + SHAFT_H;
   const collar = new THREE.Mesh(
     new THREE.CylinderGeometry(SHAFT_R + 0.45, SHAFT_R + 0.55, COLLAR_H, 28),
     concrete
@@ -1525,14 +1618,14 @@ function buildManholeMarker(
     const stubMat = new THREE.MeshStandardMaterial({ color: 0x7c6a58, roughness: 0.75 });
     const stub = new THREE.Mesh(new THREE.CylinderGeometry(0.22, 0.22, stubLen, 12), stubMat);
     stub.rotation.z = Math.PI / 2;
-    stub.position.set(CHAMBER_R + stubLen / 2 - 0.1, 0.3 + chamberH * 0.4, 0);
+    stub.position.set(CHAMBER_R + stubLen / 2 - 0.1, 0.3 + chamberCylH * 0.4, 0);
     group.add(stub);
     const cap = new THREE.Mesh(
       new THREE.CircleGeometry(0.22, 12),
       new THREE.MeshStandardMaterial({ color: 0x1f2937, roughness: 0.9 })
     );
     cap.rotation.y = Math.PI / 2;
-    cap.position.set(CHAMBER_R + stubLen - 0.1, 0.3 + chamberH * 0.4, 0);
+    cap.position.set(CHAMBER_R + stubLen - 0.1, 0.3 + chamberCylH * 0.4, 0);
     group.add(cap);
   }
 
@@ -1644,6 +1737,13 @@ export function Map3DViewer({ features, classMap, anomalies, datasets, activeDat
   const [showHeatmap, setShowHeatmap] = useState(false);
   // Search filter for the Layers panel (mirrors the 2D Map Canvas panel).
   const [layerQuery, setLayerQuery] = useState("");
+  // Which per-dataset Layers-panel group is collapsed — defaults to all
+  // expanded. Loading several GDB files at once used to dump every one's
+  // categories into a single flat list with no indication of which file a
+  // layer came from (confusing when two files happen to use similar/near-
+  // duplicate names) — grouping by source dataset here mirrors the 2D Map
+  // Canvas's own "DATA SOURCES" panel.
+  const [collapsedDatasetGroups, setCollapsedDatasetGroups] = useState<Record<string, boolean>>({});
   // "default" = the same hash-based GIS category color the 2D Map Canvas
   // uses everywhere in this view; "realworld" = a plausible real-life
   // material color per category instead. Changing this rebuilds the whole
@@ -1726,6 +1826,52 @@ export function Map3DViewer({ features, classMap, anomalies, datasets, activeDat
       .map(([category, count]) => ({ category, count, color: sceneColor(category) }))
       .sort((a, b) => b.count - a.count);
   }, [features, colorMode]);
+
+  // categoryList grouped by which loaded dataset each category actually came
+  // from — display-only: visibility state, the AI-focus keying, and the
+  // scene's own per-category THREE.Group all still key off the bare category
+  // string exactly as before, unchanged. A raw category name is trusted to
+  // belong to one dataset in the vast majority of real GDB uploads; if the
+  // same exact name genuinely appears in two loaded files it's grouped under
+  // whichever one contributed more of its features, so nothing is dropped —
+  // the toggle still controls every feature under that name either way.
+  const datasetGroupedLayers = useMemo(() => {
+    const perDatasetCounts = new Map<string, Map<string, number>>();
+    for (const f of features) {
+      const raw = (f.properties.category ?? "").trim();
+      if (raw === "raster_pixel") continue;
+      const cat = raw && raw !== "" ? raw : "uncategorized";
+      const dsId = f.properties.dataset_id ?? "";
+      let byCat = perDatasetCounts.get(dsId);
+      if (!byCat) { byCat = new Map(); perDatasetCounts.set(dsId, byCat); }
+      byCat.set(cat, (byCat.get(cat) ?? 0) + 1);
+    }
+    // Pick the single dataset that contributed the most rows for each
+    // category, so a name shared across files still lands in exactly one
+    // group instead of being duplicated or split.
+    const owningDataset = new Map<string, string>();
+    const bestCount = new Map<string, number>();
+    for (const [dsId, byCat] of perDatasetCounts) {
+      for (const [cat, count] of byCat) {
+        if (count > (bestCount.get(cat) ?? -1)) {
+          bestCount.set(cat, count);
+          owningDataset.set(cat, dsId);
+        }
+      }
+    }
+    const groups = new Map<string, { datasetId: string; name: string; layers: typeof categoryList }>();
+    for (const entry of categoryList) {
+      const dsId = owningDataset.get(entry.category) ?? "";
+      const name = datasets.find((d) => d.id === dsId)?.name ?? "Other";
+      let g = groups.get(dsId);
+      if (!g) { g = { datasetId: dsId, name, layers: [] }; groups.set(dsId, g); }
+      g.layers.push(entry);
+    }
+    // Active datasets first (in their selected order), then anything else
+    // present in the loaded features but not currently an active source.
+    const order = [...activeDatasetIds, ...Array.from(groups.keys()).filter((id) => !activeDatasetIds.includes(id))];
+    return order.map((id) => groups.get(id)).filter((g): g is NonNullable<typeof g> => !!g && g.layers.length > 0);
+  }, [categoryList, features, datasets, activeDatasetIds]);
 
   // New taxonomy classes may be backfilled directly onto old feature rows by
   // the audit engine. Prefer that authoritative per-feature value over the
@@ -3896,9 +4042,12 @@ export function Map3DViewer({ features, classMap, anomalies, datasets, activeDat
   // default checked state, set via setVisible above) — so the panel always
   // has a checkbox the user can click to bring any other layer back on
   // alongside the active focus, same as the 2D Map Canvas's Layers panel.
-  const displayedLayers = (() => {
+  const displayedGroups = (() => {
     const q = layerQuery.trim().toLowerCase();
-    return q ? categoryList.filter((c) => c.category.toLowerCase().includes(q)) : categoryList;
+    if (!q) return datasetGroupedLayers;
+    return datasetGroupedLayers
+      .map((g) => ({ ...g, layers: g.layers.filter((c) => c.category.toLowerCase().includes(q)) }))
+      .filter((g) => g.layers.length > 0);
   })();
 
   const applySurfaceContextVisibility = (
@@ -4071,27 +4220,75 @@ export function Map3DViewer({ features, classMap, anomalies, datasets, activeDat
               <span className="layer-row__name">Terrain</span>
               <span className="layer-row__count" />
             </div>
-            {displayedLayers.map((c) => {
-              const key = `cat:${c.category}`;
-              const on = visible[key] !== false;
+            {displayedGroups.map((g) => {
+              const collapsed = collapsedDatasetGroups[g.datasetId];
+              const allOnInGroup = g.layers.every((c) => visible[`cat:${c.category}`] !== false);
+              const anyOnInGroup = g.layers.some((c) => visible[`cat:${c.category}`] !== false);
               return (
-                <div
-                  key={c.category}
-                  className={`layer-row${on ? "" : " layer-row--hidden"}`}
-                  onClick={() => setVisible((v) => ({ ...v, [key]: v[key] === false ? true : false }))}
-                >
-                  <div className={`layer-row__checkbox${on ? " layer-row__checkbox--checked" : ""}`}>
-                    <svg className="layer-row__checkbox-mark" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3">
-                      <path d="M5 13l4 4L19 7" strokeLinecap="round" strokeLinejoin="round" />
-                    </svg>
+                <div key={g.datasetId || "other"} className="layer-group">
+                  <div
+                    className="layer-group__head"
+                    onClick={() =>
+                      setCollapsedDatasetGroups((prev) => ({ ...prev, [g.datasetId]: !prev[g.datasetId] }))
+                    }
+                  >
+                    <input
+                      type="checkbox"
+                      className="layer-group__check"
+                      aria-label={`Show all layers in ${g.name}`}
+                      checked={allOnInGroup}
+                      ref={(el) => { if (el) el.indeterminate = !allOnInGroup && anyOnInGroup; }}
+                      onClick={(e) => e.stopPropagation()}
+                      onChange={() => {
+                        setVisible((v) => {
+                          const next = { ...v };
+                          for (const c of g.layers) next[`cat:${c.category}`] = !allOnInGroup;
+                          return next;
+                        });
+                      }}
+                    />
+                    <button
+                      type="button"
+                      className="layer-group__toggle"
+                      aria-expanded={!collapsed}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setCollapsedDatasetGroups((prev) => ({ ...prev, [g.datasetId]: !prev[g.datasetId] }));
+                      }}
+                    >
+                      <span className="layer-group__name" title={g.name}>{g.name}</span>
+                      <span className="layer-group__count">{g.layers.length}</span>
+                      <span className="grouped-field-list__chevron layer-group__chevron" aria-hidden="true" />
+                    </button>
                   </div>
-                  <span className="layer-row__swatch" style={{ background: c.color }} />
-                  <span className="layer-row__name">{c.category}</span>
-                  <span className="layer-row__count">{c.count}</span>
+                  {!collapsed && (
+                  <div className="layer-group__body">
+                  {g.layers.map((c) => {
+                      const key = `cat:${c.category}`;
+                      const on = visible[key] !== false;
+                      return (
+                        <div
+                          key={c.category}
+                          className={`layer-row${on ? "" : " layer-row--hidden"}`}
+                          onClick={() => setVisible((v) => ({ ...v, [key]: v[key] === false ? true : false }))}
+                        >
+                          <div className={`layer-row__checkbox${on ? " layer-row__checkbox--checked" : ""}`}>
+                            <svg className="layer-row__checkbox-mark" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3">
+                              <path d="M5 13l4 4L19 7" strokeLinecap="round" strokeLinejoin="round" />
+                            </svg>
+                          </div>
+                          <span className="layer-row__swatch" style={{ background: c.color }} />
+                          <span className="layer-row__name">{c.category}</span>
+                          <span className="layer-row__count">{c.count}</span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                  )}
                 </div>
               );
             })}
-            {displayedLayers.length === 0 && <div className="layer-list__empty">No matching layers</div>}
+            {displayedGroups.length === 0 && <div className="layer-list__empty">No matching layers</div>}
           </div>
         </div>
         <button
