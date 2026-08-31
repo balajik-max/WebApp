@@ -15,7 +15,7 @@ export default function PublicLogin() {
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    document.title = "Public Login · Davanagere Smart Urban Survey";
+    document.title = "Public Login · Smart Urban Survey";
   }, []);
 
   if (loading) {

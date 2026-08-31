@@ -24,7 +24,7 @@
   min-height: 100vh;
   margin: 0;
   background:
-    radial-gradient(circle at 84% 0%, rgba(36, 135, 112, 0.11), transparent 30rem),
+    radial-gradient(circle at 84% 0%, rgba(31, 79, 140, 0.11), transparent 30rem),
     #eef3f8;
 }
 
@@ -56,7 +56,7 @@
 .approved-dashboard-host .dashboard-section-heading span,
 .approved-dashboard-host .dashboard-panel__heading span {
   margin: 0;
-  color: #187660;
+  color: #13417b;
   font-size: 0.76rem;
   font-weight: 800;
   letter-spacing: 0.12em;
@@ -82,10 +82,10 @@
   gap: 9px;
   flex: 0 0 auto;
   padding: 10px 14px;
-  border: 1px solid #cbe7de;
+  border: 1px solid #cad8e8;
   border-radius: 999px;
-  color: #17634f;
-  background: #eefaf6;
+  color: #133967;
+  background: #edf3fb;
   font-size: 0.84rem;
   font-weight: 750;
 }
@@ -94,8 +94,8 @@
   width: 9px;
   height: 9px;
   border-radius: 50%;
-  background: #1da477;
-  box-shadow: 0 0 0 4px rgba(29, 164, 119, 0.13);
+  background: #165bab;
+  box-shadow: 0 0 0 4px rgba(22, 91, 171, 0.13);
 }
 
 .approved-dashboard-host .dashboard-tabs {
@@ -121,18 +121,18 @@
 }
 
 .approved-dashboard-host .dashboard-tab:hover {
-  color: #1e6f5c;
-  background: #eff7f5;
+  color: #1a4173;
+  background: #eff3f7;
 }
 
 .approved-dashboard-host .dashboard-tab--active {
   color: white;
-  background: #1e7662;
+  background: #1a447a;
 }
 
 .approved-dashboard-host .dashboard-tab--active:hover {
   color: white;
-  background: #1e7662;
+  background: #1a447a;
 }
 
 .approved-dashboard-host .executive-hero {
@@ -171,7 +171,7 @@
   gap: 16px;
   padding: 21px;
   border-radius: 18px;
-  background: #edf8f5;
+  background: #ecf2f9;
 }
 
 .approved-dashboard-host .executive-hero__message strong {
@@ -186,7 +186,7 @@
   flex: 0 0 auto;
   border-radius: 50%;
   color: white;
-  background: #1b9270;
+  background: #155098;
   font-size: 1.35rem;
   font-weight: 900;
 }
@@ -202,7 +202,7 @@
   min-height: 190px;
   padding: 18px;
   border: 1px solid #dce5ef;
-  border-top: 4px solid #3b806f;
+  border-top: 4px solid #385983;
   border-radius: 16px;
   background: white;
 }
@@ -217,7 +217,7 @@
 }
 
 .approved-dashboard-host .approved-kpi-card--success {
-  border-top-color: #1b9270;
+  border-top-color: #155098;
 }
 
 .approved-dashboard-host .approved-kpi-card__top {
@@ -233,8 +233,8 @@
   place-items: center;
   flex: 0 0 auto;
   border-radius: 11px;
-  color: #1f7562;
-  background: #eaf5f2;
+  color: #1b4479;
+  background: #e9eff6;
   font-size: 1.1rem;
   font-weight: 900;
 }
@@ -381,8 +381,8 @@
   place-items: center;
   flex: 0 0 auto;
   border-radius: 10px;
-  color: #267d6b;
-  background: #edf7f4;
+  color: #224c81;
+  background: #ecf1f7;
   font-size: 0.78rem;
   font-weight: 850;
 }
@@ -427,7 +427,7 @@
   display: block;
   height: 100%;
   border-radius: inherit;
-  background: #2a8a74;
+  background: #25548f;
 }
 
 .approved-dashboard-host .completeness-list {
@@ -464,7 +464,7 @@
   min-height: 175px;
   padding: 21px;
   border: 1px solid #dce5ef;
-  border-left: 5px solid #2a8a74;
+  border-left: 5px solid #25548f;
   border-radius: 15px;
   background: white;
 }
@@ -552,8 +552,8 @@
   width: 46px;
   height: 46px;
   margin: auto;
-  border: 5px solid #d8eee8;
-  border-top-color: #1b8a6e;
+  border: 5px solid #d7e2ef;
+  border-top-color: #154c90;
   border-radius: 50%;
   animation: spin 800ms linear infinite;
 }
@@ -678,7 +678,7 @@
 }
 
 .approved-dashboard-host .dashboard-page-heading > div:first-child > span {
-  color: #187660;
+  color: #13417b;
   font-size: 0.76rem;
   font-weight: 800;
   letter-spacing: 0.12em;
@@ -701,10 +701,10 @@
 .approved-dashboard-host .page-record-badge {
   flex: 0 0 auto;
   padding: 10px 14px;
-  border: 1px solid #d3e7e0;
+  border: 1px solid #d2dce8;
   border-radius: 999px;
-  color: #17634f;
-  background: #eef9f6;
+  color: #133967;
+  background: #edf3fa;
   font-size: 0.84rem;
   font-weight: 800;
 }
@@ -746,8 +746,8 @@
 
 .approved-dashboard-host .dashboard-filter-panel input:focus,
 .approved-dashboard-host .dashboard-filter-panel select:focus {
-  border-color: #2b846f;
-  box-shadow: 0 0 0 3px rgba(43, 132, 111, 0.12);
+  border-color: #275288;
+  box-shadow: 0 0 0 3px rgba(39, 82, 136, 0.12);
 }
 
 .approved-dashboard-host .clear-filter-button {
@@ -866,8 +866,8 @@
 }
 
 .approved-dashboard-host .table-status--good {
-  color: #17634f;
-  background: #e9f7f2;
+  color: #133967;
+  background: #e8eff8;
 }
 
 .approved-dashboard-host .table-status--warning {
@@ -897,7 +897,7 @@
   border-radius: 10px;
   padding: 10px 15px;
   color: white;
-  background: #1e7662;
+  background: #1a447a;
   font-weight: 800;
 }
 
@@ -988,8 +988,8 @@
   place-items: center;
   flex: 0 0 auto;
   border-radius: 12px;
-  color: #287b68;
-  background: #e8f5f1;
+  color: #244c7f;
+  background: #e7eef6;
   font-weight: 900;
 }
 
@@ -999,8 +999,8 @@
 }
 
 .approved-dashboard-host .drainage-summary-icon--open {
-  color: #198363;
-  background: #e7f6f0;
+  color: #144988;
+  background: #e6eef7;
 }
 
 .approved-dashboard-host .chart-container--drain-roads {
@@ -1068,7 +1068,7 @@
   place-items: center;
   border-radius: 50%;
   color: white;
-  background: #259276;
+  background: #205597;
   font-size: 1.25rem;
   font-weight: 900;
 }
@@ -1166,8 +1166,8 @@
 }
 
 .approved-dashboard-host .manhole-summary-icon--good {
-  color: #17634f;
-  background: #e8f6f1;
+  color: #133967;
+  background: #e7eef7;
 }
 
 .approved-dashboard-host .manhole-summary-icon--danger {
@@ -1222,7 +1222,7 @@
   display: block;
   height: 100%;
   border-radius: inherit;
-  background: #247d69;
+  background: #204b81;
 }
 
 .approved-dashboard-host .manhole-depth-panel {
@@ -1408,8 +1408,8 @@
 }
 
 .approved-dashboard-host .utility-group-badge--point {
-  color: #17634f;
-  background: #e8f7f1;
+  color: #133967;
+  background: #e7eff8;
 }
 
 .approved-dashboard-host .utility-group-badge--line {
@@ -1457,7 +1457,7 @@
   display: block;
   height: 100%;
   border-radius: inherit;
-  background: #2a8a74;
+  background: #25548f;
 }
 
 @media (max-width: 1320px) {
@@ -1618,15 +1618,15 @@
   min-height: 30px;
   border-radius: 9px;
   padding: 5px 10px;
-  color: #17634f;
-  background: #e9f7f2;
+  color: #133967;
+  background: #e8eff8;
   font-size: 0.76rem;
   font-weight: 800;
   text-decoration: none;
 }
 
 .approved-dashboard-host .problem-map-link:hover {
-  background: #d9efe7;
+  background: #d8e3f0;
 }
 
 @media (max-width: 1320px) {
@@ -1659,7 +1659,7 @@
   overflow-y: auto;
   overscroll-behavior: contain;
   scrollbar-gutter: stable;
-  background: radial-gradient(circle at 84% 0%, rgba(36, 135, 112, 0.11), transparent 30rem), #eef3f8;
+  background: radial-gradient(circle at 84% 0%, rgba(31, 79, 140, 0.11), transparent 30rem), #eef3f8;
 }
 
 .approved-dashboard-host .executive-dashboard {
@@ -1681,7 +1681,7 @@
   color: #48566d; background: rgba(255,255,255,.9); font-size: .8rem; font-weight: 750;
 }
 .approved-dashboard-host .approved-dashboard-actions button:last-child {
-  color: white; border-color: #1e7662; background: #1e7662;
+  color: white; border-color: #1a447a; background: #1a447a;
 }
 @media (max-width: 720px) {
   .approved-dashboard-host .dashboard-titlebar__side { justify-items: stretch; width: 100%; }
@@ -1756,7 +1756,7 @@
 
 .approved-dashboard-host .surface-highlight-panel > span,
 .approved-dashboard-host .surface-alert-panel span {
-  color: #187660;
+  color: #13417b;
   font-size: 0.74rem;
   font-weight: 800;
   letter-spacing: 0.1em;
@@ -1786,7 +1786,7 @@
   place-items: center;
   border-radius: 9px;
   color: #fff;
-  background: #267d6b;
+  background: #224c81;
   font-size: 0.8rem;
 }
 
@@ -1879,8 +1879,8 @@
   min-height: 27px;
   padding: 4px 9px;
   border-radius: 999px;
-  color: #17634f;
-  background: #e9f7f2;
+  color: #133967;
+  background: #e8eff8;
   font-size: 0.73rem;
   font-weight: 750;
 }
@@ -1900,10 +1900,10 @@
   align-items: center;
   min-height: 31px;
   padding: 6px 10px;
-  border: 1px solid #bedfd6;
+  border: 1px solid #bccde1;
   border-radius: 9px;
-  color: #17634f;
-  background: #eef9f6;
+  color: #133967;
+  background: #edf3fa;
   font-size: 0.74rem;
   font-weight: 800;
   text-decoration: none;
@@ -1911,8 +1911,8 @@
 }
 
 .approved-dashboard-host .dashboard-map-link:hover {
-  border-color: #2b846f;
-  background: #e4f5ef;
+  border-color: #275288;
+  background: #e3ecf6;
 }
 
 @media (max-width: 1260px) {

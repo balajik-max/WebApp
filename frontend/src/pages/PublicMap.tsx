@@ -14,7 +14,7 @@ import {
   type PublicDataset,
 } from "../lib/publicPortal";
 
-const DAVANAGERE_CENTER: [number, number] = [75.9218, 14.4644];
+const DEFAULT_MAP_CENTER: [number, number] = [78.9629, 22.5937];
 const DATA_SOURCE = "public-user-datasets";
 const FILL_LAYER = "public-user-dataset-fill";
 const LINE_LAYER = "public-user-dataset-line";
@@ -94,7 +94,7 @@ export default function PublicMap() {
 
   useEffect(() => {
     document.body.classList.add("citizen-scroll");
-    document.title = "Public Map · Davanagere Smart Urban Survey";
+    document.title = "Public Map · Smart Urban Survey";
     return () => document.body.classList.remove("citizen-scroll");
   }, []);
 
@@ -103,8 +103,8 @@ export default function PublicMap() {
     const map = new maplibregl.Map({
       container: containerRef.current,
       style: BASE_STYLE,
-      center: DAVANAGERE_CENTER,
-      zoom: 11.5,
+      center: DEFAULT_MAP_CENTER,
+      zoom: 4.2,
       maxZoom: 22,
     });
     map.addControl(new maplibregl.NavigationControl(), "top-right");

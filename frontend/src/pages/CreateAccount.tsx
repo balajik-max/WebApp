@@ -59,7 +59,7 @@ export default function CreateAccountView() {
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    document.title = "Create Public Account · Davanagere Smart Urban Survey";
+    document.title = "Create Public Account · Smart Urban Survey";
   }, []);
 
   useEffect(() => {

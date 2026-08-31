@@ -10,7 +10,7 @@ const POINT_LAYER = "analytics-points";
 const LINE_LAYER = "analytics-lines";
 const POLYGON_FILL_LAYER = "analytics-polygons-fill";
 const POLYGON_LINE_LAYER = "analytics-polygons-line";
-const DAVANGERE_CENTER: [number, number] = [75.9218, 14.4644];
+const DEFAULT_MAP_CENTER: [number, number] = [78.9629, 22.5937];
 
 const EMPTY_COLLECTION: FeatureCollectionResponse = {
   type: "FeatureCollection",
@@ -59,7 +59,7 @@ function fitToFeatures(map: MapLibreMap, features: UrbanFeature[]) {
     });
   }
   if (hasCoordinate) map.fitBounds(bounds, { padding: 34, maxZoom: 17, duration: 500 });
-  else map.easeTo({ center: DAVANGERE_CENTER, zoom: 11, duration: 350 });
+  else map.easeTo({ center: DEFAULT_MAP_CENTER, zoom: 4.2, duration: 350 });
 }
 
 function withAnalyticsColors(
@@ -129,8 +129,8 @@ export function AnalyticsCategoryMap({ datasetIds, categories, filters = {}, onC
     const map = new maplibregl.Map({
       container: containerRef.current,
       style: BASE_STYLE,
-      center: DAVANGERE_CENTER,
-      zoom: 11,
+      center: DEFAULT_MAP_CENTER,
+      zoom: 4.2,
       minZoom: 2,
       maxZoom: 24,
       attributionControl: false,

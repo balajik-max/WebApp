@@ -74,7 +74,7 @@ export default function PublicDashboard() {
 
   useEffect(() => {
     document.body.classList.add("citizen-scroll");
-    document.title = "Public Dashboard · Davanagere Smart Urban Survey";
+    document.title = "Public Dashboard · Smart Urban Survey";
     return () => document.body.classList.remove("citizen-scroll");
   }, []);
 

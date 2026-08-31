@@ -1,9 +1,7 @@
 import { Link } from "react-router-dom";
 import chiefMinisterPhoto from "../../assets/chief-minister-dk-shivakumar.png";
-import corporationLogo from "../../assets/davanagere-corporation-logo.png";
 import urbanDevelopmentMinisterPhoto from "../../assets/urban-development-minister-yathindra-siddaramaiah.png";
 import karnatakaLogo from "../../assets/government-karnataka-logo.png";
-import commissionerPhoto from "../../assets/Dr. N. Mahantesh.jpg";
 
 type PublicPortalHeaderProps = {
   showLoginAction?: boolean;
@@ -31,12 +29,6 @@ const OFFICIALS = [
     photo: urbanDevelopmentMinisterPhoto,
     alt: "Shri Yathindra Siddaramaiah, Minister for Urban Development, Government of Karnataka",
   },
-  {
-    name: "Dr. N. Mahantesh",
-    designation: "Commissioner, Davanagere City Corporation",
-    photo: commissionerPhoto,
-    alt: "Dr. N. Mahantesh, KMAS (Selection Grade), Commissioner, Davanagere City Corporation",
-  },
 ] as const;
 
 export function PublicPortalHeader({ showLoginAction = false }: PublicPortalHeaderProps) {
@@ -51,20 +43,12 @@ export function PublicPortalHeader({ showLoginAction = false }: PublicPortalHead
             </span>
             <span>Government of<br />Karnataka</span>
           </div>
-          <div className="portal-agency portal-agency--corporation">
-            <span className="portal-agency__mark">
-              <img src={corporationLogo} alt="Davanagere City Corporation" />
-            </span>
-            <span>Davanagere<br />City Corporation</span>
-          </div>
         </div>
 
-        <Link to="/" className="public-portal-header__identity" aria-label="Davanagere Smart Urban Survey home">
-          <span className="public-portal-header__title">Davanagere Smart Urban Survey</span>
+        <Link to="/" className="public-portal-header__identity" aria-label="Smart Urban Survey home">
+          <span className="public-portal-header__title">Smart Urban Survey</span>
           <span className="public-portal-header__subtitle">
             Government of Karnataka
-            <i aria-hidden="true" />
-            Davanagere City Corporation
           </span>
         </Link>
 

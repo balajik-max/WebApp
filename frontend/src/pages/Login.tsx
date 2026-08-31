@@ -158,7 +158,7 @@ export function LoginPage() {
                     data-testid="input-email"
                     type="email"
                     autoComplete="email"
-                    placeholder="admin@davangere.gov.in"
+                    placeholder="admin@urbansurvey.app"
                     value={email}
                     onChange={(event) => setEmail(event.target.value)}
                     onBlur={() =>
@@ -262,25 +262,25 @@ export function LoginPage() {
               <h2>Demo Accounts</h2>
               <p>Use any demo account below to explore the platform</p>
               <div className="auth-demo-accounts">
-                <button type="button" onClick={() => selectDemoAccount("admin@davangere.gov.in")}>
+                <button type="button" onClick={() => selectDemoAccount("admin@urbansurvey.app")}>
                   <span className="auth-demo-badge auth-demo-badge--admin">ADMIN</span>
-                  <span>admin@davangere.gov.in</span>
+                  <span>admin@urbansurvey.app</span>
                 </button>
-                <button type="button" onClick={() => selectDemoAccount("commissioner@davangere.gov.in")}>
+                <button type="button" onClick={() => selectDemoAccount("commissioner@urbansurvey.app")}>
                   <span className="auth-demo-badge auth-demo-badge--commissioner">Commissioner</span>
-                  <span>commissioner@davangere.gov.in</span>
+                  <span>commissioner@urbansurvey.app</span>
                 </button>
-                <button type="button" onClick={() => selectDemoAccount("aee@davangere.gov.in")}>
+                <button type="button" onClick={() => selectDemoAccount("aee@urbansurvey.app")}>
                   <span className="auth-demo-badge auth-demo-badge--aee">AEE</span>
-                  <span>aee@davangere.gov.in</span>
+                  <span>aee@urbansurvey.app</span>
                 </button>
-                <button type="button" onClick={() => selectDemoAccount("ae@davangere.gov.in")}>
+                <button type="button" onClick={() => selectDemoAccount("ae@urbansurvey.app")}>
                   <span className="auth-demo-badge auth-demo-badge--ae">AE</span>
-                  <span>ae@davangere.gov.in</span>
+                  <span>ae@urbansurvey.app</span>
                 </button>
-                <button type="button" onClick={() => selectDemoAccount("mla@davangere.gov.in")}>
+                <button type="button" onClick={() => selectDemoAccount("mla@urbansurvey.app")}>
                   <span className="auth-demo-badge auth-demo-badge--mla">MLA</span>
-                  <span>mla@davangere.gov.in</span>
+                  <span>mla@urbansurvey.app</span>
                 </button>
               </div>
             </div>
@@ -320,7 +320,7 @@ export function LoginPage() {
             <span className="login-assurance-icon"><HeadsetGlyph /></span>
             <span>
               <strong>Need Help?</strong>
-              <small>Contact support@davanagere.gov.in</small>
+              <small>Contact support@urbansurvey.app</small>
             </span>
           </div>
         </div>

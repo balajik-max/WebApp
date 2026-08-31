@@ -21,7 +21,7 @@ export const STRINGS: Dict = {
 
   // ── Login ─────────────────────────────────────────────────
   "login.title": { en: "Urban Intelligence", kn: "ನಗರ ಬುದ್ಧಿಮತ್ತೆ" },
-  "login.subtitle": { en: "Davanagere Smart Urban Survey & Architecture", kn: "ದಾವಣಗೆರೆ ಸ್ಮಾರ್ಟ್ ನಗರ ಸರ್ವೇ ಮತ್ತು ಆರ್ಕಿಟೆಕ್ಚರ್" },
+  "login.subtitle": { en: "Smart Urban Survey & Architecture", kn: "ಸ್ಮಾರ್ಟ್ ನಗರ ಸರ್ವೇ ಮತ್ತು ಆರ್ಕಿಟೆಕ್ಚರ್" },
   "login.email": { en: "Email", kn: "ಇಮೇಲ್" },
   "login.password": { en: "Password", kn: "ಪಾಸ್‌ವರ್ಡ್" },
   "login.signin": { en: "Sign In", kn: "ಸೈನ್ ಇನ್" },

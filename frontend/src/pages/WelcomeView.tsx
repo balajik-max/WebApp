@@ -232,7 +232,7 @@ export default function WelcomeView() {
         <section className="public-welcome-hero" aria-labelledby="welcome-title">
           <div className="public-welcome-container public-welcome-hero__inner">
             <div className="public-welcome-hero__content">
-              <p className="public-welcome-eyebrow">Davanagere Smart Urban Survey</p>
+              <p className="public-welcome-eyebrow">Smart Urban Survey</p>
               <h1 id="welcome-title">
                 Smarter Decisions.
                 <br />
@@ -321,28 +321,28 @@ export default function WelcomeView() {
           <div className="public-welcome-footer__brand-mark">
             <UiIcon name="building" />
           </div>
-          <h2>Davanagere Smart Urban Survey</h2>
+          <h2>Smart Urban Survey</h2>
           <p>Urban planning, infrastructure, and public services &mdash; connected in one intelligent platform.</p>
           <nav className="public-welcome-footer__nav" aria-label="Footer navigation">
             <a href="#main">About the Platform</a>
             <Link to="/public/login">Public Login</Link>
             <Link to="/public/register">Create Account</Link>
-            <a href="mailto:support@davanagere.gov.in">Contact Support</a>
+            <a href="mailto:support@urbansurvey.app">Contact Support</a>
           </nav>
 
           <div className="public-welcome-footer__lower">
             <div>
-              <strong>Official platform for Davanagere City governance.</strong>
+              <strong>Official platform for city governance.</strong>
               <span>Secure. Accurate. Accountable.</span>
             </div>
             <div>
               <strong>Need Help?</strong>
-              <a href="mailto:support@davanagere.gov.in">support@davanagere.gov.in</a>
+              <a href="mailto:support@urbansurvey.app">support@urbansurvey.app</a>
             </div>
           </div>
 
           <small className="public-welcome-footer__copyright">
-            &copy; 2026 Davanagere City Corporation, Government of Karnataka. All rights reserved.
+            &copy; 2026 Government of Karnataka. All rights reserved.
           </small>
         </div>
       </footer>

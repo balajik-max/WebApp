@@ -157,19 +157,19 @@ class Settings(BaseSettings):
     architect_password: str = Field(validation_alias="ARCHITECT_PASSWORD")
     architect_name: str = Field(default="City Architect", validation_alias="ARCHITECT_NAME")
 
-    commissioner_email: str = Field(default="commissioner@davangere.gov.in", validation_alias="COMMISSIONER_EMAIL")
+    commissioner_email: str = Field(default="commissioner@urbansurvey.app", validation_alias="COMMISSIONER_EMAIL")
     commissioner_password: str = Field(validation_alias="COMMISSIONER_PASSWORD")
     commissioner_name: str = Field(default="City Commissioner", validation_alias="COMMISSIONER_NAME")
 
-    aee_email: str = Field(default="aee@davangere.gov.in", validation_alias="AEE_EMAIL")
+    aee_email: str = Field(default="aee@urbansurvey.app", validation_alias="AEE_EMAIL")
     aee_password: str = Field(validation_alias="AEE_PASSWORD")
     aee_name: str = Field(default="Assistant Executive Engineer", validation_alias="AEE_NAME")
 
-    ae_email: str = Field(default="ae@davangere.gov.in", validation_alias="AE_EMAIL")
+    ae_email: str = Field(default="ae@urbansurvey.app", validation_alias="AE_EMAIL")
     ae_password: str = Field(validation_alias="AE_PASSWORD")
     ae_name: str = Field(default="Assistant Engineer", validation_alias="AE_NAME")
 
-    mla_email: str = Field(default="mla@davangere.gov.in", validation_alias="MLA_EMAIL")
+    mla_email: str = Field(default="mla@urbansurvey.app", validation_alias="MLA_EMAIL")
     mla_password: str = Field(default="Mla@12345", validation_alias="MLA_PASSWORD")
     mla_name: str = Field(default="Member of Legislative Assembly", validation_alias="MLA_NAME")
 

@@ -636,8 +636,8 @@ export function WorkspaceLayout() {
 
   // Current map camera state (zoom, center, pitch, bearing) - persists through tab navigation
   const [mapState, setMapState] = useState<MapState>({
-    zoom: 12,
-    center: [75.9218, 14.4644],
+    zoom: 4.2,
+    center: [78.9629, 22.5937],
     pitch: 0,
     bearing: 0,
   });
@@ -797,7 +797,7 @@ export function WorkspaceLayout() {
 }
 
 // Keep the browser tab title in sync with the active view.
-export function useTabTitle(base = "Davangere Urban Survey") {
+export function useTabTitle(base = "Smart Urban Survey") {
   const location = useLocation();
   useEffect(() => {
     const label =

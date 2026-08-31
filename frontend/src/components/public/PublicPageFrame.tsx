@@ -28,7 +28,7 @@ export function PublicPageFrame({
               <span aria-hidden="true">←</span> Back to Welcome
             </Link>
           )}
-          <p className="citizen-eyebrow">Davanagere Smart Urban Survey</p>
+          <p className="citizen-eyebrow">Smart Urban Survey</p>
           <h1>{title}</h1>
           <p>{description}</p>
         </section>

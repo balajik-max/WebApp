@@ -214,8 +214,11 @@ interface Props {
   propertyTaxSelectedFeatureId?: string | null;
 }
 
-const DAVANGERE_CENTER: [number, number] = [75.9218, 14.4644];
-const DAVANGERE_ZOOM = 12;
+// Generic fallback used only until a dataset is selected/loaded — the
+// platform is not tied to one city, so this centres on India as a whole
+// rather than defaulting to any single ward.
+const DEFAULT_MAP_CENTER: [number, number] = [78.9629, 22.5937];
+const DEFAULT_MAP_ZOOM = 4.2;
 // Dataset/filter changes load one stable GeoJSON snapshot. Map navigation
 // then only changes the camera; it never replaces that snapshot. The API
 // still requires a bbox, so use the full valid WGS84 extent and let the
@@ -3719,7 +3722,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
   // Drives the horizontal zoom slider (Google Earth Pro-style) — mirrors
   // the map's actual zoom so the thumb stays in sync with wheel/pinch/
   // keyboard zoom, not just drags on the slider itself.
-  const [mapZoom, setMapZoom] = useState(DAVANGERE_ZOOM);
+  const [mapZoom, setMapZoom] = useState(DEFAULT_MAP_ZOOM);
 
   // Drives the round compass control — mirrors the map's actual bearing so
   // it stays in sync with right-click-drag rotation, not just the compass
@@ -8058,8 +8061,8 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
     const map = new maplibregl.Map({
       container: containerRef.current,
       style: BASE_STYLE,
-      center: initialCenter || DAVANGERE_CENTER,
-      zoom: initialZoom || DAVANGERE_ZOOM,
+      center: initialCenter || DEFAULT_MAP_CENTER,
+      zoom: initialZoom || DEFAULT_MAP_ZOOM,
       pitch: initialPitch ?? 0,
       bearing: initialBearing ?? 0,
       minZoom: 4,
@@ -10495,7 +10498,7 @@ export const MapCanvas = forwardRef<MapCanvasHandle, Props>(function MapCanvas(
   }, [activeElevationDataset, cursorLngLat]);
 
   const eyeAltitudeMeters = useMemo(() => {
-    const latitude = cursorLngLat?.[1] ?? mapRef.current?.getCenter().lat ?? DAVANGERE_CENTER[1];
+    const latitude = cursorLngLat?.[1] ?? mapRef.current?.getCenter().lat ?? DEFAULT_MAP_CENTER[1];
     const height = containerRef.current?.clientHeight ?? 800;
     return estimateEyeAltitudeMeters(mapZoom, latitude, height, mapPitch);
   }, [cursorLngLat, mapPitch, mapZoom]);

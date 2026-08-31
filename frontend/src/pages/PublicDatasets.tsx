@@ -91,7 +91,7 @@ export default function PublicDatasets() {
 
   useEffect(() => {
     document.body.classList.add("citizen-scroll");
-    document.title = "My Datasets · Davanagere Smart Urban Survey";
+    document.title = "My Datasets · Smart Urban Survey";
     return () => document.body.classList.remove("citizen-scroll");
   }, []);
 
